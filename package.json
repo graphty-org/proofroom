@@ -1,0 +1,22 @@
+{
+    "name": "@graphty/visual-review",
+    "version": "0.0.0",
+    "private": true,
+    "description": "Visual review of Storybook stories: capture in CI, compare with baselines in git, accept in a local page",
+    "type": "module",
+    "bin": {
+        "visual-review": "./trusted/cli.mjs"
+    },
+    "scripts": {
+        "test": "vitest",
+        "test:run": "vitest run",
+        "coverage": "vitest run --coverage",
+        "lint": "eslint .",
+        "lint:knip": "cd .. && pnpm run lint:knip -- --workspace visual-review"
+    },
+    "devDependencies": {
+        "@vitest/coverage-v8": "catalog:",
+        "eslint": "^9.29.0",
+        "vitest": "catalog:"
+    }
+}

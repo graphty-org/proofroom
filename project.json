@@ -1,0 +1,30 @@
+{
+    "name": "visual-review",
+    "$schema": "../node_modules/nx/schemas/project-schema.json",
+    "projectType": "application",
+    "sourceRoot": "visual-review/trusted",
+    "tags": [],
+    "targets": {
+        "test": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "npm run test:run",
+                "cwd": "visual-review"
+            }
+        },
+        "coverage": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "npm run coverage",
+                "cwd": "visual-review"
+            }
+        },
+        "lint": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "npm run lint",
+                "cwd": "visual-review"
+            }
+        }
+    }
+}
