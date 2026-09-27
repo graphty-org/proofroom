@@ -83,7 +83,7 @@ async function earlierAccepts(repo, head, pr) {
  * @returns {Promise<{ signs: boolean, format: string, key: string | null, fromEnv: boolean }>} the
  *     signing settings git will use, and whether the environment overrides git's config files
  */
-export async function signingIdentity(repo) {
+async function signingIdentity(repo) {
     const get = (...k) => exec("git", ["config", ...k], { cwd: repo }).catch(() => "");
     const [sign, format, key] = await Promise.all([
         get("--type=bool", "--get", "commit.gpgsign"),
