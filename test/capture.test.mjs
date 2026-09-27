@@ -46,6 +46,7 @@ describe("storySettings", () => {
     it("defaults with no chromatic parameters", () => {
         expect(storySettings({}, null)).toEqual({
             disableSnapshot: false,
+            excludedByStory: false,
             reason: null,
             delay: 0,
             threshold: 0.063,
@@ -69,6 +70,7 @@ describe("storySettings", () => {
         );
         expect(s).toEqual({
             disableSnapshot: true,
+            excludedByStory: true,
             reason: "disableSnapshot in the story's parameters",
             delay: 500,
             threshold: 0.25,
@@ -87,6 +89,7 @@ describe("storySettings", () => {
         );
         expect(s).toEqual({
             disableSnapshot: true,
+            excludedByStory: false,
             reason: "unstable seed",
             delay: 0,
             threshold: 0.1,

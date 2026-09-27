@@ -441,6 +441,15 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 save(t);
                 return [200, out];
             } catch (err) {
+                if (err instanceof AcceptError && err.committed) {
+                    // The accepts are on the branch; keep only the rejects, so Finish again only comments.
+                    for (const [k, v] of mine) {
+                        if (v.decision !== "reject") {
+                            mine.delete(k);
+                        }
+                    }
+                    save(t);
+                }
                 return [err instanceof AcceptError ? 409 : 500, { error: err.message }];
             } finally {
                 finishing = false;

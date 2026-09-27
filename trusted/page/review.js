@@ -458,7 +458,15 @@ function showStory() {
                   )
                 : null,
             state.data.acceptable
-                ? el("button", { type: "button", onclick: () => decide("exclude") }, "Exclude")
+                ? el(
+                      "button",
+                      {
+                          type: "button",
+                          onclick: () => decide("exclude"),
+                          title: "E: stop capturing every mode of this story",
+                      },
+                      "Exclude",
+                  )
                 : null,
             d ? el("button", { type: "button", onclick: () => decide(null) }, "Undo") : null,
             reason,
@@ -594,6 +602,15 @@ async function decide(decision) {
         state.pending = decision;
         reasonBox.focus();
         say(`Type a reason, then press Enter to ${decision}.`);
+        return;
+    }
+    if (
+        decision === "exclude" &&
+        !confirm(
+            `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
+                "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
+        )
+    ) {
         return;
     }
     try {

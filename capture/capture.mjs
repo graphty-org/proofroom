@@ -5,7 +5,11 @@
  * `parameters.chromatic` from the preview's own `extract()`, then opens each story and mode in a
  * fresh browser context: a fixed start time, SwiftShader WebGL, 1200 x 900 at scale 1. It waits
  * for Storybook's render (play functions included) and, for graphty-element, for
- * `waitForStableFrame()`; a story that errors or never settles is `failed`, never a picture.
+ * `waitForStableFrame()`; a story that errors or never settles is `failed`, never a picture,
+ * after one retry in a new context, so a single timeout on a busy runner does not block a pull
+ * request. WebGPU is removed from every page (`navigator.gpu` is deleted before any script runs):
+ * no Chromium switch hides it, and whether an adapter request fails differs by host, so without
+ * this graphty-element's CPU or GPU path would depend on the machine.
  * Anything that differs from its baseline, or has none, is captured once more in a new context,
  * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs).
  *
@@ -26,7 +30,7 @@ import { chromium } from "playwright";
 import { classify, DEFAULT_THRESHOLD, sha256 } from "../trusted/lib/compare.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
-/* global document, window, requestAnimationFrame -- read only inside page.evaluate */
+/* global document, window, requestAnimationFrame -- read only inside the page */
 
 /** The instant every page's clock starts at. It keeps running from there. */
 const CLOCK_START = "2026-01-01T12:00:00Z";
@@ -111,7 +115,7 @@ export async function loadSettings(dir, id) {
  * taking precedence. Modes map a name to Storybook globals; `disable: true` drops a mode.
  * @param {{ chromatic?: object }} parameters the story's parameters (only `chromatic` is read)
  * @param {object | null} file the story's settings file
- * @returns {{ disableSnapshot: boolean, reason: string | null, delay: number, threshold: number,
+ * @returns {{ disableSnapshot: boolean, excludedByStory: boolean, reason: string | null, delay: number, threshold: number,
  *     includeAA: boolean, modes: { name: string | null, globals: object | null }[] }} one mode
  *     with a null name when the story has none
  */
@@ -119,15 +123,17 @@ export function storySettings(parameters, file) {
     const fromStory = parameters.chromatic ?? {};
     const s = { ...fromStory, ...file };
     const disableSnapshot = s.disableSnapshot === true;
+    const byFile = file?.disableSnapshot === true;
     const modes = Object.entries(s.modes ?? {})
         .filter(([, m]) => m?.disable !== true)
         .map(([name, m]) => ({
             name,
             globals: Object.fromEntries(Object.entries(m).filter(([k]) => k !== "disable")),
         }));
-    const where = file?.disableSnapshot === true ? "settings file" : "story's parameters";
+    const where = byFile ? "settings file" : "story's parameters";
     return {
         disableSnapshot,
+        excludedByStory: disableSnapshot && !byFile,
         reason: disableSnapshot ? (file?.reason ?? `disableSnapshot in the ${where}`) : null,
         delay: s.delay ?? 0,
         threshold: s.diffThreshold ?? DEFAULT_THRESHOLD,
@@ -194,8 +200,18 @@ function serve(dir) {
     );
 }
 
-const newContext = (browser) =>
-    browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, timezoneId: "UTC", locale: "en-US" });
+async function newContext(browser) {
+    const context = await browser.newContext({
+        viewport: VIEWPORT,
+        deviceScaleFactor: 1,
+        timezoneId: "UTC",
+        locale: "en-US",
+    });
+    await context.addInitScript(() => {
+        delete Navigator.prototype.gpu;
+    });
+    return context;
+}
 
 /**
  * Loads the preview once and reads every story's `parameters.chromatic`, plus what the page
@@ -232,6 +248,19 @@ async function extract(browser, base) {
 }
 
 /**
+ * Renders one story and mode, retrying once in a new context when it fails.
+ * @param {import("playwright").Browser} browser the browser
+ * @param {string} url the story's full URL
+ * @param {{ delay: number, stableFrame: boolean }} options as for shootOnce
+ * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the
+ *     second attempt's result when the first failed
+ */
+async function shoot(browser, url, options) {
+    const first = await shootOnce(browser, url, options);
+    return first.png ? first : shootOnce(browser, url, options);
+}
+
+/**
  * Renders one story and mode in a fresh context and screenshots it.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
@@ -240,7 +269,7 @@ async function extract(browser, base) {
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the PNG,
  *     or a reason it failed
  */
-async function shoot(browser, url, { delay, stableFrame }) {
+async function shootOnce(browser, url, { delay, stableFrame }) {
     const context = await newContext(browser);
     const lines = [];
     const fail = (reason) => ({ png: null, reason: reason.split("\n")[0].slice(0, MAX_LINE), console: lines });
@@ -358,12 +387,20 @@ export async function capture({ project, storybook, baselines, out, workers, sta
         const jobs = [];
         const items = [];
         const planned = new Set();
+        const existing = new Set(await pngsIn(baselines));
+        // A story whose own parameters exclude it while it still has a baseline is reported as
+        // removed, so a pull request cannot drop a story from review without the owner seeing it.
+        const newlyExcluded = new Set();
         for (const id of ids) {
             const s = storySettings(params[id] ?? {}, await loadSettings(baselines, id));
             for (const mode of s.modes) {
                 const file = fileName(id, mode.name);
-                planned.add(file);
                 const common = { id, mode: mode.name, file, threshold: s.threshold, includeAA: s.includeAA };
+                if (s.excludedByStory && existing.has(file)) {
+                    newlyExcluded.add(file);
+                    continue;
+                }
+                planned.add(file);
                 if (s.disableSnapshot) {
                     items.push({ ...common, ...EMPTY, status: "excluded", reason: s.reason });
                 } else {
@@ -371,7 +408,7 @@ export async function capture({ project, storybook, baselines, out, workers, sta
                 }
             }
         }
-        const gone = (await pngsIn(baselines)).filter((f) => !planned.has(f) && BASELINE_NAME.test(f));
+        const gone = [...existing].filter((f) => !planned.has(f) && BASELINE_NAME.test(f));
 
         const results = {
             version: 1,
@@ -406,7 +443,7 @@ export async function capture({ project, storybook, baselines, out, workers, sta
                 ...classify({ baseline, first: null, threshold: DEFAULT_THRESHOLD, includeAA: false }),
                 threshold: DEFAULT_THRESHOLD,
                 includeAA: false,
-                reason: null,
+                reason: newlyExcluded.has(file) ? "the story's parameters now set disableSnapshot" : null,
                 console: [],
             });
         }

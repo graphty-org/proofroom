@@ -10,7 +10,7 @@ export default defineConfig({
             reportsDirectory: "coverage",
             // Only the library is reachable by unit tests; capture, the page and the gh glue are
             // exercised in CI and by hand.
-            include: ["trusted/lib/*.mjs"],
+            include: ["trusted/lib/*.mjs", "trusted/*.mjs", "capture/*.mjs"],
             thresholds: { lines: 80, functions: 80, branches: 75, statements: 80 },
         },
     },

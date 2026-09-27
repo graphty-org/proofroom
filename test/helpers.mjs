@@ -52,10 +52,11 @@ export function makeRepo() {
     const remote = join(dir, "remote.git");
     const repo = join(dir, "repo");
     git(dir, "init", "-q", "--bare", "-b", "master", remote);
-    git(dir, "clone", "-q", remote, repo);
+    // init and add the remote, not clone: cloning an empty repository prints a warning -q keeps.
+    git(dir, "init", "-q", "-b", "master", repo);
+    git(repo, "remote", "add", "origin", remote);
     git(repo, "config", "user.name", "Owner");
     git(repo, "config", "user.email", "owner@example.com");
-    git(repo, "checkout", "-q", "-b", "master");
     put(join(repo, "README.md"), "test\n");
     for (const file of ["button--primary.dark.png", "card--legacy.png", "tooltip--hover.png"]) {
         cpSync(join(FIXTURE, "compact-mantine/baselines", file), join(repo, "visual-baselines/compact-mantine", file));

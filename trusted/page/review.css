@@ -242,6 +242,12 @@ td {
     max-width: 100%;
 }
 
+/* Side by side fits both images in one row, scaled down, so the decision needs no scroll. */
+.stage.side figure {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
 .stage img,
 .stage canvas {
     display: block;
@@ -267,6 +273,10 @@ td {
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 16px;
+    padding: 8px 0;
+    position: sticky;
+    bottom: 0;
+    background: var(--bg);
 }
 
 #reason {

@@ -260,6 +260,26 @@ describe("finish: rejects", () => {
         });
     });
 
+    it("says the accepts landed when only the reject comment fails", async () => {
+        const s = setup();
+        const failing = async () => {
+            throw new Error("HTTP 502");
+        };
+        const err = await finish({
+            repo: s.repo,
+            gh: failing,
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions: [
+                accept("badge--default.light.png"),
+                { project: "compact-mantine", file: "button--primary.dark.png", decision: "reject", reason: "red" },
+            ],
+            now: NOW,
+        }).catch((e) => e);
+        expect(err.message).toMatch(/accepts were pushed .* reject comment failed: HTTP 502/);
+        expect(err.committed).toBe(remoteLog(s, "feature")[0]);
+    });
+
     it("requires a reason for a reject", async () => {
         const s = setup();
         const decision = {

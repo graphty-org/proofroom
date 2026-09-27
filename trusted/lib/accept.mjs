@@ -21,8 +21,14 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const DECIDABLE = new Set(["changed", "new", "removed"]);
 const EXCLUDABLE = new Set([...DECIDABLE, "unstable", "failed"]);
 
-/** Refused decisions and failed git commands; the message is shown to the owner as is. */
-export class AcceptError extends Error {}
+/**
+ * Refused decisions and failed git commands; the message is shown to the owner as is.
+ * `committed` is set when the accepts were already pushed and only the reject comment failed,
+ * so the caller drops the accepts and keeps the rejects for a retry that only comments.
+ */
+export class AcceptError extends Error {
+    committed = null;
+}
 
 /**
  * Runs git with every hook switched off.
@@ -173,7 +179,19 @@ export async function finish({ repo, gh, target, projects, decisions, now = new 
         }
     }
     if (rejects.length > 0 && !isMaster) {
-        await commentOnPullRequest(gh, target.pr, rejectComment(target.pr, first, rejects));
+        try {
+            await commentOnPullRequest(gh, target.pr, rejectComment(target.pr, first, rejects));
+        } catch (err) {
+            if (commit === null) {
+                throw err;
+            }
+            const e = new AcceptError(
+                `the accepts were pushed as ${commit.slice(0, 10)}, but the reject comment failed: ${err.message}. ` +
+                    "Press Finish again to post the rejects.",
+            );
+            e.committed = commit;
+            throw e;
+        }
     }
     return { commit, branch, pullRequest, rejects: rejects.length };
 }
