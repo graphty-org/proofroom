@@ -50,7 +50,7 @@ story no longer exists, lost a mode, or whose story's own parameters now exclude
 | E            | Exclude (asks for a reason, then Enter, then a confirmation)                |
 | F            | Flash between baseline and new; F again returns to side by side             |
 | H            | Highlight changed pixels; H again returns to side by side                   |
-| Z            | Zoom 4x                                                                     |
+| Z            | Full frame at 4x (otherwise images are cropped to their content, enlarged)  |
 | Space (hold) | Flash while held                                                            |
 | Shift+A      | Accept every undecided item of this project without opening it (asks first) |
 | Escape       | Back to the grid, or out of the reason box                                  |
@@ -104,13 +104,27 @@ A project is "seeded" once its baselines are on master; until then the merge gat
 
 ## What this does and does not guarantee (today)
 
-- A pull request with unreviewed differences in a seeded project cannot pass "All Checks Pass",
-  including after "Re-run failed jobs", and a missing or unfinished capture blocks it too.
+- A pull request cannot pass "All Checks Pass" while its capture of a seeded project holds
+  anything but `unchanged` or `excluded` items, including after "Re-run failed jobs"; a missing,
+  unfinished or invalid capture blocks it too. A rejected item stays blocking until a code change
+  makes it match the baseline.
+- Every baseline PNG, and every settings file that excludes a story, that the pull request adds,
+  changes or deletes must be named with its new hash in a review record the pull request adds
+  under `visual-baselines/reviews/`; existing records may not be edited or deleted. This stops
+  the shortcut of copying captured PNGs, or an exclusion, straight into `visual-baselines/`.
+- It does not prove that you reviewed anything. A record is a plain JSON file: anyone who can push
+  to the branch, including an agent on your machine, can write one that names the copied PNGs, and
+  the gate cannot tell it from one Finish wrote. What the gate shows is that the captures match
+  the pull request's baselines and that each baseline change carries a record; who wrote the
+  record is unproven until signing arrives (below).
 - Review records are marked `"unproven": true`. The page runs on the development server, where
   agents run with your GitHub credentials and signing key, so an agent could press Accept or call
   the page's API. CLAUDE.md forbids it; nothing technical prevents it yet. Signing with a hardware
   security key on your own computer replaces this in milestone 3 (`design/visual-testing/roadmap.md`).
 - The gate is part of `.github/workflows/ci.yml`, which a pull request can edit, and a pull request
-  can loosen a story's own `diffThreshold` or `delay` without a review item. Read changes to those
-  in code review.
+  can loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
+  without a review item. Read changes to those in code review.
+- The CI half has not run yet: the visual jobs, the artifact download in "All Checks Pass", and
+  whether captures are byte-identical from one CI runner to the next are unmeasured until the
+  tooling pull request's own CI runs (`design/visual-testing/design.md`, section 1a).
 - No pre-push visual check exists yet; it comes in milestone 2.

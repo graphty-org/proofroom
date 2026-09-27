@@ -117,7 +117,7 @@ async function serve(args) {
         branch: values.branch,
     });
     const server = createServer({ cert: readFileSync(HTTPS_CERT_PATH), key: readFileSync(HTTPS_KEY_PATH) }, app);
-    await new Promise((done) => server.listen(Number(PORT), HOST, done));
+    await new Promise((done) => server.listen({ port: Number(PORT), host: HOST }, () => done(null)));
     console.log(`visual-review: open ${origin}/#token=${token}`);
     // Keep running until servherd stops the process.
     await new Promise(() => {});

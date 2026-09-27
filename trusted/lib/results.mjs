@@ -34,7 +34,7 @@ const isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
  * Checks a parsed results.json.
- * @param {unknown} r the parsed JSON
+ * @param {any} r the parsed JSON, untrusted
  * @returns {string[]} one message per problem; empty when the file is valid
  */
 export function validateResults(r) {

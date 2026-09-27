@@ -302,7 +302,10 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
         };
     };
 
-    const acceptable = (t, name) => t.pr !== null || projects[name].seedFromMaster === true;
+    // A local preview (--results) is never acceptable: Finish would refuse it, so the page offers
+    // only Reject and /api/decide refuses the rest up front.
+    const isLocal = (t, name) => Boolean(t.projects.find((x) => x.project === name)?.results?.local);
+    const acceptable = (t, name) => !isLocal(t, name) && (t.pr !== null || projects[name].seedFromMaster === true);
 
     async function targetOf(id) {
         if (!targets.has(id)) {
@@ -378,10 +381,10 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 return [200, { ok: true }];
             }
             if (body.decision !== "reject" && !acceptable(t, body.project)) {
-                return [
-                    403,
-                    { error: `${body.project} is not seeded from master; its first review is on a pull request` },
-                ];
+                const why = isLocal(t, body.project)
+                    ? "is a local preview; only CI captures can be accepted or excluded"
+                    : "is not seeded from master; its first review is on a pull request";
+                return [403, { error: `${body.project} ${why}` }];
             }
             const reason = cleanReason(body.reason);
             const problem = decisionProblem(item, body.decision, reason);
@@ -398,7 +401,10 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 return [404, { error: "no such capture" }];
             }
             if (!acceptable(t, body.project)) {
-                return [403, { error: `${body.project} is not seeded from master` }];
+                return [
+                    403,
+                    { error: `${body.project} cannot be accepted here (a local preview, or not seeded from master)` },
+                ];
             }
             const mine = decisionsOf(t);
             let accepted = 0;

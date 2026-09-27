@@ -196,7 +196,9 @@ function serve(dir) {
         }
     });
     return new Promise((r) =>
-        server.listen(0, "127.0.0.1", () => r([server, `http://127.0.0.1:${server.address().port}/`])),
+        server.listen(0, "127.0.0.1", () =>
+            r([server, `http://127.0.0.1:${/** @type {import("node:net").AddressInfo} */ (server.address()).port}/`]),
+        ),
     );
 }
 
@@ -208,7 +210,7 @@ async function newContext(browser) {
         locale: "en-US",
     });
     await context.addInitScript(() => {
-        delete Navigator.prototype.gpu;
+        delete (/** @type {any} */ (Navigator.prototype).gpu);
     });
     return context;
 }
@@ -226,11 +228,11 @@ async function extract(browser, base) {
     try {
         const page = await context.newPage();
         await page.goto(`${base}iframe.html`, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        await page.waitForFunction(() => window.__STORYBOOK_PREVIEW__?.storyStoreValue, null, {
+        await page.waitForFunction(() => /** @type {any} */ (window).__STORYBOOK_PREVIEW__?.storyStoreValue, null, {
             timeout: RENDER_TIMEOUT,
         });
         return await page.evaluate(async () => {
-            const preview = window.__STORYBOOK_PREVIEW__;
+            const preview = /** @type {any} */ (window).__STORYBOOK_PREVIEW__;
             const all = await preview.extract();
             const params = {};
             for (const [id, story] of Object.entries(all)) {
@@ -288,7 +290,7 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
                     if (document.body.classList.contains("sb-show-errordisplay")) {
                         return "errored";
                     }
-                    const p = window.__STORYBOOK_PREVIEW__?.currentRender?.phase;
+                    const p = /** @type {any} */ (window).__STORYBOOK_PREVIEW__?.currentRender?.phase;
                     return ["completed", "afterEach", "finished", "errored", "aborted"].includes(p) && p;
                 },
                 null,
@@ -301,7 +303,7 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
         if (stableFrame) {
             await page.evaluate(async () => {
                 const graphs = [...document.querySelectorAll("graphty-element")];
-                await Promise.all(graphs.map((g) => g.waitForStableFrame()));
+                await Promise.all(graphs.map((g) => /** @type {any} */ (g).waitForStableFrame()));
                 await new Promise((r) => requestAnimationFrame(() => r()));
             });
             if (lines.some((l) => l.includes("Graph settled timeout"))) {
@@ -325,7 +327,7 @@ const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer
 
 /**
  * Where this run came from: GitHub Actions' environment in CI, the working tree locally.
- * @returns {object} the commit, pull request and run fields of results.json, and `local`
+ * @returns {Promise<object>} the commit, pull request and run fields of results.json, and `local`
  */
 async function provenance() {
     if (process.env.GITHUB_ACTIONS !== "true") {
@@ -502,12 +504,13 @@ export async function capture({ project, storybook, baselines, out, workers, sta
         );
 
         items.sort((a, b) => (a.file < b.file ? -1 : 1));
-        results.complete = true;
-        await save();
-        const problems = validateResults(results);
+        // Validated before it is saved as complete, so an invalid file is never uploaded as finished.
+        const problems = validateResults({ ...results, complete: true });
         if (problems.length > 0) {
             throw new Error(`results.json is invalid:\n${problems.slice(0, 20).join("\n")}`);
         }
+        results.complete = true;
+        await save();
         const counts = {};
         for (const item of items) {
             counts[item.status] = (counts[item.status] ?? 0) + 1;

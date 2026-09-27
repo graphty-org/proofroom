@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { unrecordedChanges } from "../trusted/gate.mjs";
 import { commitMessage, finish } from "../trusted/lib/accept.mjs";
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { copyFixture, git, isolateGit, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
@@ -289,5 +290,32 @@ describe("finish: rejects", () => {
             reason: "",
         };
         await expect(s.run([decision])).rejects.toThrow(/reason/);
+    });
+});
+
+describe("finish and the gate's record check", () => {
+    it("records every baseline change it makes, and only those", async () => {
+        const s = setup();
+        await s.run([
+            accept("button--primary.dark.png"),
+            accept("card--legacy.png", "compact-mantine", "gone"),
+            { project: "compact-mantine", file: "tooltip--hover.png", decision: "exclude", reason: "hover races" },
+        ]);
+        git(s.repo, "fetch", "-q", "origin");
+        expect(unrecordedChanges(s.master, "origin/feature", s.repo)).toEqual([]);
+
+        // A PNG and an excluding settings file without Finish; a delay-only settings file needs none.
+        const clone = mkdtempSync(join(tmpdir(), "vr-forge-"));
+        git(clone, "clone", "-q", "-b", "feature", s.remote, ".");
+        const dir = join(clone, "visual-baselines/compact-mantine");
+        writeFileSync(join(dir, "badge--default.light.png"), "copied capture");
+        writeFileSync(join(dir, "slider--sizes.json"), JSON.stringify({ disableSnapshot: true }));
+        writeFileSync(join(dir, "button--primary.json"), JSON.stringify({ delay: 100 }));
+        git(clone, "add", "-A");
+        git(clone, "-c", "user.name=A", "-c", "user.email=a@example.com", "commit", "-q", "-m", "forge");
+        expect(unrecordedChanges(s.master, "HEAD", clone)).toEqual([
+            "visual-baselines/compact-mantine/badge--default.light.png: changed with no review record naming its new contents",
+            "visual-baselines/compact-mantine/slider--sizes.json: changed with no review record naming its new contents",
+        ]);
     });
 });

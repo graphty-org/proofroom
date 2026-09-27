@@ -122,6 +122,7 @@ export async function visualJobs(gh, run, attempt, projects) {
  */
 export async function downloadCaptures(gh, run, projects, tmp) {
     const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
+    /** @type {Record<string, { dir: string, attempt: number } | null>} */
     const out = {};
     for (const project of projects) {
         const pattern = new RegExp(`^visual-${project}-(\\d+)$`);

@@ -412,6 +412,24 @@ describe("serve: local results", () => {
         expect(body.targets[0]).toMatchObject({ id: "123", branch: "feature", runId: 1000 });
         expect((await s.api("GET", "/api/img/123/compact-mantine/capture/button--primary.dark.png")).status).toBe(200);
     });
+
+    it("offers only Reject on a local preview", async () => {
+        const r = makeRepo();
+        const dir = join(r.dir, "local");
+        copyFixture("compact-mantine", join(dir, "compact-mantine"), {
+            local: { describe: "abc1234-dirty", diff: "0".repeat(64) },
+        });
+        const s = await start({ ...r, gh: () => async () => "", results: dir, branch: "feature" });
+        await s.api("GET", "/api/prs");
+        const decide = (file, decision, reason) =>
+            s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
+        const refused = await decide("badge--default.light.png", "accept");
+        expect(refused.status).toBe(403);
+        expect(refused.body.error).toMatch(/local preview/);
+        expect((await decide("card--legacy.png", "exclude", "noisy")).status).toBe(403);
+        expect((await decide("card--legacy.png", "reject", "keep it")).status).toBe(200);
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.acceptable).toBe(false);
+    });
 });
 
 describe("serve: review extras", () => {

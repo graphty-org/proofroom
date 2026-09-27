@@ -11,12 +11,15 @@
         "test": "vitest",
         "test:run": "vitest run",
         "coverage": "vitest run --coverage",
-        "lint": "eslint .",
-        "lint:knip": "cd .. && pnpm run lint:knip -- --workspace visual-review"
+        "lint": "eslint . && npm run typecheck",
+        "lint:knip": "cd .. && ./tools/run-knip.sh --workspace visual-review",
+        "typecheck": "tsc -p tsconfig.json"
     },
     "devDependencies": {
+        "@types/node": "^20.19.9",
         "@vitest/coverage-v8": "catalog:",
         "eslint": "^9.29.0",
+        "typescript": "^5.9.3",
         "vitest": "catalog:"
     },
     "dependencies": {

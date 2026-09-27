@@ -290,6 +290,11 @@ td {
     color: var(--fg);
 }
 
+/* Cropped to the content box and drawn larger; max-width still fits it in the pane. */
+.stage img.cropped {
+    image-rendering: pixelated;
+}
+
 .stage.zoomed figure {
     position: relative;
     flex: 1 1 400px;

@@ -81,7 +81,7 @@ export function commitMessage({ pr, counts, runId, runAttempt, record }) {
 
 /**
  * Why a decision cannot be taken on an item, if it cannot.
- * @param {{ status: string }} item the results.json item
+ * @param {{ status: string, file: string }} item the results.json item
  * @param {string} decision accept, reject or exclude
  * @param {string | null} reason the owner's reason
  * @returns {{ status: number, message: string } | null} an HTTP status and a message, or null
@@ -148,8 +148,8 @@ function check(projects, decisions) {
  * @param {{ pr: number | null, branch: string | null }} input.target a pull request and its
  *     branch, or `{ pr: null }` for master
  * @param {Record<string, { dir: string, results: object }>} input.projects the downloaded captures
- * @param {{ project: string, file: string, decision: "accept" | "reject" | "exclude",
- *     reason: string | null }[]} input.decisions what the owner decided
+ * @param {{ project: string, file: string, decision: string, reason: string | null }[]} input.decisions
+ *     what the owner decided: accept, reject or exclude (checked here)
  * @param {Date} [input.now] the review time
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     rejects: number }>} what was pushed and posted

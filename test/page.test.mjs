@@ -92,13 +92,18 @@ describe("review page", () => {
         // The box's centre (180, 100) at four times sits in the middle of the view.
         expect(Math.abs(zoom.left + zoom.viewW / 2 - (zoom.offsetLeft + 720))).toBeLessThanOrEqual(2);
         expect(Math.abs(zoom.top + zoom.viewH / 2 - (zoom.offsetTop + 400))).toBeLessThanOrEqual(2);
+        // Unzoomed, both panes show only the content box, cropped from the full frame.
         await page.keyboard.press("z");
-        expect(
-            await page
-                .locator("#stage img")
-                .first()
-                .evaluate((i) => i.ownerDocument.defaultView.getComputedStyle(i).imageRendering),
-        ).toBe("auto");
+        await page.locator("#stage img.cropped").first().waitFor();
+        const crop = await page
+            .locator("#stage img.cropped")
+            .first()
+            .evaluate(async (i) => {
+                await i.decode();
+                return [i.naturalWidth, i.naturalHeight];
+            });
+        expect(crop[0]).toBeLessThan(320);
+        expect(await page.locator("#stage img.cropped").count()).toBe(2);
     });
 
     it("flashes while Space is held and returns to the view it came from", async () => {
@@ -114,7 +119,7 @@ describe("review page", () => {
             .toBe(2);
         await page.keyboard.up(" ");
         await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("side");
-        expect(await page.locator("#stage figure").count()).toBe(2);
+        await expect.poll(() => page.locator("#stage figure").count()).toBe(2);
     });
 
     it("F, H and E switch to flash, to highlight and to an exclude reason", async () => {

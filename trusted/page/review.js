@@ -97,6 +97,59 @@ function loaded(url) {
     });
 }
 
+// Most stories are a small component on a 1200 x 900 frame, so thumbnails, side by side and flash
+// show only the box holding everything that is not the background colour (the top-left pixel),
+// plus a margin. Z (zoom) shows the full frame.
+const CROP_MARGIN = 16;
+
+function contentBox(img) {
+    const [w, h] = [img.naturalWidth, img.naturalHeight];
+    const ctx = new OffscreenCanvas(w, h).getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const px = new Uint32Array(ctx.getImageData(0, 0, w, h).data.buffer);
+    let [x0, y0, x1, y1] = [w, h, -1, -1];
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            if (px[y * w + x] !== px[0]) {
+                x0 = Math.min(x0, x);
+                x1 = Math.max(x1, x);
+                y0 = Math.min(y0, y);
+                y1 = Math.max(y1, y);
+            }
+        }
+    }
+    if (x1 < 0) {
+        return null;
+    }
+    const m = CROP_MARGIN;
+    return [Math.max(0, x0 - m), Math.max(0, y0 - m), Math.min(w, x1 + 1 + m), Math.min(h, y1 + 1 + m)];
+}
+
+const unionBox = (boxes) => {
+    const real = boxes.filter(Boolean);
+    return real.length === 0 ? null : [0, 1, 2, 3].map((i) => (i < 2 ? Math.min : Math.max)(...real.map((b) => b[i])));
+};
+
+// An object URL of the box of an image (the whole image when box is null).
+async function cropped(img, box) {
+    if (!box) {
+        return img.src;
+    }
+    const [x0, y0, x1, y1] = box;
+    const c = new OffscreenCanvas(x1 - x0, y1 - y0);
+    c.getContext("2d").drawImage(img, x0, y0, x1 - x0, y1 - y0, 0, 0, x1 - x0, y1 - y0);
+    return URL.createObjectURL(await c.convertToBlob());
+}
+
+// The item's images cropped to the union of their content boxes, keyed by kind.
+async function croppedPair(item) {
+    const kinds = ["baseline", "capture"].filter((k) => item[k]);
+    const imgs = await Promise.all(kinds.map(async (k) => loaded(await image(k, item.file))));
+    const box = unionBox(imgs.map(contentBox));
+    const urls = await Promise.all(imgs.map((img) => cropped(img, box)));
+    return { box, ...Object.fromEntries(kinds.map((k, i) => [k, urls[i]])) };
+}
+
 const itemName = (item) => (item.mode ? `${item.id} (${item.mode})` : item.id);
 const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
@@ -274,10 +327,13 @@ function showGrid() {
             if (e.isIntersecting) {
                 observer.unobserve(e.target);
                 const { kind, file } = e.target.dataset;
-                image(kind, file).then(
-                    (url) => (e.target.src = url),
-                    (err) => (e.target.alt = err.message),
-                );
+                image(kind, file)
+                    .then(loaded)
+                    .then((img) => cropped(img, contentBox(img)))
+                    .then(
+                        (url) => (e.target.src = url),
+                        (err) => (e.target.alt = err.message),
+                    );
             }
         }
     });
@@ -478,7 +534,20 @@ function showStory() {
 async function renderStage(item, view) {
     const stage = document.getElementById("stage");
     const label = (text) => el("div", { class: "label" }, text);
-    const imgOf = async (kind) => el("img", { src: await image(kind, item.file), alt: `${kind} of ${itemName(item)}` });
+    // Zoomed shows the full frame; otherwise both images are cropped to the same content box and
+    // drawn up to ZOOM times larger, so a small component is legible without zooming.
+    const pair = state.zoom ? null : await croppedPair(item).catch(() => null);
+    const imgOf = async (kind) => {
+        const img = el("img", {
+            src: pair?.[kind] ?? (await image(kind, item.file)),
+            alt: `${kind} of ${itemName(item)}`,
+        });
+        if (pair?.box) {
+            img.classList.add("cropped");
+            img.style.width = `${(pair.box[2] - pair.box[0]) * ZOOM}px`;
+        }
+        return img;
+    };
     try {
         if (view === "side") {
             const panes = [];
@@ -495,8 +564,9 @@ async function renderStage(item, view) {
             }
             stage.replaceChildren(...panes);
         } else if (view === "flash") {
-            const [before, after] = [await image("baseline", item.file), await image("capture", item.file)];
-            const img = el("img", { src: before, alt: `flashing ${itemName(item)}` });
+            const img = await imgOf("baseline");
+            img.alt = `flashing ${itemName(item)}`;
+            const [before, after] = [img.src, pair?.capture ?? (await image("capture", item.file))];
             const tag = label("Baseline");
             stage.replaceChildren(el("figure", {}, tag, img));
             let showingNew = false;
