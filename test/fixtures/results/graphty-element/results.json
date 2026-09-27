@@ -1,0 +1,43 @@
+{
+    "version": 1,
+    "project": "graphty-element",
+    "commit": "1111111111111111111111111111111111111111",
+    "headSha": "2222222222222222222222222222222222222222",
+    "pr": 123,
+    "runId": 1000,
+    "runAttempt": 1,
+    "local": null,
+    "seeded": true,
+    "complete": true,
+    "expected": 1,
+    "capturedAt": "2026-09-27T12:00:00Z",
+    "clock": {
+        "start": "2026-01-01T12:00:00Z",
+        "running": true
+    },
+    "environment": {
+        "chromium": "fixture",
+        "renderer": "SwiftShader",
+        "gpu": false,
+        "tool": "fixture"
+    },
+    "items": [
+        {
+            "id": "graph--basic",
+            "mode": null,
+            "file": "graph--basic.png",
+            "status": "new",
+            "flaky": false,
+            "size": [320, 200],
+            "baselineSize": null,
+            "changedPixels": null,
+            "bbox": null,
+            "baseline": null,
+            "capture": "a0a220a4d92cbdfe3bb07d7738c2e818e473cf5bf0c666202897a4177c92c7d9",
+            "threshold": 0.063,
+            "includeAA": false,
+            "reason": null,
+            "console": []
+        }
+    ]
+}

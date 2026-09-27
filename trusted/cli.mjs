@@ -11,29 +11,36 @@
  *     visual-baselines/<id>, and --workers to the project's entry in projects.json. Exits 0
  *     whatever it finds; non-zero only when the tool itself fails.
  *
+ *   serve [--master-run <id>] [--results <dir> [--branch <name>]]
+ *     Serves the review page over HTTPS on $PORT (bound to $HOST), with the certificate at
+ *     $HTTPS_CERT_PATH and $HTTPS_KEY_PATH; start it through servherd (see CLAUDE.md, "Visual
+ *     review"). Lists open pull requests with a CI run and downloads their captures with gh.
+ *     --master-run adds master, pinned to that CI run, for seeding. --results serves a local
+ *     directory of <project>/results.json instead, offline: gh is never run, and what it would
+ *     have posted is printed; Finish pushes to --branch.
+ *
  *   compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa]
  *     Compares every PNG in the two directories by name and prints one JSON line per file that
  *     is not unchanged, then a summary. Exits 1 when anything differs. For local use: one
  *     capture per story, and the default threshold for every story.
  */
 
+import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
+import { createServer } from "node:https";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { classify, DEFAULT_THRESHOLD } from "./lib/compare.mjs";
+import { ghRunner } from "./lib/github.mjs";
+import { createApp, sessionToken } from "./lib/serve.mjs";
 
 const SUBCOMMANDS = {
     capture,
     compare,
-    serve: () => notYet("serve"),
+    serve,
 };
-
-function notYet(name) {
-    console.error(`visual-review ${name}: not implemented yet`);
-    return 1;
-}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -68,6 +75,52 @@ async function capture(args) {
         workers,
         stableFrame: project.stableFrame,
     });
+    return 0;
+}
+
+async function serve(args) {
+    const { values } = parseArgs({
+        args,
+        options: {
+            "master-run": { type: "string" },
+            results: { type: "string" },
+            branch: { type: "string" },
+        },
+    });
+    const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
+    const masterRun = values["master-run"] === undefined ? undefined : Number(values["master-run"]);
+    if (!PORT || !HTTPS_CERT_PATH || !HTTPS_KEY_PATH || (masterRun !== undefined && !Number.isInteger(masterRun))) {
+        console.error(
+            "usage: PORT=<n> HTTPS_CERT_PATH=<pem> HTTPS_KEY_PATH=<pem> visual-review serve " +
+                "[--master-run <id>] [--results <dir> [--branch <name>]]\n" +
+                'start it through servherd, which sets PORT and the certificate (CLAUDE.md, "Visual review")',
+        );
+        return 2;
+    }
+    const tmp = join(ROOT, "tmp/visual-review");
+    const token = sessionToken(join(tmp, "state"));
+    const origin = `https://${HOST}:${PORT}`;
+    // Offline: a local results directory is a preview, so nothing is posted to GitHub.
+    const offline = async (ghArgs, input) => {
+        console.log(`gh (offline, not run): ${ghArgs.join(" ")}\n${input ?? ""}`);
+        return JSON.stringify({ html_url: null });
+    };
+    const app = createApp({
+        repo: ROOT,
+        gh: values.results ? offline : ghRunner(ROOT),
+        projects: JSON.parse(await readFile(join(ROOT, "visual-review/projects.json"), "utf8")),
+        tmp,
+        token,
+        origin,
+        masterRun,
+        results: values.results && resolve(values.results),
+        branch: values.branch,
+    });
+    const server = createServer({ cert: readFileSync(HTTPS_CERT_PATH), key: readFileSync(HTTPS_KEY_PATH) }, app);
+    await new Promise((done) => server.listen(Number(PORT), HOST, done));
+    console.log(`visual-review: open ${origin}/#token=${token}`);
+    // Keep running until servherd stops the process.
+    await new Promise(() => {});
     return 0;
 }
 
