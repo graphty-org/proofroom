@@ -5,7 +5,8 @@
  * URL fragment `serve` prints. State-changing requests are POST only and must come from the
  * served origin. Images are served only when their file is named by results.json and its bytes
  * hash to the hash results.json gives, so the page shows exactly what CI compared. Decisions
- * live in memory until Finish.
+ * are kept in `<tmp>/state/<target>.json` until Finish, each with the hash of the image it was
+ * taken on, so a restart resumes them and a new CI run keeps only those whose image is unchanged.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -33,6 +34,46 @@ const HEADERS = {
     "cache-control": "no-store",
 };
 const REVIEWABLE = new Set(["changed", "new", "removed", "unstable", "failed"]);
+const WRITES = new Set(["decide", "accept-all", "finish"]);
+
+/**
+ * The image a decision was taken on: the capture, or for a removed item its baseline.
+ * @param {{ capture: string | null, baseline: string | null }} item the results.json item
+ * @returns {string | null} its SHA-256
+ */
+const imageHash = (item) => item.capture ?? item.baseline ?? null;
+
+/**
+ * The newest `to` hash per path in this pull request's review records at `head`. A record is
+ * data from the branch and only decides whether a "re-review" flag is shown.
+ * @param {string} repo the repository
+ * @param {string | null} head the captured head
+ * @param {number | null} pr the pull request
+ * @returns {Promise<Map<string, string | null>>} `to` by baseline path
+ */
+async function earlierAccepts(repo, head, pr) {
+    const out = new Map();
+    if (pr === null || !head) {
+        return out;
+    }
+    const git = (args) => exec("git", args, { cwd: repo });
+    const names = await git(["ls-tree", "--name-only", head, "visual-baselines/reviews/"]).catch(() => "");
+    // Record names start with their UTC time, so sorting by name applies the newest last.
+    for (const name of names
+        .split("\n")
+        .filter((n) => n.endsWith(".json"))
+        .sort()) {
+        const record = await git(["show", `${head}:${name}`])
+            .then(JSON.parse)
+            .catch(() => null);
+        if (record?.pr === pr && Array.isArray(record.items)) {
+            for (const item of record.items) {
+                out.set(item.path, item.to);
+            }
+        }
+    }
+    return out;
+}
 
 /**
  * The session token, created once so a restart keeps the owner's URL.
@@ -84,19 +125,53 @@ async function loadResults(dir) {
  *     the handler, for node:https in the CLI and node:http in the tests
  */
 export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, results, branch }) {
+    const stateDir = join(tmp, "state");
     const names = Object.keys(projects);
     /** @type {Map<string, object>} targets by id: a pull request number, or "master" */
     let targets = new Map();
-    /** @type {Map<string, Map<string, { decision: string, reason: string | null }>>} */
+    /**
+     * By target and run, then by `<project>/<file>`; `bulk` marks an accept from Accept all that
+     * was never opened one by one.
+     * @type {Map<string, Map<string, { decision: string, reason: string | null, bulk?: true }>>}
+     */
     const decisions = new Map();
     let finishing = false;
+
+    const itemOf = (t, key) => {
+        const at = key.indexOf("/");
+        const p = t.projects.find((x) => x.project === key.slice(0, at));
+        return p?.results?.items.find((i) => i.file === key.slice(at + 1));
+    };
+    const stateFile = (t) => join(stateDir, `${t.id}.json`);
 
     const decisionsOf = (t) => {
         const key = `${t.id}@${t.runId}`;
         if (!decisions.has(key)) {
-            decisions.set(key, new Map());
+            let saved = {};
+            try {
+                saved = JSON.parse(readFileSync(stateFile(t), "utf8"));
+            } catch {
+                // No state yet, or a broken file: start empty.
+            }
+            const mine = new Map();
+            for (const [k, { hash, ...d }] of Object.entries(saved)) {
+                const item = itemOf(t, k);
+                if (item && imageHash(item) === hash) {
+                    mine.set(k, d);
+                }
+            }
+            decisions.set(key, mine);
         }
         return decisions.get(key);
+    };
+
+    const save = (t) => {
+        const out = {};
+        for (const [k, d] of decisionsOf(t)) {
+            out[k] = { ...d, hash: imageHash(itemOf(t, k)) };
+        }
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(stateFile(t), JSON.stringify(out, null, 2));
     };
 
     // `problem` is what CI said (the job failed, or no artifact); results.json can add its own.
@@ -178,6 +253,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             t.commit = first?.commit ?? null;
             t.headSha = first?.headSha ?? null;
             const base = t.pr === null ? t.commit : t.headSha;
+            t.earlier = await earlierAccepts(repo, t.headSha, t.pr);
             t.mergeMasterFirst = false;
             for (const p of t.projects) {
                 if (p.results && base && (await behindMaster(repo, base, p.project).catch(() => true))) {
@@ -209,13 +285,16 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 }
                 const reviewable = (p.results?.items ?? []).filter((i) => REVIEWABLE.has(i.status)).length;
                 const prefix = `${p.project}/`;
+                const mine = [...decided].filter(([k]) => k.startsWith(prefix));
                 return {
                     project: p.project,
                     problem: p.problem,
                     logUrl: p.logUrl,
                     counts,
                     reviewable,
-                    decided: [...decided.keys()].filter((k) => k.startsWith(prefix)).length,
+                    decided: mine.length,
+                    undecided: reviewable - mine.length,
+                    notOpened: mine.filter(([, d]) => d.bulk).length,
                     acceptable: acceptable(t, p.project),
                     local: p.results?.local ?? null,
                 };
@@ -243,6 +322,11 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             await refresh();
             return [200, { targets: [...targets.values()].map(summary) }];
         },
+        // One target's counts without refetching from GitHub, for Finish's confirmation.
+        "GET /api/target": async ([id]) => {
+            const t = await targetOf(id);
+            return t ? [200, summary(t)] : [404, { error: "no such target" }];
+        },
         "GET /api/pr": async ([id, name]) => {
             const { t, p } = await projectOf(id, name);
             if (!p) {
@@ -258,7 +342,10 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                     project: name,
                     acceptable: acceptable(t, name),
                     results: meta,
-                    items,
+                    items: items.map((i) => {
+                        const to = t.earlier.get(`visual-baselines/${name}/${i.file}`);
+                        return to !== undefined && to !== i.baseline ? { ...i, reReview: true } : i;
+                    }),
                     decisions: Object.fromEntries(mine.map(([k, v]) => [k.slice(prefix.length), v])),
                 },
             ];
@@ -287,6 +374,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             const key = `${body.project}/${body.file}`;
             if (body.decision === null) {
                 decisionsOf(t).delete(key);
+                save(t);
                 return [200, { ok: true }];
             }
             if (body.decision !== "reject" && !acceptable(t, body.project)) {
@@ -301,7 +389,28 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 return [problem.status, { error: problem.message }];
             }
             decisionsOf(t).set(key, { decision: body.decision, reason });
+            save(t);
             return [200, { ok: true }];
+        },
+        "POST /api/accept-all": async (_, body) => {
+            const { p, t } = await projectOf(String(body.id), body.project);
+            if (!p) {
+                return [404, { error: "no such capture" }];
+            }
+            if (!acceptable(t, body.project)) {
+                return [403, { error: `${body.project} is not seeded from master` }];
+            }
+            const mine = decisionsOf(t);
+            let accepted = 0;
+            for (const item of p.results.items) {
+                const key = `${body.project}/${item.file}`;
+                if (!mine.has(key) && !decisionProblem(item, "accept", null)) {
+                    mine.set(key, { decision: "accept", reason: null, bulk: true });
+                    accepted++;
+                }
+            }
+            save(t);
+            return [200, { accepted }];
         },
         "POST /api/finish": async (_, body) => {
             const t = await targetOf(String(body.id));
@@ -314,7 +423,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             const mine = decisionsOf(t);
             const list = [...mine].map(([k, v]) => {
                 const at = k.indexOf("/");
-                return { project: k.slice(0, at), file: k.slice(at + 1), ...v };
+                return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
             });
             const captures = Object.fromEntries(
                 t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
@@ -329,6 +438,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                     decisions: list,
                 });
                 mine.clear();
+                save(t);
                 return [200, out];
             } catch (err) {
                 return [err instanceof AcceptError ? 409 : 500, { error: err.message }];
@@ -380,7 +490,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 return send(res, 401, { error: "missing or wrong session token: open the URL serve printed" });
             }
             const [, , route, ...args] = url.pathname.split("/").map(decodeURIComponent);
-            const writes = route === "decide" || route === "finish";
+            const writes = WRITES.has(route);
             const handler = routes[`${req.method} /api/${route}`];
             if (!handler) {
                 return send(res, writes || Object.hasOwn(routes, `GET /api/${route}`) ? 405 : 404, {

@@ -13,6 +13,8 @@ const statusLine = document.getElementById("status");
 
 const REVIEWABLE = ["changed", "new", "removed", "unstable", "failed"];
 const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
+const ZOOM = 4;
+const RE_REVIEW = "re-review: your earlier accept was replaced by master's baseline";
 
 const state = {
     targets: [],
@@ -22,6 +24,8 @@ const state = {
     filter: "all",
     index: 0,
     view: "side", // side | flash | highlight
+    zoom: false,
+    held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
     screen: "targets",
 };
@@ -300,6 +304,7 @@ function showGrid() {
             el("span", { class: "name" }, itemName(item)),
             el("span", { class: `badge ${item.status}` }, item.status),
             d ? el("span", { class: `badge ${d.decision}` }, d.decision) : null,
+            item.reReview ? el("span", { class: "badge warn", title: RE_REVIEW }, "re-review") : null,
         );
     });
     render(
@@ -311,6 +316,9 @@ function showGrid() {
             filterButton("undecided", "Undecided"),
             REVIEWABLE.filter((s) => counts[s]).map((s) => filterButton(s, `${s} (${counts[s]})`)),
             el("span", { class: "spacer" }),
+            state.data.acceptable
+                ? el("button", { type: "button", class: "accept", onclick: acceptAll, title: "Shift+A" }, "Accept all")
+                : null,
             finishButton(),
         ),
         state.data.results.local ? el("p", { class: "badge warn" }, "local preview, not acceptable") : null,
@@ -331,6 +339,13 @@ function showStory() {
     state.index = Math.max(0, Math.min(state.index, items.length - 1));
     const item = items[state.index];
     const d = decisionOf(item);
+    if (d?.bulk) {
+        // Opening an item Accept all decided counts it as opened.
+        delete d.bulk;
+        api("/api/decide", { id: state.target.id, project: state.project, file: item.file, ...d }).catch((err) =>
+            say(err.message, true),
+        );
+    }
     const both = Boolean(item.capture && item.baseline);
     const view = both ? state.view : "side";
     const onlyExclude = item.status === "unstable" || item.status === "failed";
@@ -394,6 +409,7 @@ function showStory() {
                   )
                 : null,
             item.flaky ? el("span", { class: "badge" }, "flaky") : null,
+            item.reReview ? el("span", { class: "badge warn" }, RE_REVIEW) : null,
         ),
         el(
             "p",
@@ -408,6 +424,19 @@ function showStory() {
             viewButton("side", "Side by side"),
             viewButton("flash", "Flash"),
             viewButton("highlight", "Highlight"),
+            el(
+                "button",
+                {
+                    type: "button",
+                    "aria-pressed": String(state.zoom),
+                    title: "Z",
+                    onclick: () => {
+                        state.zoom = !state.zoom;
+                        showStory();
+                    },
+                },
+                `Zoom ${ZOOM}x`,
+            ),
         ),
         el("div", { id: "stage", class: `stage ${view}` }),
         item.console.length > 0 ? el("pre", { class: "console" }, item.console.join("\n")) : null,
@@ -473,8 +502,28 @@ async function renderStage(item, view) {
                 el("figure", {}, label("Changed pixels in red over the dimmed baseline"), await highlight(item)),
             );
         }
+        if (state.zoom) {
+            await zoomTo(stage, item);
+        }
     } catch (err) {
         stage.replaceChildren(el("p", { class: "error" }, err.message));
+    }
+}
+
+// Each pane scrolls on its own, centred on the changed box (or the top left without one).
+async function zoomTo(stage, item) {
+    stage.classList.add("zoomed");
+    for (const figure of stage.querySelectorAll("figure")) {
+        const pic = figure.querySelector("img, canvas");
+        if (pic instanceof HTMLImageElement) {
+            await pic.decode().catch(() => {});
+        }
+        pic.style.width = `${(pic.naturalWidth ?? pic.width) * ZOOM}px`;
+        if (item.bbox) {
+            const [x, y, w, h] = item.bbox;
+            figure.scrollLeft = pic.offsetLeft + (x + w / 2) * ZOOM - figure.clientWidth / 2;
+            figure.scrollTop = pic.offsetTop + (y + h / 2) * ZOOM - figure.clientHeight / 2;
+        }
     }
 }
 
@@ -508,6 +557,26 @@ async function highlight(item) {
         ctx.strokeRect(x - 4, y - 4, bw + 8, bh + 8);
     }
     return canvas;
+}
+
+async function acceptAll() {
+    if (!state.data.acceptable) {
+        say(`${state.project} is not seeded from master: its first review is on a pull request`, true);
+        return;
+    }
+    const n = state.data.items.filter((i) => ["changed", "new", "removed"].includes(i.status) && !decisionOf(i)).length;
+    if (!confirm(`Accept ${n} items in ${state.project} without opening them?`)) {
+        return;
+    }
+    try {
+        await api("/api/accept-all", { id: state.target.id, project: state.project });
+        state.data = await api(`/api/pr/${encodeURIComponent(state.target.id)}/${encodeURIComponent(state.project)}`);
+    } catch (err) {
+        say(err.message, true);
+        return;
+    }
+    say(`Accepted ${n} items in ${state.project}.`);
+    (state.screen === "story" ? showStory : showGrid)();
 }
 
 function move(step) {
@@ -566,9 +635,27 @@ function finishButton() {
 async function finishTarget(target) {
     const what =
         target.pr === null ? "push a seed branch and open its pull request" : `commit and push to ${target.branch}`;
-    if (
-        !confirm(`Finish ${target.pr === null ? "the master seed" : `#${target.pr}`}: ${what}, across every project?`)
-    ) {
+    let fresh;
+    try {
+        fresh = await api(`/api/target/${encodeURIComponent(target.id)}`);
+    } catch (err) {
+        say(err.message, true);
+        return;
+    }
+    const lines = [
+        `Finish ${target.pr === null ? "the master seed" : `#${target.pr}`}: ${what}, across every project?`,
+    ];
+    const notOpened = fresh.projects.reduce((n, p) => n + p.notOpened, 0);
+    if (notOpened > 0) {
+        lines.push(`${notOpened} accepted without being opened.`);
+    }
+    const left = fresh.projects.filter((p) => p.undecided > 0);
+    if (left.length > 0) {
+        lines.push(
+            `Warning: still undecided, left for a later round: ${left.map((p) => `${p.project}: ${p.undecided} undecided`).join(", ")}.`,
+        );
+    }
+    if (!confirm(lines.join("\n\n"))) {
         return;
     }
     say("Finishing: committing, pushing, commenting...");
@@ -593,8 +680,14 @@ async function finishTarget(target) {
 
 // ---------------------------------------------------------------- keys and start
 
+// F and H switch to that view, or back to side by side when it is already shown.
+function toggleView(view) {
+    state.view = state.view === view ? "side" : view;
+    showStory();
+}
+
 document.addEventListener("keydown", (e) => {
-    if (state.screen !== "story" || e.ctrlKey || e.metaKey || e.altKey) {
+    if (!["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
         return;
     }
     if (e.target instanceof HTMLInputElement) {
@@ -603,17 +696,53 @@ document.addEventListener("keydown", (e) => {
         }
         return;
     }
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (e.shiftKey && key === "a") {
+        e.preventDefault();
+        acceptAll();
+        return;
+    }
+    if (state.screen !== "story") {
+        return;
+    }
+    if (key === " ") {
+        // Held: flash until released, then back to the view it came from.
+        e.preventDefault();
+        if (!e.repeat && state.held === null) {
+            state.held = state.view;
+            state.view = "flash";
+            showStory();
+        }
+        return;
+    }
     const keys = {
         j: () => move(1),
         k: () => move(-1),
         a: () => decide("accept"),
         r: () => decide("reject"),
+        e: () => decide("exclude"),
+        f: () => toggleView("flash"),
+        h: () => toggleView("highlight"),
+        z: () => {
+            state.zoom = !state.zoom;
+            showStory();
+        },
         Escape: showGrid,
     };
-    const action = keys[e.key];
+    const action = keys[key];
     if (action) {
         e.preventDefault();
         action();
+    }
+});
+document.addEventListener("keyup", (e) => {
+    if (e.key === " " && state.held !== null) {
+        e.preventDefault();
+        state.view = state.held;
+        state.held = null;
+        if (state.screen === "story") {
+            showStory();
+        }
     }
 });
 document.getElementById("home").addEventListener("click", showTargets);

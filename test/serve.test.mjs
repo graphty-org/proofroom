@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -291,7 +291,6 @@ describe("serve: images", () => {
         const { body } = await s.api("GET", "/api/prs");
         const dir = join(s.tmp, `1000-1/compact-mantine`);
         expect(body.targets[0].runAttempt).toBe(1);
-        const { writeFileSync } = await import("node:fs");
         writeFileSync(join(dir, "badge--default.light.png"), "tampered");
         writeFileSync(join(dir, "baselines/card--legacy.png"), "tampered");
         expect((await s.api("GET", "/api/img/123/compact-mantine/capture/badge--default.light.png")).status).toBe(409);
@@ -412,5 +411,83 @@ describe("serve: local results", () => {
         expect(body.targets).toHaveLength(1);
         expect(body.targets[0]).toMatchObject({ id: "123", branch: "feature", runId: 1000 });
         expect((await s.api("GET", "/api/img/123/compact-mantine/capture/button--primary.dark.png")).status).toBe(200);
+    });
+});
+
+describe("serve: review extras", () => {
+    const decide = (s, file, decision, reason, project = "compact-mantine") =>
+        s.api("POST", "/api/decide", { id: "123", project, file, decision, reason });
+
+    it("resumes decisions after a restart, dropping any whose image changed", async () => {
+        const r = makeRepo();
+        const first = await start({ ...r, gh: onePr() });
+        await first.api("GET", "/api/prs");
+        await decide(first, "badge--default.light.png", "accept");
+        await decide(first, "card--legacy.png", "reject", "keep the card");
+        server.close();
+        const file = join(first.tmp, "state/123.json");
+        const saved = JSON.parse(readFileSync(file, "utf8"));
+        expect(saved["compact-mantine/badge--default.light.png"].hash).toMatch(/^545ffef5/);
+        // The removed card's hash is its baseline's; a different hash means a different image.
+        saved["compact-mantine/card--legacy.png"].hash = "0".repeat(64);
+        writeFileSync(file, JSON.stringify(saved));
+        const second = await start({ ...r, gh: onePr() });
+        await second.api("GET", "/api/prs");
+        const { body } = await second.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.decisions).toEqual({ "badge--default.light.png": { decision: "accept", reason: null } });
+    });
+
+    it("accepts every undecided acceptable item of a project and counts them as not opened", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        await decide(s, "slider--sizes.png", "reject", "too tall");
+        const all = await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" });
+        expect(all).toMatchObject({ status: 200, body: { accepted: 3 } });
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.decisions).toEqual({
+            "slider--sizes.png": { decision: "reject", reason: "too tall" },
+            "button--primary.dark.png": { decision: "accept", reason: null, bulk: true },
+            "badge--default.light.png": { decision: "accept", reason: null, bulk: true },
+            "card--legacy.png": { decision: "accept", reason: null, bulk: true },
+        });
+        // Deciding an item one by one means it was opened.
+        await decide(s, "card--legacy.png", "accept");
+        const target = (await s.api("GET", "/api/target/123")).body;
+        expect(target.projects.map((p) => [p.project, p.notOpened, p.undecided])).toEqual([
+            ["compact-mantine", 2, 2],
+            ["graphty-element", 0, 1],
+        ]);
+    });
+
+    it("flags an item whose earlier accept on this branch was replaced by master's baseline", async () => {
+        const r = makeRepo();
+        const record = (to) => ({
+            version: 1,
+            pr: 123,
+            items: [
+                { path: "visual-baselines/compact-mantine/button--primary.dark.png", from: null, to },
+                {
+                    path: "visual-baselines/compact-mantine/slider--sizes.png",
+                    from: null,
+                    to: "a3e01202b9e6b1844c02b3c217681ba2c7e8123fbc470e63320118c7dcb9a614",
+                },
+            ],
+        });
+        git(r.repo, "checkout", "-q", "feature");
+        const reviews = join(r.repo, "visual-baselines/reviews");
+        mkdirSync(reviews, { recursive: true });
+        writeFileSync(join(reviews, "20260101T000000Z-pr123.json"), JSON.stringify(record("0".repeat(64))));
+        writeFileSync(join(reviews, "20260102T000000Z-pr123.json"), JSON.stringify(record("e".repeat(64))));
+        writeFileSync(join(reviews, "20260103T000000Z-pr999.json"), JSON.stringify({ ...record(null), pr: 999 }));
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "records");
+        git(r.repo, "push", "-q", "origin", "feature");
+        r.head = git(r.repo, "rev-parse", "HEAD");
+        git(r.repo, "checkout", "-q", "master");
+        const s = await start({ ...r, gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const flagged = body.items.filter((i) => i.reReview).map((i) => i.file);
+        expect(flagged).toEqual(["button--primary.dark.png"]);
     });
 });
