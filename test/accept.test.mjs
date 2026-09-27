@@ -229,7 +229,12 @@ describe("finish: git", () => {
         git(s.repo, "config", "gpg.format", "ssh");
         // The signing program failing stands in for an expired gpg-agent or an unplugged key.
         git(s.repo, "config", "gpg.ssh.program", "false");
-        git(s.repo, "config", "user.signingkey", "key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyNeverUsedBecauseTheProgramFails");
+        git(
+            s.repo,
+            "config",
+            "user.signingkey",
+            "key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyNeverUsedBecauseTheProgramFails",
+        );
         git(s.repo, "config", "commit.gpgsign", "true");
         await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(/failed to write commit object/);
         expect(remoteLog(s, "feature")[0]).toBe(s.head);
