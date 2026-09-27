@@ -18,5 +18,8 @@
         "@vitest/coverage-v8": "catalog:",
         "eslint": "^9.29.0",
         "vitest": "catalog:"
+    },
+    "dependencies": {
+        "pngjs": "7.0.0"
     }
 }
