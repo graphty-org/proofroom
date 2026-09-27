@@ -51,6 +51,9 @@ function fakeGh({ prs = [], runs = {}, runsById = {}, jobs = {}, artifacts = {},
         if ((m = /actions\/runs\/(\d+)$/.exec(path))) {
             return JSON.stringify(run(runsById[m[1]]));
         }
+        if (/issues\/\d+\/comments$/.test(path ?? "")) {
+            return "{}";
+        }
         if (args[0] === "run" && args[1] === "download") {
             const name = args[4];
             const project = /^visual-(.+)-\d+$/.exec(name)[1];
@@ -359,7 +362,7 @@ describe("serve: decisions and Finish", () => {
         ]);
     });
 
-    it("finishes across every project in one commit and clears the decisions", async () => {
+    it("finishes across every project in one commit, clears the accepts and keeps the rejects", async () => {
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
         await s.api("POST", "/api/decide", {
@@ -374,11 +377,43 @@ describe("serve: decisions and Finish", () => {
             file: "graph--basic.png",
             decision: "accept",
         });
+        await s.api("POST", "/api/decide", {
+            id: "123",
+            project: "compact-mantine",
+            file: "slider--sizes.png",
+            decision: "reject",
+            reason: "thumb moved",
+        });
         const { status, body } = await s.api("POST", "/api/finish", { id: "123" });
         expect(status).toBe(200);
+        expect(body.rejects).toBe(1);
         expect(git(s.remote, "rev-parse", "feature")).toBe(body.commit);
         expect(git(s.remote, "rev-parse", "feature~1")).toBe(s.head);
-        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({});
+        const rejected = { "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true } };
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual(rejected);
+        // A second Finish has nothing new to post.
+        expect((await s.api("POST", "/api/finish", { id: "123" })).body.error).toBe("nothing decided");
+    });
+
+    it("reports the signing key the server's environment gives git", async () => {
+        const s = await start({ gh: onePr() });
+        const saved = { ...process.env };
+        Object.assign(process.env, {
+            GIT_CONFIG_COUNT: "2",
+            GIT_CONFIG_KEY_0: "user.signingkey",
+            GIT_CONFIG_VALUE_0: "/keys/agent.pub",
+            GIT_CONFIG_KEY_1: "commit.gpgsign",
+            GIT_CONFIG_VALUE_1: "yes",
+        });
+        try {
+            const { body } = await s.api("GET", "/api/prs");
+            expect(body.targets[0].signer).toMatchObject({ signs: true, key: "/keys/agent.pub", fromEnv: true });
+        } finally {
+            for (const k of Object.keys(process.env).filter((k) => k.startsWith("GIT_CONFIG_"))) {
+                delete process.env[k];
+            }
+            Object.assign(process.env, saved);
+        }
     });
 
     it("keeps the decisions and returns git's stderr when the commit fails", async () => {

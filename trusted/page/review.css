@@ -291,7 +291,8 @@ td {
 }
 
 /* Cropped to the content box and drawn larger; max-width still fits it in the pane. */
-.stage img.cropped {
+.stage img.cropped,
+.stage canvas.cropped {
     image-rendering: pixelated;
 }
 

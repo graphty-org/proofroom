@@ -197,7 +197,18 @@ async function showTargets() {
         render(el("p", {}, "No open pull request has a CI run, and no master run was given."));
         return;
     }
-    render(...state.targets.map(targetCard));
+    render(el("p", { class: "signer" }, signerLine(state.targets[0].signer)), ...state.targets.map(targetCard));
+}
+
+// The key Finish signs with comes from the server's environment, which is an agent's when an
+// agent started the server.
+function signerLine(s) {
+    if (!s) {
+        return "Signing: unknown.";
+    }
+    const who = s.signs ? `signed with ${s.format} key ${s.key ?? "(git's default for your email)"}` : "NOT signed";
+    const env = s.fromEnv ? " (set by the server's environment, not your git config: check whose key this is)" : "";
+    return `Finish commits are ${who}${env}.`;
 }
 
 function targetCard(t) {
@@ -577,7 +588,12 @@ async function renderStage(item, view) {
             }, FLASH_MS);
         } else {
             stage.replaceChildren(
-                el("figure", {}, label("Changed pixels in red over the dimmed baseline"), await highlight(item)),
+                el(
+                    "figure",
+                    {},
+                    label("Changed pixels in red over the dimmed baseline"),
+                    await highlight(item, pair?.box),
+                ),
             );
         }
         if (state.zoom) {
@@ -605,8 +621,9 @@ async function zoomTo(stage, item) {
     }
 }
 
-// pixelmatch in the browser, on both images padded top-left to the larger size.
-async function highlight(item) {
+// pixelmatch in the browser, on both images padded top-left to the larger size, then cropped like
+// the other views to the content box (widened to hold the changed box), unless zoomed.
+async function highlight(item, box) {
     const [a, b] = await Promise.all([
         loaded(await image("baseline", item.file)),
         loaded(await image("capture", item.file)),
@@ -634,7 +651,23 @@ async function highlight(item) {
         ctx.lineWidth = 2;
         ctx.strokeRect(x - 4, y - 4, bw + 8, bh + 8);
     }
-    return canvas;
+    if (!box) {
+        return canvas;
+    }
+    const m = 6; // the stroke drawn around the changed box
+    const [x0, y0, x1, y1] = unionBox([
+        box,
+        item.bbox && [
+            item.bbox[0] - m,
+            item.bbox[1] - m,
+            item.bbox[0] + item.bbox[2] + m,
+            item.bbox[1] + item.bbox[3] + m,
+        ],
+    ]).map((v, i) => Math.max(0, Math.min(v, i % 2 === 0 ? w : h)));
+    const crop = el("canvas", { width: String(x1 - x0), height: String(y1 - y0), class: "cropped" });
+    crop.getContext("2d").drawImage(canvas, x0, y0, x1 - x0, y1 - y0, 0, 0, x1 - x0, y1 - y0);
+    crop.style.width = `${(x1 - x0) * ZOOM}px`;
+    return crop;
 }
 
 async function acceptAll() {
@@ -742,6 +775,7 @@ async function finishTarget(target) {
             `Warning: still undecided, left for a later round: ${left.map((p) => `${p.project}: ${p.undecided} undecided`).join(", ")}.`,
         );
     }
+    lines.push(signerLine(fresh.signer));
     if (!confirm(lines.join("\n\n"))) {
         return;
     }

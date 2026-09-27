@@ -6,17 +6,18 @@
  * <dir> holds the downloaded `visual-<project>-<attempt>` artifacts of this CI run, every attempt
  * of it. For each project only the highest attempt counts, so re-running failed jobs (which
  * leaves the visual jobs' old attempt as the newest) can neither hide nor resurrect a capture.
- * Whether a project is seeded is read from <ref> (the base branch tip, fetched by the caller), not
- * from the pull request, so deleting a project's baselines in the pull request does not turn the
+ * Which projects exist and are seeded is read from <ref> (the base branch tip, fetched by the
+ * caller), not from the pull request, so deleting a project's baselines in the pull request does not turn the
  * gate off. A seeded project with no results.json, or an incomplete one, fails: a capture that
  * crashed has shown the owner nothing. An invalid results.json counts as missing.
  *
  * It also fails when a baseline PNG, or a settings file that excludes a story, differs from the
  * base without a review record added in the pull request (visual-baselines/reviews/*.json) naming
  * that path and its new hash. Without that, committing the captured PNGs straight into
- * visual-baselines/ would turn the capture check green with no review at all. A record is a plain
- * file Finish writes, so this proves the change went through the review tool's format, not that
- * the owner pressed Finish (visual-review/README.md, "What this does and does not guarantee").
+ * visual-baselines/ would turn the capture check green with no review at all. Only a record's
+ * items[].path and items[].to are read, so this proves a record names the change, not that Finish
+ * wrote it or the owner pressed it (visual-review/README.md, "What this does and does not
+ * guarantee").
  *
  * Usage: node visual-review/trusted/gate.mjs --captures <dir> --base <ref> [--head <ref>]
  * Standard library only (results.mjs has no dependencies), so it runs without an install.
@@ -25,7 +26,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -165,21 +166,20 @@ function parseOr(bytes) {
 }
 
 /**
- * The projects with at least one baseline PNG at a git ref.
- * @param {string[]} projects the project ids
+ * The projects with at least one baseline PNG at a git ref: the directories under
+ * visual-baselines/ at the base tip, so a pull request cannot drop a project from the gate by
+ * editing visual-review/projects.json.
  * @param {string} ref the base branch tip
  * @param {string} [cwd] the repository
  * @returns {Set<string>} the seeded ones
  */
-export function seededAt(projects, ref, cwd = process.cwd()) {
+export function seededAt(ref, cwd = process.cwd()) {
     const files = execFileSync("git", ["ls-tree", "-r", "--name-only", ref, "--", "visual-baselines/"], {
         cwd,
         encoding: "utf8",
         maxBuffer: 1 << 28,
     }).split("\n");
-    return new Set(
-        projects.filter((p) => files.some((f) => f.startsWith(`visual-baselines/${p}/`) && f.endsWith(".png"))),
-    );
+    return new Set(files.map((f) => /^visual-baselines\/([^/]+)\/.+\.png$/.exec(f)?.[1]).filter(Boolean));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -190,11 +190,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         console.error("usage: gate.mjs --captures <dir> --base <ref> [--head <ref>]");
         process.exit(2);
     }
-    const projectsFile = join(dirname(fileURLToPath(import.meta.url)), "..", "projects.json");
-    const projects = Object.keys(JSON.parse(readFileSync(projectsFile, "utf8")));
+    const seeded = seededAt(values.base);
     const problems = gateProblems({
-        projects,
-        seeded: seededAt(projects, values.base),
+        projects: [...seeded],
+        seeded,
         captures: newestResults(values.captures),
     });
     for (const line of problems) {

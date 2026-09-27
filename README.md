@@ -13,8 +13,12 @@ The design is `design/visual-testing/design.md`; what exists today is its sectio
 Ask an agent to start it, or start it yourself through servherd (the command is in CLAUDE.md,
 "Visual review"). The page's address, including a session token after `#token=`, is printed in
 the server's log every time it starts; servherd's `servherd_logs` for `visual-review` shows it.
-Open that exact URL. Without the token the page shows "No session token". The token changes when
-the server restarts, so a stale tab needs the new URL.
+Open that exact URL. Without the token the page shows "No session token". The URL stays valid
+across restarts; deleting `tmp/visual-review/state/token` issues a new one.
+
+Finish's commit is signed by the git environment the server was started from. When an agent
+starts it, that is the agent's signing key, not yours. The targets screen and Finish's
+confirmation say which key will sign; start the server from your own shell to sign as yourself.
 
 Variants of the command:
 
@@ -68,6 +72,9 @@ story no longer exists, lost a mode, or whose story's own parameters now exclude
   decision for `unstable` and `failed` items; for a one-off `failed` item (a timeout on a busy
   runner), re-run the `visual` job instead, since the newest attempt replaces the old results.
 - **Undo** clears a decision before Finish. Decisions are kept across server restarts.
+- After Finish, accepts and exclusions are cleared; rejects stay, marked as already posted, and
+  still show as rejected on the next CI run while the capture is unchanged. Finish does not post
+  them twice. They live in this server's `tmp/visual-review/state/`, not in the repository.
 
 ## Finish
 
@@ -79,8 +86,8 @@ Finish applies every decision on one target at once:
 - **Master (seeding):** a branch `visual/seed-<date>` with the same commit, and a pull request
   from it.
 
-The commit is signed as your git configuration signs any commit, so the signing key or agent must
-be available. If Finish fails, your decisions are kept and the page shows git's or GitHub's
+The commit is signed by whatever git configuration the server process sees: yours when you
+started it, the agent's key when an agent started it (the page names the key before Finish). If Finish fails, your decisions are kept and the page shows git's or GitHub's
 message:
 
 - **capture is stale, wait for CI**: someone pushed to the branch after the capture. Wait for the
@@ -110,7 +117,8 @@ A project is "seeded" once its baselines are on master; until then the merge gat
   makes it match the baseline.
 - Every baseline PNG, and every settings file that excludes a story, that the pull request adds,
   changes or deletes must be named with its new hash in a review record the pull request adds
-  under `visual-baselines/reviews/`; existing records may not be edited or deleted. This stops
+  under `visual-baselines/reviews/`. Only the path and new hash are checked: any JSON file with
+  an `items` entry naming them passes, and the hash need not match a CI capture; existing records may not be edited or deleted. This stops
   the shortcut of copying captured PNGs, or an exclusion, straight into `visual-baselines/`.
 - It does not prove that you reviewed anything. A record is a plain JSON file: anyone who can push
   to the branch, including an agent on your machine, can write one that names the copied PNGs, and
@@ -121,6 +129,8 @@ A project is "seeded" once its baselines are on master; until then the merge gat
   agents run with your GitHub credentials and signing key, so an agent could press Accept or call
   the page's API. CLAUDE.md forbids it; nothing technical prevents it yet. Signing with a hardware
   security key on your own computer replaces this in milestone 3 (`design/visual-testing/roadmap.md`).
+- The projects the gate checks are the ones with baselines on the base branch, so editing
+  `visual-review/projects.json` does not remove one from the gate.
 - The gate is part of `.github/workflows/ci.yml`, which a pull request can edit, and a pull request
   can loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
   without a review item. Read changes to those in code review.

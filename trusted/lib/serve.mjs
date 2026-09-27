@@ -76,6 +76,29 @@ async function earlierAccepts(repo, head, pr) {
 }
 
 /**
+ * Who Finish's commit will be signed by: the git configuration of the server's own environment.
+ * An agent that starts the server passes on its GIT_CONFIG_* overrides, and with them its own
+ * signing key, so the page shows this before every Finish.
+ * @param {string} repo the repository
+ * @returns {Promise<{ signs: boolean, format: string, key: string | null, fromEnv: boolean }>} the
+ *     signing settings git will use, and whether the environment overrides git's config files
+ */
+export async function signingIdentity(repo) {
+    const get = (...k) => exec("git", ["config", ...k], { cwd: repo }).catch(() => "");
+    const [sign, format, key] = await Promise.all([
+        get("--type=bool", "--get", "commit.gpgsign"),
+        get("--get", "gpg.format"),
+        get("--get", "user.signingkey"),
+    ]);
+    return {
+        signs: sign === "true",
+        format: format || "openpgp",
+        key: key || null,
+        fromEnv: Boolean(process.env.GIT_CONFIG_COUNT || process.env.GIT_CONFIG_PARAMETERS),
+    };
+}
+
+/**
  * The session token, created once so a restart keeps the owner's URL.
  * @param {string} stateDir where the token file lives
  * @returns {string} the token
@@ -131,11 +154,13 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
     let targets = new Map();
     /**
      * By target and run, then by `<project>/<file>`; `bulk` marks an accept from Accept all that
-     * was never opened one by one.
-     * @type {Map<string, Map<string, { decision: string, reason: string | null, bulk?: true }>>}
+     * was never opened one by one, `posted` a reject an earlier Finish already commented.
+     * @type {Map<string, Map<string, { decision: string, reason: string | null, bulk?: true,
+     *     posted?: true }>>}
      */
     const decisions = new Map();
     let finishing = false;
+    let signer = null;
 
     const itemOf = (t, key) => {
         const at = key.indexOf("/");
@@ -261,6 +286,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 }
             }
         }
+        signer = await signingIdentity(repo);
         targets = next;
     }
 
@@ -278,6 +304,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             commit: t.commit,
             headSha: t.headSha,
             mergeMasterFirst: t.mergeMasterFirst,
+            signer,
             projects: t.projects.map((p) => {
                 const counts = {};
                 for (const item of p.results?.items ?? []) {
@@ -427,10 +454,13 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 return [409, { error: "a Finish is already running" }];
             }
             const mine = decisionsOf(t);
-            const list = [...mine].map(([k, v]) => {
-                const at = k.indexOf("/");
-                return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
-            });
+            // A reject already posted by an earlier Finish stays shown as rejected, not posted again.
+            const list = [...mine]
+                .filter(([, v]) => !v.posted)
+                .map(([k, v]) => {
+                    const at = k.indexOf("/");
+                    return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
+                });
             const captures = Object.fromEntries(
                 t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
             );
@@ -443,7 +473,15 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                     projects: captures,
                     decisions: list,
                 });
-                mine.clear();
+                // Rejects stay, keyed by image hash, so an unchanged rejected capture on the next
+                // CI run still reads as rejected rather than undecided.
+                for (const [k, v] of mine) {
+                    if (v.decision === "reject") {
+                        v.posted = true;
+                    } else {
+                        mine.delete(k);
+                    }
+                }
                 save(t);
                 return [200, out];
             } catch (err) {

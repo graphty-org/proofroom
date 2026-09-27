@@ -98,13 +98,11 @@ describe("gateProblems", () => {
 describe("seededAt", () => {
     it("reads seeded projects from the base ref, not the working tree", () => {
         const r = makeRepo();
-        expect(seededAt(["compact-mantine", "graphty-element"], r.master, r.repo)).toEqual(
-            new Set(["compact-mantine"]),
-        );
+        expect(seededAt(r.master, r.repo)).toEqual(new Set(["compact-mantine"]));
         git(r.repo, "rm", "-q", "-r", "visual-baselines");
         git(r.repo, "commit", "-q", "-m", "delete baselines");
-        expect(seededAt(["compact-mantine"], "HEAD", r.repo)).toEqual(new Set());
-        expect(seededAt(["compact-mantine"], r.master, r.repo)).toEqual(new Set(["compact-mantine"]));
+        expect(seededAt("HEAD", r.repo)).toEqual(new Set());
+        expect(seededAt(r.master, r.repo)).toEqual(new Set(["compact-mantine"]));
     });
 });
 

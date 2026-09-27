@@ -127,7 +127,11 @@ describe("review page", () => {
         await page.keyboard.press("f");
         await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("flash");
         await page.keyboard.press("h");
-        await page.locator("#stage canvas").waitFor();
+        // Cropped to the content like the other views; Z shows the full frame.
+        await page.locator("#stage canvas.cropped").waitFor();
+        await page.keyboard.press("z");
+        await page.locator("#stage.zoomed canvas:not(.cropped)").waitFor();
+        await page.keyboard.press("z");
         await page.keyboard.press("e");
         await expect
             .poll(() => page.locator("#reason").evaluate((r) => r === r.ownerDocument.activeElement))
@@ -146,6 +150,7 @@ describe("review page", () => {
         expect(dialogs[1]).toContain("4 accepted without being opened");
         expect(dialogs[1]).toContain("graphty-element: 1 undecided");
         expect(dialogs[1]).toContain("compact-mantine: 2 undecided");
+        expect(dialogs[1]).toMatch(/Finish commits are (signed with|NOT signed)/);
     });
 
     it("shows a re-review flag on an item whose earlier accept master replaced", async () => {
