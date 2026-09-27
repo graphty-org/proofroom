@@ -5,6 +5,12 @@
  *
  * Usage: visual-review <capture|compare|serve> [options]
  *
+ *   capture --project <id> --out <dir> [--storybook <dir>] [--baselines <dir>] [--workers <n>]
+ *     Captures every story of one built Storybook and writes results.json and the PNGs to review
+ *     into <dir>. --storybook defaults to <package>/storybook-static, --baselines to
+ *     visual-baselines/<id>, and --workers to the project's entry in projects.json. Exits 0
+ *     whatever it finds; non-zero only when the tool itself fails.
+ *
  *   compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa]
  *     Compares every PNG in the two directories by name and prints one JSON line per file that
  *     is not unchanged, then a summary. Exits 1 when anything differs. For local use: one
@@ -12,13 +18,14 @@
  */
 
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { classify, DEFAULT_THRESHOLD } from "./lib/compare.mjs";
 
 const SUBCOMMANDS = {
-    capture: () => notYet("capture"),
+    capture,
     compare,
     serve: () => notYet("serve"),
 };
@@ -26,6 +33,42 @@ const SUBCOMMANDS = {
 function notYet(name) {
     console.error(`visual-review ${name}: not implemented yet`);
     return 1;
+}
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+async function capture(args) {
+    const { values } = parseArgs({
+        args,
+        options: {
+            project: { type: "string" },
+            out: { type: "string" },
+            storybook: { type: "string" },
+            baselines: { type: "string" },
+            workers: { type: "string" },
+        },
+    });
+    const projects = JSON.parse(await readFile(join(ROOT, "visual-review/projects.json"), "utf8"));
+    const project = Object.hasOwn(projects, values.project ?? "") ? projects[values.project] : undefined;
+    const workers = Number(values.workers ?? project?.workers);
+    if (!project || !values.out || !(Number.isInteger(workers) && workers > 0)) {
+        console.error(
+            `usage: visual-review capture --project <${Object.keys(projects).join("|")}> --out <dir> ` +
+                "[--storybook <dir>] [--baselines <dir>] [--workers <n>]",
+        );
+        return 2;
+    }
+    // Playwright is capture's only dependency, so it loads only for this subcommand.
+    const { capture: run } = await import("../capture/capture.mjs");
+    await run({
+        project: values.project,
+        storybook: resolve(values.storybook ?? join(ROOT, project.dir, "storybook-static")),
+        baselines: resolve(values.baselines ?? join(ROOT, "visual-baselines", values.project)),
+        out: resolve(values.out),
+        workers,
+        stableFrame: project.stableFrame,
+    });
+    return 0;
 }
 
 async function compare(args) {

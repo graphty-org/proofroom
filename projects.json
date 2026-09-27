@@ -1,0 +1,16 @@
+{
+    "compact-mantine": {
+        "dir": "compact-mantine",
+        "artifact": "build-storybook-compact-mantine",
+        "workers": 8,
+        "stableFrame": false,
+        "seedFromMaster": true
+    },
+    "graphty-element": {
+        "dir": "graphty-element",
+        "artifact": "build-storybook-element",
+        "workers": 4,
+        "stableFrame": true,
+        "seedFromMaster": false
+    }
+}

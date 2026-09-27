@@ -20,6 +20,7 @@
         "vitest": "catalog:"
     },
     "dependencies": {
+        "playwright": "1.57.0",
         "pngjs": "7.0.0"
     }
 }
