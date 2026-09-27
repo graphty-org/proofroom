@@ -12,6 +12,13 @@ import { fileURLToPath } from "node:url";
 export const FIXTURE = fileURLToPath(new URL("fixtures/results/", import.meta.url));
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
+// Inside a git hook (the pre-push gate runs these tests) git exports GIT_DIR and friends, which
+// point every git command here, even one run in a temporary directory, at the real repository:
+// `git init --bare` there turned the developer's checkout bare. Drop them before any git runs.
+for (const name of execFileSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" }).split("\n")) {
+    if (name) delete process.env[name];
+}
+
 /**
  * Keeps the developer's own git configuration (signing, hooks, aliases) out of the tests. Every
  * git process the code under test starts inherits this environment.

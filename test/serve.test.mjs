@@ -419,6 +419,7 @@ describe("serve: decisions and Finish", () => {
     it("keeps the decisions and returns git's stderr when the commit fails", async () => {
         const s = await start({ gh: onePr() });
         git(s.repo, "config", "gpg.ssh.program", "false");
+        git(s.repo, "config", "user.signingkey", "key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyNeverUsedBecauseTheProgramFails");
         git(s.repo, "config", "gpg.format", "ssh");
         git(s.repo, "config", "commit.gpgsign", "true");
         await s.api("GET", "/api/prs");
