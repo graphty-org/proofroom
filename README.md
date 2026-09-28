@@ -1,6 +1,6 @@
 # Visual review: the owner's guide
 
-CI screenshots every story of compact-mantine and graphty-element on every pull request and
+CI screenshots every story of compact-mantine, graphty-element and layout on every pull request and
 compares each screenshot with its approved baseline PNG in `visual-baselines/<project>/`. A pull
 request whose screenshots differ from the baselines cannot merge ("All Checks Pass" fails) until
 you accept or reject each difference in the review page described here. Nothing is hosted: the
