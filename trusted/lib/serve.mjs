@@ -33,6 +33,13 @@ const HEADERS = {
     "referrer-policy": "no-referrer",
     "cache-control": "no-store",
 };
+/**
+ * The component a story belongs to: its id before "--" (`components-overlays-tooltip--states`).
+ * @param {string} id the story id
+ * @returns {string} the component part
+ */
+const componentOf = (id) => id.split("--")[0];
+
 const REVIEWABLE = new Set(["changed", "new", "removed", "unstable", "failed"]);
 const WRITES = new Set(["decide", "accept-all", "finish"]);
 
@@ -78,22 +85,29 @@ async function earlierAccepts(repo, head, pr) {
 /**
  * Who Finish's commit will be signed by: the git configuration of the server's own environment.
  * An agent that starts the server passes on its GIT_CONFIG_* overrides, and with them its own
- * signing key, so the page shows this before every Finish.
+ * signing key, so the page shows this before every Finish, with where git found the key.
  * @param {string} repo the repository
- * @returns {Promise<{ signs: boolean, format: string, key: string | null, fromEnv: boolean }>} the
- *     signing settings git will use, and whether the environment overrides git's config files
+ * @returns {Promise<{ signs: boolean, format: string, key: string | null, keyFrom: string | null,
+ *     author: string | null, fromEnv: boolean }>} the signing settings git will use, where the key
+ *     is set (`file:<path>` or `command line:`, as `git config --show-origin` says), the committer,
+ *     and whether the environment overrides git's config files
  */
 async function signingIdentity(repo) {
     const get = (...k) => exec("git", ["config", ...k], { cwd: repo }).catch(() => "");
-    const [sign, format, key] = await Promise.all([
+    const [sign, format, keyLine, name, email] = await Promise.all([
         get("--type=bool", "--get", "commit.gpgsign"),
         get("--get", "gpg.format"),
-        get("--get", "user.signingkey"),
+        get("--show-origin", "--get", "user.signingkey"),
+        get("--get", "user.name"),
+        get("--get", "user.email"),
     ]);
+    const [keyFrom, key] = keyLine ? keyLine.split("\t") : [null, null];
     return {
         signs: sign === "true",
         format: format || "openpgp",
         key: key || null,
+        keyFrom: keyFrom || null,
+        author: name || email ? `${name} <${email}>` : null,
         fromEnv: Boolean(process.env.GIT_CONFIG_COUNT || process.env.GIT_CONFIG_PARAMETERS),
     };
 }
@@ -142,12 +156,14 @@ async function loadResults(dir) {
  * @param {string} options.token the session token
  * @param {string} options.origin the origin the page is served from
  * @param {number} [options.masterRun] the master CI run to seed from
- * @param {string} [options.results] a local directory of `<project>/results.json` instead of CI
- * @param {string} [options.branch] with `results`, the branch Finish pushes to
+ * @param {string} [options.results] a local directory of `<project>/results.json` instead of CI:
+ *     a preview to look at, with no decisions and no Finish
+ * @param {string} [options.startCommand] the shell command that starts this server, shown so the
+ *     owner can restart it from their own shell and sign Finish with their own key
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void}
  *     the handler, for node:https in the CLI and node:http in the tests
  */
-export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, results, branch }) {
+export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, results, startCommand = null }) {
     const stateDir = join(tmp, "state");
     const names = Object.keys(projects);
     /** @type {Map<string, object>} targets by id: a pull request number, or "master" */
@@ -235,13 +251,14 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             );
             const r = list.find((p) => p.results)?.results;
             if (r) {
-                const id = r.pr === null ? "master" : String(r.pr);
-                next.set(id, {
-                    id,
-                    pr: r.pr,
-                    title: `local results in ${results}`,
+                // Never "master" or a pull request: a preview is not a seed and has no Finish.
+                next.set("local", {
+                    id: "local",
+                    pr: null,
+                    local: true,
+                    title: `local preview of ${results}`,
                     url: null,
-                    branch: branch ?? null,
+                    branch: null,
                     runId: r.runId,
                     runAttempt: r.runAttempt,
                     runUrl: null,
@@ -281,7 +298,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             t.earlier = await earlierAccepts(repo, t.headSha, t.pr);
             t.mergeMasterFirst = false;
             for (const p of t.projects) {
-                if (p.results && base && (await behindMaster(repo, base, p.project).catch(() => true))) {
+                if (!t.local && p.results && base && (await behindMaster(repo, base, p.project).catch(() => true))) {
                     t.mergeMasterFirst = true;
                 }
             }
@@ -295,6 +312,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
         return {
             id: t.id,
             pr: t.pr,
+            local: t.local === true,
             title: t.title,
             url: t.url,
             branch: t.branch,
@@ -305,6 +323,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             headSha: t.headSha,
             mergeMasterFirst: t.mergeMasterFirst,
             signer,
+            startCommand,
             projects: t.projects.map((p) => {
                 const counts = {};
                 for (const item of p.results?.items ?? []) {
@@ -329,10 +348,12 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
         };
     };
 
-    // A local preview (--results) is never acceptable: Finish would refuse it, so the page offers
-    // only Reject and /api/decide refuses the rest up front.
-    const isLocal = (t, name) => Boolean(t.projects.find((x) => x.project === name)?.results?.local);
+    // A local preview (--results, or any capture not made by CI) is only looked at: no decision is
+    // taken on it and it has no Finish, since Finish accepts only CI captures.
+    const isLocal = (t, name) =>
+        t.local === true || Boolean(t.projects.find((x) => x.project === name)?.results?.local);
     const acceptable = (t, name) => !isLocal(t, name) && (t.pr !== null || projects[name].seedFromMaster === true);
+    const LOCAL = "is a local preview: nothing is decided on it; only CI captures of a pushed commit are";
 
     async function targetOf(id) {
         if (!targets.has(id)) {
@@ -402,21 +423,31 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 return [404, { error: "no such item" }];
             }
             const key = `${body.project}/${body.file}`;
+            if (isLocal(t, body.project)) {
+                return [403, { error: `${body.project} ${LOCAL}` }];
+            }
             if (body.decision === null) {
                 decisionsOf(t).delete(key);
                 save(t);
                 return [200, { ok: true }];
             }
             if (body.decision !== "reject" && !acceptable(t, body.project)) {
-                const why = isLocal(t, body.project)
-                    ? "is a local preview; only CI captures can be accepted or excluded"
-                    : "is not seeded from master; its first review is on a pull request";
-                return [403, { error: `${body.project} ${why}` }];
+                return [
+                    403,
+                    { error: `${body.project} is not seeded from master; its first review is on a pull request` },
+                ];
             }
             const reason = cleanReason(body.reason);
             const problem = decisionProblem(item, body.decision, reason);
             if (problem) {
                 return [problem.status, { error: problem.message }];
+            }
+            // Nothing silently reverses a decision: changing one takes an explicit Undo first. The
+            // same decision again is allowed (opening an item Accept all decided re-sends it).
+            const before = decisionsOf(t).get(key);
+            if (before && (before.decision !== body.decision || before.reason !== reason)) {
+                const done = { accept: "accepted", reject: "rejected", exclude: "excluded" }[before.decision];
+                return [409, { error: `${body.file} is already ${done}: Undo it first to change it` }];
             }
             decisionsOf(t).set(key, { decision: body.decision, reason });
             save(t);
@@ -433,11 +464,13 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                     { error: `${body.project} cannot be accepted here (a local preview, or not seeded from master)` },
                 ];
             }
+            // With `component`, only that component's stories: the story id before "--".
+            const inScope = (item) => typeof body.component !== "string" || componentOf(item.id) === body.component;
             const mine = decisionsOf(t);
             let accepted = 0;
             for (const item of p.results.items) {
                 const key = `${body.project}/${item.file}`;
-                if (!mine.has(key) && !decisionProblem(item, "accept", null)) {
+                if (inScope(item) && !mine.has(key) && !decisionProblem(item, "accept", null)) {
                     mine.set(key, { decision: "accept", reason: null, bulk: true });
                     accepted++;
                 }
@@ -449,6 +482,9 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             const t = await targetOf(String(body.id));
             if (!t) {
                 return [404, { error: "no such target" }];
+            }
+            if (t.local) {
+                return [403, { error: "a local preview has no Finish" }];
             }
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];
@@ -464,6 +500,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             const captures = Object.fromEntries(
                 t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
             );
+            const undecided = summary(t).projects.reduce((n, p) => n + p.undecided, 0);
             finishing = true;
             try {
                 const out = await finish({
@@ -472,6 +509,7 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                     target: { pr: t.pr, branch: t.branch },
                     projects: captures,
                     decisions: list,
+                    undecided,
                 });
                 // Rejects stay, keyed by image hash, so an unchanged rejected capture on the next
                 // CI run still reads as rejected rather than undecided.

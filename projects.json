@@ -11,6 +11,7 @@
         "artifact": "build-storybook-element",
         "workers": 4,
         "stableFrame": true,
+        "canvas": true,
         "seedFromMaster": false
     }
 }

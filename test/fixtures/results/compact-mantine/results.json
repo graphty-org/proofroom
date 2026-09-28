@@ -121,8 +121,8 @@
             "bbox": null,
             "threshold": 0.063,
             "includeAA": false,
-            "reason": null,
-            "console": ["Error: render timed out after 30 s"]
+            "reason": "story render errored",
+            "console": ["Error: render timed out after 30 s", "    at play (menu.stories.tsx:12:5)"]
         },
         {
             "id": "input--default",

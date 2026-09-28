@@ -76,6 +76,8 @@ export function validateResults(r) {
     check(isStr(r.capturedAt) && !Number.isNaN(Date.parse(r.capturedAt)), "capturedAt must be a date");
     check(isObj(r.clock), "clock must be an object");
     check(isObj(r.environment), "environment must be an object");
+    // Device pixels per CSS pixel. Captures made before it was recorded were at 1.
+    check(r.scale === undefined || r.scale === 1 || r.scale === 2, "scale must be 1 or 2");
 
     if (!Array.isArray(r.items)) {
         errors.push("items must be an array");

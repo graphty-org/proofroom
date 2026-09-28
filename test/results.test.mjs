@@ -69,6 +69,11 @@ describe("validateResults", () => {
         ]);
     });
 
+    it("accepts a scale of 1 or 2, or none (an older capture), and nothing else", () => {
+        expect(validateResults(results({ scale: 2 }))).toEqual([]);
+        expect(validateResults(results({ scale: 3 }))).toEqual(["scale must be 1 or 2"]);
+    });
+
     it("rejects an unknown status", () => {
         expect(validateResults(results({ items: [item({ status: "approved" })] })).join("\n")).toMatch(/status/);
     });

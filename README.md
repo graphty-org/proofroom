@@ -46,15 +46,19 @@ Open that exact URL. Without the token the page shows "No session token". The UR
 across restarts; deleting `tmp/visual-review/state/token` issues a new one.
 
 Finish's commit is signed by the git environment the server was started from. When an agent
-starts it, that is the agent's signing key, not yours. The targets screen and Finish's
-confirmation say which key will sign; start the server from your own shell to sign as yourself.
+starts it, that is the agent's signing key, not yours. The top of the targets screen and Finish's
+confirmation name the key that will sign, where git found it (a config file, or the command line
+when the server's environment set it) and the committer, and print the exact command that starts
+the same server from your own shell. To sign as yourself, stop the agent's server (servherd's
+`servherd_stop` for `visual-review`) and run that command in your own terminal.
 
 Variants of the command:
 
 - `--master-run <run id>`: also lists master at that CI run, for seeding (below).
-- `--results <dir> --branch <name>`: serves local captures offline, for iterating on a story
-  before a pull request exists (below). They are marked "local preview, not acceptable": only CI
-  captures of a pushed commit can be accepted.
+- `--results <dir>`: serves local captures offline, for looking at a story before a pull request
+  exists (below). It is listed as "Local preview", never as master or a seed, and it is look
+  only: no Accept, Reject or Exclude, and no Finish. Only CI captures of a pushed commit are
+  decided.
 
 ## The screens
 
@@ -66,10 +70,31 @@ Variants of the command:
     - **incomplete: N of M stories**: the capture stopped part way. Re-run the job.
     - **not seeded from master**: this project is not reviewed on master (`seedFromMaster: false`
       in `projects.json`); its first baselines are accepted on a pull request.
-2. **Grid.** A thumbnail per item that needs a decision, with its status and your decision.
-3. **Story.** One item: baseline and new side by side, the changed-pixel count and box, and the
-   buttons. Badges here: **size changed**, **flaky** (the two captures differed, then matched),
-   and **re-review** (an accept you made was replaced by master's newer baseline).
+2. **Grid.** It opens on **Needs a decision** (the undecided items); **All** and one button per
+   status show the rest. At the top, **Errors** lists every failed capture with its reason and,
+   under "console and stack", the story's console output and the thrown error's stack (a play
+   function's failed `expect` included). An error is never accepted: fix the story, re-run the
+   `visual` job for a one-off timeout, or exclude it with a reason. Below it the items are grouped
+   by component (the story id before `--`), components with a changed item first, then new,
+   unstable and removed ones; each story's modes (light, dark) sit side by side under its name.
+   Every tile is numbered, and the number is the story screen's "N of M". A component's
+   **Accept N undecided** accepts that component's undecided items without opening them, after
+   asking. **Filter by story id** narrows the grid; **Go to** opens item N, or the first item
+   whose id contains the text. Coming back from a story, its tile is outlined and scrolled into
+   view.
+3. **Story.** One item. Images are shown at real size: one CSS pixel of the page for each CSS
+   pixel the story was drawn at (a capture holds two image pixels per CSS pixel). **2x**, **4x**
+   and **8x** enlarge it; from 4x pixels are drawn as hard squares. Each image scrolls in its own
+   frame. **Next changed box** (N) moves every frame to the next region of changed pixels and
+   outlines it; "box i of k" counts them. The views: **Side by side**; **Flash**, which shows
+   baseline and new one after the other in the same place, about 1.5 times a second (the images
+   themselves, not an overlay); **Highlight**, pixelmatch's changed pixels in red over the
+   dimmed baseline; and **Spotlight**, the new image dimmed everywhere except around the changed
+   pixels (each grown by 10 image pixels), which finds a one-pixel change. Flash, Highlight and
+   Spotlight need two images; on a new or removed story they are off and the page says why
+   ("New story, no baseline", "Only one image: this story was removed"). Badges here:
+   **size changed** (in image pixels), **flaky** (the two captures differed, then matched), and
+   **re-review** (an accept you made was replaced by master's newer baseline).
 
 Statuses: `changed` (differs from its baseline), `new` (no baseline, and on a pull request the
 story is new or looks different from master's newest capture of it), `no baseline yet` (status
@@ -83,24 +108,30 @@ for them. Seed them from master (below), or accept them on the pull request that
 
 ## Keys
 
-| Key          | Action                                                                      |
-| ------------ | --------------------------------------------------------------------------- |
-| J / K        | Next / previous item                                                        |
-| A            | Accept                                                                      |
-| R            | Reject (asks for a reason, then Enter)                                      |
-| E            | Exclude (asks for a reason, then Enter, then a confirmation)                |
-| F            | Flash between baseline and new; F again returns to side by side             |
-| H            | Highlight changed pixels; H again returns to side by side                   |
-| Z            | Full frame at 4x (otherwise images are cropped to their content, enlarged)  |
-| Space (hold) | Flash while held                                                            |
-| Shift+A      | Accept every undecided item of this project without opening it (asks first) |
-| Escape       | Back to the grid, or out of the reason box                                  |
+| Key          | Action                                                                         |
+| ------------ | ------------------------------------------------------------------------------ |
+| J / K        | Next / previous item                                                           |
+| A            | Accept an undecided item                                                       |
+| R            | Reject an undecided item (asks for a reason, then Enter)                       |
+| E            | Exclude an undecided item (asks for a reason, then Enter, then a confirmation) |
+| U            | Undo the item's decision                                                       |
+| F            | Flash between baseline and new; F again returns to side by side                |
+| H            | Highlight changed pixels; H again returns to side by side                      |
+| S            | Spotlight the changes; S again returns to side by side                         |
+| Z            | Next zoom: real size, 2x, 4x, 8x, then real size again                         |
+| N            | Next changed box                                                               |
+| Space (hold) | Flash while held                                                               |
+| Shift+A      | Accept every undecided item of this project without opening it (asks first)    |
+| Escape       | Back to the grid from a story, wherever the focus is (the reason box included) |
+
+No key reverses a decision. A, R and E do nothing on an item that is already decided, and say
+so; to change a decision, press U (or the Undo button) first. The same key twice never undoes.
 
 ## What each decision does
 
 - **Accept**: the new screenshot becomes the baseline (or, for `removed`, the baseline is
   deleted). Allowed on `changed`, `new` and `removed`.
-- **Reject**: the difference is a regression. It needs a reason, which is posted to the pull
+- **Reject**: the difference is a regression. It always needs a reason, which is posted to the pull
   request as a comment with a machine-readable block an agent can read. The pull request stays
   blocked until its code changes so the capture matches the baseline again.
 - **Exclude**: stops capturing the story. It needs a reason and writes
@@ -108,7 +139,8 @@ for them. Seed them from master (below), or accept them on the pull request that
   of the story**, on every later pull request, until that file is deleted. It is the only
   decision for `unstable` and `failed` items; for a one-off `failed` item (a timeout on a busy
   runner), re-run the `visual` job instead, since the newest attempt replaces the old results.
-- **Undo** clears a decision before Finish. Decisions are kept across server restarts.
+- **Undo** (U) clears a decision before Finish; it is the only way to change one. Decisions are
+  kept across server restarts.
 - After Finish, accepts and exclusions are cleared; rejects stay, marked as already posted, and
   still show as rejected on the next CI run while the capture is unchanged. Finish does not post
   them twice. They live in this server's `tmp/visual-review/state/`, not in the repository.
@@ -120,6 +152,12 @@ Finish applies every decision on one target at once:
 - **A pull request:** one commit holding the accepted PNGs, the exclusion files and one review
   record in `visual-baselines/reviews/`, pushed to the pull request's branch, plus one comment
   holding every reject. CI then recaptures, and the accepted items read `unchanged`.
+- **One commit status**, "Visual review", posted once when Finish completes (never per
+  decision), on the commit Finish pushed, or on the captured commit when it pushed none. It
+  fails when anything was rejected, is pending while items are left undecided, and succeeds
+  otherwise; its description counts the accepts, rejects, exclusions and undecided items. It is
+  information for the pull request page, not a required check: the merge gate is "All Checks
+  Pass". If posting it fails, the page says so; what was pushed and posted stays.
 - **Master (seeding):** a branch `visual/seed-<date>` with the same commit and a pull request
   from it, and one issue holding every reject (labelled `bug`) with the same machine-readable
   block, for an agent to fix the stories. Rejects alone, with nothing accepted, open only the issue.
@@ -168,7 +206,7 @@ master's CI has finished.
 
 ## Iterating on a story before a pull request exists
 
-To try a story's look quickly, capture it locally and look at it in the page:
+To try a story's look quickly, capture it locally and look at it, as a PNG or in the page:
 
 ```bash
 pnpm exec nx run compact-mantine:build-storybook   # or graphty-element:build-storybook
@@ -178,13 +216,20 @@ node visual-review/trusted/cli.mjs capture --project compact-mantine \
 
 `--stories` captures only the story ids that start with one of the given prefixes, in seconds
 rather than minutes, and then reports no baseline as removed. Start the server with
-`--results tmp/visual-preview --branch <branch>` to see the capture beside its baseline. Capture
-and look again after each change. A local preview can never be accepted: its fonts and graphics
-stack are not CI's, so only a CI capture of a pushed commit becomes a baseline. Push, let CI
-capture, and accept it on the pull request.
+`--results tmp/visual-preview` to see the capture beside its baseline. Capture and look again
+after each change. A local preview is look only: its fonts and graphics stack are not CI's, so
+only a CI capture of a pushed commit becomes a baseline. Push, let CI capture, and accept it on
+the pull request.
 
 ## How captures and baselines move
 
+- **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale
+  factor 2, as Chromatic captures, so a PNG holds two image pixels per CSS pixel. It is cropped
+  to the story's rendered content (the box around every visible element, tooltips and popovers
+  included) plus a 32 px margin. graphty-element keeps its viewport: the full width, cropped only
+  in height, never past the viewport, because capturing beyond it could resize the graph's
+  canvas, which clears it. results.json records the scale as `scale`, and each review record
+  copies it into its `subject`.
 - **From GitHub Actions to the page.** Each `visual` job uploads `results.json` and the PNGs to
   review as an artifact `visual-<project>-<attempt>`, kept 30 days. The server lists open pull
   requests with `gh`, finds each one's newest CI run, and downloads those artifacts with
