@@ -38,4 +38,14 @@ describe("projects.json", () => {
             );
         }
     });
+
+    it("lets the owner seed layout from master, whose stories render in one frame", () => {
+        expect(PROJECTS.layout).toEqual({
+            dir: "layout",
+            artifact: "build-storybook-layout",
+            workers: 4,
+            stableFrame: false,
+            seedFromMaster: true,
+        });
+    });
 });
