@@ -437,7 +437,7 @@ function contentClip({ margin, canvas }) {
                 clipsY ? Math.min(c[3], r.bottom) : c[3],
             ];
             visit(e, inner);
-            // A web component draws inside its open shadow root (graphty-element's canvas is there).
+            // A web component draws inside its shadow root: graphty-element's canvas lives there.
             if (e.shadowRoot) {
                 visit(e.shadowRoot, inner);
             }

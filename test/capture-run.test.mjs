@@ -38,10 +38,11 @@ if (id === "demo--broken") {
     document.body.insertAdjacentHTML("beforeend",
         "<div style='position:absolute;left:100px;top:100px;width:10px;height:10px;background:red'></div>");
 } else if (id === "demo--shadow") {
-    // A web component whose only drawing, a 40 x 30 box at (200, 150), is in its shadow root.
+    // A web component that draws a 200 x 300 canvas at (100, 100) inside its shadow root, as
+    // graphty-element does; the host element itself paints nothing.
     const host = document.createElement("div");
     host.attachShadow({ mode: "open" }).innerHTML =
-        "<div style='position:absolute;left:200px;top:150px;width:40px;height:30px;background:red'></div>";
+        "<canvas style='position:absolute;left:100px;top:100px;width:200px;height:300px'></canvas>";
     document.body.append(host);
 } else if (id === "demo--small") {
     // A 50 x 20 box at (100, 100), and a 10 x 10 portal-like box at (300, 40) outside it.
@@ -180,8 +181,8 @@ describe("capture", () => {
         expect(await run(true)).toEqual([1200 * 2, (152 - 8) * 2]);
         // The capture waits for the page's fonts: the box drawn when they settle is in it.
         expect(await run(false, "demo--late-font")).toEqual([(442 - 68) * 2, (342 - 68) * 2]);
-        // What a web component draws in its shadow root is content.
-        expect(await run(false, "demo--shadow")).toEqual([(272 - 168) * 2, (212 - 118) * 2]);
+        // A canvas inside a shadow root counts: 100..300 by 100..400, with the margin 68..332 by 68..432.
+        expect(await run(false, "demo--shadow")).toEqual([(332 - 68) * 2, (432 - 68) * 2]);
         // A block-level heading is cropped to its text, not to the block's full width.
         const [width] = await run(false, "demo--plain");
         expect(width).toBeGreaterThan(200);
