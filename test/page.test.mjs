@@ -81,7 +81,13 @@ describe("review page: a pull request", () => {
     });
 
     it("opens on what needs a decision: errors first with their stack, then components, changed first", async () => {
-        expect(await page.getByRole("button", { name: "Needs a decision" }).getAttribute("aria-pressed")).toBe("true");
+        const needs = page.getByRole("button", { name: /^Needs a decision/ });
+        expect(await needs.getAttribute("aria-pressed")).toBe("true");
+        // One count everywhere: 6 undecided, of which the failed capture is listed as an error.
+        expect(await needs.textContent()).toBe("Needs a decision (6)");
+        expect(await page.locator("#shown").textContent()).toBe(
+            "Showing 6: 1 error (listed first, never accepted) and 5 images to compare.",
+        );
         const error = page.locator(".errors li").first();
         expect(await error.textContent()).toContain("1 menu--open");
         expect(await error.textContent()).toContain("story render errored");
@@ -92,12 +98,26 @@ describe("review page: a pull request", () => {
         const button = page.locator('.component[data-component="button"] .story');
         expect(await button.locator(".story-name").textContent()).toBe("primary");
         expect(await button.locator(".tile .name").textContent()).toBe("2 dark");
+        // A story without modes shows no mode name.
+        expect(await page.locator('.component[data-component="slider"] .tile .name').textContent()).toBe("3 ");
         // A thumbnail shows the whole capture, however wide.
         expect(
             await button
                 .locator(".tile img")
                 .evaluate((i) => i.ownerDocument.defaultView.getComputedStyle(i).objectFit),
         ).toBe("contain");
+    });
+
+    it("fits an image wider than its pane by default, and shows real size on request", async () => {
+        await page.setViewportSize({ width: 500, height: 800 });
+        await openStory(2);
+        const img = page.locator("#stage img").first();
+        await img.waitFor();
+        const fitted = await img.evaluate((i) => [i.getBoundingClientRect().width, i.parentElement.clientWidth]);
+        expect(fitted[0]).toBeLessThan(320);
+        expect(Math.abs(fitted[0] - fitted[1])).toBeLessThanOrEqual(1);
+        await page.getByRole("button", { name: "Real size (1x)" }).click();
+        await expect.poll(() => img.evaluate((i) => i.getBoundingClientRect().width)).toBe(320);
     });
 
     it("shows images at real size, zooms at a labelled factor, crisp only from 4x, and jumps to the changed box", async () => {

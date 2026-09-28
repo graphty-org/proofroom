@@ -484,6 +484,20 @@ async function provenance() {
     };
 }
 
+/**
+ * Whether any font on this machine draws emoji, asked of fontconfig with one common emoji
+ * (U+1F680). Without one, every emoji in a story renders as an empty box, so capture warns.
+ * ponytail: one code point, a machine-level check; the pinned fonts of milestone 2 replace it.
+ * @returns {boolean | null} null when fc-list is not installed
+ */
+export function hasEmojiFont() {
+    try {
+        return execFileSync("fc-list", [":charset=1f680", "family"], { encoding: "utf8" }).trim() !== "";
+    } catch {
+        return null;
+    }
+}
+
 async function cpuModel() {
     try {
         return /^model name\s*:\s*(.*)$/m.exec(await readFile("/proc/cpuinfo", "utf8"))?.[1] ?? null;
@@ -586,6 +600,13 @@ export async function capture({
         }
         const gone = stories ? [] : [...existing].filter((f) => !planned.has(f) && BASELINE_NAME.test(f));
 
+        const emojiFont = hasEmojiFont();
+        if (emojiFont === false) {
+            log(
+                "warning: no font on this machine draws emoji (fc-list :charset=1f680 found none), so " +
+                    "every emoji in a story is captured as an empty box; install fonts-noto-color-emoji",
+            );
+        }
         const results = {
             version: 1,
             project,
@@ -602,6 +623,7 @@ export async function capture({
                 renderer,
                 gpu,
                 cpu: await cpuModel(),
+                emojiFont,
                 tool: git("-C", dirname(fileURLToPath(import.meta.url)), "rev-parse", "HEAD"),
             },
             items,

@@ -70,8 +70,9 @@ Variants of the command:
     - **incomplete: N of M stories**: the capture stopped part way. Re-run the job.
     - **not seeded from master**: this project is not reviewed on master (`seedFromMaster: false`
       in `projects.json`); its first baselines are accepted on a pull request.
-2. **Grid.** It opens on **Needs a decision** (the undecided items); **All** and one button per
-   status show the rest. At the top, **Errors** lists every failed capture with its reason and,
+2. **Grid.** It opens on **Needs a decision** (the undecided items, counted on the button); **All**
+   and one button per status show the rest. A line above the grid splits what is shown into
+   errors and images to compare, so the counts always add up. At the top, **Errors** lists every failed capture with its reason and,
    under "console and stack", the story's console output and the thrown error's stack (a play
    function's failed `expect` included). An error is never accepted: fix the story, re-run the
    `visual` job for a one-off timeout, or exclude it with a reason. Below it the items are grouped
@@ -82,8 +83,10 @@ Variants of the command:
    asking. **Filter by story id** narrows the grid; **Go to** opens item N, or the first item
    whose id contains the text. Coming back from a story, its tile is outlined and scrolled into
    view.
-3. **Story.** One item. Images are shown at real size: one CSS pixel of the page for each CSS
-   pixel the story was drawn at (a capture holds two image pixels per CSS pixel). **2x**, **4x**
+3. **Story.** One item. Images open at **Fit**: real size, shrunk to the pane when wider (a
+   1200 px graphty-element capture beside its baseline). **Real size (1x)** is one CSS pixel of the
+   page for each CSS pixel the story was drawn at (a capture holds two image pixels per CSS
+   pixel), scrolling when wider than the pane. **2x**, **4x**
    and **8x** enlarge it; from 4x pixels are drawn as hard squares. Each image scrolls in its own
    frame, which opens at the top left of the image. **Next changed box** (N) scrolls every frame
    until the next region of changed pixels is in view and outlines it; "box i of k" counts them. The views: **Side by side**; **Flash**, which shows
@@ -118,7 +121,7 @@ for them. Seed them from master (below), or accept them on the pull request that
 | F            | Flash between baseline and new; F again returns to side by side                |
 | H            | Highlight changed pixels; H again returns to side by side                      |
 | S            | Spotlight the changes; S again returns to side by side                         |
-| Z            | Next zoom: real size, 2x, 4x, 8x, then real size again                         |
+| Z            | Next zoom: fit, real size, 2x, 4x, 8x, then fit again                          |
 | N            | Next changed box                                                               |
 | Space (hold) | Flash while held                                                               |
 | Shift+A      | Accept every undecided item of this project without opening it (asks first)    |

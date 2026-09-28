@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { capture } from "../capture/capture.mjs";
+import { capture, hasEmojiFont } from "../capture/capture.mjs";
 
 const PARAMS = {
     "demo--plain": {},
@@ -97,6 +97,8 @@ describe("capture", () => {
             "    at play (demo.stories.ts:9:3)",
         ]);
         expect(first.scale).toBe(2);
+        // Recorded so an empty-box emoji in a capture can be traced to the machine.
+        expect(first.environment.emojiFont).toBe(hasEmojiFont());
         expect(items["demo--docs.png"]).toBeUndefined();
 
         // Seed: demo--plain's capture, and a baseline for a story the pull request now excludes.
