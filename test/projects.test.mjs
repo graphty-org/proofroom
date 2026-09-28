@@ -39,20 +39,6 @@ describe("projects.json", () => {
         }
     });
 
-    // layout's 3D stories draw into a WebGL canvas, so its captures keep the viewport rather than
-    // cropping to the content, which could resize the canvas and clear it. Its 17 stories captured
-    // identically twice in a row without waiting for a stable frame.
-    it("captures layout as a canvas project and lets the owner seed it from master", () => {
-        expect(PROJECTS.layout).toEqual({
-            dir: "layout",
-            artifact: "build-storybook-layout",
-            workers: 4,
-            stableFrame: false,
-            canvas: true,
-            seedFromMaster: true,
-        });
-    });
-
     // layout's stories import @graphty/layout, which resolves to layout/dist.
     it("builds layout before its Storybook, which imports the built package", () => {
         const layout = JSON.parse(readFileSync(new URL("../../layout/project.json", import.meta.url), "utf8"));

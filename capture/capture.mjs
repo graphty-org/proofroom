@@ -360,7 +360,8 @@ async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
  * each text run's own box, each replaced element (image, SVG, canvas, form control), and each
  * element that paints something of its own (a background other than the page's, a border, a
  * shadow, an outline). A block that only lays out -- the story root, a full-width wrapper --
- * adds nothing, so a single button is cropped to the button. Portals (tooltips, popovers) are
+ * adds nothing, so a single button is cropped to the button. Open shadow roots are walked too, so a
+ * web component's own drawing counts. Portals (tooltips, popovers) are
  * elements of the body too and count. Every box is cut to the ancestors whose overflow clips it
  * (so rows a scroll area hides do not stretch it; a fixed element escapes them). Then `margin`
  * is added, within the page. A canvas project (`canvas`) keeps the viewport: its full width, and
@@ -429,12 +430,17 @@ function contentClip({ margin, canvas }) {
             }
             const clipsX = style.overflowX !== "visible";
             const clipsY = style.overflowY !== "visible";
-            visit(e, [
+            const inner = [
                 clipsX ? Math.max(c[0], r.left) : c[0],
                 clipsY ? Math.max(c[1], r.top) : c[1],
                 clipsX ? Math.min(c[2], r.right) : c[2],
                 clipsY ? Math.min(c[3], r.bottom) : c[3],
-            ]);
+            ];
+            visit(e, inner);
+            // A web component draws inside its open shadow root (graphty-element's canvas is there).
+            if (e.shadowRoot) {
+                visit(e.shadowRoot, inner);
+            }
         }
     };
     visit(document.body, ALL);
