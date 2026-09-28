@@ -8,7 +8,12 @@ import { copyFixture, FIXTURE, git, isolateGit, makeRepo, pushCommit } from "./h
 
 beforeAll(isolateGit);
 
-const PROJECTS = JSON.parse(readFileSync(new URL("../projects.json", import.meta.url), "utf8"));
+// The two projects the fixtures hold, not the live registry, so adding a project to
+// projects.json does not change what these tests expect.
+const PROJECTS = {
+    "compact-mantine": { dir: "compact-mantine", seedFromMaster: true },
+    "graphty-element": { dir: "graphty-element", seedFromMaster: false },
+};
 const TOKEN = "t".repeat(43);
 
 /*
