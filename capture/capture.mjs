@@ -322,6 +322,15 @@ async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
             );
             return fail([`story render ${phase}`, ...shown].join("\n"));
         }
+        // A web font the story uses is fetched only once text needs it, which can be after the
+        // render completed; a capture taken before it arrives draws the fallback face, so the
+        // text, the crop and anything placed beside the text all differ from a later capture.
+        // Wait for every font in use, then for one frame drawn with them.
+        await page.evaluate(async () => {
+            await document.fonts.ready;
+            await new Promise((r) => requestAnimationFrame(() => r()));
+            await document.fonts.ready;
+        });
         if (stableFrame) {
             await page.evaluate(async () => {
                 const graphs = [...document.querySelectorAll("graphty-element")];
@@ -347,13 +356,16 @@ async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
 }
 
 /**
- * Runs in the page: the box to screenshot, in CSS pixels. It is the union of every visible
- * element's box (portals such as tooltips and popovers included, since they are elements of the
- * body too), each cut to the ancestors that clip it (overflow other than visible; a fixed element
- * escapes them), so the rows hidden inside a scroll area do not stretch it, plus `margin`, kept
- * within the page. A canvas project (`canvas`) keeps the viewport: its full width, and the
- * content's height plus the margin, never past the viewport, because a capture beyond it could
- * resize the canvas, which clears it. A story that draws nothing keeps the whole viewport.
+ * Runs in the page: the box to screenshot, in CSS pixels. It is the union of the story's ink:
+ * each text run's own box, each replaced element (image, SVG, canvas, form control), and each
+ * element that paints something of its own (a background other than the page's, a border, a
+ * shadow, an outline). A block that only lays out -- the story root, a full-width wrapper --
+ * adds nothing, so a single button is cropped to the button. Portals (tooltips, popovers) are
+ * elements of the body too and count. Every box is cut to the ancestors whose overflow clips it
+ * (so rows a scroll area hides do not stretch it; a fixed element escapes them). Then `margin`
+ * is added, within the page. A canvas project (`canvas`) keeps the viewport: its full width, and
+ * the ink's height plus the margin, never past the viewport, because a capture beyond it could
+ * resize the canvas, which clears it. A story with no ink keeps the whole viewport.
  * @param {{ margin: number, canvas: boolean }} options the margin and whether it is a canvas project
  * @returns {{ x: number, y: number, width: number, height: number }} the clip
  */
@@ -361,7 +373,36 @@ function contentClip({ margin, canvas }) {
     const root = document.documentElement;
     const W = canvas ? window.innerWidth : Math.max(root.scrollWidth, window.innerWidth);
     const H = canvas ? window.innerHeight : Math.max(root.scrollHeight, window.innerHeight);
+    const transparent = (c) => c === "transparent" || /^rgba\(.*,\s*0\)$/.test(c);
+    const bodyBg = window.getComputedStyle(document.body).backgroundColor;
+    const pageBg = transparent(bodyBg) ? window.getComputedStyle(root).backgroundColor : bodyBg;
+    const REPLACED = new Set(["IMG", "SVG", "svg", "CANVAS", "VIDEO", "IFRAME", "INPUT", "TEXTAREA", "SELECT", "HR"]);
+    const paints = (st) =>
+        (!transparent(st.backgroundColor) && st.backgroundColor !== pageBg) ||
+        st.backgroundImage !== "none" ||
+        st.boxShadow !== "none" ||
+        (st.outlineStyle !== "none" && parseFloat(st.outlineWidth) > 0) ||
+        ["Top", "Right", "Bottom", "Left"].some(
+            (side) =>
+                st[`border${side}Style`] !== "none" &&
+                parseFloat(st[`border${side}Width`]) > 0 &&
+                !transparent(st[`border${side}Color`]),
+        );
     let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    const add = (r, c) => {
+        const [l, t, rr, b] = [
+            Math.max(r.left, c[0]),
+            Math.max(r.top, c[1]),
+            Math.min(r.right, c[2]),
+            Math.min(r.bottom, c[3]),
+        ];
+        if (rr > l && b > t) {
+            x0 = Math.min(x0, l + window.scrollX);
+            y0 = Math.min(y0, t + window.scrollY);
+            x1 = Math.max(x1, rr + window.scrollX);
+            y1 = Math.max(y1, b + window.scrollY);
+        }
+    };
     const ALL = [-Infinity, -Infinity, Infinity, Infinity];
     // Walks the tree with the clip its ancestors impose, as [left, top, right, bottom].
     const visit = (parent, clipBox) => {
@@ -372,17 +413,19 @@ function contentClip({ margin, canvas }) {
             }
             const r = e.getBoundingClientRect();
             const c = style.position === "fixed" ? ALL : clipBox;
-            const [l, t, rr, b] = [
-                Math.max(r.left, c[0]),
-                Math.max(r.top, c[1]),
-                Math.min(r.right, c[2]),
-                Math.min(r.bottom, c[3]),
-            ];
-            if (rr > l && b > t && style.visibility !== "hidden") {
-                x0 = Math.min(x0, l + window.scrollX);
-                y0 = Math.min(y0, t + window.scrollY);
-                x1 = Math.max(x1, rr + window.scrollX);
-                y1 = Math.max(y1, b + window.scrollY);
+            if (style.visibility !== "hidden" && parseFloat(style.opacity) > 0) {
+                if (REPLACED.has(e.tagName) || paints(style)) {
+                    add(r, c);
+                }
+                for (const node of e.childNodes) {
+                    if (node.nodeType === 3 && node.textContent.trim() !== "") {
+                        const range = document.createRange();
+                        range.selectNodeContents(node);
+                        for (const tr of range.getClientRects()) {
+                            add(tr, c);
+                        }
+                    }
+                }
             }
             const clipsX = style.overflowX !== "visible";
             const clipsY = style.overflowY !== "visible";

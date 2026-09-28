@@ -368,6 +368,7 @@ const thumbs = new IntersectionObserver((entries) => {
 });
 
 function openItem(index) {
+    say("");
     state.index = index;
     state.box = 0;
     showStory();
@@ -978,35 +979,57 @@ async function renderStage(item, view) {
                 diff.boxes.length === 0
                     ? "no changed box at this threshold"
                     : `box ${Math.min(state.box, diff.boxes.length - 1) + 1} of ${diff.boxes.length}`;
-            showBox(stage, diff.boxes);
+            showBox(stage, diff.boxes, false);
         }
     } catch (err) {
         stage.replaceChildren(el("p", { class: "error" }, err.message));
     }
 }
 
-// Scrolls every pane so the current changed box is in the middle, and outlines it.
-function showBox(stage, boxes) {
+// Outlines the current changed box in every pane, and scrolls it into view. A pane opens at the
+// top left of its image; on opening (`jump` false) it scrolls only when the box is smaller than
+// the pane and out of sight. Next changed box (`jump` true) always brings the box into view, its
+// top left first when it is larger than the pane.
+function showBox(stage, boxes, jump) {
     if (boxes.length === 0) {
         return;
     }
     state.box = Math.min(state.box, boxes.length - 1);
     const [x, y, w, h] = boxes[state.box];
+    const PAD = 16;
     for (const frame of stage.querySelectorAll(".frame")) {
         const pic = frame.querySelector("img, canvas");
         const natural = pic.naturalWidth ?? pic.width;
-        const f = pic.getBoundingClientRect().width / natural;
+        const shown = pic.getBoundingClientRect();
+        const f = shown.width / natural;
+        // The outline is drawn inside the image, so a box at an edge keeps all four sides.
+        const [left, top] = [Math.max(0, x * f - 2), Math.max(0, y * f - 2)];
+        const [right, bottom] = [Math.min(shown.width, (x + w) * f + 2), Math.min(shown.height, (y + h) * f + 2)];
         frame.querySelector(".boxmark")?.remove();
         const mark = el("div", { class: "boxmark" });
         Object.assign(mark.style, {
-            left: `${pic.offsetLeft + x * f - 2}px`,
-            top: `${pic.offsetTop + y * f - 2}px`,
-            width: `${w * f + 4}px`,
-            height: `${h * f + 4}px`,
+            left: `${pic.offsetLeft + left}px`,
+            top: `${pic.offsetTop + top}px`,
+            width: `${right - left}px`,
+            height: `${bottom - top}px`,
         });
         frame.append(mark);
-        frame.scrollLeft = pic.offsetLeft + (x + w / 2) * f - frame.clientWidth / 2;
-        frame.scrollTop = pic.offsetTop + (y + h / 2) * f - frame.clientHeight / 2;
+        if (!jump) {
+            frame.scrollLeft = 0;
+            frame.scrollTop = 0;
+        }
+        const fits = right - left <= frame.clientWidth && bottom - top <= frame.clientHeight;
+        if (!jump && !fits) {
+            continue;
+        }
+        const reveal = (start, end, scroll, view) => {
+            if (end - start > view || start < scroll) {
+                return Math.max(0, start - PAD);
+            }
+            return end > scroll + view ? end - view + PAD : scroll;
+        };
+        frame.scrollLeft = reveal(pic.offsetLeft + left, pic.offsetLeft + right, frame.scrollLeft, frame.clientWidth);
+        frame.scrollTop = reveal(pic.offsetTop + top, pic.offsetTop + bottom, frame.scrollTop, frame.clientHeight);
     }
 }
 
@@ -1022,7 +1045,7 @@ async function nextBox() {
     }
     state.box = (state.box + 1) % boxes.length;
     document.getElementById("box-count").textContent = `box ${state.box + 1} of ${boxes.length}`;
-    showBox(document.getElementById("stage"), boxes);
+    showBox(document.getElementById("stage"), boxes, true);
 }
 
 // pixelmatch's own picture: the changed pixels in red over the dimmed baseline.
@@ -1086,6 +1109,7 @@ async function acceptAll(component) {
 }
 
 function move(step) {
+    say("");
     const count = visibleItems().length;
     state.index = (state.index + step + count) % count;
     state.box = 0;
@@ -1247,6 +1271,7 @@ document.addEventListener("keydown", (e) => {
             e.target.blur();
         }
         if (state.screen === "story") {
+            say("");
             showGrid();
         }
         return;

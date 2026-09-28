@@ -85,8 +85,8 @@ Variants of the command:
 3. **Story.** One item. Images are shown at real size: one CSS pixel of the page for each CSS
    pixel the story was drawn at (a capture holds two image pixels per CSS pixel). **2x**, **4x**
    and **8x** enlarge it; from 4x pixels are drawn as hard squares. Each image scrolls in its own
-   frame. **Next changed box** (N) moves every frame to the next region of changed pixels and
-   outlines it; "box i of k" counts them. The views: **Side by side**; **Flash**, which shows
+   frame, which opens at the top left of the image. **Next changed box** (N) scrolls every frame
+   until the next region of changed pixels is in view and outlines it; "box i of k" counts them. The views: **Side by side**; **Flash**, which shows
    baseline and new one after the other in the same place, about 1.5 times a second (the images
    themselves, not an overlay); **Highlight**, pixelmatch's changed pixels in red over the
    dimmed baseline; and **Spotlight**, the new image dimmed everywhere except around the changed
@@ -225,8 +225,9 @@ the pull request.
 
 - **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale
   factor 2, as Chromatic captures, so a PNG holds two image pixels per CSS pixel. It is cropped
-  to the story's rendered content (the box around every visible element, tooltips and popovers
-  included, but not what a scroll area hides) plus a 32 px margin. graphty-element keeps its viewport: the full width, cropped only
+  to the story's rendered content: its text, images and form controls and whatever paints a
+  background, border or shadow, tooltips and popovers included, but not an empty full-width
+  wrapper nor what a scroll area hides, plus a 32 px margin. graphty-element keeps its viewport: the full width, cropped only
   in height, never past the viewport, because capturing beyond it could resize the graph's
   canvas, which clears it. results.json records the scale as `scale`, and each review record
   copies it into its `subject`.

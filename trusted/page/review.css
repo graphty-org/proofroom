@@ -240,13 +240,11 @@ td {
     text-align: left;
 }
 
-/* The top-left corner, where a component starts: captures are often full-width strips. */
 .tile img,
 .tile .noimage {
     width: 100%;
     aspect-ratio: 4 / 3;
-    object-fit: cover;
-    object-position: left top;
+    object-fit: contain;
     background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;
 }
 
@@ -344,6 +342,7 @@ td {
 
 .boxmark {
     position: absolute;
+    box-sizing: border-box;
     border: 2px solid #d000d0;
     pointer-events: none;
 }
