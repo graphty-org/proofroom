@@ -1,11 +1,12 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { gateProblems, newestResults, seededAt, unrecordedChanges } from "../trusted/gate.mjs";
+import { contentHash, gateProblems, newestResults, seededAt, unrecordedChanges } from "../trusted/gate.mjs";
 import { FIXTURE, git, isolateGit, makeRepo } from "./helpers.mjs";
 
 beforeAll(isolateGit);
@@ -24,7 +25,7 @@ const results = (statuses, extra = {}) => ({
         mode: null,
         file: `story--s${i}.png`,
         status,
-        baseline: status === "new" ? null : HASH,
+        baseline: status === "new" || status === "unseeded" ? null : HASH,
         capture: status === "removed" ? null : HASH,
     })),
     ...extra,
@@ -76,6 +77,19 @@ describe("gateProblems", () => {
         };
         expect(gateProblems({ projects, seeded, captures })).toEqual([
             "compact-mantine: 2 changed, 1 removed (not accepted; a rejected item needs a code change, not another review)",
+        ]);
+    });
+
+    it("passes stories with no baseline yet that the pull request does not change", () => {
+        // Seeding is per story: a seeded project keeps stories nobody has accepted yet.
+        const captures = { "compact-mantine": { attempt: 1, results: results(["unchanged", "unseeded", "unseeded"]) } };
+        expect(gateProblems({ projects, seeded, captures })).toEqual([]);
+    });
+
+    it("blocks a story with no baseline that the pull request adds or changes", () => {
+        const captures = { "compact-mantine": { attempt: 1, results: results(["unseeded", "new"]) } };
+        expect(gateProblems({ projects, seeded, captures })).toEqual([
+            "compact-mantine: 1 new (not accepted; a rejected item needs a code change, not another review)",
         ]);
     });
 
@@ -140,7 +154,36 @@ describe("gate command", () => {
     });
 });
 
+describe("contentHash", () => {
+    it("reads the image's hash from a Git LFS pointer and hashes anything else", () => {
+        const pointer = Buffer.from(`version https://git-lfs.github.com/spec/v1\noid sha256:${HASH}\nsize 5\n`);
+        expect(contentHash(pointer)).toBe(HASH);
+        expect(contentHash(Buffer.from("plain"))).toMatch(/^[0-9a-f]{64}$/);
+        expect(contentHash(Buffer.from("plain"))).not.toBe(HASH);
+    });
+});
+
 describe("unrecordedChanges", () => {
+    it("accepts a record naming the image's hash when the baseline is committed as an LFS pointer", () => {
+        const r = makeRepo();
+        git(r.repo, "checkout", "-q", "feature");
+        const path = "visual-baselines/compact-mantine/card--legacy.png";
+        writeFileSync(join(r.repo, path), "new image");
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "accept");
+        const blob = execFileSync("git", ["cat-file", "blob", `HEAD:${path}`], { cwd: r.repo });
+        expect(blob.toString()).toMatch(/^version https:\/\/git-lfs.github.com\/spec\/v1\n/);
+        expect(unrecordedChanges("master", "feature", r.repo)).toEqual([
+            `${path}: changed with no review record naming its new contents`,
+        ]);
+        const to = createHash("sha256").update("new image").digest("hex");
+        mkdirSync(join(r.repo, "visual-baselines/reviews"));
+        writeFileSync(join(r.repo, "visual-baselines/reviews/r.json"), JSON.stringify({ items: [{ path, to }] }));
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "record");
+        expect(unrecordedChanges("master", "feature", r.repo)).toEqual([]);
+    });
+
     it("fails a pull request that deletes a review record the base holds", () => {
         const r = makeRepo();
         mkdirSync(join(r.repo, "visual-baselines/reviews"));

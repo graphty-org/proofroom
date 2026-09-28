@@ -80,4 +80,56 @@ describe("capture", () => {
         expect(items["demo--always-excluded.png"].status).toBe("excluded");
         expect(second.expected).toBe(second.items.length);
     }, 120_000);
+
+    it("marks a story with no baseline unseeded when it looks as in master's capture", async () => {
+        const sb = storybook();
+        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        const run = (out, extra) =>
+            capture({
+                project: "demo",
+                storybook: sb,
+                baselines,
+                out,
+                workers: 1,
+                stableFrame: false,
+                log: () => {},
+                ...extra,
+            });
+        // Master's capture: demo--plain is new there, captured twice and stable.
+        const master = mkdtempSync(join(tmpdir(), "vr-master-"));
+        const masterResults = await run(master, { stories: ["demo--plain"] });
+        writeFileSync(join(master, "results.json"), JSON.stringify({ ...masterResults, runId: 77 }));
+
+        const pr = await run(mkdtempSync(join(tmpdir(), "vr-out-")), { reference: master, stories: ["demo--plain"] });
+        expect(pr.reference).toBe(77);
+        expect(pr.items.map((i) => [i.file, i.status])).toEqual([["demo--plain.png", "unseeded"]]);
+
+        // A reference image that is not what master's results.json names is ignored: new.
+        writeFileSync(join(master, "demo--plain.png"), "tampered");
+        const tampered = await run(mkdtempSync(join(tmpdir(), "vr-out-")), {
+            reference: master,
+            stories: ["demo--plain"],
+        });
+        expect(tampered.items[0].status).toBe("new");
+    }, 120_000);
+
+    it("fails with a clear message when a baseline is a Git LFS pointer", async () => {
+        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        writeFileSync(
+            join(baselines, "demo--plain.png"),
+            `version https://git-lfs.github.com/spec/v1\noid sha256:${"a".repeat(64)}\nsize 9\n`,
+        );
+        await expect(
+            capture({
+                project: "demo",
+                storybook: storybook(),
+                baselines,
+                out: mkdtempSync(join(tmpdir(), "vr-out-")),
+                workers: 1,
+                stableFrame: false,
+                stories: ["demo--plain"],
+                log: () => {},
+            }),
+        ).rejects.toThrow(/demo--plain.png: baseline is an LFS pointer; run git lfs pull/);
+    }, 60_000);
 });

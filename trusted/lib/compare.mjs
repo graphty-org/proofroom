@@ -6,6 +6,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 // ponytail: pngjs until milestone 3 needs a dependency-free decoder
 import { PNG } from "pngjs";
@@ -21,6 +22,35 @@ export const DEFAULT_THRESHOLD = 0.063;
  * @returns {string} the hex SHA-256 of the bytes
  */
 export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/** The first line of every Git LFS pointer file. */
+const LFS_POINTER = "version https://git-lfs.github.com/spec/";
+
+/**
+ * Whether bytes are a Git LFS pointer file rather than the image it stands for.
+ * @param {Buffer} bytes a file's bytes
+ * @returns {boolean} true for a pointer
+ */
+export const isLfsPointer = (bytes) => bytes.subarray(0, LFS_POINTER.length).toString("latin1") === LFS_POINTER;
+
+/**
+ * Reads a baseline PNG. Baselines are stored in Git LFS; a checkout without `git lfs pull` holds
+ * pointer files, and comparing a pointer would report every image as changed, so it throws.
+ * @param {string} path the baseline's path
+ * @returns {Promise<Buffer | null>} its bytes, or null when there is no baseline
+ */
+export async function readBaseline(path) {
+    const bytes = await readFile(path).catch((e) => {
+        if (e.code === "ENOENT") {
+            return null;
+        }
+        throw e;
+    });
+    if (bytes && isLfsPointer(bytes)) {
+        throw new Error(`${path}: baseline is an LFS pointer; run git lfs pull`);
+    }
+    return bytes;
+}
 
 /**
  * Compares a capture with its baseline.
@@ -120,14 +150,19 @@ function crop(img, w, h) {
  * Classifies one story and mode from its baseline and up to two captures. A second capture is
  * taken, in a fresh browser context, only when the first differs from the baseline or there is
  * no baseline; without one (a local run) the first capture stands alone.
+ *
+ * A story with no baseline is `unseeded` ("no baseline yet") when its capture matches
+ * `reference`, master's newest capture of it: the pull request did not change it, so it needs no
+ * review here. It is `new` when it differs from master's, or master has none (a new story).
  * @param {{ baseline: Buffer | null, first: Buffer | null, second?: Buffer | null,
- *     threshold: number, includeAA: boolean }} input `first` is null when the story is gone
- * @returns {{ status: "unchanged" | "changed" | "new" | "removed" | "unstable", flaky: boolean,
+ *     reference?: Buffer | null, threshold: number, includeAA: boolean }} input `first` is null
+ *     when the story is gone
+ * @returns {{ status: "unchanged" | "changed" | "new" | "unseeded" | "removed" | "unstable", flaky: boolean,
  *     baseline: string | null, capture: string | null, size: number[] | null,
  *     baselineSize: number[] | null, changedPixels: number | null, bbox: number[] | null }}
  *     `capture` is the hash of the capture the status describes: the second one when flaky
  */
-export function classify({ baseline, first, second = null, threshold, includeAA }) {
+export function classify({ baseline, first, second = null, reference = null, threshold, includeAA }) {
     const options = { threshold, includeAA };
     const none = { flaky: false, size: null, baselineSize: null, changedPixels: null, bbox: null };
     if (first === null) {
@@ -135,7 +170,8 @@ export function classify({ baseline, first, second = null, threshold, includeAA 
     }
     const agree = () => second === null || compareImages(first, second, options).status === "unchanged";
     if (baseline === null) {
-        const status = agree() ? "new" : "unstable";
+        const same = reference !== null && compareImages(reference, first, options).status === "unchanged";
+        const status = same ? "unseeded" : agree() ? "new" : "unstable";
         return { status, ...none, baseline: null, capture: sha256(first), size: pngSize(first) };
     }
     const vsFirst = compareImages(baseline, first, options);

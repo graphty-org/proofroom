@@ -6,8 +6,11 @@
  * `file` name is later joined to a directory, so it may never leave that directory.
  */
 
-/** Every status an item can have. */
-const STATUSES = ["unchanged", "changed", "new", "removed", "unstable", "failed", "excluded"];
+/**
+ * Every status an item can have. `unseeded` ("no baseline yet") is a story with no baseline whose
+ * capture matches master's newest capture of it, so the pull request did not change it.
+ */
+const STATUSES = ["unchanged", "changed", "new", "unseeded", "removed", "unstable", "failed", "excluded"];
 
 /** The most items one file may hold (compact-mantine has about 830 today). */
 export const MAX_ITEMS = 5000;
@@ -24,6 +27,7 @@ const HASHES = {
     unchanged: { baseline: true, capture: true },
     changed: { baseline: true, capture: true },
     new: { baseline: false, capture: true },
+    unseeded: { baseline: false, capture: true },
     removed: { baseline: true, capture: false },
 };
 

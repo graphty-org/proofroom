@@ -3,13 +3,21 @@
  * visual-review: capture Storybook stories, compare them with the baselines in git, and serve
  * the page where the owner accepts or rejects the differences.
  *
- * Usage: visual-review <capture|compare|serve> [options]
+ * Usage: visual-review <capture|reference|compare|serve> [options]
  *
  *   capture --project <id> --out <dir> [--storybook <dir>] [--baselines <dir>] [--workers <n>]
+ *           [--reference <dir>] [--stories <prefix,...>]
  *     Captures every story of one built Storybook and writes results.json and the PNGs to review
  *     into <dir>. --storybook defaults to <package>/storybook-static, --baselines to
- *     visual-baselines/<id>, and --workers to the project's entry in projects.json. Exits 0
- *     whatever it finds; non-zero only when the tool itself fails.
+ *     visual-baselines/<id>, and --workers to the project's entry in projects.json. --reference
+ *     is master's capture (from `reference`): a story with no baseline that looks as it does there
+ *     is `unseeded`, not `new`. --stories captures only the story ids starting with a prefix, for
+ *     a quick local preview. Exits 0 whatever it finds; non-zero only when the tool itself fails,
+ *     including a baseline that is an LFS pointer (run `git lfs pull`).
+ *
+ *   reference --project <id> --out <dir>
+ *     Downloads master's newest complete capture of the project with gh into <dir> and prints
+ *     its directory, or prints nothing when there is none.
  *
  *   serve [--master-run <id>] [--results <dir> [--branch <name>]]
  *     Serves the review page over HTTPS on $PORT (bound to $HOST), with the certificate at
@@ -17,7 +25,8 @@
  *     review"). Lists open pull requests with a CI run and downloads their captures with gh.
  *     --master-run adds master, pinned to that CI run, for seeding. --results serves a local
  *     directory of <project>/results.json instead, offline: gh is never run, and what it would
- *     have posted is printed; Finish pushes to --branch.
+ *     have posted is printed; Finish pushes to --branch. Refuses to start without git-lfs,
+ *     because an accept would then commit raw PNGs.
  *
  *   compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa]
  *     Compares every PNG in the two directories by name and prints one JSON line per file that
@@ -32,12 +41,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { classify, DEFAULT_THRESHOLD } from "./lib/compare.mjs";
-import { ghRunner } from "./lib/github.mjs";
+import { lfsProblem } from "./lib/accept.mjs";
+import { classify, DEFAULT_THRESHOLD, readBaseline } from "./lib/compare.mjs";
+import { ghRunner, newestMasterCapture } from "./lib/github.mjs";
 import { createApp, sessionToken } from "./lib/serve.mjs";
 
 const SUBCOMMANDS = {
     capture,
+    reference,
     compare,
     serve,
 };
@@ -53,6 +64,8 @@ async function capture(args) {
             storybook: { type: "string" },
             baselines: { type: "string" },
             workers: { type: "string" },
+            reference: { type: "string" },
+            stories: { type: "string" },
         },
     });
     const projects = JSON.parse(await readFile(join(ROOT, "visual-review/projects.json"), "utf8"));
@@ -61,7 +74,7 @@ async function capture(args) {
     if (!project || !values.out || !(Number.isInteger(workers) && workers > 0)) {
         console.error(
             `usage: visual-review capture --project <${Object.keys(projects).join("|")}> --out <dir> ` +
-                "[--storybook <dir>] [--baselines <dir>] [--workers <n>]",
+                "[--storybook <dir>] [--baselines <dir>] [--workers <n>] [--reference <dir>] [--stories <prefix,...>]",
         );
         return 2;
     }
@@ -74,7 +87,19 @@ async function capture(args) {
         out: resolve(values.out),
         workers,
         stableFrame: project.stableFrame,
+        reference: values.reference ? resolve(values.reference) : null,
+        stories: values.stories ? values.stories.split(",").filter(Boolean) : null,
     });
+    return 0;
+}
+
+async function reference(args) {
+    const { values } = parseArgs({ args, options: { project: { type: "string" }, out: { type: "string" } } });
+    if (!values.project || !values.out) {
+        console.error("usage: visual-review reference --project <id> --out <dir>");
+        return 2;
+    }
+    console.log((await newestMasterCapture(ghRunner(ROOT), values.project, resolve(values.out))) ?? "");
     return 0;
 }
 
@@ -96,6 +121,11 @@ async function serve(args) {
                 'start it through servherd, which sets PORT and the certificate (CLAUDE.md, "Visual review")',
         );
         return 2;
+    }
+    const lfs = await lfsProblem(ROOT);
+    if (lfs) {
+        console.error(`visual-review serve: ${lfs}`);
+        return 1;
     }
     const tmp = join(ROOT, "tmp/visual-review");
     const token = sessionToken(join(tmp, "state"));
@@ -140,7 +170,8 @@ async function compare(args) {
         return 2;
     }
     const pngs = async (dir) => (await readdir(dir)).filter((f) => f.endsWith(".png"));
-    const read = (dir, file, present) => (present.includes(file) ? readFile(join(dir, file)) : null);
+    const read = (dir, file, present) =>
+        present.includes(file) ? (dir === values.baselines ? readBaseline : readFile)(join(dir, file)) : null;
     const [baselines, captures] = await Promise.all([pngs(values.baselines), pngs(values.captures)]);
     const counts = {};
     for (const file of [...new Set([...baselines, ...captures])].sort()) {
