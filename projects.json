@@ -20,6 +20,6 @@
         "workers": 4,
         "stableFrame": false,
         "canvas": true,
-        "seedFromMaster": true
+        "seedFromMaster": false
     }
 }
