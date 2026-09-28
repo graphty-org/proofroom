@@ -172,7 +172,8 @@ describe("serve: master", () => {
     });
 
     it("refuses Accept for a project that is not seeded from master", async () => {
-        const s = await start({ gh: master, masterRun: 2000 });
+        const projects = { ...PROJECTS, "graphty-element": { ...PROJECTS["graphty-element"], seedFromMaster: false } };
+        const s = await start({ gh: master, masterRun: 2000, projects });
         await s.api("GET", "/api/prs");
         const decide = (project, file) =>
             s.api("POST", "/api/decide", { id: "master", project, file, decision: "accept" });

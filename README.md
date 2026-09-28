@@ -190,6 +190,11 @@ Seeding is per story:
    rejects become one issue whose machine-readable block an agent reads to fix the stories.
 3. Merge the seed pull request once its own capture shows its accepted items `unchanged`.
 
+To seed from an older, known-good commit instead of master's newest, capture it with master's
+tool: `gh workflow run visual-seed.yml --ref master -f ref=<sha>`, then start the server with
+`--master-run <that run's id>`. It is listed as "master"; its results.json names the captured
+commit, so Finish's seed branch starts from that commit.
+
 A story with no baseline on master is in the "no baseline yet" state. On every pull request, CI
 compares its capture with master's newest capture of that story:
 

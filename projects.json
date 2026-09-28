@@ -12,6 +12,6 @@
         "workers": 4,
         "stableFrame": true,
         "canvas": true,
-        "seedFromMaster": false
+        "seedFromMaster": true
     }
 }
