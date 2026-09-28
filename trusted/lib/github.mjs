@@ -199,6 +199,20 @@ export async function commentOnPullRequest(gh, pr, body) {
 }
 
 /**
+ * Sets the "Visual review" commit status on one commit. Finish posts it once, when it completes,
+ * never per decision.
+ * @param {Function} gh the gh runner
+ * @param {string} sha the commit
+ * @param {{ state: "success" | "failure" | "pending", description: string }} status what to post;
+ *     GitHub cuts the description at 140 characters
+ * @returns {Promise<void>}
+ */
+export async function postStatus(gh, sha, { state, description }) {
+    const input = JSON.stringify({ state, context: "Visual review", description: description.slice(0, 140) });
+    await gh(["api", `repos/{owner}/{repo}/statuses/${sha}`, "--input", "-"], input);
+}
+
+/**
  * Opens a pull request against master.
  * @param {Function} gh the gh runner
  * @param {{ title: string, head: string, body: string }} pr what to open

@@ -132,3 +132,99 @@ export function copyFixture(project, dest, overrides = {}) {
     writeFileSync(path, JSON.stringify(results));
     return { dir: dest, results };
 }
+
+/**
+ * A fake gh answering the calls github.mjs makes, from plain data.
+ * @param {object} data what gh answers
+ * @param {object[]} [data.prs] open pull requests: { number, head, branch }
+ * @param {Record<string, object>} [data.runs] CI runs by head sha
+ * @param {Record<string, object>} [data.runsById] CI runs by id
+ * @param {object[]} [data.masterRuns] master's CI runs, newest first
+ * @param {Record<string, object[]>} [data.jobs] jobs by run id
+ * @param {Record<string, string[]>} [data.artifacts] artifact names by run id
+ * @param {Record<string, object>} [data.results] results overrides applied to each download, by
+ *     artifact name
+ * @param {object[]} [data.posted] collects the comments and commit statuses posted, as { path, body }
+ * @returns {Function} the gh runner
+ */
+export function fakeGh({
+    prs = [],
+    runs = {},
+    runsById = {},
+    masterRuns = [],
+    jobs = {},
+    artifacts = {},
+    results = {},
+    posted = [],
+}) {
+    const run = (r) => ({
+        id: r.id,
+        run_attempt: r.attempt ?? 1,
+        status: "completed",
+        conclusion: "success",
+        html_url: `https://gh/runs/${r.id}`,
+        head_sha: r.head,
+    });
+    return async (args, input) => {
+        const path = args[0] === "api" ? args[1] : null;
+        let m;
+        if (path?.startsWith("repos/{owner}/{repo}/pulls?")) {
+            return JSON.stringify(
+                prs.map((p) => ({
+                    number: p.number,
+                    title: `PR ${p.number}`,
+                    html_url: `https://gh/pull/${p.number}`,
+                    head: { sha: p.head, ref: p.branch },
+                })),
+            );
+        }
+        if (path?.includes("workflows/ci.yml/runs?branch=master&event=push")) {
+            return JSON.stringify({ workflow_runs: masterRuns.map(run) });
+        }
+        if ((m = /workflows\/ci\.yml\/runs\?head_sha=(\w+)/.exec(path))) {
+            return JSON.stringify({ workflow_runs: runs[m[1]] ? [run(runs[m[1]])] : [] });
+        }
+        if ((m = /actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs/.exec(path))) {
+            return JSON.stringify({ jobs: jobs[m[1]] ?? [] });
+        }
+        if ((m = /actions\/runs\/(\d+)\/artifacts/.exec(path))) {
+            return JSON.stringify({ artifacts: (artifacts[m[1]] ?? []).map((name) => ({ name, expired: false })) });
+        }
+        if ((m = /actions\/runs\/(\d+)$/.exec(path))) {
+            return JSON.stringify(run(runsById[m[1]]));
+        }
+        if (/issues\/\d+\/comments$/.test(path ?? "") || /\/statuses\/\w+$/.test(path ?? "")) {
+            posted.push({ path, body: JSON.parse(args.length > 2 ? (input ?? "{}") : "{}") });
+            return "{}";
+        }
+        if (args[0] === "run" && args[1] === "download") {
+            const name = args[4];
+            const project = /^visual-(.+)-\d+$/.exec(name)[1];
+            copyFixture(project, args[6], results[name] ?? {});
+            return "";
+        }
+        throw new Error(`fake gh: unexpected ${args.join(" ")}`);
+    };
+}
+
+export const job = (project, conclusion = "success") => ({
+    name: `visual (${project})`,
+    conclusion,
+    html_url: `https://gh/job/${project}`,
+});
+
+// One pull request (#123, branch feature) with a finished run 1000 of both projects.
+export const onePr =
+    (extra = {}) =>
+    (r) =>
+        fakeGh({
+            prs: [{ number: 123, head: r.head, branch: "feature" }],
+            runs: { [r.head]: { id: 1000, head: r.head, attempt: 1 } },
+            jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
+            artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+            results: {
+                "visual-compact-mantine-1": { commit: r.head, headSha: r.head },
+                "visual-graphty-element-1": { commit: r.head, headSha: r.head },
+            },
+            ...extra,
+        });

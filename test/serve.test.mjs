@@ -5,74 +5,12 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { newestMasterCapture } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { copyFixture, FIXTURE, git, isolateGit, makeRepo, pushCommit } from "./helpers.mjs";
+import { copyFixture, FIXTURE, fakeGh, git, isolateGit, job, makeRepo, onePr, pushCommit } from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
 const PROJECTS = JSON.parse(readFileSync(new URL("../projects.json", import.meta.url), "utf8"));
 const TOKEN = "t".repeat(43);
-
-/*
- * A fake gh answering the calls github.mjs makes, from plain data.
- * @param {object} data prs, runs (by head sha), runsById, jobs and artifacts (by run id), and
- *     results overrides applied to each download (by artifact name)
- * @returns {Function} the gh runner
- */
-function fakeGh({ prs = [], runs = {}, runsById = {}, masterRuns = [], jobs = {}, artifacts = {}, results = {} }) {
-    const run = (r) => ({
-        id: r.id,
-        run_attempt: r.attempt ?? 1,
-        status: "completed",
-        conclusion: "success",
-        html_url: `https://gh/runs/${r.id}`,
-        head_sha: r.head,
-    });
-    return async (args) => {
-        const path = args[0] === "api" ? args[1] : null;
-        let m;
-        if (path?.startsWith("repos/{owner}/{repo}/pulls?")) {
-            return JSON.stringify(
-                prs.map((p) => ({
-                    number: p.number,
-                    title: `PR ${p.number}`,
-                    html_url: `https://gh/pull/${p.number}`,
-                    head: { sha: p.head, ref: p.branch },
-                })),
-            );
-        }
-        if (path?.includes("workflows/ci.yml/runs?branch=master&event=push")) {
-            return JSON.stringify({ workflow_runs: masterRuns.map(run) });
-        }
-        if ((m = /workflows\/ci\.yml\/runs\?head_sha=(\w+)/.exec(path))) {
-            return JSON.stringify({ workflow_runs: runs[m[1]] ? [run(runs[m[1]])] : [] });
-        }
-        if ((m = /actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs/.exec(path))) {
-            return JSON.stringify({ jobs: jobs[m[1]] ?? [] });
-        }
-        if ((m = /actions\/runs\/(\d+)\/artifacts/.exec(path))) {
-            return JSON.stringify({ artifacts: (artifacts[m[1]] ?? []).map((name) => ({ name, expired: false })) });
-        }
-        if ((m = /actions\/runs\/(\d+)$/.exec(path))) {
-            return JSON.stringify(run(runsById[m[1]]));
-        }
-        if (/issues\/\d+\/comments$/.test(path ?? "")) {
-            return "{}";
-        }
-        if (args[0] === "run" && args[1] === "download") {
-            const name = args[4];
-            const project = /^visual-(.+)-\d+$/.exec(name)[1];
-            copyFixture(project, args[6], results[name] ?? {});
-            return "";
-        }
-        throw new Error(`fake gh: unexpected ${args.join(" ")}`);
-    };
-}
-
-const job = (project, conclusion = "success") => ({
-    name: `visual (${project})`,
-    conclusion,
-    html_url: `https://gh/job/${project}`,
-});
 
 let server;
 afterEach(() => server?.close());
@@ -106,22 +44,6 @@ async function start(options = {}) {
     };
     return { ...r, repo, origin, api, tmp };
 }
-
-// One pull request (#123, branch feature) with a finished run 1000 of both projects.
-const onePr =
-    (extra = {}) =>
-    (r) =>
-        fakeGh({
-            prs: [{ number: 123, head: r.head, branch: "feature" }],
-            runs: { [r.head]: { id: 1000, head: r.head, attempt: 1 } },
-            jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
-            artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
-            results: {
-                "visual-compact-mantine-1": { commit: r.head, headSha: r.head },
-                "visual-graphty-element-1": { commit: r.head, headSha: r.head },
-            },
-            ...extra,
-        });
 
 describe("serve: pull requests", () => {
     it("lists every open pull request with a CI run, with counts per project", async () => {
@@ -411,7 +333,12 @@ describe("serve: decisions and Finish", () => {
         });
         try {
             const { body } = await s.api("GET", "/api/prs");
-            expect(body.targets[0].signer).toMatchObject({ signs: true, key: "/keys/agent.pub", fromEnv: true });
+            expect(body.targets[0].signer).toMatchObject({
+                signs: true,
+                key: "/keys/agent.pub",
+                keyFrom: "command line:",
+                fromEnv: true,
+            });
         } finally {
             for (const k of Object.keys(process.env).filter((k) => k.startsWith("GIT_CONFIG_"))) {
                 delete process.env[k];
@@ -449,31 +376,33 @@ describe("serve: decisions and Finish", () => {
 });
 
 describe("serve: local results", () => {
-    it("serves a results directory given with --results as one target", async () => {
-        const r = makeRepo();
-        const s = await start({ ...r, gh: () => async () => "", results: FIXTURE, branch: "feature" });
-        const { body } = await s.api("GET", "/api/prs");
-        expect(body.targets).toHaveLength(1);
-        expect(body.targets[0]).toMatchObject({ id: "123", branch: "feature", runId: 1000 });
-        expect((await s.api("GET", "/api/img/123/compact-mantine/capture/button--primary.dark.png")).status).toBe(200);
-    });
-
-    it("offers only Reject on a local preview", async () => {
+    it("serves a results directory given with --results as one local preview, never master or a seed", async () => {
         const r = makeRepo();
         const dir = join(r.dir, "local");
-        copyFixture("compact-mantine", join(dir, "compact-mantine"), {
-            local: { describe: "abc1234-dirty", diff: "0".repeat(64) },
-        });
-        const s = await start({ ...r, gh: () => async () => "", results: dir, branch: "feature" });
+        copyFixture("compact-mantine", join(dir, "compact-mantine"), { pr: null, runId: null, runAttempt: null });
+        const s = await start({ ...r, gh: () => async () => "", results: dir });
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets).toHaveLength(1);
+        expect(body.targets[0]).toMatchObject({ id: "local", local: true, pr: null, branch: null });
+        expect(body.targets[0].title).toMatch(/^local preview of /);
+        expect((await s.api("GET", "/api/img/local/compact-mantine/capture/button--primary.dark.png")).status).toBe(
+            200,
+        );
+    });
+
+    it("takes no decision and no Finish on a local preview", async () => {
+        const r = makeRepo();
+        const s = await start({ ...r, gh: () => async () => "", results: FIXTURE });
         await s.api("GET", "/api/prs");
         const decide = (file, decision, reason) =>
-            s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
+            s.api("POST", "/api/decide", { id: "local", project: "compact-mantine", file, decision, reason });
         const refused = await decide("badge--default.light.png", "accept");
         expect(refused.status).toBe(403);
         expect(refused.body.error).toMatch(/local preview/);
         expect((await decide("card--legacy.png", "exclude", "noisy")).status).toBe(403);
-        expect((await decide("card--legacy.png", "reject", "keep it")).status).toBe(200);
-        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.acceptable).toBe(false);
+        expect((await decide("card--legacy.png", "reject", "keep it")).status).toBe(403);
+        expect((await s.api("GET", "/api/pr/local/compact-mantine")).body.acceptable).toBe(false);
+        expect((await s.api("POST", "/api/finish", { id: "local" })).status).toBe(403);
     });
 });
 
@@ -498,6 +427,55 @@ describe("serve: review extras", () => {
         await second.api("GET", "/api/prs");
         const { body } = await second.api("GET", "/api/pr/123/compact-mantine");
         expect(body.decisions).toEqual({ "badge--default.light.png": { decision: "accept", reason: null } });
+    });
+
+    it("never reverses a decision without an explicit Undo, and needs a reason for every reject", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "badge--default.light.png", "reject", "  ")).status).toBe(400);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        // The same decision again is harmless; a different one is refused until Undo.
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const flipped = await decide(s, "badge--default.light.png", "reject", "too dark");
+        expect(flipped.status).toBe(409);
+        expect(flipped.body.error).toMatch(/already accepted: Undo it first/);
+        expect((await decide(s, "badge--default.light.png", null)).status).toBe(200);
+        expect((await decide(s, "badge--default.light.png", "reject", "too dark")).status).toBe(200);
+    });
+
+    it("accepts the undecided items of one component only", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const one = await s.api("POST", "/api/accept-all", {
+            id: "123",
+            project: "compact-mantine",
+            component: "badge",
+        });
+        expect(one.body).toEqual({ accepted: 1 });
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(Object.keys(body.decisions)).toEqual(["badge--default.light.png"]);
+    });
+
+    it("posts one commit status when Finish completes, none per decision", async () => {
+        const posted = [];
+        const s = await start({ gh: onePr({ posted }), startCommand: "cd /repo && node serve" });
+        await s.api("GET", "/api/prs");
+        await decide(s, "badge--default.light.png", "accept");
+        await decide(s, "slider--sizes.png", "reject", "thumb moved");
+        expect(posted).toEqual([]);
+        const { body } = await s.api("POST", "/api/finish", { id: "123" });
+        const statuses = posted.filter((p) => p.path.includes("/statuses/"));
+        expect(statuses).toEqual([
+            {
+                path: `repos/{owner}/{repo}/statuses/${body.commit}`,
+                body: {
+                    state: "failure",
+                    context: "Visual review",
+                    description: "Reviewed: 1 accepted, 1 rejected, 0 excluded, 5 left undecided",
+                },
+            },
+        ]);
+        expect((await s.api("GET", "/api/target/123")).body.startCommand).toBe("cd /repo && node serve");
     });
 
     it("accepts every undecided acceptable item of a project and counts them as not opened", async () => {

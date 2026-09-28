@@ -192,10 +192,42 @@ td {
     flex: 1;
 }
 
-.grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+.component {
+    margin-bottom: 20px;
+}
+
+.component h3 {
+    display: flex;
     gap: 12px;
+    align-items: center;
+    margin: 0 0 8px;
+    font-size: 15px;
+}
+
+.stories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+/* One story, its modes (light and dark) side by side under its name. */
+.story {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px;
+    background: var(--card);
+}
+
+.story-name {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    word-break: break-all;
+}
+
+.modes {
+    display: flex;
+    gap: 6px;
 }
 
 .tile {
@@ -204,14 +236,17 @@ td {
     gap: 4px;
     align-items: flex-start;
     padding: 6px;
+    width: 200px;
     text-align: left;
 }
 
+/* The top-left corner, where a component starts: captures are often full-width strips. */
 .tile img,
 .tile .noimage {
     width: 100%;
     aspect-ratio: 4 / 3;
-    object-fit: contain;
+    object-fit: cover;
+    object-position: left top;
     background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;
 }
 
@@ -230,6 +265,50 @@ td {
     word-break: break-all;
 }
 
+.number {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+/* The story last opened, when the grid comes back. */
+.tile.current,
+.error-list li.current {
+    outline: 3px solid var(--accent);
+    outline-offset: 2px;
+    opacity: 1;
+}
+
+.errors {
+    border: 1px solid var(--bad);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin-bottom: 20px;
+}
+
+.errors h3 {
+    color: var(--bad);
+    margin: 0 0 4px;
+}
+
+.error-list li {
+    margin: 6px 0;
+}
+
+.error-list .reason {
+    color: var(--bad);
+}
+
+#filter,
+#goto {
+    min-width: 220px;
+    font: inherit;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--card);
+    color: var(--fg);
+}
+
 .stage {
     display: flex;
     flex-wrap: wrap;
@@ -239,21 +318,34 @@ td {
 
 .stage figure {
     margin: 0;
-    max-width: 100%;
-}
-
-/* Side by side fits both images in one row, scaled down, so the decision needs no scroll. */
-.stage.side figure {
     flex: 1 1 0;
     min-width: 0;
+}
+
+/* Each image scrolls in its own frame; real size and zoom never squeeze it. */
+.frame {
+    position: relative;
+    overflow: auto;
+    max-height: 75vh;
+    border: 1px solid var(--line);
 }
 
 .stage img,
 .stage canvas {
     display: block;
-    max-width: 100%;
-    border: 1px solid var(--line);
+    max-width: none;
     background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+
+/* Hard pixels only from 4x: below that the smoothed image reads more like the real one. */
+.stage .crisp {
+    image-rendering: pixelated;
+}
+
+.boxmark {
+    position: absolute;
+    border: 2px solid #d000d0;
+    pointer-events: none;
 }
 
 .label {
@@ -272,6 +364,7 @@ td {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+    align-items: center;
     margin-top: 16px;
     padding: 8px 0;
     position: sticky;
@@ -288,31 +381,4 @@ td {
     border-radius: 4px;
     background: var(--card);
     color: var(--fg);
-}
-
-/* Cropped to the content box and drawn larger; max-width still fits it in the pane. */
-.stage img.cropped,
-.stage canvas.cropped {
-    image-rendering: pixelated;
-}
-
-.stage.zoomed figure {
-    position: relative;
-    flex: 1 1 400px;
-    min-width: 0;
-    max-height: 70vh;
-    overflow: auto;
-}
-
-.stage.zoomed .label {
-    position: sticky;
-    top: 0;
-    left: 0;
-    background: var(--bg);
-}
-
-.stage.zoomed img,
-.stage.zoomed canvas {
-    max-width: none;
-    image-rendering: pixelated;
 }

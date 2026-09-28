@@ -18,7 +18,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { commentOnPullRequest, createIssue, createPullRequest, exec } from "./github.mjs";
+import { commentOnPullRequest, createIssue, createPullRequest, exec, postStatus } from "./github.mjs";
 import { isLfsPointer } from "./compare.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -180,11 +180,14 @@ function check(projects, decisions) {
  * @param {Record<string, { dir: string, results: object }>} input.projects the downloaded captures
  * @param {{ project: string, file: string, decision: string, reason: string | null }[]} input.decisions
  *     what the owner decided: accept, reject or exclude (checked here)
+ * @param {number} [input.undecided] how many reviewable items are left undecided, for the status
  * @param {Date} [input.now] the review time
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
- *     issue: string | null, rejects: number }>} what was pushed and posted (`issue`: master's rejects)
+ *     issue: string | null, rejects: number, status: string | null, statusError: string | null }>}
+ *     what was pushed and posted (`issue`: master's rejects; `status`: the commit status's
+ *     description, or `statusError` when posting it failed)
  */
-export async function finish({ repo, gh, target, projects, decisions, now = new Date() }) {
+export async function finish({ repo, gh, target, projects, decisions, undecided = 0, now = new Date() }) {
     const { accepts, rejects } = check(projects, decisions);
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first) {
@@ -232,7 +235,21 @@ export async function finish({ repo, gh, target, projects, decisions, now = new 
             throw e;
         }
     }
-    return { commit, branch, pullRequest, issue, rejects: rejects.length };
+    // One commit status per Finish, on the commit it pushed, or the captured one when it pushed
+    // none. A failure here does not undo what was pushed and posted; the page shows it.
+    const accepted = accepts.filter((a) => a.decision === "accept").length;
+    const excluded = accepts.length - accepted;
+    const state = rejects.length > 0 ? "failure" : undecided > 0 ? "pending" : "success";
+    const status =
+        `Reviewed: ${accepted} accepted, ${rejects.length} rejected, ${excluded} excluded, ` +
+        `${undecided} left undecided`;
+    let statusError = null;
+    try {
+        await postStatus(gh, commit ?? (isMaster ? first.commit : first.headSha), { state, description: status });
+    } catch (err) {
+        statusError = err.message;
+    }
+    return { commit, branch, pullRequest, issue, rejects: rejects.length, status, statusError };
 }
 
 /**
@@ -315,6 +332,7 @@ async function commitAccepts({ repo, target, accepts, first, now }) {
                 runId: first.runId,
                 runAttempt: first.runAttempt,
                 environment: first.environment,
+                scale: first.scale ?? 1,
             },
             items: dedupe(items).sort((a, b) => a.path.localeCompare(b.path)),
             reviewedAt: now.toISOString(),

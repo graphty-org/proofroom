@@ -3,7 +3,10 @@
  *
  * Serves storybook-static on 127.0.0.1, reads the story list from index.json and every story's
  * `parameters.chromatic` from the preview's own `extract()`, then opens each story and mode in a
- * fresh browser context: a fixed start time, SwiftShader WebGL, 1200 x 900 at scale 1. It waits
+ * fresh browser context: a fixed start time, SwiftShader WebGL, a 1200 x 900 viewport at device
+ * scale factor 2, as Chromatic captures. Each PNG is cropped to the story's rendered content (every
+ * visible element, portals included) plus a 32 px margin; a canvas project keeps the viewport and
+ * its full width, and is cropped only in height, never past the viewport. It waits
  * for Storybook's render (play functions included) and, for graphty-element, for
  * `waitForStableFrame()`; a story that errors or never settles is `failed`, never a picture,
  * after one retry in a new context, so a single timeout on a busy runner does not block a pull
@@ -41,6 +44,10 @@ import { validateResults } from "../trusted/lib/results.mjs";
 const CLOCK_START = "2026-01-01T12:00:00Z";
 
 const VIEWPORT = { width: 1200, height: 900 };
+/** Device pixels per CSS pixel, as Chromatic captures; recorded in results.json as `scale`. */
+const SCALE = 2;
+/** CSS pixels kept around the story's content box. */
+const MARGIN = 32;
 const RENDER_TIMEOUT = 30_000;
 const CHROMIUM_ARGS = [
     "--use-gl=angle",
@@ -210,7 +217,7 @@ function serve(dir) {
 async function newContext(browser) {
     const context = await browser.newContext({
         viewport: VIEWPORT,
-        deviceScaleFactor: 1,
+        deviceScaleFactor: SCALE,
         timezoneId: "UTC",
         locale: "en-US",
     });
@@ -258,7 +265,7 @@ async function extract(browser, base) {
  * Renders one story and mode, retrying once in a new context when it fails.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean }} options as for shootOnce
+ * @param {{ delay: number, stableFrame: boolean, canvas: boolean }} options as for shootOnce
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the
  *     second attempt's result when the first failed
  */
@@ -271,19 +278,24 @@ async function shoot(browser, url, options) {
  * Renders one story and mode in a fresh context and screenshots it.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean }} options the story's delay, and whether to
- *     wait for every graphty-element's stable frame
+ * @param {{ delay: number, stableFrame: boolean, canvas: boolean }} options the story's delay,
+ *     whether to wait for every graphty-element's stable frame, and whether the project draws on
+ *     a canvas (see contentClip)
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the PNG,
- *     or a reason it failed
+ *     or a reason it failed; a failure's console holds the rest of its message and any stack
  */
-async function shootOnce(browser, url, { delay, stableFrame }) {
+async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
     const context = await newContext(browser);
     const lines = [];
-    const fail = (reason) => ({ png: null, reason: reason.split("\n")[0].slice(0, MAX_LINE), console: lines });
+    const fail = (reason) => {
+        const [first, ...rest] = reason.split("\n");
+        lines.push(...rest.filter((l) => l.trim() !== ""));
+        return { png: null, reason: first.slice(0, MAX_LINE), console: lines };
+    };
     try {
         const page = await context.newPage();
         page.on("console", (m) => lines.push(`${m.type()}: ${m.text()}`));
-        page.on("pageerror", (e) => lines.push(`pageerror: ${e.message}`));
+        page.on("pageerror", (e) => lines.push(`pageerror: ${e.stack ?? e.message}`));
         // A fixed start that keeps running: setFixedTime would freeze Date.now(), which hangs
         // graphty-element's input playback and recording, both timed with it.
         await page.clock.install({ time: CLOCK_START });
@@ -303,7 +315,12 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
             )
             .then((h) => h.jsonValue());
         if (phase === "errored" || phase === "aborted") {
-            return fail(`story render ${phase}`);
+            // Storybook's error screen holds the thrown message and its stack (a play function's
+            // failed expect included).
+            const shown = await page.evaluate(() =>
+                ["error-message", "error-stack"].map((id) => document.getElementById(id)?.textContent?.trim() ?? ""),
+            );
+            return fail([`story render ${phase}`, ...shown].join("\n"));
         }
         if (stableFrame) {
             await page.evaluate(async () => {
@@ -318,12 +335,77 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
         if (delay > 0) {
             await page.waitForTimeout(delay);
         }
-        return { png: await page.screenshot({ animations: "disabled", caret: "hide" }), reason: null, console: lines };
+        const box = await page.evaluate(contentClip, { margin: MARGIN, canvas });
+        const beyond = box.x + box.width > VIEWPORT.width || box.y + box.height > VIEWPORT.height;
+        const png = await page.screenshot({ animations: "disabled", caret: "hide", clip: box, fullPage: beyond });
+        return { png, reason: null, console: lines };
     } catch (e) {
         return fail(e.message);
     } finally {
         await context.close();
     }
+}
+
+/**
+ * Runs in the page: the box to screenshot, in CSS pixels. It is the union of every visible
+ * element's box (portals such as tooltips and popovers included, since they are elements of the
+ * body too), each cut to the ancestors that clip it (overflow other than visible; a fixed element
+ * escapes them), so the rows hidden inside a scroll area do not stretch it, plus `margin`, kept
+ * within the page. A canvas project (`canvas`) keeps the viewport: its full width, and the
+ * content's height plus the margin, never past the viewport, because a capture beyond it could
+ * resize the canvas, which clears it. A story that draws nothing keeps the whole viewport.
+ * @param {{ margin: number, canvas: boolean }} options the margin and whether it is a canvas project
+ * @returns {{ x: number, y: number, width: number, height: number }} the clip
+ */
+function contentClip({ margin, canvas }) {
+    const root = document.documentElement;
+    const W = canvas ? window.innerWidth : Math.max(root.scrollWidth, window.innerWidth);
+    const H = canvas ? window.innerHeight : Math.max(root.scrollHeight, window.innerHeight);
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    const ALL = [-Infinity, -Infinity, Infinity, Infinity];
+    // Walks the tree with the clip its ancestors impose, as [left, top, right, bottom].
+    const visit = (parent, clipBox) => {
+        for (const e of parent.children) {
+            const style = window.getComputedStyle(e);
+            if (style.display === "none") {
+                continue;
+            }
+            const r = e.getBoundingClientRect();
+            const c = style.position === "fixed" ? ALL : clipBox;
+            const [l, t, rr, b] = [
+                Math.max(r.left, c[0]),
+                Math.max(r.top, c[1]),
+                Math.min(r.right, c[2]),
+                Math.min(r.bottom, c[3]),
+            ];
+            if (rr > l && b > t && style.visibility !== "hidden") {
+                x0 = Math.min(x0, l + window.scrollX);
+                y0 = Math.min(y0, t + window.scrollY);
+                x1 = Math.max(x1, rr + window.scrollX);
+                y1 = Math.max(y1, b + window.scrollY);
+            }
+            const clipsX = style.overflowX !== "visible";
+            const clipsY = style.overflowY !== "visible";
+            visit(e, [
+                clipsX ? Math.max(c[0], r.left) : c[0],
+                clipsY ? Math.max(c[1], r.top) : c[1],
+                clipsX ? Math.min(c[2], r.right) : c[2],
+                clipsY ? Math.min(c[3], r.bottom) : c[3],
+            ]);
+        }
+    };
+    visit(document.body, ALL);
+    if (x1 <= x0 || y1 <= y0) {
+        return { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+    const left = canvas ? 0 : Math.max(0, Math.floor(x0 - margin));
+    const right = canvas ? W : Math.min(W, Math.ceil(x1 + margin));
+    const top = Math.max(0, Math.floor(y0 - margin));
+    const bottom = Math.min(H, Math.ceil(y1 + margin));
+    if (right <= left || bottom <= top) {
+        return { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+    return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 const clip = (lines) => lines.slice(0, MAX_CONSOLE).map((l) => l.slice(0, MAX_LINE));
@@ -397,9 +479,9 @@ async function loadReference(dir) {
 /**
  * Captures one project.
  * @param {{ project: string, storybook: string, baselines: string, out: string, workers: number,
- *     stableFrame: boolean, reference?: string | null, stories?: string[] | null,
+ *     stableFrame: boolean, canvas?: boolean, reference?: string | null, stories?: string[] | null,
  *     log?: (line: string) => void }} options `stableFrame` waits for every graphty-element's
- *     `waitForStableFrame()`; `reference` is master's capture (see above); `stories` keeps only
+ *     `waitForStableFrame()`; `canvas` keeps the viewport (see contentClip); `reference` is master's capture (see above); `stories` keeps only
  *     the story ids starting with one of these prefixes, for a quick local preview, and then no
  *     baseline is reported removed
  * @returns {Promise<object>} the final results.json contents
@@ -411,6 +493,7 @@ export async function capture({
     out,
     workers,
     stableFrame,
+    canvas = false,
     reference = null,
     stories = null,
     log = console.log,
@@ -470,6 +553,7 @@ export async function capture({
             expected: items.length + jobs.length + gone.length,
             capturedAt: new Date().toISOString(),
             clock: { start: CLOCK_START, running: true },
+            scale: SCALE,
             environment: {
                 chromium: browser.version(),
                 renderer,
@@ -512,14 +596,14 @@ export async function capture({
                 reason: prefix + shot.reason,
                 console: clip(shot.console),
             });
-            const first = await shoot(browser, url, { delay, stableFrame });
+            const first = await shoot(browser, url, { delay, stableFrame, canvas });
             if (!first.png) {
                 return failed(first);
             }
             let result = classify({ baseline, first: first.png, ...opts });
             let second = null;
             if (result.status === "changed" || result.status === "new") {
-                second = await shoot(browser, url, { delay, stableFrame });
+                second = await shoot(browser, url, { delay, stableFrame, canvas });
                 if (!second.png) {
                     return failed(second, "second capture: ");
                 }

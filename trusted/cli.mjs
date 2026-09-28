@@ -19,13 +19,13 @@
  *     Downloads master's newest complete capture of the project with gh into <dir> and prints
  *     its directory, or prints nothing when there is none.
  *
- *   serve [--master-run <id>] [--results <dir> [--branch <name>]]
+ *   serve [--master-run <id>] [--results <dir>]
  *     Serves the review page over HTTPS on $PORT (bound to $HOST), with the certificate at
  *     $HTTPS_CERT_PATH and $HTTPS_KEY_PATH; start it through servherd (see CLAUDE.md, "Visual
  *     review"). Lists open pull requests with a CI run and downloads their captures with gh.
  *     --master-run adds master, pinned to that CI run, for seeding. --results serves a local
- *     directory of <project>/results.json instead, offline: gh is never run, and what it would
- *     have posted is printed; Finish pushes to --branch. Refuses to start without git-lfs,
+ *     directory of <project>/results.json instead, offline, as a preview to look at: gh is
+ *     never run, nothing can be decided and there is no Finish. Refuses to start without git-lfs,
  *     because an accept would then commit raw PNGs.
  *
  *   compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa]
@@ -87,6 +87,7 @@ async function capture(args) {
         out: resolve(values.out),
         workers,
         stableFrame: project.stableFrame,
+        canvas: project.canvas === true,
         reference: values.reference ? resolve(values.reference) : null,
         stories: values.stories ? values.stories.split(",").filter(Boolean) : null,
     });
@@ -109,7 +110,6 @@ async function serve(args) {
         options: {
             "master-run": { type: "string" },
             results: { type: "string" },
-            branch: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
@@ -117,7 +117,7 @@ async function serve(args) {
     if (!PORT || !HTTPS_CERT_PATH || !HTTPS_KEY_PATH || (masterRun !== undefined && !Number.isInteger(masterRun))) {
         console.error(
             "usage: PORT=<n> HTTPS_CERT_PATH=<pem> HTTPS_KEY_PATH=<pem> visual-review serve " +
-                "[--master-run <id>] [--results <dir> [--branch <name>]]\n" +
+                "[--master-run <id>] [--results <dir>]\n" +
                 'start it through servherd, which sets PORT and the certificate (CLAUDE.md, "Visual review")',
         );
         return 2;
@@ -144,7 +144,11 @@ async function serve(args) {
         origin,
         masterRun,
         results: values.results && resolve(values.results),
-        branch: values.branch,
+        // What the owner types to run this server from their own shell, so Finish signs with
+        // their key rather than the environment of whoever started it (an agent, through servherd).
+        startCommand:
+            `cd ${ROOT} && PORT=${PORT} HOST=${HOST} HTTPS_CERT_PATH=${HTTPS_CERT_PATH} ` +
+            `HTTPS_KEY_PATH=${HTTPS_KEY_PATH} node visual-review/trusted/cli.mjs serve ${args.join(" ")}`.trim(),
     });
     const server = createServer({ cert: readFileSync(HTTPS_CERT_PATH), key: readFileSync(HTTPS_KEY_PATH) }, app);
     await new Promise((done) => server.listen({ port: Number(PORT), host: HOST }, () => done(null)));

@@ -15,13 +15,27 @@ const PARAMS = {
     "demo--excluded-here": { chromatic: { disableSnapshot: true } },
     "demo--always-excluded": { chromatic: { disableSnapshot: true } },
     "demo--broken": {},
+    "demo--small": {},
 };
 
 const IFRAME = `<!doctype html><html><body><script>
 const id = new URLSearchParams(location.search).get("id");
-if (id === "demo--broken") document.body.classList.add("sb-show-errordisplay");
-document.body.insertAdjacentHTML("beforeend", "<h1 style='font: 40px monospace'>" + (id ?? "preview") +
-    (navigator.gpu ? " gpu" : " no-gpu") + "</h1>");
+if (id === "demo--broken") {
+    document.body.classList.add("sb-show-errordisplay");
+    document.body.insertAdjacentHTML("beforeend", "<h1 id='error-message'>expected 1 to be 2</h1>" +
+        "<pre id='error-stack'>AssertionError: expected 1 to be 2\\n    at play (demo.stories.ts:9:3)</pre>");
+} else if (id === "demo--small") {
+    // A 50 x 20 box at (100, 100), and a 10 x 10 portal-like box at (300, 40) outside it.
+    document.body.insertAdjacentHTML("beforeend",
+        "<div style='position:absolute;left:100px;top:100px;width:50px;height:20px;background:red'></div>" +
+        "<div style='position:fixed;left:300px;top:40px;width:10px;height:10px;background:blue'></div>" +
+        // Rows clipped by a scroll area do not count past the area's own box.
+        "<div style='position:absolute;left:120px;top:60px;width:20px;height:40px;overflow:auto'>" +
+        "<div style='height:2000px;background:green'></div></div>");
+} else {
+    document.body.insertAdjacentHTML("beforeend", "<h1 style='font: 40px monospace'>" + (id ?? "preview") +
+        (navigator.gpu ? " gpu" : " no-gpu") + "</h1>");
+}
 window.__STORYBOOK_PREVIEW__ = {
     storyStoreValue: {},
     currentRender: { phase: "completed" },
@@ -62,6 +76,13 @@ describe("capture", () => {
         expect(items["demo--plain.png"].status).toBe("new");
         expect(items["demo--excluded-here.png"].status).toBe("excluded");
         expect(items["demo--broken.png"]).toMatchObject({ status: "failed", reason: "story render errored" });
+        // Storybook's error screen: the message and the stack, for the errors list.
+        expect(items["demo--broken.png"].console).toEqual([
+            "expected 1 to be 2",
+            "AssertionError: expected 1 to be 2",
+            "    at play (demo.stories.ts:9:3)",
+        ]);
+        expect(first.scale).toBe(2);
         expect(items["demo--docs.png"]).toBeUndefined();
 
         // Seed: demo--plain's capture, and a baseline for a story the pull request now excludes.
@@ -111,6 +132,29 @@ describe("capture", () => {
             stories: ["demo--plain"],
         });
         expect(tampered.items[0].status).toBe("new");
+    }, 120_000);
+
+    it("captures at scale 2, cropped to the content plus 32 px, or the full width for a canvas project", async () => {
+        const sb = storybook();
+        const run = async (canvas) => {
+            const out = mkdtempSync(join(tmpdir(), "vr-out-"));
+            const r = await capture({
+                project: "demo",
+                storybook: sb,
+                baselines: mkdtempSync(join(tmpdir(), "vr-bl-")),
+                out,
+                workers: 1,
+                stableFrame: false,
+                canvas,
+                stories: ["demo--small"],
+                log: () => {},
+            });
+            return r.items[0].size;
+        };
+        // Content spans x 100..310 and y 40..120; with the margin 68..342 and 8..152, doubled.
+        expect(await run(false)).toEqual([(342 - 68) * 2, (152 - 8) * 2]);
+        // A canvas project keeps the viewport's full width and crops only the height.
+        expect(await run(true)).toEqual([1200 * 2, (152 - 8) * 2]);
     }, 120_000);
 
     it("fails with a clear message when a baseline is a Git LFS pointer", async () => {

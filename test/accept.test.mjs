@@ -30,14 +30,60 @@ function setup() {
         calls.push({ args, input });
         return JSON.stringify({ html_url: "https://github.com/o/r/pull/9", number: 9 });
     };
-    const run = (decisions, target = { pr: 123, branch: "feature" }) =>
-        finish({ repo: r.repo, gh, target, projects, decisions, now: NOW });
+    const run = (decisions, target = { pr: 123, branch: "feature" }, undecided = 0) =>
+        finish({ repo: r.repo, gh, target, projects, decisions, undecided, now: NOW });
     return { ...r, projects, calls, run };
 }
 
 const accept = (file, project = "compact-mantine", reason = null) => ({ project, file, decision: "accept", reason });
 const remoteLog = (s, branch) => git(s.remote, "log", "--format=%H", branch).split("\n");
 const show = (s, branch, path) => execFileSync("git", ["show", `${branch}:${path}`], { cwd: s.remote });
+
+describe("finish: the commit status", () => {
+    const statuses = (s) => s.calls.filter((c) => c.args[1].includes("/statuses/"));
+
+    it("posts one status on the pushed commit, pending while items are left undecided", async () => {
+        const s = setup();
+        const out = await s.run([accept("button--primary.dark.png"), accept("badge--default.light.png")], undefined, 3);
+        expect(statuses(s)).toHaveLength(1);
+        expect(statuses(s)[0].args[1]).toBe(`repos/{owner}/{repo}/statuses/${out.commit}`);
+        expect(JSON.parse(statuses(s)[0].input)).toEqual({
+            state: "pending",
+            context: "Visual review",
+            description: "Reviewed: 2 accepted, 0 rejected, 0 excluded, 3 left undecided",
+        });
+    });
+
+    it("fails the status on the captured head when there are only rejects, and survives a failed post", async () => {
+        const s = setup();
+        await s.run([{ project: "compact-mantine", file: "slider--sizes.png", decision: "reject", reason: "tall" }]);
+        expect(statuses(s)[0].args[1]).toBe(`repos/{owner}/{repo}/statuses/${s.head}`);
+        expect(JSON.parse(statuses(s)[0].input).state).toBe("failure");
+
+        const t = setup();
+        const out = await finish({
+            repo: t.repo,
+            gh: async (args) => {
+                if (args[1].includes("/statuses/")) {
+                    throw new Error("HTTP 403");
+                }
+                return "{}";
+            },
+            target: { pr: 123, branch: "feature" },
+            projects: t.projects,
+            decisions: [accept("badge--default.light.png")],
+            now: NOW,
+        });
+        expect(out).toMatchObject({ statusError: "HTTP 403" });
+        expect(out.commit).toBe(remoteLog(t, "feature")[0]);
+    });
+
+    it("succeeds when everything is decided and nothing rejected", async () => {
+        const s = setup();
+        await s.run([accept("badge--default.light.png")]);
+        expect(JSON.parse(statuses(s)[0].input).state).toBe("success");
+    });
+});
 
 describe("finish: accepts", () => {
     it("commits two PNGs and one record, once, and pushes to the pull request's branch", async () => {
@@ -71,7 +117,7 @@ describe("finish: accepts", () => {
             version: 1,
             unproven: true,
             pr: 123,
-            subject: { runId: 1000, runAttempt: 1, builtMerge: s.head, head: s.head },
+            subject: { runId: 1000, runAttempt: 1, builtMerge: s.head, head: s.head, scale: 1 },
             reviewedAt: NOW.toISOString(),
         });
         expect(record.items).toEqual([
@@ -159,7 +205,7 @@ describe("finish: rejects on master", () => {
             { pr: null, branch: null },
         );
         expect(out).toMatchObject({ commit: null, pullRequest: null, issue: "https://github.com/o/r/pull/9" });
-        expect(s.calls).toHaveLength(1);
+        expect(s.calls.filter((c) => !c.args[1].includes("/statuses/"))).toHaveLength(1);
         expect(s.calls[0].args).toEqual(["api", "repos/{owner}/{repo}/issues", "--input", "-"]);
         const issue = JSON.parse(s.calls[0].input);
         expect(issue.title).toBe("Visual review: 1 story rejected on master");
@@ -316,7 +362,7 @@ describe("finish: rejects", () => {
         ]);
         expect(out.commit).toBeNull();
         expect(remoteLog(s, "feature")[0]).toBe(s.head);
-        expect(s.calls).toHaveLength(1);
+        expect(s.calls.filter((c) => !c.args[1].includes("/statuses/"))).toHaveLength(1);
         expect(s.calls[0].args.join(" ")).toContain("issues/123/comments");
         const body = JSON.parse(s.calls[0].input).body;
         expect(body).toContain("red square");
