@@ -429,12 +429,17 @@ function contentClip({ margin, canvas }) {
             }
             const clipsX = style.overflowX !== "visible";
             const clipsY = style.overflowY !== "visible";
-            visit(e, [
+            const inner = [
                 clipsX ? Math.max(c[0], r.left) : c[0],
                 clipsY ? Math.max(c[1], r.top) : c[1],
                 clipsX ? Math.min(c[2], r.right) : c[2],
                 clipsY ? Math.min(c[3], r.bottom) : c[3],
-            ]);
+            ];
+            visit(e, inner);
+            // A web component draws inside its shadow root: graphty-element's canvas lives there.
+            if (e.shadowRoot) {
+                visit(e.shadowRoot, inner);
+            }
         }
     };
     visit(document.body, ALL);

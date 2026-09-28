@@ -270,18 +270,21 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             // Best effort: master and the branches, so the badge below sees what accept will see.
             // A fork's branch is not on origin and fails its fetch, so master is fetched alone first.
             const fetch = (refs) => exec("git", ["fetch", "-q", "origin", ...refs], { cwd: repo }).catch(() => {});
-            await fetch(["+refs/heads/master:refs/remotes/origin/master"]);
-            await fetch(prs.map((p) => `+refs/heads/${p.branch}:refs/remotes/origin/${p.branch}`));
-            for (const pr of prs) {
-                const run = await newestCiRun(gh, pr.headSha);
-                if (run) {
+            const fetched = fetch(["+refs/heads/master:refs/remotes/origin/master"]).then(() =>
+                fetch(prs.map((p) => `+refs/heads/${p.branch}:refs/remotes/origin/${p.branch}`)),
+            );
+            // Every pull request at once: one after another took about 40 s for 18 of them.
+            const built = await Promise.all(
+                prs.map(async (pr) => {
+                    const run = await newestCiRun(gh, pr.headSha);
                     const id = String(pr.number);
-                    next.set(
-                        id,
-                        await build({ id, pr: pr.number, title: pr.title, url: pr.url, branch: pr.branch }, run),
-                    );
-                }
-            }
+                    return run
+                        ? build({ id, pr: pr.number, title: pr.title, url: pr.url, branch: pr.branch }, run)
+                        : null;
+                }),
+            );
+            await fetched;
+            for (const t of built) if (t) next.set(t.id, t);
             if (masterRun) {
                 const run = await getRun(gh, masterRun);
                 next.set(
