@@ -105,6 +105,10 @@ async function reference(args) {
 }
 
 async function serve(args) {
+    if (args.includes("--branch")) {
+        console.error("visual-review serve: --branch is gone: a --results preview is look only and has no Finish");
+        return 2;
+    }
     const { values } = parseArgs({
         args,
         options: {

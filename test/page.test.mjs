@@ -81,7 +81,13 @@ describe("review page: a pull request", () => {
     });
 
     it("opens on what needs a decision: errors first with their stack, then components, changed first", async () => {
-        expect(await page.getByRole("button", { name: "Needs a decision" }).getAttribute("aria-pressed")).toBe("true");
+        const needs = page.getByRole("button", { name: /^Needs a decision/ });
+        expect(await needs.getAttribute("aria-pressed")).toBe("true");
+        // One count everywhere: 6 undecided, of which the failed capture is listed as an error.
+        expect(await needs.textContent()).toBe("Needs a decision (6)");
+        expect(await page.locator("#shown").textContent()).toBe(
+            "Showing 6: 1 error (listed first, never accepted) and 5 images to compare.",
+        );
         const error = page.locator(".errors li").first();
         expect(await error.textContent()).toContain("1 menu--open");
         expect(await error.textContent()).toContain("story render errored");
@@ -92,6 +98,26 @@ describe("review page: a pull request", () => {
         const button = page.locator('.component[data-component="button"] .story');
         expect(await button.locator(".story-name").textContent()).toBe("primary");
         expect(await button.locator(".tile .name").textContent()).toBe("2 dark");
+        // A story without modes shows no mode name.
+        expect(await page.locator('.component[data-component="slider"] .tile .name').textContent()).toBe("3 ");
+        // A thumbnail shows the whole capture, however wide.
+        expect(
+            await button
+                .locator(".tile img")
+                .evaluate((i) => i.ownerDocument.defaultView.getComputedStyle(i).objectFit),
+        ).toBe("contain");
+    });
+
+    it("fits an image wider than its pane by default, and shows real size on request", async () => {
+        await page.setViewportSize({ width: 500, height: 800 });
+        await openStory(2);
+        const img = page.locator("#stage img").first();
+        await img.waitFor();
+        const fitted = await img.evaluate((i) => [i.getBoundingClientRect().width, i.parentElement.clientWidth]);
+        expect(fitted[0]).toBeLessThan(320);
+        expect(Math.abs(fitted[0] - fitted[1])).toBeLessThanOrEqual(1);
+        await page.getByRole("button", { name: "Real size (1x)" }).click();
+        await expect.poll(() => img.evaluate((i) => i.getBoundingClientRect().width)).toBe(320);
     });
 
     it("shows images at real size, zooms at a labelled factor, crisp only from 4x, and jumps to the changed box", async () => {
@@ -106,6 +132,9 @@ describe("review page: a pull request", () => {
             }));
         let s = await shape();
         expect(s.width).toBe(s.natural);
+        const frame = page.locator("#stage .frame").first();
+        // Real size opens at the top left of the image.
+        expect(await frame.evaluate((f) => [f.scrollLeft, f.scrollTop])).toEqual([0, 0]);
         await page.getByRole("button", { name: "2x", exact: true }).click();
         await expect.poll(async () => (await shape()).width).toBe(s.natural * 2);
         expect((await shape()).rendering).toBe("auto");
@@ -114,15 +143,23 @@ describe("review page: a pull request", () => {
         s = await shape();
         expect(s.rendering).toBe("pixelated");
         await expect.poll(() => page.locator("#box-count").textContent()).toBe("box 1 of 1");
-        // The box's centre (180, 100) at four times sits in the middle of each pane.
-        const frame = page.locator("#stage .frame").first();
-        await expect.poll(() => frame.evaluate((f) => f.scrollLeft)).toBeGreaterThan(0);
-        const at = await frame.evaluate((f) => ({
-            left: f.scrollLeft + f.clientWidth / 2,
-            top: f.scrollTop + f.clientHeight / 2,
-        }));
-        expect(Math.abs(at.left - 720)).toBeLessThanOrEqual(2);
-        expect(Math.abs(at.top - 400)).toBeLessThanOrEqual(2);
+        // At 4x the box (smaller than the pane) is out of sight at the top left, so the pane scrolls
+        // just far enough to show all of it, outlined.
+        const inView = () =>
+            frame.evaluate((f) => {
+                const [m, v] = [f.querySelector(".boxmark").getBoundingClientRect(), f.getBoundingClientRect()];
+                return (
+                    m.width > 20 &&
+                    m.left >= v.left &&
+                    m.right <= v.left + f.clientWidth &&
+                    m.top >= v.top &&
+                    m.bottom <= v.top + f.clientHeight
+                );
+            });
+        await expect.poll(inView).toBe(true);
+        await frame.evaluate((f) => f.scrollTo(0, 0));
+        await page.keyboard.press("n");
+        await expect.poll(inView).toBe(true);
         await page.keyboard.press("z");
         await expect.poll(async () => (await shape()).width).toBe(s.natural * 8);
         await page.keyboard.press("z");
@@ -217,6 +254,31 @@ describe("review page: a pull request", () => {
         await page.keyboard.press("k");
         await page.keyboard.press("a");
         await expect.poll(status).toContain("already accepted");
+    });
+
+    it("draws all four sides of a changed box at the image's edge", async () => {
+        // slider--sizes grew 40 px at the bottom: its changed box runs to the image's edges.
+        await openStory(3);
+        const frame = page.locator("#stage .frame").last();
+        await frame.locator(".boxmark").waitFor();
+        const [mark, pic] = await frame.evaluate((f) =>
+            [f.querySelector(".boxmark"), f.querySelector("img")].map((e) => {
+                const r = e.getBoundingClientRect();
+                return [r.left, r.top, r.right, r.bottom];
+            }),
+        );
+        expect(mark[0]).toBeGreaterThanOrEqual(pic[0]);
+        expect(mark[2]).toBeLessThanOrEqual(pic[2]);
+        expect(mark[3]).toBeLessThanOrEqual(pic[3]);
+        expect(mark[2] - mark[0]).toBeGreaterThan(100);
+    });
+
+    it("clears a go-to error once another story opens", async () => {
+        await page.locator("#goto").fill("99999");
+        await page.locator("#goto").press("Enter");
+        await expect.poll(status).toContain("There is no item 99999");
+        await openStory(2);
+        expect(await status()).toBe("");
     });
 
     it("filters by text and goes to a number or a story id", async () => {

@@ -20,7 +20,9 @@ const statusLabel = (status) => (status === UNSEEDED ? NO_BASELINE : status);
 // Errors first (their own list), then what changed, then new, unstable and removed stories.
 const RANK = { failed: 0, changed: 1, new: 2, unstable: 3, removed: 4, unseeded: 5 };
 const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
-const ZOOMS = [1, 2, 4, 8]; // 1 is real size: one CSS pixel per CSS pixel the story was drawn at
+// "fit" (the default) is real size, shrunk to the pane when the image is wider; 1 is real size:
+// one CSS pixel per CSS pixel the story was drawn at, scrolling when wider than the pane.
+const ZOOMS = ["fit", 1, 2, 4, 8];
 const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
 const GROW = 10; // image pixels the spotlight and the changed boxes grow each changed pixel by
 const SPOT_ALPHA = 190; // the spotlight's dimming, out of 255, as Chromatic's focus mask
@@ -36,7 +38,7 @@ const state = {
     index: 0,
     lastFile: null, // the item last opened, highlighted when the grid comes back
     view: "side", // side | flash | highlight | spotlight
-    zoom: 1,
+    zoom: "fit",
     box: 0, // which changed box "next changed box" is on
     held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
@@ -368,6 +370,7 @@ const thumbs = new IntersectionObserver((entries) => {
 });
 
 function openItem(index) {
+    say("");
     state.index = index;
     state.box = 0;
     showStory();
@@ -391,7 +394,7 @@ function tile(item, number) {
             onclick: () => openItem(number - 1),
         },
         img,
-        el("span", { class: "name" }, el("span", { class: "number" }, `${number}`), " ", item.mode ?? "no mode"),
+        el("span", { class: "name" }, el("span", { class: "number" }, `${number}`), " ", item.mode ?? ""),
         el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
         d ? el("span", { class: `badge ${d.decision}` }, d.decision) : null,
         item.reReview ? el("span", { class: "badge warn", title: RE_REVIEW }, "re-review") : null,
@@ -529,7 +532,10 @@ function showGrid() {
             "div",
             { class: "toolbar" },
             el("strong", { id: "progress" }, progress()),
-            filterButton("undecided", "Needs a decision"),
+            filterButton(
+                "undecided",
+                `Needs a decision (${state.data.items.filter((i) => REVIEWABLE.includes(i.status) && !decisionOf(i)).length})`,
+            ),
             filterButton("all", `All (${state.data.items.filter((i) => REVIEWABLE.includes(i.status)).length})`),
             ["changed", "new", "unstable", "removed", "failed"]
                 .filter((s) => counts[s])
@@ -552,6 +558,15 @@ function showGrid() {
                   "p",
                   { class: "badge warn" },
                   "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
+              )
+            : null,
+        items.length > 0
+            ? el(
+                  "p",
+                  { id: "shown", class: "meta" },
+                  `Showing ${items.length}: ${errors.length} ${errors.length === 1 ? "error" : "errors"} ` +
+                      `(listed first, never accepted) and ${items.length - errors.length} ` +
+                      `${items.length - errors.length === 1 ? "image" : "images"} to compare.`,
               )
             : null,
         errors.length > 0
@@ -681,7 +696,7 @@ function showStory() {
                     showStory();
                 },
             },
-            z === 1 ? "Real size (1x)" : `${z}x`,
+            z === "fit" ? "Fit" : z === 1 ? "Real size (1x)" : `${z}x`,
         );
     const reason = el("input", {
         id: "reason",
@@ -916,10 +931,13 @@ function regions(grown, w, h) {
     return boxes.sort((p, q) => q[2] * q[3] - p[2] * p[3]);
 }
 
-// Sizes a picture: real size is its image pixels divided by the capture's scale, times the zoom.
+// Sizes a picture: real size is its image pixels divided by the capture's scale, times the zoom;
+// "fit" is real size, no wider than its pane.
 function size(pic, naturalWidth) {
-    pic.style.width = `${(naturalWidth / scale()) * state.zoom}px`;
-    if (state.zoom >= CRISP_FROM) {
+    const factor = state.zoom === "fit" ? 1 : state.zoom;
+    pic.style.width = `${(naturalWidth / scale()) * factor}px`;
+    pic.style.maxWidth = state.zoom === "fit" ? "100%" : "none";
+    if (factor >= CRISP_FROM) {
         pic.classList.add("crisp");
     }
     return pic;
@@ -954,6 +972,7 @@ async function renderStage(item, view) {
             const [base, next] = [await imgOf("baseline"), await imgOf("capture")];
             const img = el("img", { alt: `flashing ${itemName(item)}`, src: base.src });
             img.style.width = base.style.width;
+            img.style.maxWidth = base.style.maxWidth;
             img.className = base.className;
             const tag = label("Baseline");
             stage.replaceChildren(el("figure", {}, tag, el("div", { class: "frame" }, img)));
@@ -963,6 +982,7 @@ async function renderStage(item, view) {
                 const shown = showingNew ? next : base;
                 img.src = shown.src;
                 img.style.width = shown.style.width;
+                img.style.maxWidth = shown.style.maxWidth;
                 tag.textContent = showingNew ? "New" : "Baseline";
             }, FLASH_MS);
         } else if (view === "highlight") {
@@ -978,35 +998,57 @@ async function renderStage(item, view) {
                 diff.boxes.length === 0
                     ? "no changed box at this threshold"
                     : `box ${Math.min(state.box, diff.boxes.length - 1) + 1} of ${diff.boxes.length}`;
-            showBox(stage, diff.boxes);
+            showBox(stage, diff.boxes, false);
         }
     } catch (err) {
         stage.replaceChildren(el("p", { class: "error" }, err.message));
     }
 }
 
-// Scrolls every pane so the current changed box is in the middle, and outlines it.
-function showBox(stage, boxes) {
+// Outlines the current changed box in every pane, and scrolls it into view. A pane opens at the
+// top left of its image; on opening (`jump` false) it scrolls only when the box is smaller than
+// the pane and out of sight. Next changed box (`jump` true) always brings the box into view, its
+// top left first when it is larger than the pane.
+function showBox(stage, boxes, jump) {
     if (boxes.length === 0) {
         return;
     }
     state.box = Math.min(state.box, boxes.length - 1);
     const [x, y, w, h] = boxes[state.box];
+    const PAD = 16;
     for (const frame of stage.querySelectorAll(".frame")) {
         const pic = frame.querySelector("img, canvas");
         const natural = pic.naturalWidth ?? pic.width;
-        const f = pic.getBoundingClientRect().width / natural;
+        const shown = pic.getBoundingClientRect();
+        const f = shown.width / natural;
+        // The outline is drawn inside the image, so a box at an edge keeps all four sides.
+        const [left, top] = [Math.max(0, x * f - 2), Math.max(0, y * f - 2)];
+        const [right, bottom] = [Math.min(shown.width, (x + w) * f + 2), Math.min(shown.height, (y + h) * f + 2)];
         frame.querySelector(".boxmark")?.remove();
         const mark = el("div", { class: "boxmark" });
         Object.assign(mark.style, {
-            left: `${pic.offsetLeft + x * f - 2}px`,
-            top: `${pic.offsetTop + y * f - 2}px`,
-            width: `${w * f + 4}px`,
-            height: `${h * f + 4}px`,
+            left: `${pic.offsetLeft + left}px`,
+            top: `${pic.offsetTop + top}px`,
+            width: `${right - left}px`,
+            height: `${bottom - top}px`,
         });
         frame.append(mark);
-        frame.scrollLeft = pic.offsetLeft + (x + w / 2) * f - frame.clientWidth / 2;
-        frame.scrollTop = pic.offsetTop + (y + h / 2) * f - frame.clientHeight / 2;
+        if (!jump) {
+            frame.scrollLeft = 0;
+            frame.scrollTop = 0;
+        }
+        const fits = right - left <= frame.clientWidth && bottom - top <= frame.clientHeight;
+        if (!jump && !fits) {
+            continue;
+        }
+        const reveal = (start, end, scroll, view) => {
+            if (end - start > view || start < scroll) {
+                return Math.max(0, start - PAD);
+            }
+            return end > scroll + view ? end - view + PAD : scroll;
+        };
+        frame.scrollLeft = reveal(pic.offsetLeft + left, pic.offsetLeft + right, frame.scrollLeft, frame.clientWidth);
+        frame.scrollTop = reveal(pic.offsetTop + top, pic.offsetTop + bottom, frame.scrollTop, frame.clientHeight);
     }
 }
 
@@ -1022,7 +1064,7 @@ async function nextBox() {
     }
     state.box = (state.box + 1) % boxes.length;
     document.getElementById("box-count").textContent = `box ${state.box + 1} of ${boxes.length}`;
-    showBox(document.getElementById("stage"), boxes);
+    showBox(document.getElementById("stage"), boxes, true);
 }
 
 // pixelmatch's own picture: the changed pixels in red over the dimmed baseline.
@@ -1086,6 +1128,7 @@ async function acceptAll(component) {
 }
 
 function move(step) {
+    say("");
     const count = visibleItems().length;
     state.index = (state.index + step + count) % count;
     state.box = 0;
@@ -1247,6 +1290,7 @@ document.addEventListener("keydown", (e) => {
             e.target.blur();
         }
         if (state.screen === "story") {
+            say("");
             showGrid();
         }
         return;

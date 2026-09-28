@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { capture } from "../capture/capture.mjs";
+import { capture, hasEmojiFont } from "../capture/capture.mjs";
 
 const PARAMS = {
     "demo--plain": {},
@@ -16,6 +16,7 @@ const PARAMS = {
     "demo--always-excluded": { chromatic: { disableSnapshot: true } },
     "demo--broken": {},
     "demo--small": {},
+    "demo--late-font": {},
 };
 
 const IFRAME = `<!doctype html><html><body><script>
@@ -24,10 +25,23 @@ if (id === "demo--broken") {
     document.body.classList.add("sb-show-errordisplay");
     document.body.insertAdjacentHTML("beforeend", "<h1 id='error-message'>expected 1 to be 2</h1>" +
         "<pre id='error-stack'>AssertionError: expected 1 to be 2\\n    at play (demo.stories.ts:9:3)</pre>");
+} else if (id === "demo--late-font") {
+    // Stands in for a web font that arrives after the render: the box appears only when
+    // document.fonts.ready settles, half a second later.
+    const late = new Promise((resolve) => setTimeout(() => {
+        document.body.insertAdjacentHTML("beforeend",
+            "<div style='position:absolute;left:400px;top:300px;width:10px;height:10px;background:red'></div>");
+        resolve();
+    }, 500));
+    Object.defineProperty(document.fonts, "ready", { get: () => late });
+    document.body.insertAdjacentHTML("beforeend",
+        "<div style='position:absolute;left:100px;top:100px;width:10px;height:10px;background:red'></div>");
 } else if (id === "demo--small") {
     // A 50 x 20 box at (100, 100), and a 10 x 10 portal-like box at (300, 40) outside it.
     document.body.insertAdjacentHTML("beforeend",
-        "<div style='position:absolute;left:100px;top:100px;width:50px;height:20px;background:red'></div>" +
+        // A full-width wrapper with nothing of its own to paint does not widen the crop.
+        "<div style='position:absolute;left:0;top:0;width:100%;height:600px'>" +
+        "<div style='position:absolute;left:100px;top:100px;width:50px;height:20px;background:red'></div></div>" +
         "<div style='position:fixed;left:300px;top:40px;width:10px;height:10px;background:blue'></div>" +
         // Rows clipped by a scroll area do not count past the area's own box.
         "<div style='position:absolute;left:120px;top:60px;width:20px;height:40px;overflow:auto'>" +
@@ -83,6 +97,8 @@ describe("capture", () => {
             "    at play (demo.stories.ts:9:3)",
         ]);
         expect(first.scale).toBe(2);
+        // Recorded so an empty-box emoji in a capture can be traced to the machine.
+        expect(first.environment.emojiFont).toBe(hasEmojiFont());
         expect(items["demo--docs.png"]).toBeUndefined();
 
         // Seed: demo--plain's capture, and a baseline for a story the pull request now excludes.
@@ -136,7 +152,7 @@ describe("capture", () => {
 
     it("captures at scale 2, cropped to the content plus 32 px, or the full width for a canvas project", async () => {
         const sb = storybook();
-        const run = async (canvas) => {
+        const run = async (canvas, story = "demo--small") => {
             const out = mkdtempSync(join(tmpdir(), "vr-out-"));
             const r = await capture({
                 project: "demo",
@@ -146,7 +162,7 @@ describe("capture", () => {
                 workers: 1,
                 stableFrame: false,
                 canvas,
-                stories: ["demo--small"],
+                stories: [story],
                 log: () => {},
             });
             return r.items[0].size;
@@ -155,6 +171,12 @@ describe("capture", () => {
         expect(await run(false)).toEqual([(342 - 68) * 2, (152 - 8) * 2]);
         // A canvas project keeps the viewport's full width and crops only the height.
         expect(await run(true)).toEqual([1200 * 2, (152 - 8) * 2]);
+        // The capture waits for the page's fonts: the box drawn when they settle is in it.
+        expect(await run(false, "demo--late-font")).toEqual([(442 - 68) * 2, (342 - 68) * 2]);
+        // A block-level heading is cropped to its text, not to the block's full width.
+        const [width] = await run(false, "demo--plain");
+        expect(width).toBeGreaterThan(200);
+        expect(width).toBeLessThan(1200);
     }, 120_000);
 
     it("fails with a clear message when a baseline is a Git LFS pointer", async () => {
