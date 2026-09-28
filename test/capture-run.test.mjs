@@ -17,6 +17,7 @@ const PARAMS = {
     "demo--broken": {},
     "demo--small": {},
     "demo--late-font": {},
+    "demo--shadow": {},
 };
 
 const IFRAME = `<!doctype html><html><body><script>
@@ -36,6 +37,12 @@ if (id === "demo--broken") {
     Object.defineProperty(document.fonts, "ready", { get: () => late });
     document.body.insertAdjacentHTML("beforeend",
         "<div style='position:absolute;left:100px;top:100px;width:10px;height:10px;background:red'></div>");
+} else if (id === "demo--shadow") {
+    // A web component whose only drawing, a 40 x 30 box at (200, 150), is in its shadow root.
+    const host = document.createElement("div");
+    host.attachShadow({ mode: "open" }).innerHTML =
+        "<div style='position:absolute;left:200px;top:150px;width:40px;height:30px;background:red'></div>";
+    document.body.append(host);
 } else if (id === "demo--small") {
     // A 50 x 20 box at (100, 100), and a 10 x 10 portal-like box at (300, 40) outside it.
     document.body.insertAdjacentHTML("beforeend",
@@ -173,6 +180,8 @@ describe("capture", () => {
         expect(await run(true)).toEqual([1200 * 2, (152 - 8) * 2]);
         // The capture waits for the page's fonts: the box drawn when they settle is in it.
         expect(await run(false, "demo--late-font")).toEqual([(442 - 68) * 2, (342 - 68) * 2]);
+        // What a web component draws in its shadow root is content.
+        expect(await run(false, "demo--shadow")).toEqual([(272 - 168) * 2, (212 - 118) * 2]);
         // A block-level heading is cropped to its text, not to the block's full width.
         const [width] = await run(false, "demo--plain");
         expect(width).toBeGreaterThan(200);
