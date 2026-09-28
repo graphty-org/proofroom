@@ -226,7 +226,7 @@ the pull request.
 - **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale
   factor 2, as Chromatic captures, so a PNG holds two image pixels per CSS pixel. It is cropped
   to the story's rendered content (the box around every visible element, tooltips and popovers
-  included) plus a 32 px margin. graphty-element keeps its viewport: the full width, cropped only
+  included, but not what a scroll area hides) plus a 32 px margin. graphty-element keeps its viewport: the full width, cropped only
   in height, never past the viewport, because capturing beyond it could resize the graph's
   canvas, which clears it. results.json records the scale as `scale`, and each review record
   copies it into its `subject`.

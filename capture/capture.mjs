@@ -349,10 +349,11 @@ async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
 /**
  * Runs in the page: the box to screenshot, in CSS pixels. It is the union of every visible
  * element's box (portals such as tooltips and popovers included, since they are elements of the
- * body too) plus `margin`, kept within the page. A canvas project (`canvas`) keeps the viewport:
- * its full width, and the content's height plus the margin, never past the viewport, because a
- * capture beyond it could resize the canvas, which clears it. A story that draws nothing keeps the
- * whole viewport.
+ * body too), each cut to the ancestors that clip it (overflow other than visible; a fixed element
+ * escapes them), so the rows hidden inside a scroll area do not stretch it, plus `margin`, kept
+ * within the page. A canvas project (`canvas`) keeps the viewport: its full width, and the
+ * content's height plus the margin, never past the viewport, because a capture beyond it could
+ * resize the canvas, which clears it. A story that draws nothing keeps the whole viewport.
  * @param {{ margin: number, canvas: boolean }} options the margin and whether it is a canvas project
  * @returns {{ x: number, y: number, width: number, height: number }} the clip
  */
@@ -361,15 +362,39 @@ function contentClip({ margin, canvas }) {
     const W = canvas ? window.innerWidth : Math.max(root.scrollWidth, window.innerWidth);
     const H = canvas ? window.innerHeight : Math.max(root.scrollHeight, window.innerHeight);
     let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const e of document.body.querySelectorAll("*")) {
-        const r = e.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0 && window.getComputedStyle(e).visibility !== "hidden") {
-            x0 = Math.min(x0, r.left + window.scrollX);
-            y0 = Math.min(y0, r.top + window.scrollY);
-            x1 = Math.max(x1, r.right + window.scrollX);
-            y1 = Math.max(y1, r.bottom + window.scrollY);
+    const ALL = [-Infinity, -Infinity, Infinity, Infinity];
+    // Walks the tree with the clip its ancestors impose, as [left, top, right, bottom].
+    const visit = (parent, clipBox) => {
+        for (const e of parent.children) {
+            const style = window.getComputedStyle(e);
+            if (style.display === "none") {
+                continue;
+            }
+            const r = e.getBoundingClientRect();
+            const c = style.position === "fixed" ? ALL : clipBox;
+            const [l, t, rr, b] = [
+                Math.max(r.left, c[0]),
+                Math.max(r.top, c[1]),
+                Math.min(r.right, c[2]),
+                Math.min(r.bottom, c[3]),
+            ];
+            if (rr > l && b > t && style.visibility !== "hidden") {
+                x0 = Math.min(x0, l + window.scrollX);
+                y0 = Math.min(y0, t + window.scrollY);
+                x1 = Math.max(x1, rr + window.scrollX);
+                y1 = Math.max(y1, b + window.scrollY);
+            }
+            const clipsX = style.overflowX !== "visible";
+            const clipsY = style.overflowY !== "visible";
+            visit(e, [
+                clipsX ? Math.max(c[0], r.left) : c[0],
+                clipsY ? Math.max(c[1], r.top) : c[1],
+                clipsX ? Math.min(c[2], r.right) : c[2],
+                clipsY ? Math.min(c[3], r.bottom) : c[3],
+            ]);
         }
-    }
+    };
+    visit(document.body, ALL);
     if (x1 <= x0 || y1 <= y0) {
         return { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
     }

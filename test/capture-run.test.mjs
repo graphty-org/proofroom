@@ -28,7 +28,10 @@ if (id === "demo--broken") {
     // A 50 x 20 box at (100, 100), and a 10 x 10 portal-like box at (300, 40) outside it.
     document.body.insertAdjacentHTML("beforeend",
         "<div style='position:absolute;left:100px;top:100px;width:50px;height:20px;background:red'></div>" +
-        "<div style='position:fixed;left:300px;top:40px;width:10px;height:10px;background:blue'></div>");
+        "<div style='position:fixed;left:300px;top:40px;width:10px;height:10px;background:blue'></div>" +
+        // Rows clipped by a scroll area do not count past the area's own box.
+        "<div style='position:absolute;left:120px;top:60px;width:20px;height:40px;overflow:auto'>" +
+        "<div style='height:2000px;background:green'></div></div>");
 } else {
     document.body.insertAdjacentHTML("beforeend", "<h1 style='font: 40px monospace'>" + (id ?? "preview") +
         (navigator.gpu ? " gpu" : " no-gpu") + "</h1>");
