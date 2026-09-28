@@ -12,6 +12,10 @@ const crumbs = document.getElementById("crumbs");
 const statusLine = document.getElementById("status");
 
 const REVIEWABLE = ["changed", "new", "removed", "unstable", "failed"];
+// A story with no baseline that this pull request did not change: shown, never a decision here.
+const UNSEEDED = "unseeded";
+const NO_BASELINE = "no baseline yet";
+const statusLabel = (status) => (status === UNSEEDED ? NO_BASELINE : status);
 const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
 const ZOOM = 4;
 const RE_REVIEW = "re-review: your earlier accept was replaced by master's baseline";
@@ -155,6 +159,9 @@ const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
 
 function visibleItems() {
+    if (state.filter === UNSEEDED) {
+        return state.data.items.filter((i) => i.status === UNSEEDED);
+    }
     const items = state.data.items.filter((i) => REVIEWABLE.includes(i.status));
     if (state.filter === "all") {
         return items;
@@ -369,7 +376,7 @@ function showGrid() {
             },
             img,
             el("span", { class: "name" }, itemName(item)),
-            el("span", { class: `badge ${item.status}` }, item.status),
+            el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
             d ? el("span", { class: `badge ${d.decision}` }, d.decision) : null,
             item.reReview ? el("span", { class: "badge warn", title: RE_REVIEW }, "re-review") : null,
         );
@@ -382,6 +389,7 @@ function showGrid() {
             filterButton("all", `All (${state.data.items.filter((i) => REVIEWABLE.includes(i.status)).length})`),
             filterButton("undecided", "Undecided"),
             REVIEWABLE.filter((s) => counts[s]).map((s) => filterButton(s, `${s} (${counts[s]})`)),
+            counts[UNSEEDED] ? filterButton(UNSEEDED, `${NO_BASELINE} (${counts[UNSEEDED]})`) : null,
             el("span", { class: "spacer" }),
             state.data.acceptable
                 ? el("button", { type: "button", class: "accept", onclick: acceptAll, title: "Shift+A" }, "Accept all")
@@ -416,6 +424,7 @@ function showStory() {
     const both = Boolean(item.capture && item.baseline);
     const view = both ? state.view : "side";
     const onlyExclude = item.status === "unstable" || item.status === "failed";
+    const unseeded = item.status === UNSEEDED;
     setCrumbs(
         el("button", { type: "button", class: "link", onclick: showGrid }, `${targetLabel()} / ${state.project}`),
         el("span", {}, itemName(item)),
@@ -466,7 +475,7 @@ function showStory() {
             {},
             itemName(item),
             " ",
-            el("span", { class: `badge ${item.status}` }, item.status),
+            el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
             d ? el("span", { class: `badge ${d.decision}` }, `${d.decision}${d.reason ? `: ${d.reason}` : ""}`) : null,
             sizeChanged
                 ? el(
@@ -510,21 +519,29 @@ function showStory() {
         el(
             "div",
             { class: "actions" },
-            state.data.acceptable && !onlyExclude
+            unseeded
+                ? el(
+                      "p",
+                      {},
+                      "No baseline yet, and this pull request does not change it: it looks as on master. " +
+                          "Seed it from master's capture, or accept it on the pull request that changes it.",
+                  )
+                : null,
+            state.data.acceptable && !onlyExclude && !unseeded
                 ? el(
                       "button",
                       { type: "button", class: "accept", onclick: () => decide("accept"), title: "A" },
                       "Accept",
                   )
                 : null,
-            !onlyExclude
+            !onlyExclude && !unseeded
                 ? el(
                       "button",
                       { type: "button", class: "reject", onclick: () => decide("reject"), title: "R" },
                       "Reject",
                   )
                 : null,
-            state.data.acceptable
+            state.data.acceptable && !unseeded
                 ? el(
                       "button",
                       {

@@ -19,6 +19,19 @@ for (const name of execFileSync("git", ["rev-parse", "--local-env-vars"], { enco
     if (name) delete process.env[name];
 }
 
+/** The line of the monorepo's .gitattributes that stores baseline PNGs in Git LFS. */
+export const LFS_ATTRIBUTES = readFileSync(join(ROOT, ".gitattributes"), "utf8")
+    .split("\n")
+    .find((l) => l.startsWith("visual-baselines/"));
+
+/**
+ * Where a bare remote keeps a Git LFS object it received (git-lfs's local file transfer).
+ * @param {string} remote the bare repository
+ * @param {string} oid the object's SHA-256
+ * @returns {string} the path
+ */
+export const lfsObject = (remote, oid) => join(remote, "lfs/objects", oid.slice(0, 2), oid.slice(2, 4), oid);
+
 /**
  * Keeps the developer's own git configuration (signing, hooks, aliases) out of the tests. Every
  * git process the code under test starts inherits this environment.
@@ -50,7 +63,9 @@ function put(path, data) {
 
 /**
  * A repository cloned from a bare remote. master holds the fixture's baselines for the changed,
- * removed and unstable items; the branch `feature` adds one commit on top of it.
+ * removed and unstable items, as Git LFS pointers the way the monorepo stores them (the same
+ * .gitattributes line, `git lfs install --local`, and the bare remote as its LFS store); the
+ * branch `feature` adds one commit on top of it.
  * @returns {{ dir: string, repo: string, remote: string, master: string, head: string }} shas of
  *     master and of the feature branch's head
  */
@@ -64,6 +79,8 @@ export function makeRepo() {
     git(repo, "remote", "add", "origin", remote);
     git(repo, "config", "user.name", "Owner");
     git(repo, "config", "user.email", "owner@example.com");
+    git(repo, "lfs", "install", "--local");
+    put(join(repo, ".gitattributes"), `${LFS_ATTRIBUTES}\n`);
     put(join(repo, "README.md"), "test\n");
     for (const file of ["button--primary.dark.png", "card--legacy.png", "tooltip--hover.png"]) {
         cpSync(join(FIXTURE, "compact-mantine/baselines", file), join(repo, "visual-baselines/compact-mantine", file));

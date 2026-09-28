@@ -61,6 +61,14 @@ describe("validateResults", () => {
         expect(validateResults(results({ local: { describe: "f449e107-dirty", diff: HASH_A } }))).toEqual([]);
     });
 
+    it("accepts an unseeded item, which has a capture and no baseline", () => {
+        const unseeded = { id: "b--u", mode: null, file: "b--u.png", status: "unseeded", baseline: null };
+        expect(validateResults(results({ items: [item(unseeded)] }))).toEqual([]);
+        expect(validateResults(results({ items: [item({ ...unseeded, baseline: HASH_A })] }))).toEqual([
+            "items[0].baseline must be null for a unseeded item",
+        ]);
+    });
+
     it("rejects an unknown status", () => {
         expect(validateResults(results({ items: [item({ status: "approved" })] })).join("\n")).toMatch(/status/);
     });

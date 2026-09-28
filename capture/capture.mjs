@@ -17,6 +17,11 @@
  * the end), the first capture of every changed, new and unstable item, `second/<file>` for the
  * second capture of an unstable one, and `baselines/<file>`: the baseline each changed, unstable
  * and removed item was compared with.
+ *
+ * With `reference`, a directory holding master's newest capture of the project (CI downloads it
+ * on pull requests), a story with no baseline whose capture matches master's is `unseeded`, not
+ * `new`: seeding is per story, so a story nobody has accepted yet does not block every pull
+ * request, only one that changes it.
  */
 
 import { execFileSync } from "node:child_process";
@@ -27,7 +32,7 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
 
-import { classify, DEFAULT_THRESHOLD, sha256 } from "../trusted/lib/compare.mjs";
+import { classify, DEFAULT_THRESHOLD, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
 /* global document, window, requestAnimationFrame -- read only inside the page */
@@ -363,17 +368,60 @@ async function cpuModel() {
 }
 
 /**
+ * Reads an earlier capture's images of stories that had no baseline, to compare new captures with.
+ * Only complete, valid results are used, and only `new` items (captured twice and stable) whose
+ * file hashes to the capture results.json names.
+ * @param {string | null} dir the earlier capture's directory, or null
+ * @returns {Promise<{ images: Map<string, Buffer>, runId: number | null }>} images by file name
+ */
+async function loadReference(dir) {
+    const images = new Map();
+    let results = null;
+    try {
+        results = dir ? JSON.parse(await readFile(join(dir, "results.json"), "utf8")) : null;
+    } catch {
+        // No reference downloaded: every story without a baseline is new.
+    }
+    if (!results || validateResults(results).length > 0 || !results.complete) {
+        return { images, runId: null };
+    }
+    for (const item of results.items.filter((i) => i.status === "new")) {
+        const bytes = await readFile(join(dir, item.file)).catch(() => null);
+        if (bytes && sha256(bytes) === item.capture) {
+            images.set(item.file, bytes);
+        }
+    }
+    return { images, runId: results.runId };
+}
+
+/**
  * Captures one project.
  * @param {{ project: string, storybook: string, baselines: string, out: string, workers: number,
- *     stableFrame: boolean, log?: (line: string) => void }} options `stableFrame` waits for every
- *     graphty-element's `waitForStableFrame()`
+ *     stableFrame: boolean, reference?: string | null, stories?: string[] | null,
+ *     log?: (line: string) => void }} options `stableFrame` waits for every graphty-element's
+ *     `waitForStableFrame()`; `reference` is master's capture (see above); `stories` keeps only
+ *     the story ids starting with one of these prefixes, for a quick local preview, and then no
+ *     baseline is reported removed
  * @returns {Promise<object>} the final results.json contents
  */
-export async function capture({ project, storybook, baselines, out, workers, stableFrame, log = console.log }) {
+export async function capture({
+    project,
+    storybook,
+    baselines,
+    out,
+    workers,
+    stableFrame,
+    reference = null,
+    stories = null,
+    log = console.log,
+}) {
     const started = Date.now();
     await mkdir(join(out, "baselines"), { recursive: true });
     await mkdir(join(out, "second"), { recursive: true });
-    const ids = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
+    const ids = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8"))).filter(
+        (id) => !stories || stories.some((p) => id.startsWith(p)),
+    );
+    const refs = await loadReference(reference);
     const [server, base] = await serve(storybook);
     // One browser per worker: every page of a browser shares its one GPU process, so with
     // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.
@@ -410,13 +458,14 @@ export async function capture({ project, storybook, baselines, out, workers, sta
                 }
             }
         }
-        const gone = [...existing].filter((f) => !planned.has(f) && BASELINE_NAME.test(f));
+        const gone = stories ? [] : [...existing].filter((f) => !planned.has(f) && BASELINE_NAME.test(f));
 
         const results = {
             version: 1,
             project,
             ...(await provenance()),
             seeded: await hasBaselines(baselines),
+            reference: refs.runId,
             complete: false,
             expected: items.length + jobs.length + gone.length,
             capturedAt: new Date().toISOString(),
@@ -435,7 +484,7 @@ export async function capture({ project, storybook, baselines, out, workers, sta
         await save();
 
         for (const file of gone) {
-            const baseline = await readFile(join(baselines, file));
+            const baseline = await readBaseline(join(baselines, file));
             const [id, mode = null] = file.slice(0, -4).split(".");
             await writeFile(join(out, "baselines", file), baseline);
             items.push({
@@ -452,8 +501,9 @@ export async function capture({ project, storybook, baselines, out, workers, sta
 
         const run = async (browser, job) => {
             const { url, delay, ...common } = job;
-            const baseline = await readFile(join(baselines, job.file)).catch(() => null);
-            const opts = { threshold: job.threshold, includeAA: job.includeAA };
+            const baseline = await readBaseline(join(baselines, job.file));
+            const reference = baseline ? null : (refs.images.get(job.file) ?? null);
+            const opts = { threshold: job.threshold, includeAA: job.includeAA, reference };
             const failed = (shot, prefix = "") => ({
                 ...common,
                 ...EMPTY,
@@ -476,7 +526,7 @@ export async function capture({ project, storybook, baselines, out, workers, sta
                 result = classify({ baseline, first: first.png, second: second.png, ...opts });
             }
             const { status } = result;
-            if (["changed", "new", "unstable"].includes(status)) {
+            if (["changed", "new", "unseeded", "unstable"].includes(status)) {
                 await writeFile(join(out, job.file), first.png);
             }
             if (status === "unstable") {

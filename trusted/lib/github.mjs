@@ -1,7 +1,8 @@
 /**
  * Everything the review page needs from GitHub, through the `gh` CLI with the owner's login:
  * open pull requests, the CI run for a head, the `visual` job's outcome, the capture artifacts,
- * and the comment and pull request that a Finish writes.
+ * and the comment, issue and pull request that a Finish writes. CI uses one of these too: a pull
+ * request's capture downloads master's newest capture with `newestMasterCapture`.
  *
  * Only `gh api` and `gh run download` are used, because they exist in every gh release still in
  * use (Ubuntu 22.04 ships gh 2.4, which lacks `gh run list --commit` and most `--json` fields).
@@ -9,8 +10,10 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+import { validateResults } from "./results.mjs";
 
 /**
  * Runs a program and resolves with its trimmed stdout.
@@ -141,6 +144,47 @@ export async function downloadCaptures(gh, run, projects, tmp) {
         out[project] = { dir, attempt: newest.attempt };
     }
     return out;
+}
+
+/**
+ * Downloads master's newest complete capture of one project: the reference a pull request's
+ * capture compares stories without a baseline against.
+ * ponytail: the newest master run with a complete capture, not the run of the pull request's
+ * exact base; a story changed on master since then shows as `new` (it blocks, never passes).
+ * @param {Function} gh the gh runner
+ * @param {string} project the project id
+ * @param {string} tmp the download root
+ * @returns {Promise<string | null>} the capture's directory, or null when no master run has one
+ */
+export async function newestMasterCapture(gh, project, tmp) {
+    const { workflow_runs: runs } = await api(
+        gh,
+        "repos/{owner}/{repo}/actions/workflows/ci.yml/runs?branch=master&event=push&per_page=10",
+    );
+    for (const run of runs.map(toRun)) {
+        const dir = (await downloadCaptures(gh, run, [project], tmp))[project]?.dir;
+        let results = null;
+        try {
+            results = dir ? JSON.parse(readFileSync(join(dir, "results.json"), "utf8")) : null;
+        } catch {
+            // An unreadable capture is skipped like a missing one.
+        }
+        if (results && validateResults(results).length === 0 && results.complete && results.project === project) {
+            return dir;
+        }
+    }
+    return null;
+}
+
+/**
+ * Opens an issue.
+ * @param {Function} gh the gh runner
+ * @param {{ title: string, body: string, labels: string[] }} issue what to open
+ * @returns {Promise<string>} its URL
+ */
+export async function createIssue(gh, { title, body, labels }) {
+    const input = JSON.stringify({ title, body, labels });
+    return JSON.parse(await gh(["api", "repos/{owner}/{repo}/issues", "--input", "-"], input)).html_url;
 }
 
 /**

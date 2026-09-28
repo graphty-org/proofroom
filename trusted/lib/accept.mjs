@@ -1,11 +1,16 @@
 /**
  * Finish: turns the owner's decisions on one pull request (or on master, for the seed) into one
- * commit, one push and one comment.
+ * commit, one push and one comment (on master, one issue).
  *
  * Accepts and exclusions are written as files under `visual-baselines/` in a throwaway worktree
  * at the captured head, never in the main checkout, together with one review record, and pushed
  * to the pull request's branch. Rejects become one pull request comment. Every accepted PNG is
  * the artifact's file only when its bytes hash to the capture results.json names.
+ *
+ * Baseline PNGs are stored in Git LFS (the root .gitattributes). The commit must hold LFS pointers,
+ * never raw PNGs, and the LFS objects must reach GitHub before the commit does; with hooks
+ * switched off nothing else uploads them, so this module checks git-lfs is set up, checks every
+ * committed PNG is a pointer, and runs `git lfs push` before `git push`.
  */
 
 import { createHash } from "node:crypto";
@@ -13,7 +18,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { commentOnPullRequest, createPullRequest, exec } from "./github.mjs";
+import { commentOnPullRequest, createIssue, createPullRequest, exec } from "./github.mjs";
+import { isLfsPointer } from "./compare.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -39,7 +45,8 @@ export class AcceptError extends Error {
  * files the tool wrote under `visual-baselines/`, and its message is generated to pass commitlint
  * (a test checks it). `--no-verify` alone is not enough, because git runs prepare-commit-msg even
  * with it, so the hooks path points nowhere. Signing is left as the repository configures it, so
- * the commit carries the owner's identity and signature.
+ * the commit carries the owner's identity and signature. GIT_LFS_SKIP_SMUDGE keeps the worktree's
+ * checkout from downloading every baseline image: untouched baselines stay pointer files there.
  * @param {string} cwd the repository or worktree
  * @param {string[]} args git's arguments
  * @param {string} [input] stdin
@@ -49,7 +56,7 @@ const git = (cwd, args, input) =>
     exec("git", ["-c", "core.hooksPath=/dev/null", ...args], {
         cwd,
         input,
-        env: { ...process.env, HUSKY: "0" },
+        env: { ...process.env, HUSKY: "0", GIT_LFS_SKIP_SMUDGE: "1" },
     });
 
 const gitOk = (cwd, args) =>
@@ -57,6 +64,29 @@ const gitOk = (cwd, args) =>
         () => true,
         () => false,
     );
+
+/** How to set up git-lfs; the owner's guide is visual-review/README.md, "Setup". */
+const LFS_SETUP =
+    "on Ubuntu 22.04 run `sudo apt-get install git-lfs`, or put the git-lfs binary from " +
+    "https://github.com/git-lfs/git-lfs/releases in ~/bin; then run `git lfs install` " +
+    '(visual-review/README.md, "Setup")';
+
+/**
+ * Why an accept would commit raw PNGs instead of Git LFS pointers, if it would: git-lfs is
+ * missing, or its filter is not configured (`git lfs install` never ran).
+ * @param {string} repo the repository
+ * @returns {Promise<string | null>} the problem and how to fix it, or null when git-lfs is ready
+ */
+export async function lfsProblem(repo) {
+    const env = await exec("git", ["lfs", "env"], { cwd: repo }).catch(() => null);
+    if (env === null) {
+        return `git-lfs is not installed (git lfs env failed): ${LFS_SETUP}`;
+    }
+    if (!/^git config filter\.lfs\.clean = "[^"]/m.test(env)) {
+        return `git-lfs is installed but its filter is not configured: ${LFS_SETUP}`;
+    }
+    return null;
+}
 
 /**
  * The generated commit message.
@@ -152,7 +182,7 @@ function check(projects, decisions) {
  *     what the owner decided: accept, reject or exclude (checked here)
  * @param {Date} [input.now] the review time
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
- *     rejects: number }>} what was pushed and posted
+ *     issue: string | null, rejects: number }>} what was pushed and posted (`issue`: master's rejects)
  */
 export async function finish({ repo, gh, target, projects, decisions, now = new Date() }) {
     const { accepts, rejects } = check(projects, decisions);
@@ -161,13 +191,11 @@ export async function finish({ repo, gh, target, projects, decisions, now = new 
         throw new AcceptError("nothing decided");
     }
     const isMaster = target.pr === null;
-    if (isMaster && accepts.length === 0) {
-        throw new AcceptError("nothing accepted: a seed needs at least one accept");
-    }
 
     let commit = null;
     let branch = target.branch;
     let pullRequest = null;
+    let issue = null;
     if (accepts.length > 0) {
         ({ commit, branch } = await commitAccepts({ repo, target, accepts, first, now }));
         if (isMaster) {
@@ -178,9 +206,20 @@ export async function finish({ repo, gh, target, projects, decisions, now = new 
             });
         }
     }
-    if (rejects.length > 0 && !isMaster) {
+    if (rejects.length > 0) {
         try {
-            await commentOnPullRequest(gh, target.pr, rejectComment(target.pr, first, rejects));
+            // Master has no pull request to comment on: its rejects are stories that do not look
+            // right yet, so they become one issue an agent can pick up.
+            const body = rejectComment(target.pr, first, rejects);
+            if (isMaster) {
+                issue = await createIssue(gh, {
+                    title: `Visual review: ${rejects.length} ${rejects.length === 1 ? "story" : "stories"} rejected on master`,
+                    body,
+                    labels: ["bug", "priority:medium", "effort:low"],
+                });
+            } else {
+                await commentOnPullRequest(gh, target.pr, body);
+            }
         } catch (err) {
             if (commit === null) {
                 throw err;
@@ -193,7 +232,7 @@ export async function finish({ repo, gh, target, projects, decisions, now = new 
             throw e;
         }
     }
-    return { commit, branch, pullRequest, rejects: rejects.length };
+    return { commit, branch, pullRequest, issue, rejects: rejects.length };
 }
 
 /**
@@ -208,6 +247,10 @@ export async function finish({ repo, gh, target, projects, decisions, now = new 
  */
 async function commitAccepts({ repo, target, accepts, first, now }) {
     const isMaster = target.pr === null;
+    const lfs = await lfsProblem(repo);
+    if (lfs) {
+        throw new AcceptError(lfs);
+    }
     const base = isMaster ? first.commit : first.headSha;
     for (const { capture } of accepts) {
         const r = capture.results;
@@ -286,6 +329,18 @@ async function commitAccepts({ repo, target, accepts, first, now }) {
             record,
         });
         await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
+        for (const { path, to } of items) {
+            if (
+                path.endsWith(".png") &&
+                to !== null &&
+                !isLfsPointer(Buffer.from(await git(tree, ["cat-file", "blob", `HEAD:${path}`])))
+            ) {
+                throw new AcceptError(
+                    `${path} was committed as a raw PNG, not a Git LFS pointer: check .gitattributes`,
+                );
+            }
+        }
+        await git(tree, ["lfs", "push", "origin", "HEAD"]);
         await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]);
         return { commit: await git(tree, ["rev-parse", "HEAD"]), branch };
     } catch (err) {
@@ -363,8 +418,9 @@ async function removeWorktree(repo, tree) {
 const oneLine = (s) => s.replace(/\s+/g, " ").slice(0, 2000);
 
 /**
- * The one comment a reject session posts.
- * @param {number} pr the pull request
+ * The one comment (on master, the one issue) a reject session posts. An agent fixing the stories
+ * reads the block at the end.
+ * @param {number | null} pr the pull request, or null for master
  * @param {object} results the capture's results.json
  * @param {object[]} rejects the rejects with their items
  * @returns {string} Markdown with a machine-readable block at the end
@@ -376,16 +432,10 @@ function rejectComment(pr, results, rejects) {
         capture: r.item.capture,
         reason: oneLine(r.reason),
     }));
-    const block = {
-        version: 1,
-        pr,
-        runId: results.runId,
-        runAttempt: results.runAttempt,
-        head: results.headSha,
-        items,
-    };
+    const head = results.headSha ?? results.commit;
+    const block = { version: 1, pr, runId: results.runId, runAttempt: results.runAttempt, head, items };
     return [
-        `**Visual review: ${rejects.length} rejected** (CI run ${results.runId}, head ${results.headSha?.slice(0, 10)}).`,
+        `**Visual review: ${rejects.length} rejected** (CI run ${results.runId}, ${pr === null ? "master at" : "head"} ${head.slice(0, 10)}).`,
         "The reasons below are the reviewer's notes, quoted as data.",
         "",
         ...items.map((i) => `- \`${i.project}/${i.file}\`: ${JSON.stringify(i.reason)}`),

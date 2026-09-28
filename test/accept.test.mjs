@@ -1,13 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { unrecordedChanges } from "../trusted/gate.mjs";
-import { commitMessage, finish } from "../trusted/lib/accept.mjs";
-import { sha256 } from "../trusted/lib/compare.mjs";
-import { copyFixture, git, isolateGit, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
+import { contentHash, unrecordedChanges } from "../trusted/gate.mjs";
+import { commitMessage, finish, lfsProblem } from "../trusted/lib/accept.mjs";
+import { isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
+import { copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
@@ -59,9 +59,12 @@ describe("finish: accepts", () => {
         const cm = s.projects["compact-mantine"].results;
         const button = cm.items.find((i) => i.file === "button--primary.dark.png");
         const badge = cm.items.find((i) => i.file === "badge--default.light.png");
-        expect(sha256(show(s, "feature", "visual-baselines/compact-mantine/button--primary.dark.png"))).toBe(
-            button.capture,
-        );
+        // Committed as a Git LFS pointer to the captured image, and the image itself uploaded.
+        const pointer = show(s, "feature", "visual-baselines/compact-mantine/button--primary.dark.png");
+        expect(isLfsPointer(pointer)).toBe(true);
+        expect(contentHash(pointer)).toBe(button.capture);
+        const object = readFileSync(lfsObject(s.remote, button.capture));
+        expect(sha256(object)).toBe(button.capture);
 
         const record = JSON.parse(show(s, "feature", "visual-baselines/reviews/20260927T150405Z-pr123.json"));
         expect(record).toMatchObject({
@@ -143,6 +146,69 @@ describe("finish: accepts", () => {
             base: "master",
         });
         expect(out.pullRequest).toBe("https://github.com/o/r/pull/9");
+    });
+});
+
+describe("finish: rejects on master", () => {
+    it("opens one issue holding the rejects, with nothing accepted", async () => {
+        const s = setup();
+        const master = { commit: s.master, headSha: null, pr: null };
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master);
+        const out = await s.run(
+            [{ project: "compact-mantine", file: "badge--default.light.png", decision: "reject", reason: "clipped" }],
+            { pr: null, branch: null },
+        );
+        expect(out).toMatchObject({ commit: null, pullRequest: null, issue: "https://github.com/o/r/pull/9" });
+        expect(s.calls).toHaveLength(1);
+        expect(s.calls[0].args).toEqual(["api", "repos/{owner}/{repo}/issues", "--input", "-"]);
+        const issue = JSON.parse(s.calls[0].input);
+        expect(issue.title).toBe("Visual review: 1 story rejected on master");
+        expect(issue.labels).toEqual(["bug", "priority:medium", "effort:low"]);
+        const block = JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(issue.body)[1]);
+        expect(block).toMatchObject({
+            pr: null,
+            head: s.master,
+            items: [{ project: "compact-mantine", file: "badge--default.light.png", reason: "clipped" }],
+        });
+    });
+});
+
+describe("finish: Git LFS", () => {
+    it("refuses to accept when git-lfs's filter is not configured, so no raw PNG is committed", async () => {
+        const s = setup();
+        git(s.repo, "config", "--unset", "filter.lfs.clean");
+        expect(await lfsProblem(s.repo)).toMatch(/filter is not configured: .*git lfs install/);
+        await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(/filter is not configured/);
+        expect(remoteLog(s, "feature")[0]).toBe(s.head);
+    });
+
+    it("says how to install git-lfs when it is missing", async () => {
+        const s = setup();
+        const bin = mkdtempSync(join(tmpdir(), "vr-bin-"));
+        symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(bin, "git"));
+        const path = process.env.PATH;
+        process.env.PATH = bin;
+        try {
+            expect(await lfsProblem(s.repo)).toMatch(/git-lfs is not installed .*apt-get install git-lfs/);
+        } finally {
+            process.env.PATH = path;
+        }
+        expect(await lfsProblem(s.repo)).toBeNull();
+    });
+
+    it("refuses when .gitattributes does not store the baselines in LFS", async () => {
+        const s = setup();
+        git(s.repo, "checkout", "-q", "feature");
+        writeFileSync(join(s.repo, ".gitattributes"), "");
+        git(s.repo, "commit", "-q", "-am", "drop the LFS attributes");
+        git(s.repo, "push", "-q", "origin", "feature");
+        const head = git(s.repo, "rev-parse", "HEAD");
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "h/compact-mantine"), {
+            commit: head,
+            headSha: head,
+        });
+        await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(/raw PNG, not a Git LFS pointer/);
+        expect(remoteLog(s, "feature")[0]).toBe(head);
     });
 });
 

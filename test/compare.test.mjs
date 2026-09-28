@@ -1,7 +1,10 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
-import { classify, compareImages, sha256 } from "../trusted/lib/compare.mjs";
+import { classify, compareImages, isLfsPointer, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 
 /**
  * Encodes a width x height PNG filled with `fill` ([r, g, b]), then applies `edits`.
@@ -153,5 +156,38 @@ describe("classify", () => {
 
     it("a single capture that differs is changed (a local run captures once)", () => {
         expect(classify({ baseline: base, first: a, ...OPTS })).toMatchObject({ status: "changed" });
+    });
+
+    it("no baseline and the same as master's capture is unseeded; different from it is new", () => {
+        expect(classify({ baseline: null, first: a, reference: Buffer.from(a), ...OPTS })).toMatchObject({
+            status: "unseeded",
+            baseline: null,
+            capture: sha256(a),
+            size: [8, 8],
+        });
+        expect(classify({ baseline: null, first: a, reference: b, ...OPTS })).toMatchObject({ status: "new" });
+        // A reference never applies where a baseline exists: the baseline decides.
+        expect(classify({ baseline: base, first: a, reference: a, ...OPTS })).toMatchObject({ status: "changed" });
+    });
+});
+
+describe("Git LFS pointers", () => {
+    const POINTER = `version https://git-lfs.github.com/spec/v1\noid sha256:${"a".repeat(64)}\nsize 687\n`;
+
+    it("tells a pointer file from a PNG", () => {
+        expect(isLfsPointer(Buffer.from(POINTER))).toBe(true);
+        expect(isLfsPointer(png(8, 8, WHITE))).toBe(false);
+        expect(isLfsPointer(Buffer.alloc(0))).toBe(false);
+    });
+
+    it("refuses a baseline that is a pointer, reads a PNG, and returns null for none", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "vr-lfs-"));
+        writeFileSync(join(dir, "pointer.png"), POINTER);
+        writeFileSync(join(dir, "real.png"), png(8, 8, WHITE));
+        await expect(readBaseline(join(dir, "pointer.png"))).rejects.toThrow(
+            /pointer.png: baseline is an LFS pointer; run git lfs pull/,
+        );
+        expect(await readBaseline(join(dir, "real.png"))).toEqual(png(8, 8, WHITE));
+        expect(await readBaseline(join(dir, "missing.png"))).toBeNull();
     });
 });

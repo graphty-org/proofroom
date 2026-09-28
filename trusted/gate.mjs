@@ -3,6 +3,11 @@
  * The pull request gate: fails while a project that has baselines on the base branch holds visual
  * changes the owner has not reviewed.
  *
+ * Seeding is per story, so a seeded project can hold stories with no baseline yet. Those that the
+ * pull request did not change are `unseeded` (capture compared them with master's newest capture)
+ * and pass; a story the pull request adds or changes is `new` and blocks until the owner accepts
+ * it there, which creates its first baseline.
+ *
  * <dir> holds the downloaded `visual-<project>-<attempt>` artifacts of this CI run, every attempt
  * of it. For each project only the highest attempt counts, so re-running failed jobs (which
  * leaves the visual jobs' old attempt as the newest) can neither hide nor resurrect a capture.
@@ -32,7 +37,7 @@ import { parseArgs } from "node:util";
 
 import { validateResults } from "./lib/results.mjs";
 
-const PASSING = new Set(["unchanged", "excluded"]);
+const PASSING = new Set(["unchanged", "excluded", "unseeded"]);
 
 /**
  * The newest attempt's results.json of every project in a directory of downloaded artifacts.
@@ -128,7 +133,7 @@ export function unrecordedChanges(base, head, cwd = process.cwd()) {
                 problems.push(`${path}: review records are append-only, but this one was changed or deleted`);
             }
         } else if (path.endsWith(".png")) {
-            changed.push({ path, hash: status === "D" ? null : sha256(show(path)) });
+            changed.push({ path, hash: status === "D" ? null : contentHash(show(path)) });
         } else if (path.endsWith(".json") && status !== "D") {
             // ponytail: only settings that exclude a story need a record. Any other settings edit,
             // and deleting a settings file, passes: the capture it causes is itself reviewed.
@@ -156,6 +161,19 @@ export function unrecordedChanges(base, head, cwd = process.cwd()) {
 }
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * The SHA-256 of the file a blob stands for. Baseline PNGs are Git LFS pointers in git, and a
+ * pointer names its object's SHA-256 (`oid sha256:<hex>`), which is the PNG's own hash, so no
+ * LFS object is ever downloaded to check a record. Any other blob is hashed as it is.
+ * @param {Buffer} bytes the blob
+ * @returns {string} the hex SHA-256 of the content
+ */
+export function contentHash(bytes) {
+    const text = bytes.subarray(0, 200).toString("latin1");
+    const oid = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:([0-9a-f]{64})\n/.exec(text);
+    return oid ? oid[1] : sha256(bytes);
+}
 
 function parseOr(bytes) {
     try {
