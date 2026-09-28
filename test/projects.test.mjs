@@ -11,6 +11,12 @@ function visualMatrix() {
     return Object.fromEntries([...include.matchAll(/- project: (\S+)\s+artifact: (\S+)/g)].map((m) => [m[1], m[2]]));
 }
 
+// The `build` job alone, so a matching download step in a later job cannot stand in for its upload.
+function buildJob() {
+    const start = CI.indexOf("\n    build:\n");
+    return CI.slice(start, CI.indexOf("\n    test:\n", start));
+}
+
 describe("projects.json", () => {
     it("lists exactly the projects the CI visual job captures, with the same Storybook artifact", () => {
         const fromRegistry = Object.fromEntries(Object.entries(PROJECTS).map(([name, p]) => [name, p.artifact]));
@@ -25,7 +31,11 @@ describe("projects.json", () => {
 
     it("points each project at a Storybook the build job uploads from that directory", () => {
         for (const p of Object.values(PROJECTS)) {
-            expect(CI).toMatch(new RegExp(`name: ${p.artifact}\\s+path: ${p.dir}/storybook-static/`));
+            expect(buildJob()).toMatch(
+                new RegExp(
+                    `uses: actions/upload-artifact@v4\\s+with:\\s+name: ${p.artifact}\\s+path: ${p.dir}/storybook-static/`,
+                ),
+            );
         }
     });
 });
