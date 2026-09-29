@@ -4,9 +4,8 @@
  * Serves storybook-static on 127.0.0.1, reads the story list from index.json and every story's
  * `parameters.chromatic` from the preview's own `extract()`, then opens each story and mode in a
  * fresh browser context: a fixed start time, SwiftShader WebGL, a 1200 x 900 viewport at device
- * scale factor 2, as Chromatic captures. Each PNG is cropped to the story's rendered content (every
- * visible element, portals included) plus a 32 px margin; a canvas project keeps the viewport and
- * its full width, and is cropped only in height, never past the viewport. It waits
+ * scale factor 2, as Chromatic captures. Each PNG is the whole canvas, never cropped to the content:
+ * the full page of the story iframe, which is the viewport unless the story overflows it. It waits
  * for Storybook's render (play functions included) and, for graphty-element, for
  * `waitForStableFrame()`; a story that errors or never settles is `failed`, never a picture,
  * after one retry in a new context, so a single timeout on a busy runner does not block a pull
@@ -46,8 +45,6 @@ const CLOCK_START = "2026-01-01T12:00:00Z";
 const VIEWPORT = { width: 1200, height: 900 };
 /** Device pixels per CSS pixel, as Chromatic captures; recorded in results.json as `scale`. */
 const SCALE = 2;
-/** CSS pixels kept around the story's content box. */
-const MARGIN = 32;
 const RENDER_TIMEOUT = 30_000;
 const CHROMIUM_ARGS = [
     "--use-gl=angle",
@@ -265,7 +262,7 @@ async function extract(browser, base) {
  * Renders one story and mode, retrying once in a new context when it fails.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean, canvas: boolean }} options as for shootOnce
+ * @param {{ delay: number, stableFrame: boolean }} options as for shootOnce
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the
  *     second attempt's result when the first failed
  */
@@ -278,13 +275,12 @@ async function shoot(browser, url, options) {
  * Renders one story and mode in a fresh context and screenshots it.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean, canvas: boolean }} options the story's delay,
- *     whether to wait for every graphty-element's stable frame, and whether the project draws on
- *     a canvas (see contentClip)
+ * @param {{ delay: number, stableFrame: boolean }} options the story's delay and whether to wait
+ *     for every graphty-element's stable frame
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the PNG,
  *     or a reason it failed; a failure's console holds the rest of its message and any stack
  */
-async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
+async function shootOnce(browser, url, { delay, stableFrame }) {
     const context = await newContext(browser);
     const lines = [];
     const fail = (reason) => {
@@ -324,7 +320,7 @@ async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
         }
         // A web font the story uses is fetched only once text needs it, which can be after the
         // render completed; a capture taken before it arrives draws the fallback face, so the
-        // text, the crop and anything placed beside the text all differ from a later capture.
+        // text and anything placed beside the text differ from a later capture.
         // Wait for every font in use, then for one frame drawn with them.
         await page.evaluate(async () => {
             await document.fonts.ready;
@@ -344,116 +340,17 @@ async function shootOnce(browser, url, { delay, stableFrame, canvas }) {
         if (delay > 0) {
             await page.waitForTimeout(delay);
         }
-        const box = await page.evaluate(contentClip, { margin: MARGIN, canvas });
-        const beyond = box.x + box.width > VIEWPORT.width || box.y + box.height > VIEWPORT.height;
-        const png = await page.screenshot({ animations: "disabled", caret: "hide", clip: box, fullPage: beyond });
+        // The owner's rule: always the whole canvas, never cropped to the content. That is the
+        // full page of the story iframe -- the viewport, or everything a scroll would reach when
+        // the story is taller or wider -- so every story of a project is the same size unless
+        // it overflows.
+        const png = await page.screenshot({ animations: "disabled", caret: "hide", fullPage: true });
         return { png, reason: null, console: lines };
     } catch (e) {
         return fail(e.message);
     } finally {
         await context.close();
     }
-}
-
-/**
- * Runs in the page: the box to screenshot, in CSS pixels. It is the union of the story's ink:
- * each text run's own box, each replaced element (image, SVG, canvas, form control), and each
- * element that paints something of its own (a background other than the page's, a border, a
- * shadow, an outline). A block that only lays out -- the story root, a full-width wrapper --
- * adds nothing, so a single button is cropped to the button. Portals (tooltips, popovers) are
- * elements of the body too and count. Every box is cut to the ancestors whose overflow clips it
- * (so rows a scroll area hides do not stretch it; a fixed element escapes them). Then `margin`
- * is added, within the page. A canvas project (`canvas`) keeps the viewport: its full width, and
- * the ink's height plus the margin, never past the viewport, because a capture beyond it could
- * resize the canvas, which clears it. A story with no ink keeps the whole viewport.
- * @param {{ margin: number, canvas: boolean }} options the margin and whether it is a canvas project
- * @returns {{ x: number, y: number, width: number, height: number }} the clip
- */
-function contentClip({ margin, canvas }) {
-    const root = document.documentElement;
-    const W = canvas ? window.innerWidth : Math.max(root.scrollWidth, window.innerWidth);
-    const H = canvas ? window.innerHeight : Math.max(root.scrollHeight, window.innerHeight);
-    const transparent = (c) => c === "transparent" || /^rgba\(.*,\s*0\)$/.test(c);
-    const bodyBg = window.getComputedStyle(document.body).backgroundColor;
-    const pageBg = transparent(bodyBg) ? window.getComputedStyle(root).backgroundColor : bodyBg;
-    const REPLACED = new Set(["IMG", "SVG", "svg", "CANVAS", "VIDEO", "IFRAME", "INPUT", "TEXTAREA", "SELECT", "HR"]);
-    const paints = (st) =>
-        (!transparent(st.backgroundColor) && st.backgroundColor !== pageBg) ||
-        st.backgroundImage !== "none" ||
-        st.boxShadow !== "none" ||
-        (st.outlineStyle !== "none" && parseFloat(st.outlineWidth) > 0) ||
-        ["Top", "Right", "Bottom", "Left"].some(
-            (side) =>
-                st[`border${side}Style`] !== "none" &&
-                parseFloat(st[`border${side}Width`]) > 0 &&
-                !transparent(st[`border${side}Color`]),
-        );
-    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
-    const add = (r, c) => {
-        const [l, t, rr, b] = [
-            Math.max(r.left, c[0]),
-            Math.max(r.top, c[1]),
-            Math.min(r.right, c[2]),
-            Math.min(r.bottom, c[3]),
-        ];
-        if (rr > l && b > t) {
-            x0 = Math.min(x0, l + window.scrollX);
-            y0 = Math.min(y0, t + window.scrollY);
-            x1 = Math.max(x1, rr + window.scrollX);
-            y1 = Math.max(y1, b + window.scrollY);
-        }
-    };
-    const ALL = [-Infinity, -Infinity, Infinity, Infinity];
-    // Walks the tree with the clip its ancestors impose, as [left, top, right, bottom].
-    const visit = (parent, clipBox) => {
-        for (const e of parent.children) {
-            const style = window.getComputedStyle(e);
-            if (style.display === "none") {
-                continue;
-            }
-            const r = e.getBoundingClientRect();
-            const c = style.position === "fixed" ? ALL : clipBox;
-            if (style.visibility !== "hidden" && parseFloat(style.opacity) > 0) {
-                if (REPLACED.has(e.tagName) || paints(style)) {
-                    add(r, c);
-                }
-                for (const node of e.childNodes) {
-                    if (node.nodeType === 3 && node.textContent.trim() !== "") {
-                        const range = document.createRange();
-                        range.selectNodeContents(node);
-                        for (const tr of range.getClientRects()) {
-                            add(tr, c);
-                        }
-                    }
-                }
-            }
-            const clipsX = style.overflowX !== "visible";
-            const clipsY = style.overflowY !== "visible";
-            const inner = [
-                clipsX ? Math.max(c[0], r.left) : c[0],
-                clipsY ? Math.max(c[1], r.top) : c[1],
-                clipsX ? Math.min(c[2], r.right) : c[2],
-                clipsY ? Math.min(c[3], r.bottom) : c[3],
-            ];
-            visit(e, inner);
-            // A web component draws inside its shadow root: graphty-element's canvas lives there.
-            if (e.shadowRoot) {
-                visit(e.shadowRoot, inner);
-            }
-        }
-    };
-    visit(document.body, ALL);
-    if (x1 <= x0 || y1 <= y0) {
-        return { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
-    }
-    const left = canvas ? 0 : Math.max(0, Math.floor(x0 - margin));
-    const right = canvas ? W : Math.min(W, Math.ceil(x1 + margin));
-    const top = Math.max(0, Math.floor(y0 - margin));
-    const bottom = Math.min(H, Math.ceil(y1 + margin));
-    if (right <= left || bottom <= top) {
-        return { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
-    }
-    return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 const clip = (lines) => lines.slice(0, MAX_CONSOLE).map((l) => l.slice(0, MAX_LINE));
@@ -541,9 +438,9 @@ async function loadReference(dir) {
 /**
  * Captures one project.
  * @param {{ project: string, storybook: string, baselines: string, out: string, workers: number,
- *     stableFrame: boolean, canvas?: boolean, reference?: string | null, stories?: string[] | null,
+ *     stableFrame: boolean, reference?: string | null, stories?: string[] | null,
  *     log?: (line: string) => void }} options `stableFrame` waits for every graphty-element's
- *     `waitForStableFrame()`; `canvas` keeps the viewport (see contentClip); `reference` is master's capture (see above); `stories` keeps only
+ *     `waitForStableFrame()`; `reference` is master's capture (see above); `stories` keeps only
  *     the story ids starting with one of these prefixes, for a quick local preview, and then no
  *     baseline is reported removed
  * @returns {Promise<object>} the final results.json contents
@@ -555,7 +452,6 @@ export async function capture({
     out,
     workers,
     stableFrame,
-    canvas = false,
     reference = null,
     stories = null,
     log = console.log,
@@ -666,14 +562,14 @@ export async function capture({
                 reason: prefix + shot.reason,
                 console: clip(shot.console),
             });
-            const first = await shoot(browser, url, { delay, stableFrame, canvas });
+            const first = await shoot(browser, url, { delay, stableFrame });
             if (!first.png) {
                 return failed(first);
             }
             let result = classify({ baseline, first: first.png, ...opts });
             let second = null;
             if (result.status === "changed" || result.status === "new") {
-                second = await shoot(browser, url, { delay, stableFrame, canvas });
+                second = await shoot(browser, url, { delay, stableFrame });
                 if (!second.png) {
                     return failed(second, "second capture: ");
                 }
