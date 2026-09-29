@@ -29,6 +29,9 @@ const SPOT_ALPHA = 190; // the spotlight's dimming, out of 255, as Chromatic's f
 const RE_REVIEW = "re-review: your earlier accept was replaced by master's baseline";
 // The grid's decision filters, and how a decision reads on a tile.
 const DECISIONS = { accept: "Accepted", reject: "Rejected", exclude: "Excluded" };
+// The reviewer's own display choices (the changed box, blinking the overlay), kept in this browser.
+const OPTIONS_KEY = "visual-review:options";
+const saved = loadOptions();
 
 const state = {
     targets: [],
@@ -42,6 +45,8 @@ const state = {
     view: "side", // side | flash | highlight | spotlight
     zoom: "fit",
     box: 0, // which changed box "next changed box" is on
+    showBox: saved.showBox ?? true, // outline the changed box (B)
+    blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
     held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
     screen: "targets",
@@ -193,6 +198,30 @@ function setCrumbs(...parts) {
 function stopFlash() {
     clearInterval(flashTimer);
     flashTimer = null;
+}
+
+// Local storage can be missing or refuse (a private window, blocked site data): the page then uses
+// the defaults and forgets the choices, and nothing else changes.
+function loadOptions() {
+    try {
+        return JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}") ?? {};
+    } catch {
+        return {};
+    }
+}
+
+function saveOptions() {
+    try {
+        localStorage.setItem(OPTIONS_KEY, JSON.stringify({ showBox: state.showBox, blink: state.blink }));
+    } catch {
+        // Not remembered; the choice still holds for this page.
+    }
+}
+
+function toggleOption(key) {
+    state[key] = !state[key];
+    saveOptions();
+    showStory();
 }
 
 // ---------------------------------------------------------------- screen: targets
@@ -923,6 +952,30 @@ function showStory() {
                 viewButton("flash", "Flash", "F, or hold Space"),
                 viewButton("highlight", "Highlight", "H"),
                 viewButton("spotlight", "Spotlight", "S"),
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        "aria-pressed": String(state.showBox),
+                        title: "B: outline the changed box",
+                        onclick: () => toggleOption("showBox"),
+                    },
+                    "Box",
+                ),
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        "aria-pressed": String(state.blink),
+                        disabled: view !== "highlight",
+                        title:
+                            view === "highlight"
+                                ? "L: blink the changed pixels"
+                                : "Blink flashes the changed pixels that Highlight lays over the images",
+                        onclick: () => toggleOption("blink"),
+                    },
+                    "Blink",
+                ),
                 note ? el("span", { id: "single-note", class: "meta" }, note) : null,
                 el("span", { class: "spacer" }),
                 ZOOMS.map(zoomButton),
@@ -1003,7 +1056,7 @@ async function diffOf(item) {
                     diffMask: true,
                 });
                 const grown = grow(mask, w, h);
-                return { w, h, a: pa, b: pb, grown, boxes: regions(grown, w, h) };
+                return { w, h, a: pa, b: pb, mask, grown, boxes: regions(grown, w, h) };
             })(),
         );
     }
@@ -1128,7 +1181,14 @@ async function renderStage(item, view, keep) {
     };
     try {
         const diff = item.baseline && item.capture ? await diffOf(item) : null;
-        const left = item.baseline ? pane("Baseline", await imgOf("baseline")) : pane("No baseline");
+        const marked = view === "highlight" && diff !== null;
+        const left = item.baseline
+            ? pane(
+                  marked ? "Baseline, changed pixels in red" : "Baseline",
+                  await imgOf("baseline"),
+                  ...(marked ? [overlay(diff)] : []),
+              )
+            : pane("No baseline");
         let right;
         if (!item.capture) {
             right = pane(item.status === "failed" ? "No capture: it failed" : "No capture");
@@ -1149,11 +1209,22 @@ async function renderStage(item, view, keep) {
                 tag.textContent = showingNew ? "Flash: new" : "Flash: baseline";
             }, FLASH_MS);
         } else if (view === "highlight") {
-            right = pane("Changed pixels in red over the dimmed baseline", highlight(item, diff));
+            right = pane("New, changed pixels in red", await imgOf("capture"), overlay(diff));
         } else {
             right = pane("Spotlight: the new image, dimmed except around each change", spotlight(diff));
         }
         stage.replaceChildren(left, right);
+        if (marked && state.blink) {
+            // Both panes' overlays on and off together, at Flash's pace.
+            const marks = [...stage.querySelectorAll(".diffmark")];
+            let on = true;
+            flashTimer = setInterval(() => {
+                on = !on;
+                for (const m of marks) {
+                    m.style.visibility = on ? "visible" : "hidden";
+                }
+            }, FLASH_MS);
+        }
         const frames = [...stage.querySelectorAll(".frame")];
         // Zoomed, scrolling one pane scrolls the other to the same place.
         for (const f of frames) {
@@ -1210,14 +1281,16 @@ function showBox(stage, boxes, jump) {
         const [left, top] = [Math.max(0, x * factor - 2), Math.max(0, y * factor - 2)];
         const [right, bottom] = [Math.min(sw, (x + w) * factor + 2), Math.min(sh, (y + h) * factor + 2)];
         sheet.querySelector(".boxmark")?.remove();
-        const mark = el("div", { class: "boxmark" });
-        Object.assign(mark.style, {
-            left: `${left}px`,
-            top: `${top}px`,
-            width: `${right - left}px`,
-            height: `${bottom - top}px`,
-        });
-        sheet.append(mark);
+        if (state.showBox) {
+            const mark = el("div", { class: "boxmark" });
+            Object.assign(mark.style, {
+                left: `${left}px`,
+                top: `${top}px`,
+                width: `${right - left}px`,
+                height: `${bottom - top}px`,
+            });
+            sheet.append(mark);
+        }
         if (!jump) {
             frame.scrollLeft = 0;
             frame.scrollTop = 0;
@@ -1253,16 +1326,18 @@ async function nextBox() {
     showBox(document.getElementById("stage"), boxes, true);
 }
 
-// pixelmatch's own picture: the changed pixels in red over the dimmed baseline.
-function highlight(item, diff) {
-    const canvas = el("canvas", { width: String(diff.w), height: String(diff.h) });
+// The changed pixels alone, in solid red, transparent everywhere else: laid over an image in the
+// same grid cell, so it lines up with the image at every zoom.
+function overlay(diff) {
+    const canvas = el("canvas", { width: String(diff.w), height: String(diff.h), class: "diffmark" });
     const ctx = canvas.getContext("2d");
     const out = ctx.createImageData(diff.w, diff.h);
-    pixelmatch(diff.a, diff.b, out.data, diff.w, diff.h, {
-        threshold: item.threshold,
-        includeAA: item.includeAA,
-        alpha: 0.2,
-    });
+    for (let i = 0; i < diff.w * diff.h; i++) {
+        if (diff.mask[i * 4 + 3] !== 0) {
+            out.data[i * 4] = 255;
+            out.data[i * 4 + 3] = 255;
+        }
+    }
     ctx.putImageData(out, 0, 0);
     return canvas;
 }
@@ -1515,6 +1590,12 @@ document.addEventListener("keydown", (e) => {
         f: () => toggleView("flash"),
         h: () => toggleView("highlight"),
         s: () => toggleView("spotlight"),
+        b: () => toggleOption("showBox"),
+        l: () => {
+            if (state.view === "highlight") {
+                toggleOption("blink");
+            }
+        },
         n: nextBox,
         z: () => {
             state.zoom = ZOOMS[(ZOOMS.indexOf(state.zoom) + 1) % ZOOMS.length];
