@@ -12,20 +12,22 @@
  * of it. For each project only the highest attempt counts, so re-running failed jobs (which
  * leaves the visual jobs' old attempt as the newest) can neither hide nor resurrect a capture.
  * Which projects exist and are seeded is read from <ref> (the base branch tip, fetched by the
- * caller), not from the pull request, so deleting a project's baselines in the pull request does not turn the
- * gate off. A seeded project with no results.json, or an incomplete one, fails: a capture that
+ * caller), not from the pull request, and so is visual-review.config.json (where the baselines
+ * live), so neither deleting a project's baselines nor moving the baselines directory in the pull
+ * request turns the gate off. A seeded project with no results.json, or an incomplete one, fails: a capture that
  * crashed has shown the owner nothing. An invalid results.json counts as missing.
  *
  * It also fails when a baseline PNG, or a settings file that excludes a story, differs from the
- * base without a review record added in the pull request (visual-baselines/reviews/*.json) naming
+ * base without a review record added in the pull request (<baselines>/reviews/*.json) naming
  * that path and its new hash. Without that, committing the captured PNGs straight into
- * visual-baselines/ would turn the capture check green with no review at all. Only a record's
- * items[].path and items[].to are read, so this proves a record names the change, not that Finish
- * wrote it or the owner pressed it (visual-review/README.md, "What this does and does not
+ * the baselines directory would turn the capture check green with no review at all. Only a
+ * record's items[].path and items[].to are read, so this proves a record names the change, not
+ * that Finish wrote it or the owner pressed it (the README, "What the gate does and does not
  * guarantee").
  *
- * Usage: node visual-review/trusted/gate.mjs --captures <dir> --base <ref> [--head <ref>]
- * Standard library only (results.mjs has no dependencies), so it runs without an install.
+ * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>], or node gate.mjs with
+ * the same options. Standard library only (results.mjs and config.mjs have no dependencies), so
+ * it runs from a checkout of this package without an install.
  */
 
 import { execFileSync } from "node:child_process";
@@ -35,6 +37,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { validateResults } from "./lib/results.mjs";
 
 const PASSING = new Set(["unchanged", "excluded", "unseeded"]);
@@ -114,10 +117,11 @@ const gitOut = (cwd, args) => execFileSync("git", args, { cwd, maxBuffer: 1 << 2
  * @param {string} base the base branch tip
  * @param {string} head the pull request's checkout
  * @param {string} [cwd] the repository
+ * @param {string} [baselines] the baselines directory
  * @returns {string[]} one line per unaccounted change; empty when every change has a record
  */
-export function unrecordedChanges(base, head, cwd = process.cwd()) {
-    const fields = gitOut(cwd, ["diff", "-z", "--no-renames", "--name-status", base, head, "--", "visual-baselines/"])
+export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "visual-baselines") {
+    const fields = gitOut(cwd, ["diff", "-z", "--no-renames", "--name-status", base, head, "--", `${baselines}/`])
         .toString("utf8")
         .split("\0");
     const show = (path) => gitOut(cwd, ["show", `${head}:${path}`]);
@@ -126,7 +130,7 @@ export function unrecordedChanges(base, head, cwd = process.cwd()) {
     const changed = [];
     for (let i = 0; i + 1 < fields.length; i += 2) {
         const [status, path] = [fields[i], fields[i + 1]];
-        if (path.startsWith("visual-baselines/reviews/")) {
+        if (path.startsWith(`${baselines}/reviews/`)) {
             if (status === "A") {
                 records.push(path);
             } else {
@@ -184,31 +188,65 @@ function parseOr(bytes) {
 }
 
 /**
- * The projects with at least one baseline PNG at a git ref: the directories under
- * visual-baselines/ at the base tip, so a pull request cannot drop a project from the gate by
- * editing visual-review/projects.json.
+ * The projects with at least one baseline PNG at a git ref: the directories under the baselines
+ * directory at the base tip, so a pull request cannot drop a project from the gate by editing
+ * visual-review.config.json.
  * @param {string} ref the base branch tip
  * @param {string} [cwd] the repository
+ * @param {string} [baselines] the baselines directory
  * @returns {Set<string>} the seeded ones
  */
-export function seededAt(ref, cwd = process.cwd()) {
-    const files = execFileSync("git", ["ls-tree", "-r", "--name-only", ref, "--", "visual-baselines/"], {
+export function seededAt(ref, cwd = process.cwd(), baselines = "visual-baselines") {
+    const files = execFileSync("git", ["ls-tree", "-r", "--name-only", ref, "--", `${baselines}/`], {
         cwd,
         encoding: "utf8",
         maxBuffer: 1 << 28,
     }).split("\n");
-    return new Set(files.map((f) => /^visual-baselines\/([^/]+)\/.+\.png$/.exec(f)?.[1]).filter(Boolean));
+    const prefix = `${baselines}/`;
+    return new Set(
+        files
+            .filter((f) => f.startsWith(prefix) && f.endsWith(".png"))
+            .map((f) => f.slice(prefix.length).split("/"))
+            .filter((parts) => parts.length > 1)
+            .map((parts) => parts[0]),
+    );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>]
+
+Fails (exit 1) while a pull request holds visual changes nobody accepted, or a baseline change
+with no review record. Run it in CI after the capture jobs, on the pull request's merge commit.
+
+  --captures <dir>  the downloaded visual-<project>-<attempt> artifacts of this run
+  --base <ref>      the base branch tip (HEAD^1 on a pull request's merge commit)
+  --head <ref>      the pull request's checkout (default HEAD)`;
+
+/**
+ * The gate as a command.
+ * @param {string[]} args the command line after "gate"
+ * @returns {number} the exit code
+ */
+export function runGate(args) {
     const { values } = parseArgs({
-        options: { captures: { type: "string" }, base: { type: "string" }, head: { type: "string", default: "HEAD" } },
+        args,
+        options: {
+            captures: { type: "string" },
+            base: { type: "string" },
+            head: { type: "string", default: "HEAD" },
+            help: { type: "boolean", default: false },
+        },
     });
-    if (!values.captures || !values.base) {
-        console.error("usage: gate.mjs --captures <dir> --base <ref> [--head <ref>]");
-        process.exit(2);
+    if (values.help) {
+        console.log(GATE_USAGE);
+        return 0;
     }
-    const seeded = seededAt(values.base);
+    if (!values.captures || !values.base) {
+        console.error(GATE_USAGE);
+        return 2;
+    }
+    const root = repoRoot();
+    const { baselines } = loadConfigAt(values.base, root);
+    const seeded = seededAt(values.base, root, baselines);
     const problems = gateProblems({
         projects: [...seeded],
         seeded,
@@ -217,13 +255,18 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);
     }
-    const unrecorded = unrecordedChanges(values.base, values.head);
+    const unrecorded = unrecordedChanges(values.base, values.head, root, baselines);
     for (const line of unrecorded) {
         console.log(`::error::baseline without a review -- ${line}`);
     }
     if (problems.length + unrecorded.length > 0) {
-        console.log("Review them with visual-review serve (visual-review/README.md).");
-        process.exit(1);
+        console.log("Review them with `visual-review serve` (the @graphty/visual-review README).");
+        return 1;
     }
     console.log("No unaccepted visual changes, and every baseline change has a review record.");
+    return 0;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    process.exitCode = runGate(process.argv.slice(2));
 }

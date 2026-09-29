@@ -79,7 +79,7 @@ describe("capture", () => {
         const sb = storybook();
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
         const run = (out) =>
-            capture({ project: "demo", storybook: sb, baselines, out, workers: 2, stableFrame: false, log: () => {} });
+            capture({ project: "demo", storybook: sb, baselines, out, workers: 2, waitFor: null, log: () => {} });
 
         const firstOut = mkdtempSync(join(tmpdir(), "vr-out-"));
         const first = await run(firstOut);
@@ -128,7 +128,7 @@ describe("capture", () => {
                 baselines,
                 out,
                 workers: 1,
-                stableFrame: false,
+                waitFor: null,
                 log: () => {},
                 ...extra,
             });
@@ -160,7 +160,7 @@ describe("capture", () => {
                 baselines: mkdtempSync(join(tmpdir(), "vr-bl-")),
                 out,
                 workers: 1,
-                stableFrame: false,
+                waitFor: null,
                 stories: [story],
                 log: () => {},
             });
@@ -190,7 +190,7 @@ describe("capture", () => {
                 baselines,
                 out: mkdtempSync(join(tmpdir(), "vr-out-")),
                 workers: 1,
-                stableFrame: false,
+                waitFor: null,
                 stories: ["demo--plain"],
                 log: () => {},
             }),

@@ -4,7 +4,6 @@
  * commits, and a Finish followed while it runs. A last block serves the fixture as a local preview.
  */
 
-import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
@@ -12,9 +11,8 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
-import { FIXTURE, isolateGit, makeRepo, onePr } from "./helpers.mjs";
+import { CONFIG, FIXTURE, isolateGit, makeRepo, onePr } from "./helpers.mjs";
 
-const PROJECTS = JSON.parse(readFileSync(new URL("../projects.json", import.meta.url), "utf8"));
 const TOKEN = "p".repeat(43);
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
 
@@ -41,7 +39,7 @@ async function open(options) {
     const app = createApp({
         repo: r.repo,
         tmp: join(r.repo, "tmp/visual-review"),
-        projects: PROJECTS,
+        config: CONFIG,
         token: TOKEN,
         origin,
         startCommand: START,
