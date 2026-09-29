@@ -90,8 +90,10 @@ function render(...children) {
     app.replaceChildren(...children.filter((c) => c !== null && c !== undefined && c !== false));
 }
 
+// Clearing the status line during a Finish shows the Finish's step instead, so a screen that
+// opens while it runs (a reload, Visual review, a link) never blanks its progress.
 function say(text, isError = false) {
-    statusLine.textContent = text;
+    statusLine.textContent = text === "" && running() ? finishing() : text;
     statusLine.className = isError ? "error" : "";
 }
 
@@ -1491,6 +1493,8 @@ async function finishTarget(target) {
     await watchFinish();
 }
 
+const finishing = () =>
+    `Finishing ${state.job.pr === null ? "the master seed" : `#${state.job.pr}`}: ${state.job.step}...`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let watching = false;
 
@@ -1502,8 +1506,7 @@ async function watchFinish() {
     watching = true;
     try {
         while (running()) {
-            const label = state.job.pr === null ? "the master seed" : `#${state.job.pr}`;
-            say(`Finishing ${label}: ${state.job.step}...`);
+            say(finishing());
             await sleep(1000);
             try {
                 state.job = (await api("/api/finish-status")).job;

@@ -643,7 +643,9 @@ describe("review page: a running Finish", () => {
             .poll(() => page.locator(".finish-running").textContent())
             .toBe("Finish is running: posting the status...");
         expect(await page.getByRole("button", { name: /^Finish #123/ }).count()).toBe(0);
-        await expect.poll(status).toBe("Finishing #123: posting the status...");
+        // Read at once, not polled: opening a screen must not blank the Finish's step until the
+        // next once-a-second check writes it again (on a slow runner that took over a second).
+        expect(await status()).toBe("Finishing #123: posting the status...");
 
         release();
         await expect
