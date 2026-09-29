@@ -232,12 +232,11 @@ the pull request.
 ## How captures and baselines move
 
 - **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale
-  factor 2, as Chromatic captures, so a PNG holds two image pixels per CSS pixel. It is cropped
-  to the story's rendered content: its text, images and form controls and whatever paints a
-  background, border or shadow, tooltips and popovers included, but not an empty full-width
-  wrapper nor what a scroll area hides, plus a 32 px margin. graphty-element keeps its viewport: the full width, cropped only
-  in height, never past the viewport, because capturing beyond it could resize the graph's
-  canvas, which clears it. results.json records the scale as `scale`, and each review record
+  factor 2, as Chromatic captures, so a PNG holds two image pixels per CSS pixel. It is always
+  the whole canvas, by the owner's rule, in every project: the full page of the story iframe,
+  which is the whole viewport, or everything a scroll would reach when the story is taller or
+  wider. It is never cropped to the content, so a small component sits in the full canvas and
+  every capture of a project has the same size unless its story overflows. results.json records the scale as `scale`, and each review record
   copies it into its `subject`.
 - **From GitHub Actions to the page.** Each `visual` job uploads `results.json` and the PNGs to
   review as an artifact `visual-<project>-<attempt>`, kept 30 days. The server lists open pull
