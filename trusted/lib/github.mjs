@@ -1,5 +1,5 @@
 /**
- * Everything the review page needs from GitHub, through the `gh` CLI with the owner's login:
+ * Everything the review page needs from GitHub, through the `gh` CLI with the reviewer's login:
  * open pull requests, the CI run for a head, the `visual` job's outcome, the capture artifacts,
  * and the comment, issue and pull request that a Finish writes. CI uses one of these too: a pull
  * request's capture downloads master's newest capture with `newestMasterCapture`.
@@ -73,15 +73,16 @@ const toRun = (r) => ({
 });
 
 /**
- * The newest ci.yml run for a head commit.
+ * The newest run of the capturing workflow for a head commit.
  * @param {Function} gh the gh runner
  * @param {string} sha the pull request's head
+ * @param {{ workflow: string }} config the workflow file that captures (the config's `workflow`)
  * @returns {Promise<object | null>} the run, or null when CI never ran on it
  */
-export async function newestCiRun(gh, sha) {
+export async function newestCiRun(gh, sha, { workflow }) {
     const { workflow_runs: runs } = await api(
         gh,
-        `repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=1`,
+        `repos/{owner}/{repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?head_sha=${sha}&per_page=1`,
     );
     return runs.length > 0 ? toRun(runs[0]) : null;
 }
@@ -147,19 +148,21 @@ export async function downloadCaptures(gh, run, projects, tmp) {
 }
 
 /**
- * Downloads master's newest complete capture of one project: the reference a pull request's
- * capture compares stories without a baseline against.
- * ponytail: the newest master run with a complete capture, not the run of the pull request's
- * exact base; a story changed on master since then shows as `new` (it blocks, never passes).
+ * Downloads the default branch's newest complete capture of one project: the reference a pull
+ * request's capture compares stories without a baseline against.
+ * ponytail: the newest default-branch run with a complete capture, not the run of the pull
+ * request's exact base; a story changed there since then shows as `new` (it blocks, never passes).
  * @param {Function} gh the gh runner
  * @param {string} project the project id
  * @param {string} tmp the download root
- * @returns {Promise<string | null>} the capture's directory, or null when no master run has one
+ * @param {{ workflow: string, defaultBranch: string }} config the capturing workflow and the branch
+ * @returns {Promise<string | null>} the capture's directory, or null when no run has one
  */
-export async function newestMasterCapture(gh, project, tmp) {
+export async function newestMasterCapture(gh, project, tmp, { workflow, defaultBranch }) {
     const { workflow_runs: runs } = await api(
         gh,
-        "repos/{owner}/{repo}/actions/workflows/ci.yml/runs?branch=master&event=push&per_page=10",
+        `repos/{owner}/{repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=` +
+            `${encodeURIComponent(defaultBranch)}&event=push&per_page=10`,
     );
     for (const run of runs.map(toRun)) {
         const dir = (await downloadCaptures(gh, run, [project], tmp))[project]?.dir;
@@ -213,12 +216,13 @@ export async function postStatus(gh, sha, { state, description }) {
 }
 
 /**
- * Opens a pull request against master.
+ * Opens a pull request.
  * @param {Function} gh the gh runner
- * @param {{ title: string, head: string, body: string }} pr what to open
+ * @param {{ title: string, head: string, base: string, body: string }} pr what to open, and the
+ *     branch it merges into
  * @returns {Promise<string>} its URL
  */
-export async function createPullRequest(gh, { title, head, body }) {
-    const input = JSON.stringify({ title, head, base: "master", body });
+export async function createPullRequest(gh, { title, head, base, body }) {
+    const input = JSON.stringify({ title, head, base, body });
     return JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls", "--input", "-"], input)).html_url;
 }

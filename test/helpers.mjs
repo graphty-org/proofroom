@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
+
 export const FIXTURE = fileURLToPath(new URL("fixtures/results/", import.meta.url));
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -18,6 +20,22 @@ export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 for (const name of execFileSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" }).split("\n")) {
     if (name) delete process.env[name];
 }
+
+/** The monorepo's own visual-review.config.json: default branch master, workflow ci.yml. */
+const CONFIG_TEXT = readFileSync(join(ROOT, CONFIG_FILE), "utf8");
+export const CONFIG = normalizeConfig(JSON.parse(CONFIG_TEXT));
+
+/**
+ * The config with only the two projects the fixtures hold, so adding a project to the monorepo's
+ * config does not change what the tests expect, while their settings are still the live ones.
+ */
+export const FIXTURE_CONFIG = {
+    ...CONFIG,
+    projects: {
+        "compact-mantine": CONFIG.projects["compact-mantine"],
+        "graphty-element": CONFIG.projects["graphty-element"],
+    },
+};
 
 /** The line of the monorepo's .gitattributes that stores baseline PNGs in Git LFS. */
 export const LFS_ATTRIBUTES = readFileSync(join(ROOT, ".gitattributes"), "utf8")
@@ -82,6 +100,7 @@ export function makeRepo() {
     git(repo, "lfs", "install", "--local");
     put(join(repo, ".gitattributes"), `${LFS_ATTRIBUTES}\n`);
     put(join(repo, "README.md"), "test\n");
+    put(join(repo, CONFIG_FILE), CONFIG_TEXT);
     for (const file of ["button--primary.dark.png", "card--legacy.png", "tooltip--hover.png"]) {
         cpSync(join(FIXTURE, "compact-mantine/baselines", file), join(repo, "visual-baselines/compact-mantine", file));
     }
