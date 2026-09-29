@@ -1,7 +1,7 @@
 /*
  * The review page in Chromium, over the results fixture served as pull request #123 by a fake gh:
  * the grid, the story views, zoom, the keys, decisions, Accept all and what Finish asks before it
- * commits. A last block serves the fixture as a local preview.
+ * commits, and a Finish followed while it runs. A last block serves the fixture as a local preview.
  */
 
 import { readFileSync } from "node:fs";
@@ -22,6 +22,7 @@ let browser;
 let server;
 let page;
 let dialogs;
+let confirmFinish = false;
 
 beforeAll(async () => {
     isolateGit();
@@ -48,16 +49,17 @@ async function open(options) {
     server.on("request", app);
     page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
     dialogs = [];
-    // Accept all is confirmed; Finish is refused, so no test commits anything.
+    // Accept all is confirmed; Finish is refused unless a test sets confirmFinish.
     page.on("dialog", (d) => {
         dialogs.push(d.message());
-        return d.message().startsWith("Finish") ? d.dismiss() : d.accept();
+        return d.message().startsWith("Finish") && !confirmFinish ? d.dismiss() : d.accept();
     });
     await page.goto(`${origin}/#token=${TOKEN}`);
     await page.getByRole("button", { name: "Review", exact: true }).first().click();
 }
 
 afterEach(async () => {
+    confirmFinish = false;
     await page?.close();
     server?.close();
 });
@@ -408,6 +410,45 @@ describe("review page: a pull request", () => {
         await expect
             .poll(() => page.locator("h2").textContent())
             .toContain("re-review: your earlier accept was replaced by master's baseline");
+    });
+});
+
+describe("review page: a running Finish", () => {
+    it("shows each step, survives a reload without offering a second Finish, then shows the result", async () => {
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        // The commit status waits until the test releases it, so the Finish is caught running.
+        await open((r) => {
+            const gh = onePr()(r);
+            return {
+                gh: async (args, input) => {
+                    if (args[1]?.includes("/statuses/")) {
+                        await gate;
+                    }
+                    return gh(args, input);
+                },
+            };
+        });
+        await page.locator(".component").first().waitFor();
+        confirmFinish = true;
+        await page.keyboard.press("Shift+A");
+        await expect.poll(() => page.locator("#progress").textContent()).toBe("4 / 6 reviewed");
+        await page.getByRole("button", { name: /^Finish/ }).click();
+        await expect.poll(status).toBe("Finishing #123: posting the status...");
+
+        await page.reload();
+        await expect
+            .poll(() => page.locator(".finish-running").textContent())
+            .toBe("Finish is running: posting the status...");
+        expect(await page.getByRole("button", { name: /^Finish #123/ }).count()).toBe(0);
+        await expect.poll(status).toBe("Finishing #123: posting the status...");
+
+        release();
+        await expect
+            .poll(() => page.locator(".finish-outcome").textContent())
+            .toMatch(/^Finish of #123 done\. Committed \w{10} to feature\. Status: Reviewed: 4 accepted/);
+        expect(await page.locator(".finish-running").count()).toBe(0);
+        expect(await page.getByRole("button", { name: /^Finish #123/ }).isDisabled()).toBe(true);
     });
 });
 

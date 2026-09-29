@@ -59,6 +59,9 @@ const git = (cwd, args, input) =>
         env: { ...process.env, HUSKY: "0", GIT_LFS_SKIP_SMUDGE: "1" },
     });
 
+/** Images per `git lfs push --object-id`, so a large seed reports its upload as it goes. */
+const LFS_BATCH = 50;
+
 const gitOk = (cwd, args) =>
     git(cwd, args).then(
         () => true,
@@ -182,12 +185,23 @@ function check(projects, decisions) {
  *     what the owner decided: accept, reject or exclude (checked here)
  * @param {number} [input.undecided] how many reviewable items are left undecided, for the status
  * @param {Date} [input.now] the review time
+ * @param {(step: string) => void} [input.progress] told each step as it starts, for the page
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, status: string | null, statusError: string | null }>}
  *     what was pushed and posted (`issue`: master's rejects; `status`: the commit status's
  *     description, or `statusError` when posting it failed)
  */
-export async function finish({ repo, gh, target, projects, decisions, undecided = 0, now = new Date() }) {
+export async function finish({
+    repo,
+    gh,
+    target,
+    projects,
+    decisions,
+    undecided = 0,
+    now = new Date(),
+    progress = () => {},
+}) {
+    progress("checking");
     const { accepts, rejects } = check(projects, decisions);
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first) {
@@ -200,8 +214,9 @@ export async function finish({ repo, gh, target, projects, decisions, undecided 
     let pullRequest = null;
     let issue = null;
     if (accepts.length > 0) {
-        ({ commit, branch } = await commitAccepts({ repo, target, accepts, first, now }));
+        ({ commit, branch } = await commitAccepts({ repo, target, accepts, first, now, progress }));
         if (isMaster) {
+            progress("opening the pull request");
             pullRequest = await createPullRequest(gh, {
                 title: "test(workspace): seed visual baselines",
                 head: branch,
@@ -213,6 +228,7 @@ export async function finish({ repo, gh, target, projects, decisions, undecided 
         try {
             // Master has no pull request to comment on: its rejects are stories that do not look
             // right yet, so they become one issue an agent can pick up.
+            progress(isMaster ? "opening the issue for the rejects" : "posting the rejects");
             const body = rejectComment(target.pr, first, rejects);
             if (isMaster) {
                 issue = await createIssue(gh, {
@@ -244,6 +260,7 @@ export async function finish({ repo, gh, target, projects, decisions, undecided 
         `Reviewed: ${accepted} accepted, ${rejects.length} rejected, ${excluded} excluded, ` +
         `${undecided} left undecided`;
     let statusError = null;
+    progress("posting the status");
     try {
         await postStatus(gh, commit ?? (isMaster ? first.commit : first.headSha), { state, description: status });
     } catch (err) {
@@ -260,9 +277,10 @@ export async function finish({ repo, gh, target, projects, decisions, undecided 
  * @param {object[]} input.accepts the checked accepts and exclusions
  * @param {object} input.first the results.json of the first decided project
  * @param {Date} input.now the review time
+ * @param {(step: string) => void} input.progress as in finish
  * @returns {Promise<{ commit: string, branch: string }>} the pushed commit and branch
  */
-async function commitAccepts({ repo, target, accepts, first, now }) {
+async function commitAccepts({ repo, target, accepts, first, now, progress }) {
     const isMaster = target.pr === null;
     const lfs = await lfsProblem(repo);
     if (lfs) {
@@ -317,6 +335,7 @@ async function commitAccepts({ repo, target, accepts, first, now }) {
     try {
         const items = [];
         const counts = { accept: 0, exclude: 0, remove: 0 };
+        progress(`writing ${writes.length} ${writes.length === 1 ? "file" : "files"}`);
         for (const w of writes) {
             items.push(await write(tree, w, counts));
         }
@@ -338,6 +357,7 @@ async function commitAccepts({ repo, target, accepts, first, now }) {
             reviewedAt: now.toISOString(),
         };
         await put(join(tree, record), `${JSON.stringify(body, null, 2)}\n`);
+        progress("committing");
         await git(tree, ["add", "-A", "--", "visual-baselines"]);
         const message = commitMessage({
             pr: target.pr,
@@ -358,7 +378,16 @@ async function commitAccepts({ repo, target, accepts, first, now }) {
                 );
             }
         }
+        // git lfs push reports progress only to a terminal, so the new images go up in batches the
+        // page can count; the push of HEAD after them uploads whatever else the commit needs.
+        const oids = [...new Set(writes.filter((w) => w.bytes).map((w) => w.item.capture))];
+        for (let i = 0; i < oids.length; i += LFS_BATCH) {
+            progress(`uploading images to LFS (${i} of ${oids.length} done)`);
+            await git(tree, ["lfs", "push", "--object-id", "origin", ...oids.slice(i, i + LFS_BATCH)]);
+        }
+        progress("uploading images to LFS (checking the commit has them all)");
         await git(tree, ["lfs", "push", "origin", "HEAD"]);
+        progress("pushing");
         await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]);
         return { commit: await git(tree, ["rev-parse", "HEAD"]), branch };
     } catch (err) {

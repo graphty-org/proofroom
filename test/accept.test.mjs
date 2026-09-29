@@ -30,9 +30,10 @@ function setup() {
         calls.push({ args, input });
         return JSON.stringify({ html_url: "https://github.com/o/r/pull/9", number: 9 });
     };
+    const steps = [];
     const run = (decisions, target = { pr: 123, branch: "feature" }, undecided = 0) =>
-        finish({ repo: r.repo, gh, target, projects, decisions, undecided, now: NOW });
-    return { ...r, projects, calls, run };
+        finish({ repo: r.repo, gh, target, projects, decisions, undecided, now: NOW, progress: (s) => steps.push(s) });
+    return { ...r, projects, calls, steps, run };
 }
 
 const accept = (file, project = "compact-mantine", reason = null) => ({ project, file, decision: "accept", reason });
@@ -192,6 +193,17 @@ describe("finish: accepts", () => {
             base: "master",
         });
         expect(out.pullRequest).toBe("https://github.com/o/r/pull/9");
+        // The steps the page shows while a Finish runs, in order.
+        expect(s.steps).toEqual([
+            "checking",
+            "writing 1 file",
+            "committing",
+            "uploading images to LFS (0 of 1 done)",
+            "uploading images to LFS (checking the commit has them all)",
+            "pushing",
+            "opening the pull request",
+            "posting the status",
+        ]);
     });
 });
 
