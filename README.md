@@ -83,17 +83,25 @@ Variants of the command:
    asking. **Filter by story id** narrows the grid; **Go to** opens item N, or the first item
    whose id contains the text. Coming back from a story, its tile is outlined and scrolled into
    view.
-3. **Story.** One item. Images open at **Fit**: real size, shrunk to the pane when wider (a
-   1200 px graphty-element capture beside its baseline). **Real size (1x)** is one CSS pixel of the
-   page for each CSS pixel the story was drawn at (a capture holds two image pixels per CSS
-   pixel), scrolling when wider than the pane. **2x**, **4x**
-   and **8x** enlarge it; from 4x pixels are drawn as hard squares. Each image scrolls in its own
-   frame, which opens at the top left of the image. **Next changed box** (N) scrolls every frame
-   until the next region of changed pixels is in view and outlines it; "box i of k" counts them. The views: **Side by side**; **Flash**, which shows
-   baseline and new one after the other in the same place, about 1.5 times a second (the images
-   themselves, not an overlay); **Highlight**, pixelmatch's changed pixels in red over the
-   dimmed baseline; and **Spotlight**, the new image dimmed everywhere except around the changed
-   pixels (each grown by 10 image pixels), which finds a one-pixel change. Flash, Highlight and
+3. **Story.** One item, on one screen: the controls on top, then two panes of the same size side
+   by side, the baseline on the left and the new capture on the right, filling the rest of the
+   window. Images open at **Fit to screen**: both whole images fit their panes, across and down,
+   at one scale (never above real size), so two captures of the same size line up pixel for pixel
+   and nothing scrolls. With no baseline (a new story, or "no baseline yet") the left pane stays
+   as an empty frame labelled "No baseline", so the new image sits exactly where it would beside
+   one; a removed or failed story leaves the right pane empty the same way. **Real size (1x)** is
+   one CSS pixel of the page for each CSS pixel the story was drawn at (a capture holds two image
+   pixels per CSS pixel). **2x**, **4x** and **8x** enlarge it; from 4x pixels are drawn as hard
+   squares. Zoomed, the images grow past their panes, which scroll: scrolling one scrolls the
+   other to the same place, and **Fit to screen** returns to the whole image. (On an iPad,
+   pinching zooms the whole page; use the zoom buttons to zoom the images.) **Next changed box**
+   (N) scrolls both panes until the next region of changed pixels is in view and outlines it;
+   "box i of k" counts them. The views, each shown in the right pane at the same scale and place:
+   **Side by side**; **Flash**, which shows baseline and new one after the other in the same
+   place, about 1.5 times a second (the images themselves, not an overlay), keeping the zoom and
+   scroll it was opened at; **Highlight**, pixelmatch's changed pixels in red over the dimmed
+   baseline; and **Spotlight**, the new image dimmed everywhere except around the changed pixels
+   (each grown by 10 image pixels), which finds a one-pixel change. Flash, Highlight and
    Spotlight need two images; on a new or removed story they are off and the page says why
    ("New story, no baseline", "Only one image: this story was removed"). Badges here:
    **size changed** (in image pixels), **flaky** (the two captures differed, then matched), and
@@ -121,7 +129,7 @@ for them. Seed them from master (below), or accept them on the pull request that
 | F            | Flash between baseline and new; F again returns to side by side                |
 | H            | Highlight changed pixels; H again returns to side by side                      |
 | S            | Spotlight the changes; S again returns to side by side                         |
-| Z            | Next zoom: fit, real size, 2x, 4x, 8x, then fit again                          |
+| Z            | Next zoom: fit to screen, real size, 2x, 4x, 8x, then fit again                |
 | N            | Next changed box                                                               |
 | Space (hold) | Flash while held                                                               |
 | Shift+A      | Accept every undecided item of this project without opening it (asks first)    |
