@@ -393,6 +393,99 @@ describe("review page: a pull request", () => {
         await expect.poll(() => page.locator(".signer pre").textContent()).toBe(START);
     });
 
+    const filter = (name) => page.getByRole("button", { name: new RegExp(`^${name} \\(`) });
+    const decisionText = (file) => page.locator(`.decision[data-file="${file}"] .what`).textContent();
+
+    it("filters by decision, shows each decision on its tile, and undoes one without opening it", async () => {
+        await page.getByRole("button", { name: /^All/ }).click();
+        await openStoryFromGrid(2);
+        await page.keyboard.press("r");
+        await page.keyboard.type("darker than before");
+        await page.keyboard.press("Enter");
+        await expect.poll(status).toBe("button--primary (dark): reject");
+        await openStoryFromGrid(1);
+        await page.keyboard.press("e");
+        await page.keyboard.type("flaky timeout");
+        await page.keyboard.press("Enter");
+        await expect.poll(status).toBe("menu--open: exclude");
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Shift+A");
+        await expect.poll(() => page.locator("#progress").textContent()).toBe("5 / 6 reviewed");
+        expect(await filter("Accepted").textContent()).toBe("Accepted (3)");
+        expect(await filter("Rejected").textContent()).toBe("Rejected (1)");
+        expect(await filter("Excluded").textContent()).toBe("Excluded (1)");
+        await filter("Rejected").click();
+        await expect.poll(() => page.locator(".tile").count()).toBe(1);
+        expect(await decisionText("button--primary.dark.png")).toBe("Rejected: darker than before");
+        await filter("Excluded").click();
+        await expect.poll(() => decisionText("menu--open.png")).toBe("Excluded: flaky timeout");
+        await filter("Accepted").click();
+        await expect.poll(() => page.locator(".tile").count()).toBe(3);
+        expect(await decisionText("slider--sizes.png")).toBe("Accepted (not opened)");
+        const dialogsBefore = dialogs.length;
+        await page.locator('.decision[data-file="slider--sizes.png"] button').click();
+        await expect.poll(() => filter("Accepted").textContent()).toBe("Accepted (2)");
+        expect(await page.locator("#progress").textContent()).toBe("4 / 6 reviewed");
+        expect(await status()).toBe("slider--sizes: undone, undecided again");
+        expect(dialogs.length).toBe(dialogsBefore);
+        // Undone, it needs a decision again; the rest keep theirs.
+        expect(await filter("Needs a decision").textContent()).toBe("Needs a decision (2)");
+    });
+
+    it("undoes one component's decisions on a second press, never with a browser dialog", async () => {
+        await page.keyboard.press("Shift+A");
+        await expect.poll(() => page.locator("#progress").textContent()).toBe("4 / 6 reviewed");
+        await page.getByRole("button", { name: /^All/ }).click();
+        const undoButton = page.locator('.component[data-component="button"] h3 .undo-all');
+        expect(await undoButton.textContent()).toBe("Undo 1 decision");
+        await undoButton.click();
+        await expect.poll(() => undoButton.textContent()).toBe("Confirm: undo 1 decision");
+        expect(await page.locator("#progress").textContent()).toBe("4 / 6 reviewed");
+        await undoButton.click();
+        await expect.poll(() => page.locator("#progress").textContent()).toBe("3 / 6 reviewed");
+        expect(await status()).toBe("Undid 1 decision of the component button.");
+        expect(await undoButton.count()).toBe(0);
+        expect(dialogs).toHaveLength(1);
+    });
+
+    it("undoes every decision of the project on a second press; Escape cancels the first", async () => {
+        await page.keyboard.press("Shift+A");
+        await expect.poll(() => page.locator("#progress").textContent()).toBe("4 / 6 reviewed");
+        const undoAll = page.locator(".toolbar .undo-all");
+        expect(await undoAll.textContent()).toBe("Undo all decisions");
+        await undoAll.click();
+        await expect.poll(() => undoAll.textContent()).toBe("Confirm: undo 4 decisions");
+        await page.keyboard.press("Escape");
+        await expect.poll(() => undoAll.textContent()).toBe("Undo all decisions");
+        await undoAll.click();
+        // Any redraw of the grid disarms it too.
+        await filter("Accepted").click();
+        await expect.poll(() => undoAll.textContent()).toBe("Undo all decisions");
+        await undoAll.click();
+        await undoAll.click();
+        await expect.poll(() => page.locator("#progress").textContent()).toBe("0 / 6 reviewed");
+        expect(await filter("Accepted").textContent()).toBe("Accepted (0)");
+        expect(await undoAll.count()).toBe(0);
+        expect(dialogs).toHaveLength(1);
+    });
+
+    it("keeps a reject an earlier Finish posted, and says so on its tile", async () => {
+        await page.route("**/api/pr/**", async (route) => {
+            const res = await route.fetch();
+            const body = await res.json();
+            body.decisions["slider--sizes.png"] = { decision: "reject", reason: "thumb moved", posted: true };
+            await route.fulfill({ response: res, json: body });
+        });
+        await page.locator("#home").click();
+        await page.getByRole("button", { name: "Review", exact: true }).first().click();
+        await filter("Rejected").click();
+        const line = page.locator('.decision[data-file="slider--sizes.png"]');
+        await expect.poll(() => line.textContent()).toBe("Rejected: thumb movedPosted by Finish: stays");
+        expect(await line.locator("button").count()).toBe(0);
+        // Nothing else is decided, so no bulk Undo is offered for the posted reject.
+        expect(await page.locator(".undo-all").count()).toBe(0);
+    });
+
     it("shows a re-review flag on an item whose earlier accept master replaced", async () => {
         // The flag comes from the server (a serve test covers when); here only its display.
         await page.route("**/api/pr/**", async (route) => {

@@ -264,6 +264,59 @@ td {
     opacity: 0.6;
 }
 
+/* A tile and, under it, its decision with an Undo: a button cannot hold another button. */
+.tile-box {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 200px;
+}
+
+.decision {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 6px;
+    align-items: baseline;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* The whole reason, wrapped: it is the point of the line. */
+.decision .what {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.decision.accept .what {
+    color: var(--ok);
+}
+
+.decision.reject .what {
+    color: var(--bad);
+}
+
+.decision.exclude .what {
+    color: var(--accent);
+}
+
+.decision button {
+    padding: 0 8px;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.decision .meta {
+    margin: 0;
+    font-weight: 400;
+    white-space: nowrap;
+}
+
+.error-list .decision .what {
+    flex: none;
+    max-width: 60ch;
+}
+
 .tile .name {
     font-size: 12px;
     word-break: break-all;
