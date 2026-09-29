@@ -210,6 +210,23 @@ token is kept in the work directory, so the URL stays valid across restarts; del
   only: no Accept, Reject or Exclude, and no Finish. Only CI captures of a pushed commit are
   decided.
 
+### Links to a screen
+
+The address always names the screen you are on, after the token: the targets list; a pull
+request (or master) and project with the grid's filter and text; or one story with its view and
+zoom, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2`.
+Opening that address, in another tab or on another device, opens the same screen. **Copy link**
+at the top right copies it. The link carries your session token, so it works on your iPad the way
+the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
+browser never sends to any server or in a Referer, so the page never hands the token to another
+site. Back and Forward move between the targets list, a grid and a story; moving between stories
+or views of one grid updates the address in place.
+
+A link to something that is gone opens the nearest screen that still exists, and the status line
+says why: a story not in the newest CI run opens its grid, and a pull request no longer listed
+(closed, or no CI run) opens the targets list.
+
 Finish's commit is signed by the git configuration of the process that runs the server. If
 someone else started it for you (an agent, a service manager), the commit carries their
 identity: the page names the key that will sign before every Finish and prints the command that
@@ -272,6 +289,14 @@ starts the same server from your own shell.
    **size changed** (in image pixels), **flaky** (the two captures differed, then matched), and
    **re-review** (an accept you made was replaced by the default branch's newer baseline).
 
+    **Next** and **Previous** (J and K) walk one pass: the items the grid showed when you opened
+    the story, in the grid's order, frozen until you go back to the grid. Accepting, rejecting or
+    excluding an item never drops it from the pass: the decision moves on to the next item, and
+    **Previous** comes back to the one just decided, showing its decision and an **Undo** (or U).
+    Going back to the grid shows what its filter now selects: under **Needs a decision** the items
+    you decided have left it, and the count has gone down; **Accepted**, **Rejected** and
+    **Excluded** show them with their decisions.
+
 Statuses: `changed` (differs from its baseline), `new` (no baseline, and on a pull request the
 story is new or looks different from the default branch's newest capture of it), `no baseline yet` (status
 `unseeded`: no baseline, and the pull request does not change it), `removed` (a baseline whose
@@ -286,7 +311,7 @@ for them. Seed them from the default branch (below), or accept them on the pull 
 
 | Key          | Action                                                                         |
 | ------------ | ------------------------------------------------------------------------------ |
-| J / K        | Next / previous item                                                           |
+| J / K        | Next / previous item of this pass (decided items stay in it)                   |
 | A            | Accept an undecided item                                                       |
 | R            | Reject an undecided item (asks for a reason, then Enter)                       |
 | E            | Exclude an undecided item (asks for a reason, then Enter, then a confirmation) |

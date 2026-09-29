@@ -18,6 +18,7 @@ const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
 
 let browser;
 let server;
+let origin;
 let page;
 let dialogs;
 let confirmFinish = false;
@@ -34,7 +35,7 @@ async function open(options) {
     const r = makeRepo();
     server = createServer();
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    origin = `http://127.0.0.1:${server.address().port}`;
     const app = createApp({
         repo: r.repo,
         tmp: join(r.repo, "tmp/visual-review"),
@@ -504,6 +505,111 @@ describe("review page: a pull request", () => {
     });
 });
 
+describe("review page: links and the frozen pass", () => {
+    beforeEach(async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator(".component").first().waitFor();
+    });
+
+    const hash = () => new URLSearchParams(new URL(page.url()).hash.slice(1));
+    const position = () => page.locator("#position").textContent();
+    // A link opened afresh, as when pasted into another tab or device.
+    async function visit(url) {
+        await page.goto("about:blank");
+        await page.goto(url);
+    }
+
+    it("puts every screen in the address and opens it again from a copied link", async () => {
+        expect(Object.fromEntries(hash())).toMatchObject({ token: TOKEN, target: "123", filter: "undecided" });
+        // The grid, with its filters.
+        await page.getByRole("button", { name: /^All/ }).click();
+        await page.locator("#filter").fill("slider");
+        await expect.poll(() => hash().get("q")).toBe("slider");
+        const grid = page.url();
+        await visit(grid);
+        await expect.poll(() => page.locator(".tile").count()).toBe(1);
+        expect(await page.getByRole("button", { name: /^All/ }).getAttribute("aria-pressed")).toBe("true");
+        expect(await page.locator("#filter").inputValue()).toBe("slider");
+        // A story, with its view and zoom.
+        await page.locator("#filter").fill("");
+        await openStory(2);
+        await page.keyboard.press("s");
+        await page.getByRole("button", { name: "2x", exact: true }).click();
+        await expect.poll(() => hash().get("zoom")).toBe("2");
+        expect(Object.fromEntries(hash())).toMatchObject({ item: "button--primary.dark.png", view: "spotlight" });
+        const story = page.url();
+        await visit(story);
+        await expect.poll(position).toBe("2 of 6");
+        expect(await page.locator("h2").textContent()).toContain("button--primary (dark)");
+        await expect.poll(stageClass).toBe("stage spotlight zoom-2");
+        // The targets screen.
+        await page.locator("#home").click();
+        await expect.poll(() => [...hash().keys()]).toEqual(["token"]);
+        await visit(page.url());
+        await expect.poll(() => page.getByRole("button", { name: "Review", exact: true }).count()).toBeGreaterThan(0);
+    });
+
+    it("goes Back and Forward between the screens", async () => {
+        await openStory(3);
+        await page.goBack();
+        await page.locator(".component").first().waitFor();
+        await expect.poll(() => page.locator(".tile.current").getAttribute("data-file")).toBe("slider--sizes.png");
+        await page.goForward();
+        await expect.poll(position).toBe("3 of 6");
+        await page.locator("#home").click();
+        await page.locator(".card").first().waitFor();
+        await page.goBack();
+        await expect.poll(position).toBe("3 of 6");
+    });
+
+    it("lands on the nearest screen, saying why, when a link names what is gone", async () => {
+        const link = new URL(page.url());
+        link.hash = `token=${TOKEN}&target=123&project=${hash().get("project")}&filter=all&item=gone--story.png`;
+        await visit(link.href);
+        await expect.poll(status).toBe("gone--story.png is not in this CI run any more: showing the grid.");
+        expect(hash().has("item")).toBe(false);
+        expect(await page.locator(".component").count()).toBeGreaterThan(0);
+        link.hash = `token=${TOKEN}&target=999&project=x`;
+        await visit(link.href);
+        await expect.poll(status).toBe("999 is no longer listed: showing every target.");
+        expect([...hash().keys()]).toEqual(["token"]);
+    });
+
+    it("copies the link to the screen", async () => {
+        await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+        await openStory(2);
+        await page.locator("#copy-link").click();
+        await expect.poll(status).toContain("Link copied");
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(page.url());
+    });
+
+    it("keeps decided items in the pass: Previous goes back to one, and U undoes it", async () => {
+        await openStory(2);
+        await page.keyboard.press("a");
+        await expect.poll(position).toBe("3 of 6");
+        await page.getByRole("button", { name: "Accept", exact: true }).click();
+        await expect.poll(position).toBe("4 of 6");
+        await page.getByRole("button", { name: "Previous" }).click();
+        await expect.poll(position).toBe("3 of 6");
+        expect(await page.locator(".actions").textContent()).toContain("Decided: accept");
+        await page.keyboard.press("u");
+        await expect.poll(status).toBe("slider--sizes: undone, undecided again");
+        expect(await position()).toBe("3 of 6");
+        await page.keyboard.press("k");
+        await expect.poll(position).toBe("2 of 6");
+        await page.getByRole("button", { name: "Undo" }).click();
+        await expect.poll(status).toContain("undone");
+        await page.keyboard.press("a");
+        await expect.poll(position).toBe("3 of 6");
+        // The grid drops what was decided once the owner goes back to it.
+        await page.keyboard.press("Escape");
+        await expect
+            .poll(() => page.getByRole("button", { name: /^Needs a decision/ }).textContent())
+            .toBe("Needs a decision (5)");
+        expect(await page.locator('.tile[data-file="button--primary.dark.png"]').count()).toBe(0);
+    });
+});
+
 describe("review page: a running Finish", () => {
     it("shows each step, survives a reload without offering a second Finish, then shows the result", async () => {
         let release;
@@ -530,6 +636,9 @@ describe("review page: a running Finish", () => {
         await expect.poll(status, slow).toBe("Finishing #123: posting the status...");
 
         await page.reload();
+        // The reload reopens the grid it was on, which follows the Finish too.
+        await expect.poll(status).toBe("Finishing #123: posting the status...");
+        await page.locator("#home").click();
         await expect
             .poll(() => page.locator(".finish-running").textContent())
             .toBe("Finish is running: posting the status...");
