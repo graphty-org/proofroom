@@ -183,9 +183,20 @@ Finish applies every decision on one target at once:
   from it, and one issue holding every reject (labelled `bug`) with the same machine-readable
   block, for an agent to fix the stories. Rejects alone, with nothing accepted, open only the issue.
 
+Finish runs on the server, not in the page. A seed of several hundred images takes minutes,
+most of it uploading the images to Git LFS, which is longer than a browser (Safari on an iPad in
+particular) keeps one request open. So pressing Finish only starts it, and the page then shows
+each step as it happens: checking, writing the files, committing, uploading images to LFS (with a
+count of the images uploaded so far), pushing, opening the pull request or posting the rejects,
+and posting the status. When it ends, the page shows what was pushed and posted, or the error.
+Closing or reloading the page does not stop it: reopen the page and it shows the running Finish
+instead of a Finish button, and after it ends the result stays above the targets until the
+server restarts. Only one Finish runs at a time, and decisions on that target are refused until
+it ends.
+
 The commit is signed by whatever git configuration the server process sees: yours when you
-started it, the agent's key when an agent started it (the page names the key before Finish). If Finish fails, your decisions are kept and the page shows git's or GitHub's
-message:
+started it, the agent's key when an agent started it (the page names the key before Finish). If
+Finish fails, your decisions are kept and the page shows git's or GitHub's message:
 
 - **capture is stale, wait for CI**: someone pushed to the branch after the capture. Wait for the
   new CI run, then decide again what still differs.
