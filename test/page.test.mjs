@@ -359,10 +359,11 @@ describe("review page: a pull request", () => {
         const box = page.getByRole("button", { name: "Box", exact: true });
         expect(await box.getAttribute("aria-pressed")).toBe("true");
         await page.keyboard.press("b");
-        await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(0);
-        expect(await box.getAttribute("aria-pressed")).toBe("false");
-        // The count and Next changed box still work without the outline.
-        expect(await page.locator("#box-count").textContent()).toBe("box 1 of 1");
+        // B re-renders the story; the count is written once the diff is ready, so wait for it
+        // before judging the outline, which an unfinished render would also lack.
+        await expect.poll(() => box.getAttribute("aria-pressed")).toBe("false");
+        await expect.poll(() => page.locator("#box-count").textContent()).toBe("box 1 of 1");
+        expect(await page.locator("#stage .boxmark").count()).toBe(0);
         await page.reload();
         await page.getByRole("button", { name: "Review", exact: true }).first().click();
         await page.locator(".component").first().waitFor();
