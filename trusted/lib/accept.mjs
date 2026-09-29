@@ -315,6 +315,16 @@ async function commitAccepts({ repo, target, accepts, first, now }) {
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, base]);
     try {
+        // A seed may be built on a commit older than the rule that stores baselines in Git LFS.
+        // Carry master's .gitattributes into it, so the PNGs become pointers and the seed merges
+        // into master with the same rule.
+        const rules = isMaster
+            ? await git(repo, ["show", "refs/remotes/origin/master:.gitattributes"]).catch(() => "")
+            : "";
+        if (rules !== "") {
+            await put(join(tree, ".gitattributes"), `${rules}\n`);
+            await git(tree, ["add", "--", ".gitattributes"]);
+        }
         const items = [];
         const counts = { accept: 0, exclude: 0, remove: 0 };
         for (const w of writes) {
