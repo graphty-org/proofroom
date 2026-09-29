@@ -527,7 +527,9 @@ describe("review page: a running Finish", () => {
         await page.keyboard.press("Shift+A");
         await expect.poll(() => page.locator("#progress").textContent()).toBe("4 / 6 reviewed");
         await page.getByRole("button", { name: /^Finish/ }).click();
-        await expect.poll(status).toBe("Finishing #123: posting the status...");
+        // The commit, the LFS upload and the push come first: seconds on a busy runner.
+        const slow = { timeout: 30000 };
+        await expect.poll(status, slow).toBe("Finishing #123: posting the status...");
 
         await page.reload();
         await expect
@@ -538,7 +540,7 @@ describe("review page: a running Finish", () => {
 
         release();
         await expect
-            .poll(() => page.locator(".finish-outcome").textContent())
+            .poll(() => page.locator(".finish-outcome").textContent(), slow)
             .toMatch(/^Finish of #123 done\. Committed \w{10} to feature\. Status: Reviewed: 4 accepted/);
         expect(await page.locator(".finish-running").count()).toBe(0);
         expect(await page.getByRole("button", { name: /^Finish #123/ }).isDisabled()).toBe(true);
