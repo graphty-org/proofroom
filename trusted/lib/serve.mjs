@@ -7,6 +7,10 @@
  * hash to the hash results.json gives, so the page shows exactly what CI compared. Decisions
  * are kept in `<tmp>/state/<target>.json` until Finish, each with the hash of the image it was
  * taken on, so a restart resumes them and a new CI run keeps only those whose image is unchanged.
+ *
+ * Finish runs in the background: a large seed takes minutes, longer than a browser (Safari on an
+ * iPad) keeps one request open. POST /api/finish starts it and GET /api/finish-status reports its
+ * step, then its result or error, so a reload finds the running Finish.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -176,7 +180,15 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
      */
     const decisions = new Map();
     let finishing = false;
+    /**
+     * The newest Finish, kept after it ends so a reload still shows its result.
+     * @type {{ id: number, target: string, pr: number | null, running: boolean, step: string | null,
+     *     result: object | null, error: string | null } | null}
+     */
+    let job = null;
     let signer = null;
+    const busy = (t) => finishing && job?.target === t.id;
+    const BUSY = "a Finish is running on this target: wait for it to end";
 
     const itemOf = (t, key) => {
         const at = key.indexOf("/");
@@ -426,6 +438,9 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
                 return [404, { error: "no such item" }];
             }
             const key = `${body.project}/${body.file}`;
+            if (busy(t)) {
+                return [409, { error: BUSY }];
+            }
             if (isLocal(t, body.project)) {
                 return [403, { error: `${body.project} ${LOCAL}` }];
             }
@@ -460,6 +475,9 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             const { p, t } = await projectOf(String(body.id), body.project);
             if (!p) {
                 return [404, { error: "no such capture" }];
+            }
+            if (busy(t)) {
+                return [409, { error: BUSY }];
             }
             if (!acceptable(t, body.project)) {
                 return [
@@ -505,42 +523,65 @@ export function createApp({ repo, gh, projects, tmp, token, origin, masterRun, r
             );
             const undecided = summary(t).projects.reduce((n, p) => n + p.undecided, 0);
             finishing = true;
-            try {
-                const out = await finish({
-                    repo,
-                    gh,
-                    target: { pr: t.pr, branch: t.branch },
-                    projects: captures,
-                    decisions: list,
-                    undecided,
-                });
-                // Rejects stay, keyed by image hash, so an unchanged rejected capture on the next
-                // CI run still reads as rejected rather than undecided.
+            job = {
+                id: (job?.id ?? 0) + 1,
+                target: t.id,
+                pr: t.pr,
+                running: true,
+                step: "starting",
+                result: null,
+                error: null,
+            };
+            runFinish(job, t, mine, {
+                repo,
+                gh,
+                target: { pr: t.pr, branch: t.branch },
+                projects: captures,
+                decisions: list,
+                undecided,
+            });
+            return [202, { job }];
+        },
+        "GET /api/finish-status": async () => [200, { job }],
+    };
+
+    /**
+     * Runs one Finish to its end, recording its steps and outcome on `j`.
+     * @param {object} j the job
+     * @param {object} t the target
+     * @param {Map<string, object>} mine the target's decisions
+     * @param {object} input finish's input
+     */
+    async function runFinish(j, t, mine, input) {
+        try {
+            j.result = await finish({ ...input, progress: (step) => (j.step = step) });
+            // Rejects stay, keyed by image hash, so an unchanged rejected capture on the next
+            // CI run still reads as rejected rather than undecided.
+            for (const [k, v] of mine) {
+                if (v.decision === "reject") {
+                    v.posted = true;
+                } else {
+                    mine.delete(k);
+                }
+            }
+            save(t);
+        } catch (err) {
+            if (err instanceof AcceptError && err.committed) {
+                // The accepts are on the branch; keep only the rejects, so Finish again only comments.
                 for (const [k, v] of mine) {
-                    if (v.decision === "reject") {
-                        v.posted = true;
-                    } else {
+                    if (v.decision !== "reject") {
                         mine.delete(k);
                     }
                 }
                 save(t);
-                return [200, out];
-            } catch (err) {
-                if (err instanceof AcceptError && err.committed) {
-                    // The accepts are on the branch; keep only the rejects, so Finish again only comments.
-                    for (const [k, v] of mine) {
-                        if (v.decision !== "reject") {
-                            mine.delete(k);
-                        }
-                    }
-                    save(t);
-                }
-                return [err instanceof AcceptError ? 409 : 500, { error: err.message }];
-            } finally {
-                finishing = false;
             }
-        },
-    };
+            j.error = err.message;
+        } finally {
+            j.running = false;
+            j.step = null;
+            finishing = false;
+        }
+    }
 
     const tokenOk = (given) => {
         const a = Buffer.from(String(given ?? ""));
