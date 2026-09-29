@@ -272,11 +272,14 @@ the pull request.
   to the branch, including an agent on your machine, can write one that names the copied PNGs, and
   the gate cannot tell it from one Finish wrote. What the gate shows is that the captures match
   the pull request's baselines and that each baseline change carries a record; who wrote the
-  record is unproven until signing arrives (below).
+  record is unproven until passkey approval arrives (below).
 - Review records are marked `"unproven": true`. The page runs on the development server, where
   agents run with your GitHub credentials and signing key, so an agent could press Accept or call
-  the page's API. CLAUDE.md forbids it; nothing technical prevents it yet. Signing with a hardware
-  security key on your own computer replaces this in milestone 3 (`design/visual-testing/roadmap.md`).
+  the page's API. CLAUDE.md forbids it; nothing technical prevents it yet. In milestone 3 Finish
+  opens a signing page on `https://sign.graphty.app`, which shows exactly what it will approve,
+  and you approve with your passkey and Face ID on your iPhone, iPad or Mac; a record counts only
+  with that approval, and the commit's git signature no longer matters
+  (`design/visual-testing/design.md`, section 8).
 - The projects the gate checks are the ones with baselines on the base branch, so editing
   `visual-review/projects.json` does not remove one from the gate.
 - The gate is part of `.github/workflows/ci.yml`, which a pull request can edit, and a pull request
