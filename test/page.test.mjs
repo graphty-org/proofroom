@@ -338,8 +338,12 @@ describe("review page: a pull request", () => {
             .poll(async () => {
                 const shown = await page
                     .locator("#stage .diffmark")
-                    .evaluateAll((ms) => ms.map((m) => m.style.visibility || "visible").join());
-                seen.add(shown);
+                    .evaluateAll((ms) => ms.map((m) => m.style.visibility || "visible"));
+                // L re-renders the stage, which holds no overlay for a moment: count only the
+                // samples taken with both overlays drawn.
+                if (shown.length === 2) {
+                    seen.add(shown.join());
+                }
                 return [...seen].sort().join("|");
             })
             .toBe("hidden,hidden|visible,visible");
