@@ -6,12 +6,13 @@
  * fresh browser context: a fixed start time, SwiftShader WebGL, a 1200 x 900 viewport at device
  * scale factor 2, as Chromatic captures. Each PNG is the whole canvas, never cropped to the content:
  * the full page of the story iframe, which is the viewport unless the story overflows it. It waits
- * for Storybook's render (play functions included) and, for graphty-element, for
- * `waitForStableFrame()`; a story that errors or never settles is `failed`, never a picture,
+ * for Storybook's render (play functions included) and, when the project's config names a
+ * `waitFor` (an element selector and a method returning a promise, such as graphty-element's
+ * `waitForStableFrame()`), for that; a story that errors or never settles is `failed`, never a picture,
  * after one retry in a new context, so a single timeout on a busy runner does not block a pull
  * request. WebGPU is removed from every page (`navigator.gpu` is deleted before any script runs):
  * no Chromium switch hides it, and whether an adapter request fails differs by host, so without
- * this graphty-element's CPU or GPU path would depend on the machine.
+ * this a component with a CPU and a GPU path would draw whichever the machine offers.
  * Anything that differs from its baseline, or has none, is captured once more in a new context,
  * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs).
  *
@@ -20,16 +21,17 @@
  * second capture of an unstable one, and `baselines/<file>`: the baseline each changed, unstable
  * and removed item was compared with.
  *
- * With `reference`, a directory holding master's newest capture of the project (CI downloads it
- * on pull requests), a story with no baseline whose capture matches master's is `unseeded`, not
+ * With `reference`, a directory holding the default branch's newest capture of the project (CI
+ * downloads it on pull requests), a story with no baseline whose capture matches it is `unseeded`, not
  * `new`: seeding is per story, so a story nobody has accepted yet does not block every pull
  * request, only one that changes it.
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { dirname, extname, join, normalize } from "node:path";
+import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
@@ -262,7 +264,7 @@ async function extract(browser, base) {
  * Renders one story and mode, retrying once in a new context when it fails.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean }} options as for shootOnce
+ * @param {{ delay: number, waitFor: object | null }} options as for shootOnce
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the
  *     second attempt's result when the first failed
  */
@@ -275,12 +277,14 @@ async function shoot(browser, url, options) {
  * Renders one story and mode in a fresh context and screenshots it.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean }} options the story's delay and whether to wait
- *     for every graphty-element's stable frame
+ * @param {{ delay: number, waitFor: { selector: string, method: string, failOnConsole: string |
+ *     null } | null }} options the story's delay, and what to wait for after the render: the
+ *     promise `method` returns on every element matching `selector`, failing the story when a
+ *     console line contains `failOnConsole`
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the PNG,
  *     or a reason it failed; a failure's console holds the rest of its message and any stack
  */
-async function shootOnce(browser, url, { delay, stableFrame }) {
+async function shootOnce(browser, url, { delay, waitFor }) {
     const context = await newContext(browser);
     const lines = [];
     const fail = (reason) => {
@@ -292,8 +296,8 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
         const page = await context.newPage();
         page.on("console", (m) => lines.push(`${m.type()}: ${m.text()}`));
         page.on("pageerror", (e) => lines.push(`pageerror: ${e.stack ?? e.message}`));
-        // A fixed start that keeps running: setFixedTime would freeze Date.now(), which hangs
-        // graphty-element's input playback and recording, both timed with it.
+        // A fixed start that keeps running: setFixedTime would freeze Date.now(), which hangs any
+        // component timed with it (graphty-element's input playback and recording, for one).
         await page.clock.install({ time: CLOCK_START });
         await page.clock.resume();
         await page.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
@@ -327,14 +331,17 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
             await new Promise((r) => requestAnimationFrame(() => r()));
             await document.fonts.ready;
         });
-        if (stableFrame) {
-            await page.evaluate(async () => {
-                const graphs = [...document.querySelectorAll("graphty-element")];
-                await Promise.all(graphs.map((g) => /** @type {any} */ (g).waitForStableFrame()));
-                await new Promise((r) => requestAnimationFrame(() => r()));
-            });
-            if (lines.some((l) => l.includes("Graph settled timeout"))) {
-                return fail("Graph settled timeout");
+        if (waitFor) {
+            await page.evaluate(
+                async ({ selector, method }) => {
+                    const found = [...document.querySelectorAll(selector)];
+                    await Promise.all(found.map((el) => /** @type {any} */ (el)[method]()));
+                    await new Promise((r) => requestAnimationFrame(() => r()));
+                },
+                { selector: waitFor.selector, method: waitFor.method },
+            );
+            if (waitFor.failOnConsole && lines.some((l) => l.includes(waitFor.failOnConsole))) {
+                return fail(waitFor.failOnConsole);
             }
         }
         if (delay > 0) {
@@ -350,6 +357,25 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
         return fail(e.message);
     } finally {
         await context.close();
+    }
+}
+
+/**
+ * Which build of this tool captured: the commit of its source checkout when it runs from one
+ * (a monorepo that develops it), else the installed package's name and version.
+ * @returns {string} a commit sha, or `@graphty/visual-review@<version>`
+ */
+function toolVersion() {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, "../package.json"), "utf8"));
+    const installed = `${pkg.name}@${pkg.version}`;
+    if (here.split(sep).includes("node_modules")) {
+        return installed;
+    }
+    try {
+        return git("-C", here, "rev-parse", "HEAD");
+    } catch {
+        return installed;
     }
 }
 
@@ -438,9 +464,9 @@ async function loadReference(dir) {
 /**
  * Captures one project.
  * @param {{ project: string, storybook: string, baselines: string, out: string, workers: number,
- *     stableFrame: boolean, reference?: string | null, stories?: string[] | null,
- *     log?: (line: string) => void }} options `stableFrame` waits for every graphty-element's
- *     `waitForStableFrame()`; `reference` is master's capture (see above); `stories` keeps only
+ *     waitFor?: object | null, reference?: string | null, stories?: string[] | null,
+ *     log?: (line: string) => void }} options `waitFor` is the project's config entry (see
+ *     shootOnce); `reference` is the default branch's capture (see above); `stories` keeps only
  *     the story ids starting with one of these prefixes, for a quick local preview, and then no
  *     baseline is reported removed
  * @returns {Promise<object>} the final results.json contents
@@ -451,7 +477,7 @@ export async function capture({
     baselines,
     out,
     workers,
-    stableFrame,
+    waitFor = null,
     reference = null,
     stories = null,
     log = console.log,
@@ -525,7 +551,7 @@ export async function capture({
                 gpu,
                 cpu: await cpuModel(),
                 emojiFont,
-                tool: git("-C", dirname(fileURLToPath(import.meta.url)), "rev-parse", "HEAD"),
+                tool: toolVersion(),
             },
             items,
         };
@@ -562,14 +588,14 @@ export async function capture({
                 reason: prefix + shot.reason,
                 console: clip(shot.console),
             });
-            const first = await shoot(browser, url, { delay, stableFrame });
+            const first = await shoot(browser, url, { delay, waitFor });
             if (!first.png) {
                 return failed(first);
             }
             let result = classify({ baseline, first: first.png, ...opts });
             let second = null;
             if (result.status === "changed" || result.status === "new") {
-                second = await shoot(browser, url, { delay, stableFrame });
+                second = await shoot(browser, url, { delay, waitFor });
                 if (!second.png) {
                     return failed(second, "second capture: ");
                 }

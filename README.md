@@ -1,75 +1,249 @@
-# Visual review: the owner's guide
+# @graphty/visual-review
 
-CI screenshots every story of compact-mantine, graphty-element and layout on every pull request and
-compares each screenshot with its approved baseline PNG in `visual-baselines/<project>/`. A pull
-request whose screenshots differ from the baselines cannot merge ("All Checks Pass" fails) until
-you accept or reject each difference in the review page described here. Nothing is hosted: the
-page runs on the development server and reads CI's artifacts with `gh`.
+Visual regression review for Storybook, hosted by nobody. GitHub Actions screenshots every story
+on every pull request and compares each screenshot with an approved baseline PNG kept in your
+repository (in Git LFS). You open a review page on your own machine, see every difference side by
+side, and accept, reject or exclude each one. Accepting commits the new baselines to the pull
+request's branch. A required check, the "Visual gate", keeps a pull request from merging while it
+holds a difference nobody accepted.
 
-The baseline PNGs are stored in Git LFS; review records and story settings files are plain git.
+There is no service, account or per-snapshot bill: the captures live in GitHub Actions artifacts
+for 30 days, the baselines live in git, and the review page reads both through the `gh` CLI with
+your login.
 
-The design is `design/visual-testing/design.md`; what exists today is its section 1a.
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Install and set up](#install-and-set-up)
+- [Configuration](#configuration)
+- [The GitHub Actions workflows](#the-github-actions-workflows)
+- [Your first review: seeding baselines](#your-first-review-seeding-baselines)
+- [Opening the review page](#opening-the-review-page), [the screens](#the-screens), [keys](#keys),
+  [decisions](#what-each-decision-does), [Finish](#finish)
+- [Seeding one story at a time](#seeding-one-story-at-a-time)
+- [Iterating on a story before a pull request exists](#iterating-on-a-story-before-a-pull-request-exists)
+- [Story parameters](#story-parameters)
+- [What the gate does and does not guarantee](#what-the-gate-does-and-does-not-guarantee)
+- [Troubleshooting](#troubleshooting)
 
-## Setup (once per machine)
+## How it works
 
-Every machine that accepts baselines, or pushes a branch holding them, needs git-lfs:
+1. **Capture (CI).** On every pull request and every push to your default branch, a workflow job
+   per Storybook builds it, opens every story in Chromium (1200 x 900 at device scale factor 2,
+   a fixed clock, software WebGL, WebGPU removed), screenshots it, and compares the screenshot
+   with its baseline. Anything that differs is captured a second time, so a real change, an
+   unstable story and a one-off flake are told apart. The results (`results.json` and the PNGs
+   worth looking at) are uploaded as an artifact.
+2. **Review (your machine).** `visual-review serve` lists your open pull requests, downloads their
+   captures, and serves a page with a grid of every change and a side-by-side, flash, highlight
+   and spotlight view of each. You accept, reject (with a reason) or exclude each item.
+3. **Finish.** One button applies your decisions: the accepted PNGs and a review record are
+   committed and pushed to the pull request's branch, and the rejects are posted as one comment.
+   CI captures again, and the accepted items now read `unchanged`.
+4. **Gate (CI).** The "Visual gate" job fails while a pull request holds a difference nobody
+   accepted, or a baseline file changed without a review record naming it.
 
-- **Ubuntu 22.04:** `sudo apt-get install git-lfs`, then `git lfs install`.
-- **Without root:** download the Linux tarball from https://github.com/git-lfs/git-lfs/releases,
-  put its `git-lfs` binary in `~/bin` (on your `PATH`), then run `git lfs install`.
+A story with no baseline yet does not block anything until a pull request changes it, so you can
+seed baselines a few stories at a time.
 
-`git lfs install` sets up the filters in your global git configuration. It also tries to add a
-pre-push hook and fails to, because this repository's hooks are husky's; that is expected:
-`.husky/pre-push` runs `tools/lfs-pre-push.sh` first, which uploads the images a push points at.
-Then run `git lfs pull` in each checkout that already existed, so its baselines are images rather
-than pointer files.
+## Requirements
 
-What happens without it:
+- **A git repository on GitHub, with GitHub Actions.** The review page talks to GitHub through
+  the [`gh` CLI](https://cli.github.com), logged in (`gh auth login`) as someone who can push to
+  the repository's branches.
+- **Node.js 20 or newer**, locally and in CI.
+- **Storybook 7 or newer**, built as a static site (`storybook build`), which writes the
+  `index.json` the capture reads.
+- **Playwright**, a peer dependency: install it next to this package. `visual-review
+install-browser` installs the Chromium that version of Playwright drives.
+- **git-lfs**, on every machine that accepts baselines or pushes a branch holding them. GitHub's
+  runners have it. Install it with your package manager (`brew install git-lfs`,
+  `sudo apt-get install git-lfs`), or without root put the `git-lfs` binary from
+  https://github.com/git-lfs/git-lfs/releases on your `PATH`; then run `git lfs install` once,
+  and `git lfs pull` in every checkout that already existed.
+- **jq** on the runners, which GitHub's Ubuntu runners have.
 
-- `visual-review serve` refuses to start, naming the install steps, because an accept would
-  commit raw PNGs instead of LFS pointers. Finish checks again, and also refuses a commit whose
-  PNG did not become a pointer.
-- `git push` of a branch holding baseline PNGs is refused with the same steps; a push holding
-  none goes ahead with a note.
-- A checkout made without git-lfs holds small pointer files instead of images. A local
-  `capture` or `compare` against them stops with "baseline is an LFS pointer; run git lfs pull";
-  it never reports every image as changed.
-- `git push --no-verify` skips the upload too. After one that carried baseline images, run
-  `git lfs push origin <branch>`, or CI's capture fails to fetch them and blocks the pull request.
+## Install and set up
 
-## Opening the page
+```bash
+npm install --save-dev @graphty/visual-review playwright
+npx visual-review init
+```
 
-Ask an agent to start it, or start it yourself through servherd (the command is in CLAUDE.md,
-"Visual review"). The page's address, including a session token after `#token=`, is printed in
-the server's log every time it starts; servherd's `servherd_logs` for `visual-review` shows it.
-Open that exact URL. Without the token the page shows "No session token". The URL stays valid
-across restarts; deleting `tmp/visual-review/state/token` issues a new one.
+(`pnpm add -D` and `yarn add -D` work the same way; `init` notices the lockfile and writes
+workflows for that package manager.)
 
-Finish's commit is signed by the git environment the server was started from. When an agent
-starts it, that is the agent's signing key, not yours. The top of the targets screen and Finish's
-confirmation name the key that will sign, where git found it (a config file, or the command line
-when the server's environment set it) and the committer, and print the exact command that starts
-the same server from your own shell. To sign as yourself, stop the agent's server (servherd's
-`servherd_stop` for `visual-review`) and run that command in your own terminal.
+`init` writes, at the root of your repository, and never overwrites a file you already have:
 
-Variants of the command:
+| File                                  | What it is                                                                               |
+| ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `visual-review.config.json`           | Your Storybooks and your repository's settings ([Configuration](#configuration))         |
+| `.gitattributes`                      | `visual-baselines/**/*.png filter=lfs diff=lfs merge=lfs -text`: baselines go to Git LFS |
+| `.gitignore`                          | `/.visual-review/`, where the review page downloads captures and keeps its state         |
+| `.github/workflows/visual-review.yml` | Captures every pull request and push, and gates pull requests                            |
+| `.github/workflows/visual-seed.yml`   | Captures an older commit on demand, to seed baselines from                               |
 
-- `--master-run <run id>`: also lists master at that CI run, for seeding (below).
-- `--results <dir>`: serves local captures offline, for looking at a story before a pull request
-  exists (below). It is listed as "Local preview", never as master or a seed, and it is look
+Then:
+
+1. Edit `visual-review.config.json`: one entry under `projects` per Storybook, with the directory
+   its build writes and the command that builds it.
+2. Commit everything and open a pull request. Its "Visual review" run captures every story; with
+   no baselines yet, nothing blocks.
+3. Make **Visual gate** a required status check (Settings, then Branches or Rulesets).
+4. Merge, then seed your first baselines ([below](#your-first-review-seeding-baselines)).
+
+`visual-review init --force` rewrites the two workflows when they still start with the line
+`init` writes ("Generated by visual-review init"), to pick up a newer template after an upgrade.
+It never replaces the config or a workflow you wrote yourself.
+
+Every command has `--help`; `visual-review --help` lists them.
+
+## Configuration
+
+`visual-review.config.json` sits at the root of the repository. Only `projects` is required.
+
+```json
+{
+    "defaultBranch": "main",
+    "workflow": "visual-review.yml",
+    "baselines": "visual-baselines",
+    "workDir": ".visual-review",
+    "commitPrefix": "test",
+    "issueLabels": ["bug"],
+    "projects": {
+        "web": {
+            "storybook": "packages/web/storybook-static",
+            "build": "npm run build-storybook --workspace packages/web",
+            "workers": 4
+        },
+        "charts": {
+            "storybook": "packages/charts/storybook-static",
+            "build": "npm run build-storybook --workspace packages/charts",
+            "seedFromDefaultBranch": false,
+            "waitFor": { "selector": "my-chart", "method": "whenRendered", "failOnConsole": "render timeout" }
+        }
+    }
+}
+```
+
+| Key             | Default             | Meaning                                                                                                             |
+| --------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `defaultBranch` | `main`              | The branch baselines are seeded from and pull requests merge into                                                   |
+| `workflow`      | `visual-review.yml` | The workflow file whose runs hold the captures; the review page looks runs up by it                                 |
+| `baselines`     | `visual-baselines`  | Where baselines live: `<baselines>/<project>/<story id>[.<mode>].png`, and review records in `<baselines>/reviews/` |
+| `workDir`       | `.visual-review`    | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                      |
+| `commitPrefix`  | `test`              | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
+| `issueLabels`   | `["bug"]`           | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
+| `projects`      | (required)          | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
+
+Per project:
+
+| Key                     | Default    | Meaning                                                                                                                                                                                                                                        |
+| ----------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storybook`             | (required) | The built Storybook's directory, relative to the repository root                                                                                                                                                                               |
+| `build`                 | none       | The shell command CI runs to build it (from the repository root)                                                                                                                                                                               |
+| `workers`               | `4`        | How many browsers capture in parallel                                                                                                                                                                                                          |
+| `seedFromDefaultBranch` | `true`     | `false`: the project's first baselines are accepted on a pull request, not seeded from the default branch                                                                                                                                      |
+| `waitFor`               | none       | After a story renders, call `method()` on every element matching `selector` and wait for the promise it returns, for a component that keeps drawing after Storybook says it is done. A console line containing `failOnConsole` fails the story |
+
+Project ids are letters, digits, `.`, `_` and `-`. The pull request gate reads the config as it is
+on the base branch, so a pull request cannot move `baselines` out from under it.
+
+## The GitHub Actions workflows
+
+**`visual-review.yml`** runs on every pull request and every push to the default branch:
+
+- **Plan** reads the projects from the config.
+- **visual (&lt;project&gt;)**, one job per project: fetches that project's baselines from Git LFS
+  (cached), installs your dependencies, installs Chromium, runs the project's `build`, downloads
+  the default branch's newest capture as a reference (on pull requests), captures, and uploads
+  the artifact `visual-<project>-<attempt>` (kept 30 days). It never fails because of a
+  difference; `continue-on-error` keeps even a crash of the tool from failing the run.
+- **Visual gate** (pull requests only) downloads every capture of the run and runs
+  `visual-review gate` at the version `init` pinned, with `npx`, so a pull request's own
+  dependencies cannot change it. Make it a required check.
+
+The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
+their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
+rather capture inside an existing CI workflow (to reuse a Storybook your build job already made),
+copy the `visual` job and the gate's steps into it, keep those names, and set `workflow` to that
+file.
+
+**`visual-seed.yml`** is started by hand to capture an older commit with the default branch's
+tool: `gh workflow run visual-seed.yml --ref main -f ref=<sha>`. See
+[Seeding](#seeding-one-story-at-a-time).
+
+Both need nothing but the default `GITHUB_TOKEN`: the capture job reads Actions artifacts
+(`actions: read`); nothing in CI writes to the repository.
+
+## Your first review: seeding baselines
+
+A project has no baselines until you accept some, and until it has one the gate ignores it. After
+the setup pull request merges, the default branch's push runs the capture:
+
+1. Find that run's id: `gh run list --workflow visual-review.yml --branch main --limit 1`.
+2. Start the page with `--master-run <run id>` ([Opening the review page](#opening-the-review-page))
+   and open "master (seed)" (the page calls the default branch's target "master", whatever its
+   name). Every story is `new` there.
+3. Accept what looks right, reject what does not (with a reason), leave the rest, and press
+   Finish. You get a pull request `visual/seed-<date>` holding the accepted baselines, and one
+   issue listing the rejects.
+4. Merge the seed pull request once its own run shows its accepted items `unchanged`. From then
+   on, every pull request that changes how a seeded story looks is blocked until you accept it.
+
+## Opening the review page
+
+```bash
+PORT=4800 npx visual-review serve
+```
+
+It prints the address to open, with a session token after `#token=`; open that exact URL. The
+token is kept in the work directory, so the URL stays valid across restarts; delete
+`<workDir>/state/token` to issue a new one. Without the token the page shows "No session token".
+
+- Without a certificate it serves plain HTTP, and only on `localhost` (`HOST` defaults to it).
+  To open the page from another device (an iPad, say), serve HTTPS: set `HOST` to the machine's
+  name and `HTTPS_CERT_PATH` and `HTTPS_KEY_PATH` to a certificate and key for it.
+- `serve` refuses to start without git-lfs: an accept would commit raw PNGs.
+- `--master-run <run id>` also lists the default branch at that run, for seeding.
+- `--results <dir>` serves local captures offline (a directory of `<project>/results.json`), for
+  looking at a story before a pull request exists. It is listed as "Local preview" and is look
   only: no Accept, Reject or Exclude, and no Finish. Only CI captures of a pushed commit are
   decided.
 
+### Links to a screen
+
+The address always names the screen you are on, after the token: the targets list; a pull
+request (or master) and project with the grid's filter and text; or one story with its view and
+zoom, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2`.
+Opening that address, in another tab or on another device, opens the same screen. **Copy link**
+at the top right copies it. The link carries your session token, so it works on your iPad the way
+the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
+browser never sends to any server or in a Referer, so the page never hands the token to another
+site. Back and Forward move between the targets list, a grid and a story; moving between stories
+or views of one grid updates the address in place.
+
+A link to something that is gone opens the nearest screen that still exists, and the status line
+says why: a story not in the newest CI run opens its grid, and a pull request no longer listed
+(closed, or no CI run) opens the targets list.
+
+Finish's commit is signed by the git configuration of the process that runs the server. If
+someone else started it for you (an agent, a service manager), the commit carries their
+identity: the page names the key that will sign before every Finish and prints the command that
+starts the same server from your own shell.
+
 ## The screens
 
-1. **Targets.** Each open pull request with a CI run, and master when started with
-   `--master-run`. Per project: how many items need a decision, how many you decided, and badges:
-    - **merge master first**: master has newer baselines for this project than the pull request.
-      Merge master into the branch (by merge, never rebase) and wait for CI.
+1. **Targets.** Each open pull request with a run of the capturing workflow, and the default
+   branch (shown as "master (seed)") when started with `--master-run`. Per project: how many items need a decision, how many you decided, and badges:
+    - **merge master first**: the default branch has newer baselines for this project than the
+      pull request. Merge the default branch into the pull request's branch (by merge, never
+      rebase) and wait for CI.
     - **capture failed**: the `visual` job produced no results. Re-run that job in GitHub Actions.
     - **incomplete: N of M stories**: the capture stopped part way. Re-run the job.
-    - **not seeded from master**: this project is not reviewed on master (`seedFromMaster: false`
-      in `projects.json`); its first baselines are accepted on a pull request.
+    - **not seeded from master**: this project is not reviewed on the default branch
+      (`"seedFromDefaultBranch": false` in the config); its first baselines are accepted on a pull
+      request.
 2. **Grid.** It opens on **Needs a decision** (the undecided items, counted on the button); **All**
    and one button per status show the rest, and **Accepted**, **Rejected** and **Excluded** show
    what you decided, each counted, as Chromatic's review does. A line above the grid splits what is shown into
@@ -113,23 +287,31 @@ Variants of the command:
    Spotlight need two images; on a new or removed story they are off and the page says why
    ("New story, no baseline", "Only one image: this story was removed"). Badges here:
    **size changed** (in image pixels), **flaky** (the two captures differed, then matched), and
-   **re-review** (an accept you made was replaced by master's newer baseline).
+   **re-review** (an accept you made was replaced by the default branch's newer baseline).
+
+    **Next** and **Previous** (J and K) walk one pass: the items the grid showed when you opened
+    the story, in the grid's order, frozen until you go back to the grid. Accepting, rejecting or
+    excluding an item never drops it from the pass: the decision moves on to the next item, and
+    **Previous** comes back to the one just decided, showing its decision and an **Undo** (or U).
+    Going back to the grid shows what its filter now selects: under **Needs a decision** the items
+    you decided have left it, and the count has gone down; **Accepted**, **Rejected** and
+    **Excluded** show them with their decisions.
 
 Statuses: `changed` (differs from its baseline), `new` (no baseline, and on a pull request the
-story is new or looks different from master's newest capture of it), `no baseline yet` (status
+story is new or looks different from the default branch's newest capture of it), `no baseline yet` (status
 `unseeded`: no baseline, and the pull request does not change it), `removed` (a baseline whose
 story no longer exists, lost a mode, or whose story's own parameters now exclude it), `unstable`
 (two captures of the same commit differed), `failed` (did not render, even after one retry).
 
 `no baseline yet` items are listed under their own filter in the grid and never need a decision:
 they do not block the pull request, Accept all skips them, and the story screen offers no buttons
-for them. Seed them from master (below), or accept them on the pull request that changes them.
+for them. Seed them from the default branch (below), or accept them on the pull request that changes them.
 
 ## Keys
 
 | Key          | Action                                                                         |
 | ------------ | ------------------------------------------------------------------------------ |
-| J / K        | Next / previous item                                                           |
+| J / K        | Next / previous item of this pass (decided items stay in it)                   |
 | A            | Accept an undecided item                                                       |
 | R            | Reject an undecided item (asks for a reason, then Enter)                       |
 | E            | Exclude an undecided item (asks for a reason, then Enter, then a confirmation) |
@@ -155,7 +337,7 @@ so; to change a decision, press U (or the Undo button) first. The same key twice
   request as a comment with a machine-readable block an agent can read. The pull request stays
   blocked until its code changes so the capture matches the baseline again.
 - **Exclude**: stops capturing the story. It needs a reason and writes
-  `visual-baselines/<project>/<story id>.json` with `disableSnapshot: true`. It drops **every mode
+  `<baselines>/<project>/<story id>.json` with `disableSnapshot: true`. It drops **every mode
   of the story**, on every later pull request, until that file is deleted. It is the only
   decision for `unstable` and `failed` items; for a one-off `failed` item (a timeout on a busy
   runner), re-run the `visual` job instead, since the newest attempt replaces the old results.
@@ -164,24 +346,25 @@ so; to change a decision, press U (or the Undo button) first. The same key twice
   Decisions are kept across server restarts.
 - After Finish, accepts and exclusions are cleared; rejects stay, marked as already posted, and
   still show as rejected on the next CI run while the capture is unchanged. Finish does not post
-  them twice. They live in this server's `tmp/visual-review/state/`, not in the repository.
+  them twice. They live in the work directory's `state/` (the config's `workDir`), not in the
+  repository.
 
 ## Finish
 
 Finish applies every decision on one target at once:
 
 - **A pull request:** one commit holding the accepted PNGs, the exclusion files and one review
-  record in `visual-baselines/reviews/`, pushed to the pull request's branch, plus one comment
+  record in `<baselines>/reviews/`, pushed to the pull request's branch, plus one comment
   holding every reject. CI then recaptures, and the accepted items read `unchanged`.
 - **One commit status**, "Visual review", posted once when Finish completes (never per
   decision), on the commit Finish pushed, or on the captured commit when it pushed none. It
   fails when anything was rejected, is pending while items are left undecided, and succeeds
   otherwise; its description counts the accepts, rejects, exclusions and undecided items. It is
-  information for the pull request page, not a required check: the merge gate is "All Checks
-  Pass". If posting it fails, the page says so; what was pushed and posted stays.
-- **Master (seeding):** a branch `visual/seed-<date>` with the same commit and a pull request
-  from it, and one issue holding every reject (labelled `bug`) with the same machine-readable
-  block, for an agent to fix the stories. Rejects alone, with nothing accepted, open only the issue.
+  information for the pull request page, not a required check: the merge gate is the "Visual
+  gate" job. If posting it fails, the page says so; what was pushed and posted stays.
+- **The default branch (seeding):** a branch `visual/seed-<date>` with the same commit and a pull
+  request from it, and one issue holding every reject (labelled with the config's `issueLabels`)
+  with the same machine-readable block, for a person or an agent to fix the stories. Rejects alone, with nothing accepted, open only the issue.
 
 Finish runs on the server, not in the page. A seed of several hundred images takes minutes,
 most of it uploading the images to Git LFS, which is longer than a browser (Safari on an iPad in
@@ -195,7 +378,9 @@ server restarts. Only one Finish runs at a time, and decisions on that target ar
 it ends.
 
 The commit is signed by whatever git configuration the server process sees: yours when you
-started it, the agent's key when an agent started it (the page names the key before Finish). If
+started it, someone else's when they (or an agent working for you) started it. The top of the
+targets screen and Finish's confirmation name the key that will sign, where git found it and the
+committer, and print the exact command that starts the same server from your own shell. If
 Finish fails, your decisions are kept and the page shows git's or GitHub's message:
 
 - **capture is stale, wait for CI**: someone pushed to the branch after the capture. Wait for the
@@ -211,21 +396,22 @@ Finish fails, your decisions are kept and the page shows git's or GitHub's messa
 A story does not have to look right the first time, and nothing has to be seeded in one pass.
 Seeding is per story:
 
-1. Master's CI captures every story on every push. Start the server with `--master-run <run id>`
-   (master's newest CI run) and open "master". Every story without a baseline is `new` there.
+1. The review workflow captures every story on every push to the default branch. Start the
+   server with `--master-run <run id>` (that workflow's newest run on the default branch) and open
+   "master (seed)". Every story without a baseline is `new` there.
 2. **Accept** the stories that look right. **Reject** the ones that do not, with a reason saying
    what is wrong. **Leave the rest** undecided; they simply stay without a baseline. Exclude only
    stories that are unstable. Press Finish: the accepts become the seed pull request, and the
-   rejects become one issue whose machine-readable block an agent reads to fix the stories.
+   rejects become one issue whose machine-readable block says what to fix.
 3. Merge the seed pull request once its own capture shows its accepted items `unchanged`.
 
-To seed from an older, known-good commit instead of master's newest, capture it with master's
-tool: `gh workflow run visual-seed.yml --ref master -f ref=<sha>`, then start the server with
-`--master-run <that run's id>`. It is listed as "master"; its results.json names the captured
-commit, so Finish's seed branch starts from that commit.
+To seed from an older, known-good commit instead of the newest, capture it with the default
+branch's tool: `gh workflow run visual-seed.yml --ref <default branch> -f ref=<sha>`, then start
+the server with `--master-run <that run's id>`. It is listed as "master (seed)"; its results.json
+names the captured commit, so Finish's seed branch starts from that commit.
 
-A story with no baseline on master is in the "no baseline yet" state. On every pull request, CI
-compares its capture with master's newest capture of that story:
+A story with no baseline on the default branch is in the "no baseline yet" state. On every pull
+request, CI compares its capture with the default branch's newest capture of that story:
 
 - **The pull request does not change it:** `no baseline yet` (`unseeded`). It is shown, it does
   not block the pull request, and it is never accepted by Accept all.
@@ -235,25 +421,25 @@ compares its capture with master's newest capture of that story:
 
 So seeding never restarts from scratch: each round accepts what now looks right, and the rest
 waits, blocking nothing, until a pull request touches it. A project enters the merge gate when its
-first baseline lands on master; before that the gate ignores it entirely.
+first baseline lands on the default branch; before that the gate ignores it entirely.
 
-If master's capture could not be downloaded (its artifacts expired, or no master run has finished
-one), every story without a baseline is `new` on that pull request. Re-run its `visual` job once
-master's CI has finished.
+If the default branch's capture could not be downloaded (its artifacts expired, or no run there has
+finished one), every story without a baseline is `new` on that pull request. Re-run its `visual` job
+once the default branch's run has finished.
 
 ## Iterating on a story before a pull request exists
 
 To try a story's look quickly, capture it locally and look at it, as a PNG or in the page:
 
 ```bash
-pnpm exec nx run compact-mantine:build-storybook   # or graphty-element:build-storybook
-node visual-review/trusted/cli.mjs capture --project compact-mantine \
-    --out tmp/visual-preview/compact-mantine --stories button--,badge--
+npx visual-review install-browser        # once per machine
+npm run build-storybook                  # your project's build command
+npx visual-review capture --project web --out .visual-review/preview/web --stories button--,badge--
 ```
 
 `--stories` captures only the story ids that start with one of the given prefixes, in seconds
 rather than minutes, and then reports no baseline as removed. Start the server with
-`--results tmp/visual-preview` to see the capture beside its baseline. Capture and look again
+`--results .visual-review/preview` to see the capture beside its baseline. Capture and look again
 after each change. A local preview is look only: its fonts and graphics stack are not CI's, so
 only a CI capture of a pushed commit becomes a baseline. Push, let CI capture, and accept it on
 the pull request.
@@ -262,15 +448,15 @@ the pull request.
 
 - **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale
   factor 2, as Chromatic captures, so a PNG holds two image pixels per CSS pixel. It is always
-  the whole canvas, by the owner's rule, in every project: the full page of the story iframe,
+  the whole canvas, in every project: the full page of the story iframe,
   which is the whole viewport, or everything a scroll would reach when the story is taller or
   wider. It is never cropped to the content, so a small component sits in the full canvas and
   every capture of a project has the same size unless its story overflows. results.json records the scale as `scale`, and each review record
   copies it into its `subject`.
 - **From GitHub Actions to the page.** Each `visual` job uploads `results.json` and the PNGs to
   review as an artifact `visual-<project>-<attempt>`, kept 30 days. The server lists open pull
-  requests with `gh`, finds each one's newest CI run, and downloads those artifacts with
-  `gh run download` into `tmp/visual-review/`. It downloads nothing from Git LFS: the baselines a
+  requests with `gh`, finds each one's newest run of the capturing workflow, and downloads those
+  artifacts with `gh run download` into the work directory. It downloads nothing from Git LFS: the baselines a
   capture was compared with travel inside the artifact.
 - **What an accept does.** Finish writes the accepted PNGs (as LFS pointers, uploading the images
   with `git lfs push`) and one review record in a throwaway worktree at the captured head,
@@ -280,39 +466,86 @@ the pull request.
   still undecided shows. Decisions you made but did not Finish are kept for every image whose
   hash did not change.
 
-## What this does and does not guarantee (today)
+## Story parameters
 
-- A pull request cannot pass "All Checks Pass" while its capture of a seeded project holds
-  anything but `unchanged`, `excluded` or `no baseline yet` items, including after "Re-run failed
-  jobs"; a missing, unfinished or invalid capture blocks it too. A rejected item stays blocking
-  until a code change makes it match the baseline.
-- `no baseline yet` rests on master's capture being honest and recent: a story is `new` (blocking)
-  only when it looks different from master's newest complete capture of it. That capture may be a
-  few merges older than the pull request's base; a story changed on master in between then shows
-  as `new` on the pull request, which blocks rather than passes.
+Capture reads each story's `parameters.chromatic`, the same keys Chromatic reads, so stories
+written for Chromatic work unchanged:
+
+| Parameter                       | Effect                                                                                                                     |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `disableSnapshot: true`         | The story is not captured (a baseline it still has is reported `removed`)                                                  |
+| `diffThreshold`                 | pixelmatch's per-pixel colour threshold, 0 to 1 (default 0.063)                                                            |
+| `diffIncludeAntiAliasing: true` | Count anti-aliased pixels as changes                                                                                       |
+| `delay`                         | Milliseconds to wait after the render before the screenshot                                                                |
+| `modes`                         | `{ "<name>": { <Storybook globals> } }`: one capture per mode, named `<story id>.<name>.png`; `disable: true` drops a mode |
+
+Inside a story, `isChromatic()` from `chromatic/isChromatic` is true during capture (the URL carries
+`chromatic=true`). A settings file `<baselines>/<project>/<story id>.json` overrides the story's
+parameters; the page's Exclude writes one with `disableSnapshot: true` and your reason.
+
+## What the gate does and does not guarantee
+
+- A pull request cannot pass the gate while its capture of a seeded project holds anything but
+  `unchanged`, `excluded` or `no baseline yet` items, including after "Re-run failed jobs" (the
+  highest attempt's artifact counts); a missing, unfinished or invalid capture blocks it too. A
+  rejected item stays blocking until a code change makes it match the baseline.
+- `no baseline yet` rests on the default branch's capture being honest and recent: a story is
+  `new` (blocking) only when it looks different from the default branch's newest complete capture
+  of it. That capture may be a few merges older than the pull request's base; a story changed in
+  between shows as `new`, which blocks rather than passes.
 - Every baseline PNG, and every settings file that excludes a story, that the pull request adds,
   changes or deletes must be named with its new hash in a review record the pull request adds
-  under `visual-baselines/reviews/`. A baseline PNG is a Git LFS pointer in git, and the gate reads
-  the image's hash from the pointer, so it never downloads an image. Only the path and new hash are checked: any JSON file with
-  an `items` entry naming them passes, and the hash need not match a CI capture; existing records may not be edited or deleted. This stops
-  the shortcut of copying captured PNGs, or an exclusion, straight into `visual-baselines/`.
-- It does not prove that you reviewed anything. A record is a plain JSON file: anyone who can push
-  to the branch, including an agent on your machine, can write one that names the copied PNGs, and
-  the gate cannot tell it from one Finish wrote. What the gate shows is that the captures match
-  the pull request's baselines and that each baseline change carries a record; who wrote the
-  record is unproven until passkey approval arrives (below).
-- Review records are marked `"unproven": true`. The page runs on the development server, where
-  agents run with your GitHub credentials and signing key, so an agent could press Accept or call
-  the page's API. CLAUDE.md forbids it; nothing technical prevents it yet. In milestone 3 Finish
-  asks for your passkey and Face ID on your iPhone, iPad or Mac, and the gate counts an accept
-  only with that approval; the commit's git signature no longer matters
-  (`design/visual-testing/design.md`, section 8).
-- The projects the gate checks are the ones with baselines on the base branch, so editing
-  `visual-review/projects.json` does not remove one from the gate.
-- The gate is part of `.github/workflows/ci.yml`, which a pull request can edit, and a pull request
-  can loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
+  under `<baselines>/reviews/`. A baseline PNG is a Git LFS pointer in git, and the gate reads the
+  image's hash from the pointer, so it never downloads an image. Existing records may not be
+  edited or deleted. This stops the shortcut of copying captured PNGs, or an exclusion, straight
+  into the baselines directory.
+- **It does not prove a person reviewed anything.** A record is a plain JSON file: anyone who can
+  push to the branch can write one that names copied PNGs, and the gate cannot tell it from one
+  Finish wrote. Records are marked `"unproven": true` for that reason. What the gate shows is that
+  the captures match the pull request's baselines and that each baseline change carries a record.
+- **Only the repository owner should approve.** The page runs on a development machine, where
+  anything running as you (an AI coding agent included) has your GitHub login and signing key and
+  could press Accept or call the page's API. Nothing technical prevents that today; tell your
+  agents not to, and keep the review to yourself.
+- The projects the gate checks are the ones with baselines on the base branch, so removing a
+  project from the config does not remove it from the gate.
+- The gate is part of a workflow file, which a pull request can edit, and a pull request can
+  loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
   without a review item. Read changes to those in code review.
-- The CI half has not run yet: the visual jobs, the artifact download in "All Checks Pass", and
-  whether captures are byte-identical from one CI runner to the next are unmeasured until the
-  tooling pull request's own CI runs (`design/visual-testing/design.md`, section 1a).
-- No pre-push visual check exists yet; it comes in milestone 2.
+
+## Troubleshooting
+
+- **"baseline is an LFS pointer; run git lfs pull".** The checkout was made without git-lfs, so
+  the baselines are small pointer files. Install git-lfs, run `git lfs install`, then
+  `git lfs pull`.
+- **`serve` refuses to start, or Finish says git-lfs is missing or its filter is not
+  configured.** Install git-lfs and run `git lfs install` (it sets up the filters in your global
+  git configuration).
+- **A push of baselines left CI unable to fetch them.** `git lfs install` adds a pre-push hook
+  that uploads the images a push points at. If your repository's hooks belong to husky (or any
+  other `core.hooksPath`), that hook is not installed: call `git lfs pre-push "$@"` from your own
+  pre-push hook. `git push --no-verify` skips the upload too; after one that carried baselines,
+  run `git lfs push origin <branch>`.
+- **capture failed / no capture** on a target. The `visual` job produced no results. Open its
+  log from the page and re-run the job. **incomplete: N of M stories**: the job stopped part way
+  (a timeout); re-run it.
+- **Every story is `new` on a pull request.** No reference capture of the default branch could be
+  downloaded (none finished yet, or its artifacts expired after 30 days). Re-run the `visual` job
+  once a run on the default branch has finished.
+- **Finish says "capture is stale, wait for CI".** Someone pushed to the branch after the capture.
+  Wait for the new run, then decide again what still differs.
+- **"merge master first".** The default branch has newer baselines for that project than the
+  pull request. Merge the default branch into the branch (by merge, never by rebase, so an accept
+  commit stays as it was made) and wait for CI.
+- **Finish fails with "failed to write commit object"** or another signing error: unlock or plug
+  in your signing key, then press Finish again. Your decisions are kept.
+- **"the accepts were pushed ..., but the reject comment failed".** The accepts are done; press
+  Finish again to post the rejects.
+- **Opening the seed issue fails.** Every label in `issueLabels` must exist in the repository.
+- **The pnpm setup step fails in CI.** `pnpm/action-setup` reads the pnpm version from the
+  `packageManager` field of your root `package.json`; add one.
+- **A merge conflict under the baselines directory.** Take the default branch's side for every
+  file there and let CI capture again; review what still differs.
+- **Captures differ from what you see locally.** Only CI's captures are compared: fonts and the
+  graphics stack differ from machine to machine. Look locally with `capture --stories` and
+  `serve --results`, but let CI's capture become the baseline.

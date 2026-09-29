@@ -5,14 +5,21 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { newestMasterCapture } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { copyFixture, FIXTURE, fakeGh, git, isolateGit, job, makeRepo, onePr, pushCommit } from "./helpers.mjs";
+import {
+    copyFixture,
+    FIXTURE,
+    FIXTURE_CONFIG,
+    fakeGh,
+    git,
+    isolateGit,
+    job,
+    makeRepo,
+    onePr,
+    pushCommit,
+} from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
-// The live registry's entries for the two projects the fixtures hold, so adding a project to
-// projects.json does not change what these tests expect, while its seedFromMaster values are still tested.
-const REGISTRY = JSON.parse(readFileSync(new URL("../projects.json", import.meta.url), "utf8"));
-const PROJECTS = { "compact-mantine": REGISTRY["compact-mantine"], "graphty-element": REGISTRY["graphty-element"] };
 const TOKEN = "t".repeat(43);
 
 let server;
@@ -31,7 +38,7 @@ async function start(options = {}) {
     server = createServer((req, res) => box.app(req, res));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    box.app = createApp({ repo, tmp, projects: PROJECTS, token: TOKEN, origin, ...options, gh: options.gh(r) });
+    box.app = createApp({ repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, ...options, gh: options.gh(r) });
     const api = async (method, path, body, headers = {}) => {
         const res = await fetch(`${origin}${path}`, {
             method,
@@ -201,8 +208,12 @@ describe("serve: master", () => {
     });
 
     it("refuses Accept for a project that is not seeded from master", async () => {
-        const projects = { ...PROJECTS, "graphty-element": { ...PROJECTS["graphty-element"], seedFromMaster: false } };
-        const s = await start({ gh: master, masterRun: 2000, projects });
+        const p = FIXTURE_CONFIG.projects;
+        const config = {
+            ...FIXTURE_CONFIG,
+            projects: { ...p, "graphty-element": { ...p["graphty-element"], seedFromDefaultBranch: false } },
+        };
+        const s = await start({ gh: master, masterRun: 2000, config });
         await s.api("GET", "/api/prs");
         const decide = (project, file) =>
             s.api("POST", "/api/decide", { id: "master", project, file, decision: "accept" });
@@ -643,7 +654,7 @@ describe("newestMasterCapture", () => {
             results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, runId: 2000 } },
         });
         const tmp = join(r.dir, "reference");
-        const dir = await newestMasterCapture(gh, "compact-mantine", tmp);
+        const dir = await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG);
         expect(dir).toBe(join(tmp, "2000-1", "compact-mantine"));
         expect(JSON.parse(readFileSync(join(dir, "results.json"), "utf8")).runId).toBe(2000);
     });
@@ -655,6 +666,6 @@ describe("newestMasterCapture", () => {
             artifacts: { 2000: ["visual-compact-mantine-1"] },
             results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, complete: false } },
         });
-        expect(await newestMasterCapture(gh, "compact-mantine", join(r.dir, "reference"))).toBeNull();
+        expect(await newestMasterCapture(gh, "compact-mantine", join(r.dir, "reference"), FIXTURE_CONFIG)).toBeNull();
     });
 });
