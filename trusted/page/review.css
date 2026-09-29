@@ -57,6 +57,12 @@ header {
     font-weight: 700;
 }
 
+#home,
+#copy-link {
+    flex: none;
+    white-space: nowrap;
+}
+
 #status {
     margin-left: auto;
     color: var(--muted);
