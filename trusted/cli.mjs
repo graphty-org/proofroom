@@ -87,7 +87,6 @@ async function capture(args) {
         out: resolve(values.out),
         workers,
         stableFrame: project.stableFrame,
-        canvas: project.canvas === true,
         reference: values.reference ? resolve(values.reference) : null,
         stories: values.stories ? values.stories.split(",").filter(Boolean) : null,
     });

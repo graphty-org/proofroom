@@ -29,7 +29,12 @@
     box-sizing: border-box;
 }
 
+/* The page is one screen: the header on top, and main scrolling under it. */
 body {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
     margin: 0;
     font:
         14px/1.4 system-ui,
@@ -45,9 +50,7 @@ header {
     padding: 8px 16px;
     border-bottom: 1px solid var(--line);
     background: var(--card);
-    position: sticky;
-    top: 0;
-    z-index: 1;
+    flex: none;
 }
 
 #home {
@@ -65,6 +68,9 @@ header {
 }
 
 main {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
     padding: 16px;
 }
 
@@ -307,36 +313,75 @@ td {
     color: var(--fg);
 }
 
+/* The story screen fills main: its controls, then the two panes taking all the height left. */
+.story-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.story-view > * {
+    flex: none;
+}
+
+.story-view h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+}
+
 .stage {
     display: flex;
-    flex-wrap: wrap;
     gap: 16px;
-    align-items: flex-start;
+    flex: 1 1 0;
+    min-height: 200px;
 }
 
+/* Two panes of the same size, whatever each holds. */
 .stage figure {
-    margin: 0;
+    display: flex;
+    flex-direction: column;
     flex: 1 1 0;
     min-width: 0;
+    margin: 0;
 }
 
-/* Each image scrolls in its own frame; real size and zoom never squeeze it. */
 .frame {
     position: relative;
+    display: flex;
+    flex: 1 1 0;
+    min-height: 0;
     overflow: auto;
-    max-height: 75vh;
     border: 1px solid var(--line);
 }
 
-.stage img,
-.stage canvas {
+/* At fit the pictures are sized to the pane; a rounding pixel never adds a scroll bar. */
+.stage.zoom-fit .frame {
+    overflow: hidden;
+}
+
+/* No image on this side: a quiet empty frame, its label says why. */
+.frame.empty {
+    border-style: dashed;
+}
+
+/* Centred while it fits; auto margins drop to 0 when it overflows, so every part scrolls in. */
+.sheet {
+    position: relative;
+    display: grid;
+    flex: none;
+    margin: auto;
+}
+
+.sheet > img,
+.sheet > canvas {
+    grid-area: 1 / 1;
     display: block;
     max-width: none;
     background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;
 }
 
 /* Hard pixels only from 4x: below that the smoothed image reads more like the real one. */
-.stage .crisp {
+.sheet > .crisp {
     image-rendering: pixelated;
 }
 
@@ -350,6 +395,19 @@ td {
 .label {
     font-weight: 600;
     margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.console-block {
+    margin-top: 8px;
+}
+
+.console-block .console {
+    max-height: 30vh;
+    overflow: auto;
+    margin: 4px 0 0;
 }
 
 .console {
@@ -364,11 +422,7 @@ td {
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
-    margin-top: 16px;
-    padding: 8px 0;
-    position: sticky;
-    bottom: 0;
-    background: var(--bg);
+    padding-top: 8px;
 }
 
 #reason {
