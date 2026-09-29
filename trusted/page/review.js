@@ -27,6 +27,8 @@ const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
 const GROW = 10; // image pixels the spotlight and the changed boxes grow each changed pixel by
 const SPOT_ALPHA = 190; // the spotlight's dimming, out of 255, as Chromatic's focus mask
 const RE_REVIEW = "re-review: your earlier accept was replaced by master's baseline";
+// The grid's decision filters, and how a decision reads on a tile.
+const DECISIONS = { accept: "Accepted", reject: "Rejected", exclude: "Excluded" };
 
 const state = {
     targets: [],
@@ -43,6 +45,7 @@ const state = {
     held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
     screen: "targets",
+    armed: null, // the bulk Undo button pressed once: its second press undoes
 };
 const images = new Map();
 const diffs = new Map();
@@ -169,6 +172,8 @@ function visibleItems() {
         items = state.data.items.filter((i) => REVIEWABLE.includes(i.status));
         if (state.filter === "undecided") {
             items = items.filter((i) => !decisionOf(i));
+        } else if (Object.hasOwn(DECISIONS, state.filter)) {
+            items = items.filter((i) => decisionOf(i)?.decision === state.filter);
         } else if (state.filter !== "all") {
             items = items.filter((i) => i.status === state.filter);
         }
@@ -397,24 +402,53 @@ function tile(item, number) {
     }
     const d = decisionOf(item);
     return el(
-        "button",
-        {
-            type: "button",
-            class: `tile ${d ? `decided ${d.decision}` : ""} ${item.file === state.lastFile ? "current" : ""}`,
-            "data-file": item.file,
-            onclick: () => openItem(number - 1),
-        },
-        img,
-        el("span", { class: "name" }, el("span", { class: "number" }, `${number}`), " ", item.mode ?? ""),
-        el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
-        d ? el("span", { class: `badge ${d.decision}` }, d.decision) : null,
-        item.reReview ? el("span", { class: "badge warn", title: RE_REVIEW }, "re-review") : null,
+        "div",
+        { class: "tile-box" },
+        el(
+            "button",
+            {
+                type: "button",
+                class: `tile ${d ? `decided ${d.decision}` : ""} ${item.file === state.lastFile ? "current" : ""}`,
+                "data-file": item.file,
+                onclick: () => openItem(number - 1),
+            },
+            img,
+            el("span", { class: "name" }, el("span", { class: "number" }, `${number}`), " ", item.mode ?? ""),
+            el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
+            item.reReview ? el("span", { class: "badge warn", title: RE_REVIEW }, "re-review") : null,
+        ),
+        decisionLine(item),
+    );
+}
+
+// An item's decision, with its reason, and an Undo that clears it without opening the story. A
+// reject an earlier Finish already posted stays: it is shown, never undone from the grid.
+function decisionLine(item) {
+    const d = decisionOf(item);
+    if (!d) {
+        return null;
+    }
+    const text = `${DECISIONS[d.decision]}${d.bulk ? " (not opened)" : ""}${d.reason ? `: ${d.reason}` : ""}`;
+    return el(
+        "div",
+        { class: `decision ${d.decision}`, "data-file": item.file },
+        el("span", { class: "what", title: text }, text),
+        d.posted
+            ? el("span", { class: "meta" }, "Posted by Finish: stays")
+            : el(
+                  "button",
+                  {
+                      type: "button",
+                      title: `Undo the ${d.decision} of ${itemName(item)}`,
+                      onclick: () => undo([item.file], itemName(item), true),
+                  },
+                  "Undo",
+              ),
     );
 }
 
 // A failed capture: its reason, and the console and stack output, in the errors list.
 function errorRow(item, number) {
-    const d = decisionOf(item);
     return el(
         "li",
         { class: item.file === state.lastFile ? "current" : null, "data-file": item.file },
@@ -424,7 +458,7 @@ function errorRow(item, number) {
             el("span", { class: "number" }, `${number}`),
             ` ${itemName(item)}`,
         ),
-        d ? el("span", { class: `badge ${d.decision}` }, d.decision) : null,
+        decisionLine(item),
         el("div", { class: "reason" }, item.reason ?? "no reason recorded"),
         item.console.length > 0
             ? el(
@@ -442,6 +476,76 @@ const undecidedIn = (component) =>
     state.data.items.filter(
         (i) => ACCEPTABLE.includes(i.status) && !decisionOf(i) && (!component || componentOf(i.id) === component),
     ).length;
+
+// The files whose decisions a bulk Undo in `component` (or the whole project) clears: every
+// decision not yet posted by Finish.
+const undoableIn = (component) =>
+    state.data.items
+        .filter((i) => decisionOf(i) && !decisionOf(i).posted && (!component || componentOf(i.id) === component))
+        .map((i) => i.file);
+
+// A bulk Undo asks by a second press: the first arms it, and any other redraw of the grid disarms it.
+function undoButton(component, label) {
+    const files = undoableIn(component);
+    if (isLocal() || files.length === 0) {
+        return null;
+    }
+    const key = component ?? "";
+    const where = component ? `the component ${component}` : state.project;
+    const armed = state.armed === key;
+    return el(
+        "button",
+        {
+            type: "button",
+            class: `undo-all ${armed ? "reject" : ""}`,
+            "data-armed": String(armed),
+            onclick: () => {
+                if (armed) {
+                    undo(files, where);
+                    return;
+                }
+                state.armed = key;
+                showGrid();
+                say(`Press Confirm to undo the decisions of ${where}, or Escape to cancel.`);
+            },
+        },
+        armed ? `Confirm: undo ${files.length} ${files.length === 1 ? "decision" : "decisions"}` : label(files.length),
+    );
+}
+
+// Clears decisions one by one through the same request as the story screen's U.
+// ponytail: one request per item; a bulk endpoint if a project ever holds thousands of decisions.
+async function undo(files, where, one = false) {
+    state.armed = null;
+    let done = 0;
+    try {
+        for (const file of files) {
+            await api("/api/decide", {
+                id: state.target.id,
+                project: state.project,
+                file,
+                decision: null,
+                reason: null,
+            });
+            done++;
+        }
+    } catch (err) {
+        say(`Undid ${done} of ${files.length}, then: ${err.message}`, true);
+    }
+    try {
+        await reload();
+    } catch (err) {
+        say(err.message, true);
+    }
+    if (done === files.length) {
+        say(
+            one
+                ? `${where}: undone, undecided again`
+                : `Undid ${done} ${done === 1 ? "decision" : "decisions"} of ${where}.`,
+        );
+    }
+    showGrid();
+}
 
 function showGrid() {
     stopFlash();
@@ -499,6 +603,7 @@ function showGrid() {
                           `Accept ${n} undecided`,
                       )
                     : null,
+                undoButton(component, (k) => `Undo ${k} ${k === 1 ? "decision" : "decisions"}`),
             ),
             el(
                 "div",
@@ -552,6 +657,14 @@ function showGrid() {
                 .filter((s) => counts[s])
                 .map((s) => filterButton(s, `${s} (${counts[s]})`)),
             counts[UNSEEDED] ? filterButton(UNSEEDED, `${NO_BASELINE} (${counts[UNSEEDED]})`) : null,
+            isLocal()
+                ? null
+                : Object.entries(DECISIONS).map(([k, label]) =>
+                      filterButton(
+                          k,
+                          `${label} (${state.data.items.filter((i) => REVIEWABLE.includes(i.status) && decisionOf(i)?.decision === k).length})`,
+                      ),
+                  ),
             el("span", { class: "spacer" }),
             filterBox,
             goto,
@@ -562,6 +675,7 @@ function showGrid() {
                       "Accept all",
                   )
                 : null,
+            undoButton(null, () => "Undo all decisions"),
             finishButton(),
         ),
         isLocal()
@@ -600,6 +714,8 @@ function showGrid() {
             : null,
         ...(items.length === 0 ? [el("p", {}, "Nothing here.")] : sections),
     );
+    // An armed bulk Undo lasts until the next redraw: this render showed it, the next one does not.
+    state.armed = null;
     // Back from a story: show where it is in the grid.
     const current = app.querySelector(".current");
     current?.scrollIntoView({ block: "center" });
@@ -1359,7 +1475,8 @@ document.addEventListener("keydown", (e) => {
         if (inInput) {
             e.target.blur();
         }
-        if (state.screen === "story") {
+        if (state.screen === "story" || app.querySelector('[data-armed="true"]')) {
+            // From a story back to the grid; on the grid, it disarms a bulk Undo pressed once.
             say("");
             showGrid();
         }
