@@ -108,16 +108,91 @@ describe("review page: a pull request", () => {
         ).toBe("contain");
     });
 
-    it("fits an image wider than its pane by default, and shows real size on request", async () => {
-        await page.setViewportSize({ width: 500, height: 800 });
+    // Where each pane and each image is on the screen, and whether anything scrolls.
+    const layout = () =>
+        page.locator("body").evaluate((body) => {
+            const doc = body.ownerDocument;
+            const rect = (e) => {
+                const r = e.getBoundingClientRect();
+                return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+            };
+            const main = doc.querySelector("main");
+            return {
+                frames: [...doc.querySelectorAll("#stage .frame")].map(rect),
+                pics: [...doc.querySelectorAll("#stage figure")].map((f) => {
+                    const p = f.querySelector("img, canvas");
+                    return p ? rect(p) : null;
+                }),
+                labels: [...doc.querySelectorAll("#stage .label")].map((l) => l.textContent),
+                scrolls:
+                    main.scrollHeight > main.clientHeight ||
+                    doc.documentElement.scrollHeight > doc.defaultView.innerHeight,
+            };
+        });
+    const inside = (p, f) =>
+        p.left >= f.left - 0.5 && p.right <= f.right + 0.5 && p.top >= f.top - 0.5 && p.bottom <= f.bottom + 0.5;
+
+    it("fits both whole images side by side on one screen, at one scale, in panes of one size", async () => {
+        // Short enough that the images shrink to the height of the panes, not their width.
+        for (const [w, h] of [
+            [1000, 480],
+            [500, 800],
+        ]) {
+            await page.setViewportSize({ width: w, height: h });
+            await openStory(2);
+            await page.locator("#stage img").nth(1).waitFor();
+            const l = await layout();
+            expect(l.scrolls).toBe(false);
+            expect(l.frames).toHaveLength(2);
+            expect(l.frames[0].width).toBeCloseTo(l.frames[1].width, 0);
+            expect(l.frames[0].height).toBeCloseTo(l.frames[1].height, 0);
+            expect(l.frames[0].top).toBe(l.frames[1].top);
+            expect(l.frames[1].left).toBeGreaterThan(l.frames[0].right);
+            const [base, next] = l.pics;
+            // Smaller than real size (320 x 200): it had to shrink to fit.
+            expect(base.width).toBeLessThan(320);
+            expect(inside(base, l.frames[0]) && inside(next, l.frames[1])).toBe(true);
+            // One scale, one place in each pane: equal images line up pixel for pixel.
+            expect(next.width).toBe(base.width);
+            expect(next.top).toBe(base.top);
+            expect(next.left - l.frames[1].left).toBeCloseTo(base.left - l.frames[0].left, 5);
+            await page.keyboard.press("Escape");
+        }
+    });
+
+    it("keeps the left pane, empty and labelled, when there is no baseline", async () => {
         await openStory(2);
-        const img = page.locator("#stage img").first();
-        await img.waitFor();
-        const fitted = await img.evaluate((i) => [i.getBoundingClientRect().width, i.parentElement.clientWidth]);
-        expect(fitted[0]).toBeLessThan(320);
-        expect(Math.abs(fitted[0] - fitted[1])).toBeLessThanOrEqual(1);
-        await page.getByRole("button", { name: "Real size (1x)" }).click();
-        await expect.poll(() => img.evaluate((i) => i.getBoundingClientRect().width)).toBe(320);
+        await page.locator("#stage img").nth(1).waitFor();
+        const withBaseline = await layout();
+        await openStoryFromGrid(4);
+        await expect.poll(async () => (await layout()).labels).toEqual(["No baseline", "New (no baseline)"]);
+        const l = await layout();
+        expect(await page.locator("#stage .frame").first().getAttribute("class")).toBe("frame empty");
+        expect(l.pics[0]).toBeNull();
+        // The right pane is exactly where it is when a baseline exists.
+        expect(l.frames[1].left).toBe(withBaseline.frames[1].left);
+        expect(l.frames[1].width).toBe(withBaseline.frames[1].width);
+        expect(l.frames[0].width).toBe(l.frames[1].width);
+        // A removed story keeps the right pane the same way.
+        await openStoryFromGrid(6);
+        await expect.poll(async () => (await layout()).labels).toEqual(["Baseline", "No capture"]);
+    });
+
+    it("zooms past the panes, which scroll together; Fit to screen brings the whole image back", async () => {
+        await openStory(2);
+        await page.locator("#stage img").nth(1).waitFor();
+        await page.getByRole("button", { name: "8x", exact: true }).click();
+        const frames = page.locator("#stage .frame");
+        await expect.poll(() => frames.first().evaluate((f) => f.scrollWidth > f.clientWidth)).toBe(true);
+        expect((await layout()).scrolls).toBe(false);
+        await frames.nth(1).evaluate((f) => f.scrollTo(300, 200));
+        await expect.poll(() => frames.first().evaluate((f) => [f.scrollLeft, f.scrollTop])).toEqual([300, 200]);
+        // Flash keeps the zoom and the place.
+        await page.keyboard.press("f");
+        await expect.poll(stageClass).toContain("flash");
+        await expect.poll(() => frames.nth(1).evaluate((f) => [f.scrollLeft, f.scrollTop])).toEqual([300, 200]);
+        await page.getByRole("button", { name: "Fit to screen" }).click();
+        await expect.poll(() => frames.first().evaluate((f) => f.scrollWidth <= f.clientWidth)).toBe(true);
     });
 
     it("shows images at real size, zooms at a labelled factor, crisp only from 4x, and jumps to the changed box", async () => {
@@ -166,16 +241,20 @@ describe("review page: a pull request", () => {
         await expect.poll(async () => (await shape()).width).toBe(s.natural);
     });
 
-    it("flashes the two images themselves, with F and while Space is held", async () => {
+    it("flashes the two images themselves in the right pane, with F and while Space is held", async () => {
         await openStory(2);
         await page.locator("#stage img").first().waitFor();
         await page.keyboard.press("f");
         await expect.poll(stageClass).toContain("flash");
-        await expect.poll(() => page.locator("#stage img").count()).toBe(1);
+        const flashing = page.locator("#stage .flashing img");
+        await expect.poll(() => flashing.count()).toBe(2);
+        // Both at the same place; one shown at a time, each in turn.
+        const [a, b] = await flashing.evaluateAll((imgs) => imgs.map((i) => i.getBoundingClientRect().toJSON()));
+        expect([a.left, a.top]).toEqual([b.left, b.top]);
         const seen = new Set();
         await expect
             .poll(async () => {
-                seen.add(await page.locator("#stage img").getAttribute("src"));
+                seen.add(await flashing.evaluateAll((imgs) => imgs.findIndex((i) => i.style.visibility !== "hidden")));
                 return seen.size;
             })
             .toBe(2);
