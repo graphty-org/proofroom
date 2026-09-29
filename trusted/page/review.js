@@ -45,8 +45,10 @@ const state = {
     held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
     screen: "targets",
+    job: null, // the newest Finish, from GET /api/finish-status
     armed: null, // the bulk Undo button pressed once: its second press undoes
 };
+const running = () => state.job?.running === true;
 const images = new Map();
 const diffs = new Map();
 let flashTimer = null;
@@ -203,18 +205,24 @@ async function showTargets() {
     setCrumbs();
     say("Loading pull requests and captures...");
     try {
-        state.targets = (await api("/api/prs")).targets;
+        const [prs, status] = await Promise.all([api("/api/prs"), api("/api/finish-status")]);
+        state.targets = prs.targets;
+        state.job = status.job;
         say("");
     } catch (err) {
         say(err.message, true);
         return;
     }
+    if (running()) {
+        // A reload during a Finish: show the running one, never offer a second.
+        watchFinish();
+    }
     if (state.targets.length === 0) {
-        render(el("p", {}, "No open pull request has a CI run, and no master run was given."));
+        render(finishOutcome(), el("p", {}, "No open pull request has a CI run, and no master run was given."));
         return;
     }
     const finishable = state.targets.find((t) => !t.local);
-    render(finishable ? signerBlock(finishable) : null, ...state.targets.map(targetCard));
+    render(finishOutcome(), finishable ? signerBlock(finishable) : null, ...state.targets.map(targetCard));
 }
 
 // The key Finish signs with comes from the server's environment, which is an agent's when an
@@ -329,15 +337,22 @@ function targetCard(t) {
         ),
         t.local
             ? null
-            : el(
-                  "p",
-                  {},
-                  el(
-                      "button",
-                      { type: "button", class: "primary", disabled: decided === 0, onclick: () => finishTarget(t) },
-                      `Finish ${t.pr === null ? "seed" : `#${t.pr}`} (${decided} decisions)`,
-                  ),
-              ),
+            : running() && state.job.target === t.id
+              ? el("p", { class: "finish-running" }, `Finish is running: ${state.job.step}...`)
+              : el(
+                    "p",
+                    {},
+                    el(
+                        "button",
+                        {
+                            type: "button",
+                            class: "primary",
+                            disabled: decided === 0 || running(),
+                            onclick: () => finishTarget(t),
+                        },
+                        `Finish ${t.pr === null ? "seed" : `#${t.pr}`} (${decided} decisions)`,
+                    ),
+                ),
     );
 }
 
@@ -1397,7 +1412,7 @@ function finishButton() {
     }
     return el(
         "button",
-        { type: "button", class: "primary", onclick: () => finishTarget(state.target) },
+        { type: "button", class: "primary", disabled: running(), onclick: () => finishTarget(state.target) },
         `Finish ${targetLabel()}`,
     );
 }
@@ -1435,25 +1450,88 @@ async function finishTarget(target) {
     if (!confirm(lines.join("\n\n"))) {
         return;
     }
-    say("Finishing: committing, pushing, commenting...");
+    // Finish runs on the server and can take minutes; the page only starts it and then asks how it
+    // is going, so a dropped connection or a reload loses nothing.
+    say("Starting Finish...");
     try {
-        const out = await api("/api/finish", { id: target.id });
-        const parts = [
-            out.commit ? `Committed ${short(out.commit)} to ${out.branch}.` : "No commit (nothing accepted).",
-        ];
-        if (out.rejects > 0) {
-            parts.push(`${out.rejects} rejects posted.`);
-        }
-        if (out.pullRequest) {
-            parts.push(`Pull request: ${out.pullRequest}`);
-        }
-        parts.push(out.statusError ? `The commit status failed: ${out.statusError}` : `Status: ${out.status}.`);
-        await showTargets();
-        say(parts.join(" "), Boolean(out.statusError));
+        state.job = (await api("/api/finish", { id: target.id })).job;
     } catch (err) {
-        say("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
-        app.prepend(el("pre", { class: "error" }, err.message));
+        // The request may have been lost after the server started it: ask before calling it failed.
+        state.job = await api("/api/finish-status")
+            .then((s) => s.job)
+            .catch(() => null);
+        if (!running() || state.job.target !== target.id) {
+            say("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
+            app.prepend(el("pre", { class: "error" }, err.message));
+            return;
+        }
     }
+    await watchFinish();
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let watching = false;
+
+// Follows the running Finish to its end, then shows the targets with its outcome.
+async function watchFinish() {
+    if (watching) {
+        return;
+    }
+    watching = true;
+    try {
+        while (running()) {
+            const label = state.job.pr === null ? "the master seed" : `#${state.job.pr}`;
+            say(`Finishing ${label}: ${state.job.step}...`);
+            await sleep(1000);
+            try {
+                state.job = (await api("/api/finish-status")).job;
+            } catch (err) {
+                say(`Lost contact with the server (${err.message}); Finish goes on there. Retrying...`, true);
+                await sleep(2000);
+            }
+        }
+    } finally {
+        watching = false;
+    }
+    await showTargets();
+}
+
+// What the newest Finish did, shown above the targets until the server restarts.
+function finishOutcome() {
+    const job = state.job;
+    if (!job || job.running) {
+        return null;
+    }
+    const label = job.pr === null ? "the master seed" : `#${job.pr}`;
+    if (job.error !== null) {
+        return el(
+            "section",
+            { class: "card finish-outcome" },
+            el(
+                "p",
+                { class: "error" },
+                `Finish of ${label} failed; your decisions are kept. Fix the cause and press Finish again.`,
+            ),
+            el("pre", { class: "error" }, job.error),
+        );
+    }
+    const out = job.result;
+    const parts = [out.commit ? `Committed ${short(out.commit)} to ${out.branch}.` : "No commit (nothing accepted)."];
+    if (out.rejects > 0) {
+        parts.push(`${out.rejects} rejects posted.`);
+    }
+    if (out.issue) {
+        parts.push(`Issue: ${out.issue}`);
+    }
+    if (out.pullRequest) {
+        parts.push(`Pull request: ${out.pullRequest}`);
+    }
+    parts.push(out.statusError ? `The commit status failed: ${out.statusError}` : `Status: ${out.status}.`);
+    return el(
+        "section",
+        { class: "card finish-outcome" },
+        el("p", { class: out.statusError ? "error" : "" }, `Finish of ${label} done. `, parts.join(" ")),
+    );
 }
 
 // ---------------------------------------------------------------- keys and start
