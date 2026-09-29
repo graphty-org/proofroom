@@ -205,6 +205,25 @@ describe("finish: accepts", () => {
             "posting the status",
         ]);
     });
+
+    it("seeds from a commit older than the LFS rule, carrying master's .gitattributes", async () => {
+        const s = setup();
+        // A known-good commit from before baselines were stored in LFS: its .gitattributes lacks the rule.
+        git(s.repo, "checkout", "-q", "--detach", s.master);
+        writeFileSync(join(s.repo, ".gitattributes"), "");
+        git(s.repo, "commit", "-q", "-am", "before the LFS rule");
+        const old = git(s.repo, "rev-parse", "HEAD");
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), {
+            commit: old,
+            headSha: null,
+            pr: null,
+        });
+        await s.run([accept("badge--default.light.png")], { pr: null, branch: null });
+        const branch = "visual/seed-2026-09-27";
+        expect(remoteLog(s, branch)[1]).toBe(old);
+        expect(isLfsPointer(show(s, branch, "visual-baselines/compact-mantine/badge--default.light.png"))).toBe(true);
+        expect(show(s, branch, ".gitattributes").toString()).toBe(show(s, "master", ".gitattributes").toString());
+    });
 });
 
 describe("finish: rejects on master", () => {
