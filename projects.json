@@ -12,5 +12,13 @@
         "workers": 4,
         "stableFrame": true,
         "seedFromMaster": true
+    },
+    "layout": {
+        "dir": "layout",
+        "artifact": "build-storybook-layout",
+        "workers": 4,
+        "stableFrame": false,
+        "canvas": true,
+        "seedFromMaster": false
     }
 }
