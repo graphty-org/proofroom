@@ -667,8 +667,8 @@ describe("newestMasterCapture", () => {
         const r = makeRepo();
         const gh = fakeGh({
             masterRuns: [
-                { id: 3000, head: r.master },
-                { id: 2000, head: r.master },
+                { id: 3000, head: "3".repeat(40) },
+                { id: 2000, head: "2".repeat(40) },
                 { id: 1000, head: r.master },
             ],
             artifacts: { 3000: [], 2000: ["visual-compact-mantine-1"], 1000: ["visual-compact-mantine-1"] },
@@ -678,6 +678,22 @@ describe("newestMasterCapture", () => {
         const dir = await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG);
         expect(dir).toBe(join(tmp, "2000-1", "compact-mantine"));
         expect(JSON.parse(readFileSync(join(dir, "results.json"), "utf8")).runId).toBe(2000);
+    });
+
+    it("skips a master commit with no run", async () => {
+        const r = makeRepo();
+        const gh = fakeGh({
+            masterRuns: [
+                { id: null, head: "4".repeat(40) },
+                { id: 2000, head: r.master },
+            ],
+            artifacts: { 2000: ["visual-compact-mantine-1"] },
+            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, runId: 2000 } },
+        });
+        const tmp = join(r.dir, "reference");
+        expect(await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG)).toBe(
+            join(tmp, "2000-1", "compact-mantine"),
+        );
     });
 
     it("finds nothing when no master run has a complete capture", async () => {

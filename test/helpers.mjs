@@ -158,7 +158,8 @@ export function copyFixture(project, dest, overrides = {}) {
  * @param {object[]} [data.prs] open pull requests: { number, head, branch }
  * @param {Record<string, object>} [data.runs] CI runs by head sha
  * @param {Record<string, object>} [data.runsById] CI runs by id
- * @param {object[]} [data.masterRuns] master's CI runs, newest first
+ * @param {object[]} [data.masterRuns] master's commits, newest first, each with its CI run (`id`
+ *     null for a commit CI never ran on)
  * @param {Record<string, object[]>} [data.jobs] jobs by run id
  * @param {Record<string, string[]>} [data.artifacts] artifact names by run id
  * @param {Record<string, object>} [data.results] results overrides applied to each download, by
@@ -197,11 +198,12 @@ export function fakeGh({
                 })),
             );
         }
-        if (path?.includes("workflows/ci.yml/runs?branch=master&event=push")) {
-            return JSON.stringify({ workflow_runs: masterRuns.map(run) });
+        if (path?.startsWith("repos/{owner}/{repo}/commits?sha=master")) {
+            return JSON.stringify(masterRuns.map((r) => ({ sha: r.head })));
         }
         if ((m = /workflows\/ci\.yml\/runs\?head_sha=(\w+)/.exec(path))) {
-            return JSON.stringify({ workflow_runs: runs[m[1]] ? [run(runs[m[1]])] : [] });
+            const found = runs[m[1]] ?? masterRuns.find((r) => r.head === m[1] && r.id !== null);
+            return JSON.stringify({ workflow_runs: found ? [run(found)] : [] });
         }
         if ((m = /actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs/.exec(path))) {
             return JSON.stringify({ jobs: jobs[m[1]] ?? [] });

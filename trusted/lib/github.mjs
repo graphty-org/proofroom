@@ -159,12 +159,15 @@ export async function downloadCaptures(gh, run, projects, tmp) {
  * @returns {Promise<string | null>} the capture's directory, or null when no run has one
  */
 export async function newestMasterCapture(gh, project, tmp, { workflow, defaultBranch }) {
-    const { workflow_runs: runs } = await api(
-        gh,
-        `repos/{owner}/{repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=` +
-            `${encodeURIComponent(defaultBranch)}&event=push&per_page=10`,
-    );
-    for (const run of runs.map(toRun)) {
+    // The branch's newest commits, then each one's run: GitHub's list of a workflow's runs filtered
+    // by branch now and then answers with a stale page (runs from weeks ago), which made a pull
+    // request compare with an old capture or none. Commits and a run by head sha answer consistently.
+    const commits = await api(gh, `repos/{owner}/{repo}/commits?sha=${encodeURIComponent(defaultBranch)}&per_page=10`);
+    for (const { sha } of commits) {
+        const run = await newestCiRun(gh, sha, { workflow });
+        if (!run) {
+            continue;
+        }
         const dir = (await downloadCaptures(gh, run, [project], tmp))[project]?.dir;
         let results = null;
         try {
