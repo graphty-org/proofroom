@@ -445,6 +445,12 @@ td {
     image-rendering: pixelated;
 }
 
+/* Highlight's changed pixels, over the image: no checkerboard behind them. */
+.sheet > canvas.diffmark {
+    background: none;
+    pointer-events: none;
+}
+
 .boxmark {
     position: absolute;
     box-sizing: border-box;

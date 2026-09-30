@@ -214,9 +214,11 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 ### Links to a screen
 
 The address always names the screen you are on, after the token: the targets list; a pull
-request (or master) and project with the grid's filter and text; or one story with its view and
-zoom, for example
-`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2`.
+request (or master) and project with the grid's filter and text; or one story with its view,
+zoom, changed box and blink, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2&box=on&blink=off`.
+A link's `box` and `blink` apply to the page it opens; the choice this browser remembers for B
+and L is left as it was.
 Opening that address, in another tab or on another device, opens the same screen. **Copy link**
 at the top right copies it. The link carries your session token, so it works on your iPad the way
 the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
@@ -279,11 +281,13 @@ starts the same server from your own shell.
    other to the same place, and **Fit to screen** returns to the whole image. (On an iPad,
    pinching zooms the whole page; use the zoom buttons to zoom the images.) **Next changed box**
    (N) scrolls both panes until the next region of changed pixels is in view and outlines it;
-   "box i of k" counts them. The views, each shown in the right pane at the same scale and place:
+   "box i of k" counts them. **Box** (B) turns that outline on and off; the page remembers the
+   choice in this browser. The views, each shown in the right pane at the same scale and place:
    **Side by side**; **Flash**, which shows baseline and new one after the other in the same
    place, about 1.5 times a second (the images themselves, not an overlay), keeping the zoom and
-   scroll it was opened at; **Highlight**, pixelmatch's changed pixels in red over the dimmed
-   baseline; and **Spotlight**, the new image dimmed everywhere except around the changed pixels
+   scroll it was opened at; **Highlight**, the changed pixels in solid red laid over both images
+   themselves, in both panes, where **Blink** (L) flashes the red pixels on and off at Flash's
+   pace (remembered in this browser); and **Spotlight**, the new image dimmed everywhere except around the changed pixels
    (each grown by 10 image pixels), which finds a one-pixel change. Flash, Highlight and
    Spotlight need two images; on a new or removed story they are off and the page says why
    ("New story, no baseline", "Only one image: this story was removed"). Badges here:
@@ -323,6 +327,8 @@ for them. Seed them from the default branch (below), or accept them on the pull 
 | S            | Spotlight the changes; S again returns to side by side                         |
 | Z            | Next zoom: fit to screen, real size, 2x, 4x, 8x, then fit again                |
 | N            | Next changed box                                                               |
+| B            | Outline the changed box, or stop outlining it                                  |
+| L            | In Highlight: blink the red changed pixels, or hold them on                    |
 | Space (hold) | Flash while held                                                               |
 | Shift+A      | Accept every undecided item of this project without opening it (asks first)    |
 | Escape       | Back to the grid from a story, wherever the focus is (the reason box included) |
