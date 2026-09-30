@@ -16,7 +16,7 @@
 
 ### 🚀 Features
 
-- ⚠️  **visual-review:** read every repository setting from visual-review.config.json ([c2cfdec2](https://github.com/graphty-org/graphty-monorepo/commit/c2cfdec2))
+- ⚠️ **visual-review:** read every repository setting from visual-review.config.json ([c2cfdec2](https://github.com/graphty-org/graphty-monorepo/commit/c2cfdec2))
 - **visual-review:** link to every screen and keep decided items in the pass ([6b85c52a](https://github.com/graphty-org/graphty-monorepo/commit/6b85c52a))
 - **visual-review:** review and undo decisions from the grid ([101c7a73](https://github.com/graphty-org/graphty-monorepo/commit/101c7a73))
 - **visual-review:** fit both captures side by side on one screen ([23c6af01](https://github.com/graphty-org/graphty-monorepo/commit/23c6af01))
@@ -48,9 +48,9 @@
 - **visual-review:** require review records in the gate and state its limits ([28b53cb8](https://github.com/graphty-org/graphty-monorepo/commit/28b53cb8))
 - **visual-review:** close the merge gate's gaps and document the review ([ed2f7455](https://github.com/graphty-org/graphty-monorepo/commit/ed2f7455))
 
-### ⚠️  Breaking Changes
+### ⚠️ Breaking Changes
 
-- **visual-review:** read every repository setting from visual-review.config.json  ([c2cfdec2](https://github.com/graphty-org/graphty-monorepo/commit/c2cfdec2))
+- **visual-review:** read every repository setting from visual-review.config.json ([c2cfdec2](https://github.com/graphty-org/graphty-monorepo/commit/c2cfdec2))
   visual-review/projects.json is gone: projects and settings are read
   from visual-review.config.json at the repository root (seedFromMaster is now
   seedFromDefaultBranch, stableFrame is now waitFor), and the accept worktree moved
