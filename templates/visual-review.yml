@@ -115,8 +115,9 @@ jobs:
                       fi
                   } >> "$GITHUB_STEP_SUMMARY"
 
-    # Fails while a project with baselines on the base branch holds anything but unchanged, excluded
-    # or unseeded items in its newest capture, or a baseline file changed without a review record.
+    # Fails while a project of the base branch's config (seeded or not; `"gate": false` skips an
+    # unseeded one) holds anything but unchanged, excluded or unseeded items in its newest capture,
+    # or a baseline file changed without a review record.
     # It runs the published gate at a pinned version, so a pull request's own dependencies cannot
     # change it. Depth 2: HEAD^1, the merge commit's first parent, is the base branch tip.
     visual-gate:

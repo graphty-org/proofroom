@@ -31,7 +31,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, workDir: string,
  *     commitPrefix: string, issueLabels: string[], projects: Record<string, { storybook: string,
- *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
+ *     build: string | null, workers: number, seedFromDefaultBranch: boolean, gate: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
 export function normalizeConfig(input) {
@@ -90,6 +90,9 @@ export function normalizeConfig(input) {
         if (p.seedFromDefaultBranch !== undefined && typeof p.seedFromDefaultBranch !== "boolean") {
             fail(`${where}.seedFromDefaultBranch must be true or false`);
         }
+        if (p.gate !== undefined && typeof p.gate !== "boolean") {
+            fail(`${where}.gate must be true or false`);
+        }
         let waitFor = null;
         if (p.waitFor !== undefined && p.waitFor !== null) {
             const w = p.waitFor;
@@ -103,6 +106,7 @@ export function normalizeConfig(input) {
             build: p.build ?? null,
             workers,
             seedFromDefaultBranch: p.seedFromDefaultBranch ?? true,
+            gate: p.gate ?? true,
             waitFor,
         };
     }

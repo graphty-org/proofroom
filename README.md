@@ -44,7 +44,8 @@ your login.
    accepted, or a baseline file changed without a review record naming it.
 
 A story with no baseline yet does not block anything until a pull request changes it, so you can
-seed baselines a few stories at a time.
+seed baselines a few stories at a time. That holds for a project with no baselines at all too: a
+pull request that changes one of its stories is blocked until you seed it or accept the change.
 
 ## Requirements
 
@@ -144,10 +145,12 @@ Per project:
 | `build`                 | none       | The shell command CI runs to build it (from the repository root)                                                                                                                                                                               |
 | `workers`               | `4`        | How many browsers capture in parallel                                                                                                                                                                                                          |
 | `seedFromDefaultBranch` | `true`     | `false`: the project's first baselines are accepted on a pull request, not seeded from the default branch                                                                                                                                      |
+| `gate`                  | `true`     | `false`: the gate skips this project while it has no baselines on the default branch, for one you deliberately do not gate yet. Once it has a baseline it is gated whatever this says. Leave it out, so a new project is gated from the start  |
 | `waitFor`               | none       | After a story renders, call `method()` on every element matching `selector` and wait for the promise it returns, for a component that keeps drawing after Storybook says it is done. A console line containing `failOnConsole` fails the story |
 
 Project ids are letters, digits, `.`, `_` and `-`. The pull request gate reads the config as it is
-on the base branch, so a pull request cannot move `baselines` out from under it.
+on the base branch, so a pull request cannot move `baselines` out from under it or turn a project's
+`gate` off; a project that a pull request adds is gated once that config has merged.
 
 ## The GitHub Actions workflows
 
@@ -178,8 +181,10 @@ Both need nothing but the default `GITHUB_TOKEN`: the capture job reads Actions 
 
 ## Your first review: seeding baselines
 
-A project has no baselines until you accept some, and until it has one the gate ignores it. After
-the setup pull request merges, the default branch's push runs the capture:
+A project has no baselines until you accept some, and the gate fails closed until it has them: a
+pull request that adds or changes any of its stories shows them `new` and is blocked, with a
+message saying to seed the project (a project with `"gate": false` is skipped instead). After the
+setup pull request merges, the default branch's push runs the capture:
 
 1. Find that run's id: `gh run list --workflow visual-review.yml --branch main --limit 1`.
 2. Start the page with `--master-run <run id>` ([Opening the review page](#opening-the-review-page))
@@ -423,8 +428,16 @@ request, CI compares its capture with the default branch's newest capture of tha
   accepting it creates its first baseline in that pull request's accept commit.
 
 So seeding never restarts from scratch: each round accepts what now looks right, and the rest
-waits, blocking nothing, until a pull request touches it. A project enters the merge gate when its
-first baseline lands on the default branch; before that the gate ignores it entirely.
+waits, blocking nothing, until a pull request touches it.
+
+The same holds for a project with no baselines at all: the gate fails closed. Every project in the
+config is gated from the start, so a pull request that adds or changes a story of an unseeded
+project is blocked, and the gate's message says how to unblock it: seed the project (capture a
+known-good commit with `visual-seed.yml`, or take the default branch's newest run, review it with
+`serve --master-run <run id>`, merge the seed pull request, then merge the default branch into the
+blocked one), or accept the items on that pull request. A project with
+`"seedFromDefaultBranch": false` is told to accept them on the pull request. To leave a project out
+of the gate on purpose until it is seeded, set `"gate": false` on it in the config.
 
 If the default branch's capture could not be downloaded (its artifacts expired, or no run there has
 finished one), every story without a baseline is `new` on that pull request. Re-run its `visual` job
@@ -527,7 +540,7 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
 
 ## What the gate does and does not guarantee
 
-- A pull request cannot pass the gate while its capture of a seeded project holds anything but
+- A pull request cannot pass the gate while its capture of a gated project holds anything but
   `unchanged`, `excluded` or `no baseline yet` items, including after "Re-run failed jobs" (the
   highest attempt's artifact counts); a missing, unfinished or invalid capture blocks it too. A
   rejected item stays blocking until a code change makes it match the baseline.
@@ -549,8 +562,10 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   anything running as you (an AI coding agent included) has your GitHub login and signing key and
   could press Accept or call the page's API. Nothing technical prevents that today; tell your
   agents not to, and keep the review to yourself.
-- The projects the gate checks are the ones with baselines on the base branch, so removing a
-  project from the config does not remove it from the gate.
+- The projects the gate checks are every project in the base branch's config, seeded or not,
+  except an unseeded one with `"gate": false`, plus every project with baselines on the base
+  branch. So removing a seeded project from the config, or setting `"gate": false` on it, does not
+  remove it from the gate.
 - The gate is part of a workflow file, which a pull request can edit, and a pull request can
   loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
   without a review item. Read changes to those in code review.
