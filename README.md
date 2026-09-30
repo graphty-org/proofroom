@@ -456,6 +456,14 @@ the pull request.
   wider. It is never cropped to the content, so a small component sits in the full canvas and
   every capture of a project has the same size unless its story overflows. results.json records the scale as `scale`, and each review record
   copies it into its `subject`.
+- **Why captures rasterize on the CPU.** Chromium runs with `--disable-gpu-rasterization`, so the
+  page's text and shapes are drawn by the CPU; WebGL still runs on SwiftShader. Drawn through
+  SwiftShader, a glyph that sat on a sub-pixel boundary landed on either side of it from one
+  render to the next (a quarter-pixel shift of one letter, in 1 to 7 of 48 renders of the same
+  story), so stories with nothing moving read `unstable`, a different few on each run. With the
+  switch, 48 of 48 renders matched. The repository owner chose this on 2026-09-30, knowing it
+  changes how text is drawn in every story of every project: a baseline captured before it can
+  read `changed` once, and is accepted again.
 - **From GitHub Actions to the page.** Each `visual` job uploads `results.json` and the PNGs to
   review as an artifact `visual-<project>-<attempt>`, kept 30 days. The server lists open pull
   requests with `gh`, finds each one's newest run of the capturing workflow, and downloads those
