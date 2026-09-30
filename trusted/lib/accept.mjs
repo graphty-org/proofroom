@@ -26,7 +26,7 @@ import { isLfsPointer } from "./compare.mjs";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** The statuses an item can be accepted or rejected in; unstable and failed are only excluded. */
-const DECIDABLE = new Set(["changed", "new", "removed"]);
+const DECIDABLE = new Set(["changed", "moved", "new", "removed"]);
 const EXCLUDABLE = new Set([...DECIDABLE, "unstable", "failed"]);
 
 /**
@@ -354,7 +354,7 @@ async function commitAccepts({ repo, target, accepts, first, now, progress, conf
         const counts = { accept: 0, exclude: 0, remove: 0 };
         progress(`writing ${writes.length} ${writes.length === 1 ? "file" : "files"}`);
         for (const w of writes) {
-            items.push(await write(tree, w, counts, baselines));
+            items.push(...(await write(tree, w, counts, baselines)));
         }
         const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
         const record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
@@ -441,8 +441,9 @@ export async function behindMaster(repo, head, project, { defaultBranch, baselin
  * @param {object} w the decision, its results item, and for an accept the verified bytes
  * @param {{ accept: number, exclude: number, remove: number }} counts tallied here
  * @param {string} baselines the baselines directory
- * @returns {Promise<{ path: string, from: string | null, to: string | null, reason: string | null }>}
- *     the record item
+ * @returns {Promise<{ path: string, from: string | null, to: string | null, reason: string | null,
+ *     movedFrom?: string, movedTo?: string }[]>} its record items: two for a renamed story, whose
+ *     baseline moves to its new name
  */
 async function write(tree, w, counts, baselines) {
     const dir = `${baselines}/${w.project}`;
@@ -453,17 +454,27 @@ async function write(tree, w, counts, baselines) {
         const bytes = `${JSON.stringify(settings, null, 2)}\n`;
         await put(join(tree, path), bytes);
         counts.exclude++;
-        return { path, from: old && sha256(old), to: sha256(bytes), reason: `exclude: ${w.reason}` };
+        return [{ path, from: old && sha256(old), to: sha256(bytes), reason: `exclude: ${w.reason}` }];
     }
     const path = `${dir}/${w.item.file}`;
     if (w.item.status === "removed") {
         await rm(join(tree, path), { force: true });
         counts.remove++;
-        return { path, from: w.item.baseline, to: null, reason: w.reason };
+        return [{ path, from: w.item.baseline, to: null, reason: w.reason }];
     }
     await put(join(tree, path), w.bytes);
     counts.accept++;
-    return { path, from: w.item.baseline, to: w.item.capture, reason: w.reason };
+    if (!w.item.from) {
+        return [{ path, from: w.item.baseline, to: w.item.capture, reason: w.reason }];
+    }
+    // A rename: the old id's baseline (of this mode) goes, the new one takes its place. For a
+    // moved item the bytes are the same, so git sees a rename and the LFS pointer is unchanged.
+    const oldPath = `${dir}/${w.item.mode === null ? w.item.from : `${w.item.from}.${w.item.mode}`}.png`;
+    await rm(join(tree, oldPath), { force: true });
+    return [
+        { path: oldPath, from: w.item.baseline, to: null, reason: w.reason, movedTo: path },
+        { path, from: null, to: w.item.capture, reason: w.reason, movedFrom: oldPath },
+    ];
 }
 
 // Two modes of one story excluded together write one settings file: keep one record item.

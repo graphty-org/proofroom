@@ -11,7 +11,7 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
-import { CONFIG, FIXTURE, isolateGit, makeRepo, onePr } from "./helpers.mjs";
+import { CONFIG, FIXTURE, isolateGit, makeRepo, onePr, withMoved } from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
@@ -653,6 +653,55 @@ describe("review page: a running Finish", () => {
             .toMatch(/^Finish of #123 done\. Committed \w{10} to feature\. Status: Reviewed: 4 accepted/);
         expect(await page.locator(".finish-running").count()).toBe(0);
         expect(await page.getByRole("button", { name: /^Finish #123/ }).isDisabled()).toBe(true);
+    });
+});
+
+describe("review page: renamed stories", () => {
+    const REASON =
+        "renames.json renames old-menu--gone to menu--gone, but the Storybook has no story menu--gone: fix renames.json";
+    beforeEach(async () => {
+        const broken = {
+            id: "menu--gone",
+            mode: null,
+            file: "menu--gone.png",
+            from: "old-menu--gone",
+            status: "failed",
+            flaky: false,
+            baseline: null,
+            capture: null,
+            size: null,
+            baselineSize: null,
+            changedPixels: null,
+            bbox: null,
+            threshold: 0.063,
+            includeAA: false,
+            reason: REASON,
+            console: [],
+        };
+        await open((r) => ({ gh: withMoved(r, [broken]) }));
+        await page.locator(".component").first().waitFor();
+    });
+
+    it("shows a moved story as a pair labeled with its old id, and a broken rename as an error", async () => {
+        expect(await page.getByRole("button", { name: /^moved \(/ }).textContent()).toBe("moved (1)");
+        const tile = page.locator('.tile[data-file="slider--sizes.png"]');
+        expect(await tile.locator(".badge.moved").textContent()).toBe("moved");
+        expect(await tile.locator(".moved-from").textContent()).toBe("moved from old-slider--sizes");
+        expect(await page.locator(".errors").textContent()).toContain(REASON);
+
+        await tile.click();
+        expect(await page.locator("h2").first().textContent()).toContain("moved from old-slider--sizes");
+        await expect
+            .poll(() => page.locator("#stage .label").allTextContents())
+            .toEqual(["Baseline of old-slider--sizes", "New"]);
+        await page.keyboard.press("a");
+        await expect.poll(() => page.locator("h2").first().textContent()).not.toContain("slider--sizes");
+        const { decisions } = await page.evaluate(
+            async (token) =>
+                (await fetch("/api/pr/123/compact-mantine", { headers: { "x-review-token": token } })).json(),
+            TOKEN,
+        );
+        expect(decisions["slider--sizes.png"]).toMatchObject({ decision: "accept" });
     });
 });
 

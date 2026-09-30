@@ -44,7 +44,7 @@ const HEADERS = {
  */
 const componentOf = (id) => id.split("--")[0];
 
-const REVIEWABLE = new Set(["changed", "new", "removed", "unstable", "failed"]);
+const REVIEWABLE = new Set(["changed", "moved", "new", "removed", "unstable", "failed"]);
 const WRITES = new Set(["decide", "accept-all", "finish"]);
 
 /**
@@ -434,9 +434,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (!hash) {
                 return [404, { error: "no such image" }];
             }
-            const bytes = await readFile(kind === "capture" ? join(p.dir, file) : join(p.dir, "baselines", file)).catch(
-                () => null,
-            );
+            // A moved item's baseline is its capture's bytes, so the artifact holds only the capture.
+            const own = kind === "capture" || item.baseline === item.capture;
+            const bytes = await readFile(own ? join(p.dir, file) : join(p.dir, "baselines", file)).catch(() => null);
             if (!bytes || createHash("sha256").update(bytes).digest("hex") !== hash) {
                 return [409, { error: `${file} does not match results.json` }];
             }

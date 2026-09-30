@@ -16,6 +16,7 @@ import {
     makeRepo,
     onePr,
     pushCommit,
+    withMoved,
 } from "./helpers.mjs";
 
 beforeAll(isolateGit);
@@ -303,6 +304,26 @@ describe("serve: access", () => {
         const s = await start({ gh: onePr() });
         expect((await s.api("GET", "/api/finish")).status).toBe(405);
         expect((await s.api("PUT", "/api/finish", { id: "123" })).status).toBe(405);
+    });
+});
+
+describe("serve: renamed stories", () => {
+    it("counts a moved item as needing a decision, serves its capture as its baseline, and accepts it", async () => {
+        const s = await start({ gh: withMoved });
+        const prs = await s.api("GET", "/api/prs");
+        const cm = prs.body.targets[0].projects.find((p) => p.project === "compact-mantine");
+        expect(cm.counts.moved).toBe(1);
+        expect(cm.reviewable).toBe(6);
+        const capture = readFileSync(join(FIXTURE, "compact-mantine/slider--sizes.png"));
+        const base = await s.api("GET", "/api/img/123/compact-mantine/baseline/slider--sizes.png");
+        expect(base.status).toBe(200);
+        expect(base.body.equals(capture)).toBe(true);
+        const decide = { id: "123", project: "compact-mantine", file: "slider--sizes.png", decision: "accept" };
+        expect((await s.api("POST", "/api/decide", decide)).status).toBe(200);
+        const item = (await s.api("GET", "/api/pr/123/compact-mantine")).body.items.find(
+            (i) => i.file === "slider--sizes.png",
+        );
+        expect(item).toMatchObject({ status: "moved", from: "old-slider--sizes" });
     });
 });
 

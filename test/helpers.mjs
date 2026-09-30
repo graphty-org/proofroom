@@ -247,3 +247,30 @@ export const onePr =
             },
             ...extra,
         });
+
+/**
+ * The fixture as pull request #123, with slider--sizes renamed from old-slider--sizes and looking
+ * exactly as that old id's baseline: a moved item, whose baseline is its own capture's bytes.
+ * @param {object} r the repository
+ * @param {object[]} [extra] more items for compact-mantine's results.json
+ * @returns {Function} the gh runner
+ */
+export const withMoved = (r, extra = []) => {
+    const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+    const items = fixture.items.map((i) =>
+        i.file === "slider--sizes.png"
+            ? {
+                  ...i,
+                  status: "moved",
+                  from: "old-slider--sizes",
+                  baseline: i.capture,
+                  baselineSize: i.size,
+                  changedPixels: 0,
+                  bbox: null,
+              }
+            : i,
+    );
+    items.push(...extra);
+    const at = { commit: r.head, headSha: r.head };
+    return onePr({ results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at } })(r);
+};
