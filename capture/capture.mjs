@@ -21,6 +21,12 @@
  * second capture of an unstable one, and `baselines/<file>`: the baseline each changed, unstable
  * and removed item was compared with.
  *
+ * A story renamed in the project's `renames.json` (see loadRenames) is compared with the baseline
+ * of its old id, mode by mode: `moved` when it looks the same, `changed` otherwise, each carrying
+ * `from`; that old baseline is then not reported `removed`. A rename whose new id is not a story
+ * is a `failed` item under the new id, so the page lists it; one whose old id is still a story
+ * does nothing.
+ *
  * With `reference`, a directory holding the default branch's newest capture of the project (CI
  * downloads it on pull requests), a story with no baseline whose capture matches it is `unseeded`, not
  * `new`: seeding is per story, so a story nobody has accepted yet does not block every pull
@@ -151,6 +157,47 @@ export function storySettings(parameters, file) {
         includeAA: s.diffIncludeAntiAliasing === true,
         modes: modes.length > 0 ? modes : [{ name: null, globals: null }],
     };
+}
+
+/** A project's renames file, in its baselines directory. */
+const RENAMES = "renames.json";
+
+const STORY_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Reads a project's renames file, `<dir>/renames.json`: `[{ "from": "<old story id>", "to":
+ * "<new story id>" }]`, for stories whose id changed while they stayed the same story.
+ * @param {string} dir the project's baselines directory
+ * @returns {Promise<Map<string, string>>} the old id by new id; empty when there is no file
+ */
+async function loadRenames(dir) {
+    const path = join(dir, RENAMES);
+    let list;
+    try {
+        list = JSON.parse(await readFile(path, "utf8"));
+    } catch (e) {
+        if (e.code === "ENOENT") {
+            return new Map();
+        }
+        throw new Error(`${path}: ${e.message}`);
+    }
+    if (!Array.isArray(list)) {
+        throw new Error(`${path}: must be an array of { "from": "<old id>", "to": "<new id>" }`);
+    }
+    const byTo = new Map();
+    const froms = new Set();
+    list.forEach((r, i) => {
+        const ok = (v) => typeof v === "string" && v.length <= 200 && STORY_ID.test(v);
+        if (!ok(r?.from) || !ok(r?.to) || r.from === r.to) {
+            throw new Error(`${path}: entry ${i} must be { "from": "<old id>", "to": "<another id>" }`);
+        }
+        if (byTo.has(r.to) || froms.has(r.from)) {
+            throw new Error(`${path}: entry ${i} renames ${r.from} or to ${r.to} a second time`);
+        }
+        byTo.set(r.to, r.from);
+        froms.add(r.from);
+    });
+    return byTo;
 }
 
 async function pngsIn(dir) {
@@ -485,9 +532,9 @@ export async function capture({
     const started = Date.now();
     await mkdir(join(out, "baselines"), { recursive: true });
     await mkdir(join(out, "second"), { recursive: true });
-    const ids = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8"))).filter(
-        (id) => !stories || stories.some((p) => id.startsWith(p)),
-    );
+    const allIds = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
+    const ids = allIds.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+    const renames = await loadRenames(baselines);
     const refs = await loadReference(reference);
     const [server, base] = await serve(storybook);
     // One browser per worker: every page of a browser shares its one GPU process, so with
@@ -508,6 +555,35 @@ export async function capture({
         // A story whose own parameters exclude it while it still has a baseline is reported as
         // removed, so a pull request cannot drop a story from review without the owner seeing it.
         const newlyExcluded = new Set();
+        // Old baselines a rename compares a story with (or reports as a broken rename): not removed.
+        const renamed = new Set();
+        const renameErrors = [];
+        const known = new Set(allIds);
+        for (const [to, from] of stories ? [] : renames) {
+            if (known.has(to)) {
+                continue;
+            }
+            // Only a rename with an old baseline left to move is an error; once it is accepted the
+            // old baselines are gone, and the entry does nothing.
+            for (const file of existing) {
+                const [id, mode = null] = file.slice(0, -4).split(".");
+                if (id === from && BASELINE_NAME.test(file)) {
+                    renamed.add(file);
+                    renameErrors.push({
+                        id: to,
+                        mode,
+                        file: fileName(to, mode),
+                        from,
+                        threshold: DEFAULT_THRESHOLD,
+                        includeAA: false,
+                        ...EMPTY,
+                        status: "failed",
+                        reason: `${RENAMES} renames ${from} to ${to}, but the Storybook has no story ${to}: fix ${RENAMES}`,
+                    });
+                }
+            }
+        }
+        items.push(...renameErrors);
         for (const id of ids) {
             const s = storySettings(params[id] ?? {}, await loadSettings(baselines, id));
             for (const mode of s.modes) {
@@ -521,11 +597,22 @@ export async function capture({
                 if (s.disableSnapshot) {
                     items.push({ ...common, ...EMPTY, status: "excluded", reason: s.reason });
                 } else {
-                    jobs.push({ ...common, url: base + storyUrl(id, mode.globals), delay: s.delay });
+                    // Renamed: compared with the old id's baseline of this mode, while the new id
+                    // has none of its own (after the accept it does, and the rename is done).
+                    // A rename from an id that is still a story is not a move: it does nothing.
+                    const old =
+                        renames.has(id) && !known.has(renames.get(id)) ? fileName(renames.get(id), mode.name) : null;
+                    const from = old && !existing.has(file) && existing.has(old) ? renames.get(id) : null;
+                    if (from) {
+                        renamed.add(old);
+                    }
+                    jobs.push({ ...common, from, url: base + storyUrl(id, mode.globals), delay: s.delay });
                 }
             }
         }
-        const gone = stories ? [] : [...existing].filter((f) => !planned.has(f) && BASELINE_NAME.test(f));
+        const gone = stories
+            ? []
+            : [...existing].filter((f) => !planned.has(f) && !renamed.has(f) && BASELINE_NAME.test(f));
 
         const emojiFont = hasEmojiFont();
         if (emojiFont === false) {
@@ -576,10 +663,12 @@ export async function capture({
         }
 
         const run = async (browser, job) => {
-            const { url, delay, ...common } = job;
-            const baseline = await readBaseline(join(baselines, job.file));
+            const { url, delay, from, ...rest } = job;
+            // `from` only on a renamed story, so results.json of a project with no renames is as before.
+            const common = from ? { ...rest, from } : rest;
+            const baseline = await readBaseline(join(baselines, from ? fileName(from, job.mode) : job.file));
             const reference = baseline ? null : (refs.images.get(job.file) ?? null);
-            const opts = { threshold: job.threshold, includeAA: job.includeAA, reference };
+            const opts = { threshold: job.threshold, includeAA: job.includeAA, reference, moved: from !== null };
             const failed = (shot, prefix = "") => ({
                 ...common,
                 ...EMPTY,
@@ -602,16 +691,22 @@ export async function capture({
                 result = classify({ baseline, first: first.png, second: second.png, ...opts });
             }
             const { status } = result;
-            if (["changed", "new", "unseeded", "unstable"].includes(status)) {
-                await writeFile(join(out, job.file), first.png);
+            // A moved capture is also its baseline when the bytes are the same: the page reads it.
+            if (["changed", "moved", "new", "unseeded", "unstable"].includes(status)) {
+                // The capture results.json names: the second one when the first was a flake.
+                await writeFile(join(out, job.file), result.flaky ? second.png : first.png);
             }
             if (status === "unstable") {
                 await writeFile(join(out, "second", job.file), second.png);
             }
-            if (baseline && (status === "changed" || status === "unstable")) {
+            const ownBaseline = status === "moved" && result.baseline !== result.capture;
+            if (baseline && (status === "changed" || status === "unstable" || ownBaseline)) {
                 await writeFile(join(out, "baselines", job.file), baseline);
             }
-            const lines = status === "unchanged" ? [] : clip([...first.console, ...(second?.console ?? [])]);
+            const lines =
+                status === "unchanged" || status === "moved"
+                    ? []
+                    : clip([...first.console, ...(second?.console ?? [])]);
             return { ...common, ...result, reason: null, console: lines };
         };
 

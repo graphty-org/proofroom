@@ -158,7 +158,8 @@ export function copyFixture(project, dest, overrides = {}) {
  * @param {object[]} [data.prs] open pull requests: { number, head, branch }
  * @param {Record<string, object>} [data.runs] CI runs by head sha
  * @param {Record<string, object>} [data.runsById] CI runs by id
- * @param {object[]} [data.masterRuns] master's CI runs, newest first
+ * @param {object[]} [data.masterRuns] master's commits, newest first, each with its CI run (`id`
+ *     null for a commit CI never ran on)
  * @param {Record<string, object[]>} [data.jobs] jobs by run id
  * @param {Record<string, string[]>} [data.artifacts] artifact names by run id
  * @param {Record<string, object>} [data.results] results overrides applied to each download, by
@@ -197,11 +198,12 @@ export function fakeGh({
                 })),
             );
         }
-        if (path?.includes("workflows/ci.yml/runs?branch=master&event=push")) {
-            return JSON.stringify({ workflow_runs: masterRuns.map(run) });
+        if (path?.startsWith("repos/{owner}/{repo}/commits?sha=master")) {
+            return JSON.stringify(masterRuns.map((r) => ({ sha: r.head })));
         }
         if ((m = /workflows\/ci\.yml\/runs\?head_sha=(\w+)/.exec(path))) {
-            return JSON.stringify({ workflow_runs: runs[m[1]] ? [run(runs[m[1]])] : [] });
+            const found = runs[m[1]] ?? masterRuns.find((r) => r.head === m[1] && r.id !== null);
+            return JSON.stringify({ workflow_runs: found ? [run(found)] : [] });
         }
         if ((m = /actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs/.exec(path))) {
             return JSON.stringify({ jobs: jobs[m[1]] ?? [] });
@@ -247,3 +249,30 @@ export const onePr =
             },
             ...extra,
         });
+
+/**
+ * The fixture as pull request #123, with slider--sizes renamed from old-slider--sizes and looking
+ * exactly as that old id's baseline: a moved item, whose baseline is its own capture's bytes.
+ * @param {object} r the repository
+ * @param {object[]} [extra] more items for compact-mantine's results.json
+ * @returns {Function} the gh runner
+ */
+export const withMoved = (r, extra = []) => {
+    const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+    const items = fixture.items.map((i) =>
+        i.file === "slider--sizes.png"
+            ? {
+                  ...i,
+                  status: "moved",
+                  from: "old-slider--sizes",
+                  baseline: i.capture,
+                  baselineSize: i.size,
+                  changedPixels: 0,
+                  bbox: null,
+              }
+            : i,
+    );
+    items.push(...extra);
+    const at = { commit: r.head, headSha: r.head };
+    return onePr({ results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at } })(r);
+};

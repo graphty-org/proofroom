@@ -27,6 +27,7 @@ const results = (statuses, extra = {}) => ({
         status,
         baseline: status === "new" || status === "unseeded" ? null : HASH,
         capture: status === "removed" ? null : HASH,
+        ...(status === "moved" && { from: `old--s${i}` }),
     })),
     ...extra,
 });
@@ -68,6 +69,13 @@ describe("gateProblems", () => {
     it("passes when a seeded project holds only unchanged and excluded items", () => {
         const captures = { "compact-mantine": { attempt: 1, results: results(["unchanged", "excluded"]) } };
         expect(gateProblems({ projects, seeded, captures })).toEqual([]);
+    });
+
+    it("blocks a renamed story until it is accepted, even when it looks the same", () => {
+        const captures = { "compact-mantine": { attempt: 1, results: results(["moved", "moved", "unchanged"]) } };
+        expect(gateProblems({ projects, seeded, captures })).toEqual([
+            "compact-mantine: 2 moved (not accepted; a rejected item needs a code change, not another review)",
+        ]);
     });
 
     it("counts unreviewed items of a seeded project and ignores an unseeded one", () => {

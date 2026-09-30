@@ -455,6 +455,53 @@ describe("finish: rejects", () => {
     });
 });
 
+describe("finish: renamed stories", () => {
+    it("moves the old id's baseline to the new name in the accept commit, LFS pointer intact", async () => {
+        const s = setup();
+        const cm = s.projects["compact-mantine"];
+        const old = "visual-baselines/compact-mantine/button--primary.dark.png";
+        const bytes = readFileSync(join(cm.dir, "baselines/button--primary.dark.png"));
+        writeFileSync(join(cm.dir, "button--main.dark.png"), bytes);
+        const item = cm.results.items.find((i) => i.file === "button--primary.dark.png");
+        cm.results.items.push({
+            ...item,
+            id: "button--main",
+            file: "button--main.dark.png",
+            status: "moved",
+            from: "button--primary",
+            capture: sha256(bytes),
+            baseline: sha256(bytes),
+            changedPixels: 0,
+            bbox: null,
+        });
+        const pointer = git(s.repo, "show", `master:${old}`);
+        await s.run([accept("button--main.dark.png")]);
+
+        const moved = "visual-baselines/compact-mantine/button--main.dark.png";
+        const changes = git(
+            s.remote,
+            "diff",
+            "-M",
+            "--name-status",
+            "feature~1",
+            "feature",
+            "--",
+            "visual-baselines/compact-mantine/",
+        );
+        expect(changes).toBe(`R100\t${old}\t${moved}`);
+        expect(git(s.remote, "show", `feature:${moved}`)).toBe(pointer);
+        const record = JSON.parse(
+            git(s.remote, "show", `feature:visual-baselines/reviews/20260927T150405Z-pr123.json`),
+        );
+        expect(record.items).toEqual([
+            { path: moved, from: null, to: sha256(bytes), reason: null, movedFrom: old },
+            { path: old, from: sha256(bytes), to: null, reason: null, movedTo: moved },
+        ]);
+        git(s.repo, "fetch", "-q", "origin");
+        expect(unrecordedChanges(s.master, "origin/feature", s.repo)).toEqual([]);
+    });
+});
+
 describe("finish and the gate's record check", () => {
     it("records every baseline change it makes, and only those", async () => {
         const s = setup();

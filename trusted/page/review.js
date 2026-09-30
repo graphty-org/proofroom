@@ -11,14 +11,14 @@ const app = document.getElementById("app");
 const crumbs = document.getElementById("crumbs");
 const statusLine = document.getElementById("status");
 
-const REVIEWABLE = ["changed", "new", "removed", "unstable", "failed"];
-const ACCEPTABLE = ["changed", "new", "removed"];
+const REVIEWABLE = ["changed", "moved", "new", "removed", "unstable", "failed"];
+const ACCEPTABLE = ["changed", "moved", "new", "removed"];
 // A story with no baseline that this pull request did not change: shown, never a decision here.
 const UNSEEDED = "unseeded";
 const NO_BASELINE = "no baseline yet";
 const statusLabel = (status) => (status === UNSEEDED ? NO_BASELINE : status);
-// Errors first (their own list), then what changed, then new, unstable and removed stories.
-const RANK = { failed: 0, changed: 1, new: 2, unstable: 3, removed: 4, unseeded: 5 };
+// Errors first (their own list), then what changed, then moved, new, unstable and removed stories.
+const RANK = { failed: 0, changed: 1, moved: 2, new: 3, unstable: 4, removed: 5, unseeded: 6 };
 const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
 // "fit" (the default) shows the whole of both images in their panes, at one scale, never above real
 // size; 1 is real size: one CSS pixel per CSS pixel the story was drawn at, scrolling when larger.
@@ -139,6 +139,8 @@ function loaded(url) {
 
 const componentOf = (id) => id.split("--")[0];
 const itemName = (item) => (item.mode ? `${item.id} (${item.mode})` : item.id);
+// A renamed story (renames.json) is compared with its old id's baseline: say which.
+const movedFrom = (item) => (item.from ? `moved from ${item.from}` : "");
 const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
 const isLocal = () => state.target?.local === true;
@@ -459,6 +461,7 @@ function tile(item, number) {
             img,
             el("span", { class: "name" }, el("span", { class: "number" }, `${number}`), " ", item.mode ?? ""),
             el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
+            item.from ? el("span", { class: "moved-from", title: movedFrom(item) }, movedFrom(item)) : null,
             item.reReview ? el("span", { class: "badge warn", title: RE_REVIEW }, "re-review") : null,
         ),
         decisionLine(item),
@@ -697,7 +700,7 @@ function showGrid() {
                 `Needs a decision (${state.data.items.filter((i) => REVIEWABLE.includes(i.status) && !decisionOf(i)).length})`,
             ),
             filterButton("all", `All (${state.data.items.filter((i) => REVIEWABLE.includes(i.status)).length})`),
-            ["changed", "new", "unstable", "removed", "failed"]
+            ["changed", "moved", "new", "unstable", "removed", "failed"]
                 .filter((s) => counts[s])
                 .map((s) => filterButton(s, `${s} (${counts[s]})`)),
             counts[UNSEEDED] ? filterButton(UNSEEDED, `${NO_BASELINE} (${counts[UNSEEDED]})`) : null,
@@ -941,6 +944,7 @@ function showStory() {
                 itemName(item),
                 " ",
                 el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
+                item.from ? el("span", { class: "badge moved" }, movedFrom(item)) : null,
                 d
                     ? el("span", { class: `badge ${d.decision}` }, `${d.decision}${d.reason ? `: ${d.reason}` : ""}`)
                     : null,
@@ -1174,7 +1178,9 @@ async function renderStage(item, view, keep) {
     };
     try {
         const diff = item.baseline && item.capture ? await diffOf(item) : null;
-        const left = item.baseline ? pane("Baseline", await imgOf("baseline")) : pane("No baseline");
+        const left = item.baseline
+            ? pane(item.from ? `Baseline of ${item.from}` : "Baseline", await imgOf("baseline"))
+            : pane("No baseline");
         let right;
         if (!item.capture) {
             right = pane(item.status === "failed" ? "No capture: it failed" : "No capture");

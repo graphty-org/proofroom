@@ -16,6 +16,7 @@ import {
     makeRepo,
     onePr,
     pushCommit,
+    withMoved,
 } from "./helpers.mjs";
 
 beforeAll(isolateGit);
@@ -303,6 +304,26 @@ describe("serve: access", () => {
         const s = await start({ gh: onePr() });
         expect((await s.api("GET", "/api/finish")).status).toBe(405);
         expect((await s.api("PUT", "/api/finish", { id: "123" })).status).toBe(405);
+    });
+});
+
+describe("serve: renamed stories", () => {
+    it("counts a moved item as needing a decision, serves its capture as its baseline, and accepts it", async () => {
+        const s = await start({ gh: withMoved });
+        const prs = await s.api("GET", "/api/prs");
+        const cm = prs.body.targets[0].projects.find((p) => p.project === "compact-mantine");
+        expect(cm.counts.moved).toBe(1);
+        expect(cm.reviewable).toBe(6);
+        const capture = readFileSync(join(FIXTURE, "compact-mantine/slider--sizes.png"));
+        const base = await s.api("GET", "/api/img/123/compact-mantine/baseline/slider--sizes.png");
+        expect(base.status).toBe(200);
+        expect(base.body.equals(capture)).toBe(true);
+        const decide = { id: "123", project: "compact-mantine", file: "slider--sizes.png", decision: "accept" };
+        expect((await s.api("POST", "/api/decide", decide)).status).toBe(200);
+        const item = (await s.api("GET", "/api/pr/123/compact-mantine")).body.items.find(
+            (i) => i.file === "slider--sizes.png",
+        );
+        expect(item).toMatchObject({ status: "moved", from: "old-slider--sizes" });
     });
 });
 
@@ -646,8 +667,8 @@ describe("newestMasterCapture", () => {
         const r = makeRepo();
         const gh = fakeGh({
             masterRuns: [
-                { id: 3000, head: r.master },
-                { id: 2000, head: r.master },
+                { id: 3000, head: "3".repeat(40) },
+                { id: 2000, head: "2".repeat(40) },
                 { id: 1000, head: r.master },
             ],
             artifacts: { 3000: [], 2000: ["visual-compact-mantine-1"], 1000: ["visual-compact-mantine-1"] },
@@ -657,6 +678,22 @@ describe("newestMasterCapture", () => {
         const dir = await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG);
         expect(dir).toBe(join(tmp, "2000-1", "compact-mantine"));
         expect(JSON.parse(readFileSync(join(dir, "results.json"), "utf8")).runId).toBe(2000);
+    });
+
+    it("skips a master commit with no run", async () => {
+        const r = makeRepo();
+        const gh = fakeGh({
+            masterRuns: [
+                { id: null, head: "4".repeat(40) },
+                { id: 2000, head: r.master },
+            ],
+            artifacts: { 2000: ["visual-compact-mantine-1"] },
+            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, runId: 2000 } },
+        });
+        const tmp = join(r.dir, "reference");
+        expect(await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG)).toBe(
+            join(tmp, "2000-1", "compact-mantine"),
+        );
     });
 
     it("finds nothing when no master run has a complete capture", async () => {

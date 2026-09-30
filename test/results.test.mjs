@@ -69,6 +69,18 @@ describe("validateResults", () => {
         ]);
     });
 
+    it("accepts a moved item only with the id it moved from, and from on any item", () => {
+        const moved = { status: "moved", baseline: HASH_A, capture: HASH_A, from: "old-button--primary" };
+        expect(validateResults(results({ items: [item(moved)] }))).toEqual([]);
+        expect(validateResults(results({ items: [item({ from: "old-button--primary" })] }))).toEqual([]);
+        expect(validateResults(results({ items: [item({ ...moved, from: null })] }))).toEqual([
+            "items[0].from is required for a moved item",
+        ]);
+        expect(validateResults(results({ items: [item({ from: "../x" })] }))).toEqual([
+            "items[0].from must be a Storybook story id or null",
+        ]);
+    });
+
     it("accepts a scale of 1 or 2, or none (an older capture), and nothing else", () => {
         expect(validateResults(results({ scale: 2 }))).toEqual([]);
         expect(validateResults(results({ scale: 3 }))).toEqual(["scale must be 1 or 2"]);

@@ -22,6 +22,7 @@ your login.
 - [Seeding one story at a time](#seeding-one-story-at-a-time)
 - [Iterating on a story before a pull request exists](#iterating-on-a-story-before-a-pull-request-exists)
 - [Story parameters](#story-parameters)
+- [Reorganizing stories: renames](#reorganizing-stories-renames)
 - [What the gate does and does not guarantee](#what-the-gate-does-and-does-not-guarantee)
 - [Troubleshooting](#troubleshooting)
 
@@ -297,7 +298,8 @@ starts the same server from your own shell.
     you decided have left it, and the count has gone down; **Accepted**, **Rejected** and
     **Excluded** show them with their decisions.
 
-Statuses: `changed` (differs from its baseline), `new` (no baseline, and on a pull request the
+Statuses: `changed` (differs from its baseline), `moved` (a renamed story that looks exactly as
+its old id's baseline; see [renames](#reorganizing-stories-renames)), `new` (no baseline, and on a pull request the
 story is new or looks different from the default branch's newest capture of it), `no baseline yet` (status
 `unseeded`: no baseline, and the pull request does not change it), `removed` (a baseline whose
 story no longer exists, lost a mode, or whose story's own parameters now exclude it), `unstable`
@@ -332,7 +334,8 @@ so; to change a decision, press U (or the Undo button) first. The same key twice
 ## What each decision does
 
 - **Accept**: the new screenshot becomes the baseline (or, for `removed`, the baseline is
-  deleted). Allowed on `changed`, `new` and `removed`.
+  deleted). Allowed on `changed`, `moved`, `new` and `removed`. For a renamed story the baseline
+  is written under the new id and the old id's baseline is deleted, in the same commit.
 - **Reject**: the difference is a regression. It always needs a reason, which is posted to the pull
   request as a comment with a machine-readable block an agent can read. The pull request stays
   blocked until its code changes so the capture matches the baseline again.
@@ -482,6 +485,45 @@ written for Chromatic work unchanged:
 Inside a story, `isChromatic()` from `chromatic/isChromatic` is true during capture (the URL carries
 `chromatic=true`). A settings file `<baselines>/<project>/<story id>.json` overrides the story's
 parameters; the page's Exclude writes one with `disableSnapshot: true` and your reason.
+
+## Reorganizing stories: renames
+
+Storybook derives a story's id from its title, so moving stories in the sidebar (a new `title`,
+a new folder) gives every moved story a new id. Without help, each old id's baseline is reported
+`removed` and each new id is `new`, with no before and after to compare. A renames file keeps them
+paired. Add it in the pull request that moves the stories, at `<baselines>/<project>/renames.json`:
+
+```json
+[
+    { "from": "building-a-panel-fieldrow--default", "to": "components-panels-and-rows-fieldrow--default" },
+    { "from": "compact-theme-mantine-components-badge--dot", "to": "components-display-badge--dot" }
+]
+```
+
+Each entry is one story: `from` is its old id, `to` its new one. Modes map on their own, so
+`<from>.dark.png` is compared with the capture of `<to>` in the dark mode, and `<from>.light.png`
+with the light one; a mode the new story no longer has is still reported `removed`.
+
+- **Capture** compares the new id's capture with the old id's baseline. It reads `moved` when the
+  two look the same (only the name changed) and `changed` when they differ; either way the item
+  carries `from`, and the old baseline is not reported `removed`.
+- **The review page** shows each one as a pair, labeled "moved from &lt;old id&gt;" on the tile
+  and on the story screen, with the old id's baseline on the left. The grid has a **moved** filter,
+  and a component's Accept N undecided takes its moved stories too.
+- **Accepting** writes the baseline under the new id and deletes the old id's baseline in the same
+  accept commit. For a `moved` item the image is the same, so git sees a rename and the Git LFS
+  pointer does not change. The review record names both paths.
+- **The gate** blocks a `moved` item until it is accepted, like any change: a pull request that
+  moves stories cannot land without their baselines moving with them.
+- **A rename whose new id is not a story** in the Storybook is an error: capture reports it as a
+  `failed` item under the new id, with the reason, and the page lists it under Errors. Fix the
+  entry in `renames.json`. A rename whose old id is still a story is not a move, and does
+  nothing.
+- **An entry whose move was accepted** does nothing any more: the old baseline is gone and the new
+  id has its own. You can delete the file once the pull request has merged, or leave it.
+
+`renames.json` is read from the pull request's own checkout, like the baselines. Only baseline
+PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the same pull request.
 
 ## What the gate does and does not guarantee
 

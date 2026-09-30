@@ -154,16 +154,21 @@ function crop(img, w, h) {
  * A story with no baseline is `unseeded` ("no baseline yet") when its capture matches
  * `reference`, master's newest capture of it: the pull request did not change it, so it needs no
  * review here. It is `new` when it differs from master's, or master has none (a new story).
+ *
+ * `moved` says the baseline is another story id's, named in the project's renames.json: a story
+ * that only moved (same image, new id) is `moved` rather than `unchanged`, so it still needs an
+ * accept, which writes its baseline under the new name.
  * @param {{ baseline: Buffer | null, first: Buffer | null, second?: Buffer | null,
- *     reference?: Buffer | null, threshold: number, includeAA: boolean }} input `first` is null
- *     when the story is gone
- * @returns {{ status: "unchanged" | "changed" | "new" | "unseeded" | "removed" | "unstable", flaky: boolean,
+ *     reference?: Buffer | null, threshold: number, includeAA: boolean, moved?: boolean }} input
+ *     `first` is null when the story is gone
+ * @returns {{ status: "unchanged" | "moved" | "changed" | "new" | "unseeded" | "removed" | "unstable", flaky: boolean,
  *     baseline: string | null, capture: string | null, size: number[] | null,
  *     baselineSize: number[] | null, changedPixels: number | null, bbox: number[] | null }}
  *     `capture` is the hash of the capture the status describes: the second one when flaky
  */
-export function classify({ baseline, first, second = null, reference = null, threshold, includeAA }) {
+export function classify({ baseline, first, second = null, reference = null, threshold, includeAA, moved = false }) {
     const options = { threshold, includeAA };
+    const matched = (r, flaky) => ({ ...r, status: moved ? "moved" : "unchanged", flaky });
     const none = { flaky: false, size: null, baselineSize: null, changedPixels: null, bbox: null };
     if (first === null) {
         return { status: "removed", ...none, baseline: sha256(baseline), capture: null };
@@ -175,12 +180,15 @@ export function classify({ baseline, first, second = null, reference = null, thr
         return { status, ...none, baseline: null, capture: sha256(first), size: pngSize(first) };
     }
     const vsFirst = compareImages(baseline, first, options);
-    if (vsFirst.status === "unchanged" || second === null) {
+    if (vsFirst.status === "unchanged") {
+        return matched(vsFirst, false);
+    }
+    if (second === null) {
         return { ...vsFirst, flaky: false };
     }
     const vsSecond = compareImages(baseline, second, options);
     if (vsSecond.status === "unchanged") {
-        return { ...vsSecond, flaky: true };
+        return matched(vsSecond, true);
     }
     return { ...vsFirst, status: agree() ? "changed" : "unstable", flaky: false };
 }

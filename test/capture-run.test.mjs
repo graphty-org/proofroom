@@ -150,6 +150,75 @@ describe("capture", () => {
         expect(tampered.items[0].status).toBe("new");
     }, 120_000);
 
+    it("compares a renamed story with its old id's baseline and reports a broken rename", async () => {
+        const sb = storybook();
+        const seedOut = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const run = (out, baselines) =>
+            capture({ project: "demo", storybook: sb, baselines, out, workers: 2, waitFor: null, log: () => {} });
+        await run(seedOut, mkdtempSync(join(tmpdir(), "vr-bl-")));
+
+        // Baselines under old ids: one that looks the same as its new story, one that does not,
+        // one whose rename names no story, and one renamed from an id that is still a story (which
+        // is no move, so it does nothing).
+        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        copyFileSync(join(seedOut, "demo--plain.png"), join(baselines, "old--plain.png"));
+        copyFileSync(join(seedOut, "demo--plain.png"), join(baselines, "old--small.png"));
+        copyFileSync(join(seedOut, "demo--plain.png"), join(baselines, "old--lost.dark.png"));
+        copyFileSync(join(seedOut, "demo--tall.png"), join(baselines, "demo--tall.png"));
+        writeFileSync(
+            join(baselines, "renames.json"),
+            JSON.stringify([
+                { from: "old--plain", to: "demo--plain" },
+                { from: "old--small", to: "demo--small" },
+                { from: "old--lost", to: "demo--nowhere" },
+                { from: "demo--tall", to: "demo--late-font" },
+            ]),
+        );
+        const out = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const r = await run(out, baselines);
+        const items = byFile(r);
+        expect(items["demo--plain.png"]).toMatchObject({ status: "moved", from: "old--plain" });
+        // The page shows a moved item's capture as its baseline too, so the capture is uploaded.
+        expect(readFileSync(join(out, "demo--plain.png")).equals(readFileSync(join(seedOut, "demo--plain.png")))).toBe(
+            true,
+        );
+        expect(items["demo--small.png"]).toMatchObject({ status: "changed", from: "old--small" });
+        expect(items["demo--nowhere.dark.png"]).toMatchObject({
+            status: "failed",
+            from: "old--lost",
+            reason: "renames.json renames old--lost to demo--nowhere, but the Storybook has no story demo--nowhere: fix renames.json",
+        });
+        expect(items["demo--late-font.png"]).toMatchObject({ status: "new" });
+        expect(items["demo--late-font.png"].from).toBeUndefined();
+        expect(items["demo--tall.png"]).toMatchObject({ status: "unchanged" });
+        // Neither old id's baseline is reported removed, and no item of a story that was not
+        // renamed carries from.
+        expect(r.items.filter((i) => i.status === "removed")).toEqual([]);
+        expect(
+            r.items
+                .filter((i) => i.from)
+                .map((i) => i.file)
+                .sort(),
+        ).toEqual(["demo--nowhere.dark.png", "demo--plain.png", "demo--small.png"]);
+        expect(r.expected).toBe(r.items.length);
+    }, 120_000);
+
+    it("refuses a renames file that is not a list of distinct renames", async () => {
+        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        writeFileSync(join(baselines, "renames.json"), JSON.stringify([{ from: "a--b", to: "a--b" }]));
+        await expect(
+            capture({
+                project: "demo",
+                storybook: storybook(),
+                baselines,
+                out: mkdtempSync(join(tmpdir(), "vr-out-")),
+                workers: 1,
+                waitFor: null,
+                log: () => {},
+            }),
+        ).rejects.toThrow(/renames.json: entry 0 must be/);
+    }, 60_000);
+
     it("captures the whole canvas at scale 2, never cropped to the content", async () => {
         const sb = storybook();
         const run = async (story) => {
