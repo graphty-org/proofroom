@@ -79,7 +79,7 @@ jobs:
               run: ${{ matrix.build }}
 
             # A story with no baseline that looks as it does in the default branch's newest capture is
-            # "unseeded" and does not block this pull request; without a reference every one is "new".
+            # "unseeded"; without a reference every one is "new". Both block until accepted or seeded.
             - name: Download the default branch's newest capture
               id: reference
               if: github.event_name == 'pull_request'
@@ -115,9 +115,9 @@ jobs:
                       fi
                   } >> "$GITHUB_STEP_SUMMARY"
 
-    # Fails while a project of the base branch's config (seeded or not; `"gate": false` skips an
-    # unseeded one) holds anything but unchanged, excluded or unseeded items in its newest capture,
-    # or a baseline file changed without a review record.
+    # Fails while a project of the base branch's or the pull request's config, or with baselines on
+    # the base branch (seeded or not), holds anything but unchanged or excluded items in its newest
+    # capture, or a baseline file changed without a review record.
     # It runs the published gate at a pinned version, so a pull request's own dependencies cannot
     # change it. Depth 2: HEAD^1, the merge commit's first parent, is the base branch tip.
     visual-gate:
