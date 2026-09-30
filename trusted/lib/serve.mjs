@@ -44,7 +44,7 @@ const HEADERS = {
  */
 const componentOf = (id) => id.split("--")[0];
 
-const REVIEWABLE = new Set(["changed", "moved", "new", "removed", "unstable", "failed"]);
+const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"]);
 const WRITES = new Set(["decide", "accept-all", "finish"]);
 
 /**

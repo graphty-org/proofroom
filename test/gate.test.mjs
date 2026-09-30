@@ -71,15 +71,8 @@ describe("newestResults", () => {
 });
 
 describe("gateProblems", () => {
-    // graphty-element opts out, so these tests look at compact-mantine alone; the fail-closed
-    // tests below gate it.
-    const config = normalizeConfig({
-        defaultBranch: "master",
-        projects: {
-            "compact-mantine": { storybook: "a" },
-            "graphty-element": { storybook: "b", gate: false },
-        },
-    });
+    // compact-mantine alone; the fail-closed tests below add projects with no baselines.
+    const config = normalizeConfig({ defaultBranch: "master", projects: { "compact-mantine": { storybook: "a" } } });
     const seeded = new Set(["compact-mantine"]);
 
     it("passes when a seeded project holds only unchanged and excluded items", () => {
@@ -94,26 +87,27 @@ describe("gateProblems", () => {
         ]);
     });
 
-    it("counts unreviewed items of a seeded project and ignores an unseeded one that opted out", () => {
+    it("counts unreviewed items of a seeded project", () => {
         const captures = {
             "compact-mantine": { attempt: 2, results: results(["changed", "changed", "removed", "unchanged"]) },
-            "graphty-element": { attempt: 2, results: results(["new"]) },
         };
         expect(gateProblems({ config, seeded, captures })).toEqual([
             "compact-mantine: 2 changed, 1 removed (not accepted; a rejected item needs a code change, not another review)",
         ]);
     });
 
-    it("passes stories with no baseline yet that the pull request does not change", () => {
-        // Seeding is per story: a seeded project keeps stories nobody has accepted yet.
+    it("blocks stories with no baseline yet even when the pull request does not change them", () => {
+        // Every story needs an approved baseline; one nobody accepted was never checked.
         const captures = { "compact-mantine": { attempt: 1, results: results(["unchanged", "unseeded", "unseeded"]) } };
-        expect(gateProblems({ config, seeded, captures })).toEqual([]);
+        expect(gateProblems({ config, seeded, captures })).toEqual([
+            "compact-mantine: 2 unseeded (not accepted; a rejected item needs a code change, not another review)",
+        ]);
     });
 
     it("blocks a story with no baseline that the pull request adds or changes", () => {
         const captures = { "compact-mantine": { attempt: 1, results: results(["unseeded", "new"]) } };
         expect(gateProblems({ config, seeded, captures })).toEqual([
-            "compact-mantine: 1 new (not accepted; a rejected item needs a code change, not another review)",
+            "compact-mantine: 1 unseeded, 1 new (not accepted; a rejected item needs a code change, not another review)",
         ]);
     });
 
@@ -152,10 +146,11 @@ describe("gateProblems fails closed", () => {
             layout: { attempt: 1, results: results(["unseeded"]) },
         };
         const problems = gateProblems({ config, seeded, captures });
-        expect(problems).toHaveLength(1);
+        expect(problems).toHaveLength(2);
         expect(problems[0]).toMatch(
-            /^graphty-element: 2 new \(not accepted; graphty-element has no baselines on master/,
+            /^graphty-element: 1 unseeded, 2 new \(not accepted; graphty-element has no baselines on master/,
         );
+        expect(problems[1]).toMatch(/^layout: 1 unseeded \(not accepted; layout has no baselines on master/);
         expect(problems[0]).toMatch(/gh workflow run visual-seed\.yml --ref master -f ref=<sha>/);
         expect(problems[0]).toMatch(/visual-review serve --master-run <run id>/);
     });
@@ -178,11 +173,9 @@ describe("gateProblems fails closed", () => {
         ]);
     });
 
-    it('skips only an unseeded project that says "gate": false, and never a seeded one', () => {
-        const off = normalizeConfig({
-            projects: { "compact-mantine": { storybook: "a", gate: false }, layout: { storybook: "c", gate: false } },
-        });
-        expect(gatedProjects(off, seeded)).toEqual(["compact-mantine"]);
+    it("gates every project of either config, and a seeded one dropped from both", () => {
+        const head = normalizeConfig({ projects: { graphty: { storybook: "d" } } });
+        expect(gatedProjects(config, new Set(), head)).toEqual(["compact-mantine", "graphty-element", "layout", "graphty"]);
         // A seeded project dropped from the config is still gated.
         expect(gatedProjects(normalizeConfig({ projects: { layout: { storybook: "c" } } }), seeded)).toEqual([
             "compact-mantine",
@@ -212,8 +205,8 @@ describe("gate command", () => {
 
     // The fixture repository's config is the monorepo's: graphty-element and layout have no baselines.
     const unseededCaptures = {
-        "visual-graphty-element-1": results(["unseeded"]),
-        "visual-layout-1": results(["unseeded"]),
+        "visual-graphty-element-1": results(["unchanged"]),
+        "visual-layout-1": results(["unchanged"]),
     };
 
     it("passes a pull request whose seeded capture is unchanged", () => {
