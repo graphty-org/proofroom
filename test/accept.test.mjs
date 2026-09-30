@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { contentHash, unrecordedChanges } from "../trusted/gate.mjs";
 import { commitMessage, finish, lfsProblem } from "../trusted/lib/accept.mjs";
 import { isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
-import { copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
+import { CONFIG, copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
@@ -32,7 +32,17 @@ function setup() {
     };
     const steps = [];
     const run = (decisions, target = { pr: 123, branch: "feature" }, undecided = 0) =>
-        finish({ repo: r.repo, gh, target, projects, decisions, undecided, now: NOW, progress: (s) => steps.push(s) });
+        finish({
+            repo: r.repo,
+            gh,
+            target,
+            projects,
+            decisions,
+            undecided,
+            now: NOW,
+            progress: (s) => steps.push(s),
+            config: CONFIG,
+        });
     return { ...r, projects, calls, steps, run };
 }
 
@@ -74,6 +84,7 @@ describe("finish: the commit status", () => {
             projects: t.projects,
             decisions: [accept("badge--default.light.png")],
             now: NOW,
+            config: CONFIG,
         });
         expect(out).toMatchObject({ statusError: "HTTP 403" });
         expect(out.commit).toBe(remoteLog(t, "feature")[0]);
@@ -135,7 +146,7 @@ describe("finish: accepts", () => {
                 reason: "wider",
             },
         ]);
-        expect(existsSync(join(s.repo, ".worktrees/visual-accept-123"))).toBe(false);
+        expect(existsSync(join(s.repo, "tmp/visual-review/worktrees/accept-123"))).toBe(false);
     });
 
     it("lands decisions from every project of the pull request in one commit and one push", async () => {
@@ -341,6 +352,7 @@ describe("finish: git", () => {
                 runId: 1000,
                 runAttempt: 2,
                 record: "visual-baselines/reviews/x.json",
+                prefix: CONFIG.commitPrefix,
             });
             const r = spawnSync(commitlint, [], { cwd: ROOT, input: msg, encoding: "utf8" });
             expect(r.stdout + r.stderr).toBe("");
@@ -425,6 +437,7 @@ describe("finish: rejects", () => {
                 { project: "compact-mantine", file: "button--primary.dark.png", decision: "reject", reason: "red" },
             ],
             now: NOW,
+            config: CONFIG,
         }).catch((e) => e);
         expect(err.message).toMatch(/accepts were pushed .* reject comment failed: HTTP 502/);
         expect(err.committed).toBe(remoteLog(s, "feature")[0]);
@@ -439,6 +452,53 @@ describe("finish: rejects", () => {
             reason: "",
         };
         await expect(s.run([decision])).rejects.toThrow(/reason/);
+    });
+});
+
+describe("finish: renamed stories", () => {
+    it("moves the old id's baseline to the new name in the accept commit, LFS pointer intact", async () => {
+        const s = setup();
+        const cm = s.projects["compact-mantine"];
+        const old = "visual-baselines/compact-mantine/button--primary.dark.png";
+        const bytes = readFileSync(join(cm.dir, "baselines/button--primary.dark.png"));
+        writeFileSync(join(cm.dir, "button--main.dark.png"), bytes);
+        const item = cm.results.items.find((i) => i.file === "button--primary.dark.png");
+        cm.results.items.push({
+            ...item,
+            id: "button--main",
+            file: "button--main.dark.png",
+            status: "moved",
+            from: "button--primary",
+            capture: sha256(bytes),
+            baseline: sha256(bytes),
+            changedPixels: 0,
+            bbox: null,
+        });
+        const pointer = git(s.repo, "show", `master:${old}`);
+        await s.run([accept("button--main.dark.png")]);
+
+        const moved = "visual-baselines/compact-mantine/button--main.dark.png";
+        const changes = git(
+            s.remote,
+            "diff",
+            "-M",
+            "--name-status",
+            "feature~1",
+            "feature",
+            "--",
+            "visual-baselines/compact-mantine/",
+        );
+        expect(changes).toBe(`R100\t${old}\t${moved}`);
+        expect(git(s.remote, "show", `feature:${moved}`)).toBe(pointer);
+        const record = JSON.parse(
+            git(s.remote, "show", `feature:visual-baselines/reviews/20260927T150405Z-pr123.json`),
+        );
+        expect(record.items).toEqual([
+            { path: moved, from: null, to: sha256(bytes), reason: null, movedFrom: old },
+            { path: old, from: sha256(bytes), to: null, reason: null, movedTo: moved },
+        ]);
+        git(s.repo, "fetch", "-q", "origin");
+        expect(unrecordedChanges(s.master, "origin/feature", s.repo)).toEqual([]);
     });
 });
 

@@ -169,6 +169,21 @@ describe("classify", () => {
         // A reference never applies where a baseline exists: the baseline decides.
         expect(classify({ baseline: base, first: a, reference: a, ...OPTS })).toMatchObject({ status: "changed" });
     });
+
+    it("a renamed story that looks as its old id's baseline is moved; one that differs is changed", () => {
+        const moved = { baseline: base, moved: true, ...OPTS };
+        expect(classify({ ...moved, first: Buffer.from(base) })).toMatchObject({ status: "moved", flaky: false });
+        expect(classify({ ...moved, first: a, second: Buffer.from(base) })).toMatchObject({
+            status: "moved",
+            flaky: true,
+            capture: sha256(base),
+        });
+        expect(classify({ ...moved, first: a, second: Buffer.from(a) })).toMatchObject({
+            status: "changed",
+            changedPixels: 1,
+        });
+        expect(classify({ ...moved, first: a, second: b })).toMatchObject({ status: "unstable" });
+    });
 });
 
 describe("Git LFS pointers", () => {

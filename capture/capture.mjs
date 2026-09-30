@@ -6,12 +6,13 @@
  * fresh browser context: a fixed start time, SwiftShader WebGL, a 1200 x 900 viewport at device
  * scale factor 2, as Chromatic captures. Each PNG is the whole canvas, never cropped to the content:
  * the full page of the story iframe, which is the viewport unless the story overflows it. It waits
- * for Storybook's render (play functions included) and, for graphty-element, for
- * `waitForStableFrame()`; a story that errors or never settles is `failed`, never a picture,
+ * for Storybook's render (play functions included) and, when the project's config names a
+ * `waitFor` (an element selector and a method returning a promise, such as graphty-element's
+ * `waitForStableFrame()`), for that; a story that errors or never settles is `failed`, never a picture,
  * after one retry in a new context, so a single timeout on a busy runner does not block a pull
  * request. WebGPU is removed from every page (`navigator.gpu` is deleted before any script runs):
  * no Chromium switch hides it, and whether an adapter request fails differs by host, so without
- * this graphty-element's CPU or GPU path would depend on the machine.
+ * this a component with a CPU and a GPU path would draw whichever the machine offers.
  * Anything that differs from its baseline, or has none, is captured once more in a new context,
  * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs).
  *
@@ -20,16 +21,23 @@
  * second capture of an unstable one, and `baselines/<file>`: the baseline each changed, unstable
  * and removed item was compared with.
  *
- * With `reference`, a directory holding master's newest capture of the project (CI downloads it
- * on pull requests), a story with no baseline whose capture matches master's is `unseeded`, not
+ * A story renamed in the project's `renames.json` (see loadRenames) is compared with the baseline
+ * of its old id, mode by mode: `moved` when it looks the same, `changed` otherwise, each carrying
+ * `from`; that old baseline is then not reported `removed`. A rename whose new id is not a story
+ * is a `failed` item under the new id, so the page lists it; one whose old id is still a story
+ * does nothing.
+ *
+ * With `reference`, a directory holding the default branch's newest capture of the project (CI
+ * downloads it on pull requests), a story with no baseline whose capture matches it is `unseeded`, not
  * `new`: seeding is per story, so a story nobody has accepted yet does not block every pull
  * request, only one that changes it.
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { dirname, extname, join, normalize } from "node:path";
+import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
@@ -151,6 +159,47 @@ export function storySettings(parameters, file) {
     };
 }
 
+/** A project's renames file, in its baselines directory. */
+const RENAMES = "renames.json";
+
+const STORY_ID = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Reads a project's renames file, `<dir>/renames.json`: `[{ "from": "<old story id>", "to":
+ * "<new story id>" }]`, for stories whose id changed while they stayed the same story.
+ * @param {string} dir the project's baselines directory
+ * @returns {Promise<Map<string, string>>} the old id by new id; empty when there is no file
+ */
+async function loadRenames(dir) {
+    const path = join(dir, RENAMES);
+    let list;
+    try {
+        list = JSON.parse(await readFile(path, "utf8"));
+    } catch (e) {
+        if (e.code === "ENOENT") {
+            return new Map();
+        }
+        throw new Error(`${path}: ${e.message}`);
+    }
+    if (!Array.isArray(list)) {
+        throw new Error(`${path}: must be an array of { "from": "<old id>", "to": "<new id>" }`);
+    }
+    const byTo = new Map();
+    const froms = new Set();
+    list.forEach((r, i) => {
+        const ok = (v) => typeof v === "string" && v.length <= 200 && STORY_ID.test(v);
+        if (!ok(r?.from) || !ok(r?.to) || r.from === r.to) {
+            throw new Error(`${path}: entry ${i} must be { "from": "<old id>", "to": "<another id>" }`);
+        }
+        if (byTo.has(r.to) || froms.has(r.from)) {
+            throw new Error(`${path}: entry ${i} renames ${r.from} or to ${r.to} a second time`);
+        }
+        byTo.set(r.to, r.from);
+        froms.add(r.from);
+    });
+    return byTo;
+}
+
 async function pngsIn(dir) {
     try {
         return (await readdir(dir)).filter((f) => f.endsWith(".png")).sort();
@@ -262,7 +311,7 @@ async function extract(browser, base) {
  * Renders one story and mode, retrying once in a new context when it fails.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean }} options as for shootOnce
+ * @param {{ delay: number, waitFor: object | null }} options as for shootOnce
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the
  *     second attempt's result when the first failed
  */
@@ -275,12 +324,14 @@ async function shoot(browser, url, options) {
  * Renders one story and mode in a fresh context and screenshots it.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
- * @param {{ delay: number, stableFrame: boolean }} options the story's delay and whether to wait
- *     for every graphty-element's stable frame
+ * @param {{ delay: number, waitFor: { selector: string, method: string, failOnConsole: string |
+ *     null } | null }} options the story's delay, and what to wait for after the render: the
+ *     promise `method` returns on every element matching `selector`, failing the story when a
+ *     console line contains `failOnConsole`
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the PNG,
  *     or a reason it failed; a failure's console holds the rest of its message and any stack
  */
-async function shootOnce(browser, url, { delay, stableFrame }) {
+async function shootOnce(browser, url, { delay, waitFor }) {
     const context = await newContext(browser);
     const lines = [];
     const fail = (reason) => {
@@ -292,8 +343,8 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
         const page = await context.newPage();
         page.on("console", (m) => lines.push(`${m.type()}: ${m.text()}`));
         page.on("pageerror", (e) => lines.push(`pageerror: ${e.stack ?? e.message}`));
-        // A fixed start that keeps running: setFixedTime would freeze Date.now(), which hangs
-        // graphty-element's input playback and recording, both timed with it.
+        // A fixed start that keeps running: setFixedTime would freeze Date.now(), which hangs any
+        // component timed with it (graphty-element's input playback and recording, for one).
         await page.clock.install({ time: CLOCK_START });
         await page.clock.resume();
         await page.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
@@ -327,14 +378,17 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
             await new Promise((r) => requestAnimationFrame(() => r()));
             await document.fonts.ready;
         });
-        if (stableFrame) {
-            await page.evaluate(async () => {
-                const graphs = [...document.querySelectorAll("graphty-element")];
-                await Promise.all(graphs.map((g) => /** @type {any} */ (g).waitForStableFrame()));
-                await new Promise((r) => requestAnimationFrame(() => r()));
-            });
-            if (lines.some((l) => l.includes("Graph settled timeout"))) {
-                return fail("Graph settled timeout");
+        if (waitFor) {
+            await page.evaluate(
+                async ({ selector, method }) => {
+                    const found = [...document.querySelectorAll(selector)];
+                    await Promise.all(found.map((el) => /** @type {any} */ (el)[method]()));
+                    await new Promise((r) => requestAnimationFrame(() => r()));
+                },
+                { selector: waitFor.selector, method: waitFor.method },
+            );
+            if (waitFor.failOnConsole && lines.some((l) => l.includes(waitFor.failOnConsole))) {
+                return fail(waitFor.failOnConsole);
             }
         }
         if (delay > 0) {
@@ -350,6 +404,25 @@ async function shootOnce(browser, url, { delay, stableFrame }) {
         return fail(e.message);
     } finally {
         await context.close();
+    }
+}
+
+/**
+ * Which build of this tool captured: the commit of its source checkout when it runs from one
+ * (a monorepo that develops it), else the installed package's name and version.
+ * @returns {string} a commit sha, or `@graphty/visual-review@<version>`
+ */
+function toolVersion() {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, "../package.json"), "utf8"));
+    const installed = `${pkg.name}@${pkg.version}`;
+    if (here.split(sep).includes("node_modules")) {
+        return installed;
+    }
+    try {
+        return git("-C", here, "rev-parse", "HEAD");
+    } catch {
+        return installed;
     }
 }
 
@@ -438,9 +511,9 @@ async function loadReference(dir) {
 /**
  * Captures one project.
  * @param {{ project: string, storybook: string, baselines: string, out: string, workers: number,
- *     stableFrame: boolean, reference?: string | null, stories?: string[] | null,
- *     log?: (line: string) => void }} options `stableFrame` waits for every graphty-element's
- *     `waitForStableFrame()`; `reference` is master's capture (see above); `stories` keeps only
+ *     waitFor?: object | null, reference?: string | null, stories?: string[] | null,
+ *     log?: (line: string) => void }} options `waitFor` is the project's config entry (see
+ *     shootOnce); `reference` is the default branch's capture (see above); `stories` keeps only
  *     the story ids starting with one of these prefixes, for a quick local preview, and then no
  *     baseline is reported removed
  * @returns {Promise<object>} the final results.json contents
@@ -451,7 +524,7 @@ export async function capture({
     baselines,
     out,
     workers,
-    stableFrame,
+    waitFor = null,
     reference = null,
     stories = null,
     log = console.log,
@@ -459,9 +532,9 @@ export async function capture({
     const started = Date.now();
     await mkdir(join(out, "baselines"), { recursive: true });
     await mkdir(join(out, "second"), { recursive: true });
-    const ids = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8"))).filter(
-        (id) => !stories || stories.some((p) => id.startsWith(p)),
-    );
+    const allIds = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
+    const ids = allIds.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+    const renames = await loadRenames(baselines);
     const refs = await loadReference(reference);
     const [server, base] = await serve(storybook);
     // One browser per worker: every page of a browser shares its one GPU process, so with
@@ -482,6 +555,35 @@ export async function capture({
         // A story whose own parameters exclude it while it still has a baseline is reported as
         // removed, so a pull request cannot drop a story from review without the owner seeing it.
         const newlyExcluded = new Set();
+        // Old baselines a rename compares a story with (or reports as a broken rename): not removed.
+        const renamed = new Set();
+        const renameErrors = [];
+        const known = new Set(allIds);
+        for (const [to, from] of stories ? [] : renames) {
+            if (known.has(to)) {
+                continue;
+            }
+            // Only a rename with an old baseline left to move is an error; once it is accepted the
+            // old baselines are gone, and the entry does nothing.
+            for (const file of existing) {
+                const [id, mode = null] = file.slice(0, -4).split(".");
+                if (id === from && BASELINE_NAME.test(file)) {
+                    renamed.add(file);
+                    renameErrors.push({
+                        id: to,
+                        mode,
+                        file: fileName(to, mode),
+                        from,
+                        threshold: DEFAULT_THRESHOLD,
+                        includeAA: false,
+                        ...EMPTY,
+                        status: "failed",
+                        reason: `${RENAMES} renames ${from} to ${to}, but the Storybook has no story ${to}: fix ${RENAMES}`,
+                    });
+                }
+            }
+        }
+        items.push(...renameErrors);
         for (const id of ids) {
             const s = storySettings(params[id] ?? {}, await loadSettings(baselines, id));
             for (const mode of s.modes) {
@@ -495,11 +597,22 @@ export async function capture({
                 if (s.disableSnapshot) {
                     items.push({ ...common, ...EMPTY, status: "excluded", reason: s.reason });
                 } else {
-                    jobs.push({ ...common, url: base + storyUrl(id, mode.globals), delay: s.delay });
+                    // Renamed: compared with the old id's baseline of this mode, while the new id
+                    // has none of its own (after the accept it does, and the rename is done).
+                    // A rename from an id that is still a story is not a move: it does nothing.
+                    const old =
+                        renames.has(id) && !known.has(renames.get(id)) ? fileName(renames.get(id), mode.name) : null;
+                    const from = old && !existing.has(file) && existing.has(old) ? renames.get(id) : null;
+                    if (from) {
+                        renamed.add(old);
+                    }
+                    jobs.push({ ...common, from, url: base + storyUrl(id, mode.globals), delay: s.delay });
                 }
             }
         }
-        const gone = stories ? [] : [...existing].filter((f) => !planned.has(f) && BASELINE_NAME.test(f));
+        const gone = stories
+            ? []
+            : [...existing].filter((f) => !planned.has(f) && !renamed.has(f) && BASELINE_NAME.test(f));
 
         const emojiFont = hasEmojiFont();
         if (emojiFont === false) {
@@ -525,7 +638,7 @@ export async function capture({
                 gpu,
                 cpu: await cpuModel(),
                 emojiFont,
-                tool: git("-C", dirname(fileURLToPath(import.meta.url)), "rev-parse", "HEAD"),
+                tool: toolVersion(),
             },
             items,
         };
@@ -550,10 +663,12 @@ export async function capture({
         }
 
         const run = async (browser, job) => {
-            const { url, delay, ...common } = job;
-            const baseline = await readBaseline(join(baselines, job.file));
+            const { url, delay, from, ...rest } = job;
+            // `from` only on a renamed story, so results.json of a project with no renames is as before.
+            const common = from ? { ...rest, from } : rest;
+            const baseline = await readBaseline(join(baselines, from ? fileName(from, job.mode) : job.file));
             const reference = baseline ? null : (refs.images.get(job.file) ?? null);
-            const opts = { threshold: job.threshold, includeAA: job.includeAA, reference };
+            const opts = { threshold: job.threshold, includeAA: job.includeAA, reference, moved: from !== null };
             const failed = (shot, prefix = "") => ({
                 ...common,
                 ...EMPTY,
@@ -562,30 +677,36 @@ export async function capture({
                 reason: prefix + shot.reason,
                 console: clip(shot.console),
             });
-            const first = await shoot(browser, url, { delay, stableFrame });
+            const first = await shoot(browser, url, { delay, waitFor });
             if (!first.png) {
                 return failed(first);
             }
             let result = classify({ baseline, first: first.png, ...opts });
             let second = null;
             if (result.status === "changed" || result.status === "new") {
-                second = await shoot(browser, url, { delay, stableFrame });
+                second = await shoot(browser, url, { delay, waitFor });
                 if (!second.png) {
                     return failed(second, "second capture: ");
                 }
                 result = classify({ baseline, first: first.png, second: second.png, ...opts });
             }
             const { status } = result;
-            if (["changed", "new", "unseeded", "unstable"].includes(status)) {
-                await writeFile(join(out, job.file), first.png);
+            // A moved capture is also its baseline when the bytes are the same: the page reads it.
+            if (["changed", "moved", "new", "unseeded", "unstable"].includes(status)) {
+                // The capture results.json names: the second one when the first was a flake.
+                await writeFile(join(out, job.file), result.flaky ? second.png : first.png);
             }
             if (status === "unstable") {
                 await writeFile(join(out, "second", job.file), second.png);
             }
-            if (baseline && (status === "changed" || status === "unstable")) {
+            const ownBaseline = status === "moved" && result.baseline !== result.capture;
+            if (baseline && (status === "changed" || status === "unstable" || ownBaseline)) {
                 await writeFile(join(out, "baselines", job.file), baseline);
             }
-            const lines = status === "unchanged" ? [] : clip([...first.console, ...(second?.console ?? [])]);
+            const lines =
+                status === "unchanged" || status === "moved"
+                    ? []
+                    : clip([...first.console, ...(second?.console ?? [])]);
             return { ...common, ...result, reason: null, console: lines };
         };
 

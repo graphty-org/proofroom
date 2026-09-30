@@ -57,6 +57,12 @@ header {
     font-weight: 700;
 }
 
+#home,
+#copy-link {
+    flex: none;
+    white-space: nowrap;
+}
+
 #status {
     margin-left: auto;
     color: var(--muted);
@@ -181,6 +187,7 @@ td {
 }
 
 .badge.changed,
+.badge.moved,
 .badge.exclude {
     border-color: var(--accent);
     color: var(--accent);
@@ -493,4 +500,10 @@ td {
     border-radius: 4px;
     background: var(--card);
     color: var(--fg);
+}
+
+.tile .moved-from {
+    font-size: 12px;
+    word-break: break-all;
+    color: var(--accent);
 }

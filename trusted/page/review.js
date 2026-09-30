@@ -11,14 +11,14 @@ const app = document.getElementById("app");
 const crumbs = document.getElementById("crumbs");
 const statusLine = document.getElementById("status");
 
-const REVIEWABLE = ["changed", "new", "removed", "unstable", "failed"];
-const ACCEPTABLE = ["changed", "new", "removed"];
+const REVIEWABLE = ["changed", "moved", "new", "removed", "unstable", "failed"];
+const ACCEPTABLE = ["changed", "moved", "new", "removed"];
 // A story with no baseline that this pull request did not change: shown, never a decision here.
 const UNSEEDED = "unseeded";
 const NO_BASELINE = "no baseline yet";
 const statusLabel = (status) => (status === UNSEEDED ? NO_BASELINE : status);
-// Errors first (their own list), then what changed, then new, unstable and removed stories.
-const RANK = { failed: 0, changed: 1, new: 2, unstable: 3, removed: 4, unseeded: 5 };
+// Errors first (their own list), then what changed, then moved, new, unstable and removed stories.
+const RANK = { failed: 0, changed: 1, moved: 2, new: 3, unstable: 4, removed: 5, unseeded: 6 };
 const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
 // "fit" (the default) shows the whole of both images in their panes, at one scale, never above real
 // size; 1 is real size: one CSS pixel per CSS pixel the story was drawn at, scrolling when larger.
@@ -40,7 +40,10 @@ const state = {
     data: null, // GET /api/pr/:id/:project
     filter: "undecided", // the grid opens on what still needs a decision
     text: "", // the grid's text filter
-    index: 0,
+    index: 0, // the item shown, in `sequence`
+    // The files of this pass through the stories, frozen when a story is opened from the grid:
+    // deciding one never drops it, so Previous goes back to it and its Undo.
+    sequence: [],
     lastFile: null, // the item last opened, highlighted when the grid comes back
     view: "side", // side | flash | highlight | spotlight
     zoom: "fit",
@@ -54,6 +57,9 @@ const state = {
     armed: null, // the bulk Undo button pressed once: its second press undoes
 };
 const running = () => state.job?.running === true;
+const VIEWS = ["side", "flash", "highlight", "spotlight"];
+const FILTERS = ["undecided", "all", ...REVIEWABLE, UNSEEDED, ...Object.keys(DECISIONS)];
+let routing = false; // true while the page follows the address (a link opened, Back, Forward)
 const images = new Map();
 const diffs = new Map();
 let flashTimer = null;
@@ -89,8 +95,10 @@ function render(...children) {
     app.replaceChildren(...children.filter((c) => c !== null && c !== undefined && c !== false));
 }
 
+// Clearing the status line during a Finish shows the Finish's step instead, so a screen that
+// opens while it runs (a reload, Visual review, a link) never blanks its progress.
 function say(text, isError = false) {
-    statusLine.textContent = text;
+    statusLine.textContent = text === "" && running() ? finishing() : text;
     statusLine.className = isError ? "error" : "";
 }
 
@@ -136,6 +144,8 @@ function loaded(url) {
 
 const componentOf = (id) => id.split("--")[0];
 const itemName = (item) => (item.mode ? `${item.id} (${item.mode})` : item.id);
+// A renamed story (renames.json) is compared with its old id's baseline: say which.
+const movedFrom = (item) => (item.from ? `moved from ${item.from}` : "");
 const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
 const isLocal = () => state.target?.local === true;
@@ -188,6 +198,14 @@ function visibleItems() {
     return ordered(text ? items.filter((i) => i.file.includes(text)) : items);
 }
 
+// The items of the frozen pass, in its order; an item gone from a reloaded project is left out.
+function passItems() {
+    const byFile = new Map(state.data.items.map((i) => [i.file, i]));
+    return state.sequence.map((f) => byFile.get(f)).filter(Boolean);
+}
+
+const current = () => passItems()[state.index];
+
 function progress() {
     const items = state.data.items.filter((i) => REVIEWABLE.includes(i.status));
     return `${items.filter(decisionOf).length} / ${items.length} reviewed`;
@@ -228,24 +246,33 @@ function toggleOption(key) {
 
 // ---------------------------------------------------------------- screen: targets
 
-async function showTargets() {
-    stopFlash();
-    state.screen = "targets";
-    setCrumbs();
+async function loadTargets() {
     say("Loading pull requests and captures...");
     try {
         const [prs, status] = await Promise.all([api("/api/prs"), api("/api/finish-status")]);
         state.targets = prs.targets;
         state.job = status.job;
         say("");
+        if (running()) {
+            // A reload during a Finish, on any screen: follow the running one, never offer a second.
+            watchFinish();
+        }
+        return true;
     } catch (err) {
         say(err.message, true);
+        return false;
+    }
+}
+
+async function showTargets(notice = "") {
+    stopFlash();
+    state.screen = "targets";
+    setCrumbs();
+    if (!(await loadTargets())) {
         return;
     }
-    if (running()) {
-        // A reload during a Finish: show the running one, never offer a second.
-        watchFinish();
-    }
+    remember();
+    say(notice);
     if (state.targets.length === 0) {
         render(finishOutcome(), el("p", {}, "No open pull request has a CI run, and no master run was given."));
         return;
@@ -393,6 +420,7 @@ async function openProject(target, project) {
     state.filter = "undecided";
     state.text = "";
     state.lastFile = null;
+    state.sequence = [];
     say("Loading...");
     try {
         await reload();
@@ -429,8 +457,11 @@ const thumbs = new IntersectionObserver((entries) => {
     }
 });
 
+// Opens item `index` of the grid, and freezes what the grid shows as the pass Next and Previous
+// walk through.
 function openItem(index) {
     say("");
+    state.sequence = visibleItems().map((i) => i.file);
     state.index = index;
     state.box = 0;
     showStory();
@@ -459,6 +490,7 @@ function tile(item, number) {
             img,
             el("span", { class: "name" }, el("span", { class: "number" }, `${number}`), " ", item.mode ?? ""),
             el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
+            item.from ? el("span", { class: "moved-from", title: movedFrom(item) }, movedFrom(item)) : null,
             item.reReview ? el("span", { class: "badge warn", title: RE_REVIEW }, "re-review") : null,
         ),
         decisionLine(item),
@@ -697,7 +729,7 @@ function showGrid() {
                 `Needs a decision (${state.data.items.filter((i) => REVIEWABLE.includes(i.status) && !decisionOf(i)).length})`,
             ),
             filterButton("all", `All (${state.data.items.filter((i) => REVIEWABLE.includes(i.status)).length})`),
-            ["changed", "new", "unstable", "removed", "failed"]
+            ["changed", "moved", "new", "unstable", "removed", "failed"]
                 .filter((s) => counts[s])
                 .map((s) => filterButton(s, `${s} (${counts[s]})`)),
             counts[UNSEEDED] ? filterButton(UNSEEDED, `${NO_BASELINE} (${counts[UNSEEDED]})`) : null,
@@ -760,6 +792,7 @@ function showGrid() {
     );
     // An armed bulk Undo lasts until the next redraw: this render showed it, the next one does not.
     state.armed = null;
+    remember();
     // Back from a story: show where it is in the grid.
     const current = app.querySelector(".current");
     current?.scrollIntoView({ block: "center" });
@@ -811,7 +844,7 @@ function singleImageNote(item) {
 function showStory() {
     stopFlash();
     state.screen = "story";
-    const items = visibleItems();
+    const items = passItems();
     if (items.length === 0) {
         showGrid();
         return;
@@ -940,6 +973,7 @@ function showStory() {
                 itemName(item),
                 " ",
                 el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
+                item.from ? el("span", { class: "badge moved" }, movedFrom(item)) : null,
                 d
                     ? el("span", { class: `badge ${d.decision}` }, `${d.decision}${d.reason ? `: ${d.reason}` : ""}`)
                     : null,
@@ -1043,6 +1077,7 @@ function showStory() {
         ),
     );
     renderStage(item, view, keep);
+    remember();
 }
 
 // The changed pixels of an item, padded top-left to the larger size, grown by GROW pixels, and the
@@ -1197,9 +1232,10 @@ async function renderStage(item, view, keep) {
     try {
         const diff = item.baseline && item.capture ? await diffOf(item) : null;
         const marked = view === "highlight" && diff !== null;
+        const baseName = item.from ? `Baseline of ${item.from}` : "Baseline";
         const left = item.baseline
             ? pane(
-                  marked ? "Baseline, changed pixels in red" : "Baseline",
+                  marked ? `${baseName}, changed pixels in red` : baseName,
                   await imgOf("baseline"),
                   ...(marked ? [overlay(diff)] : []),
               )
@@ -1327,8 +1363,7 @@ function showBox(stage, boxes, jump) {
 }
 
 async function nextBox() {
-    const items = visibleItems();
-    const item = items[state.index];
+    const item = current();
     if (!item?.baseline || !item?.capture) {
         return;
     }
@@ -1405,7 +1440,7 @@ async function acceptAll(component) {
 
 function move(step) {
     say("");
-    const count = visibleItems().length;
+    const count = passItems().length;
     state.index = (state.index + step + count) % count;
     state.box = 0;
     showStory();
@@ -1416,7 +1451,7 @@ async function decide(decision) {
         say("A local preview is only looked at: nothing is decided on it.", true);
         return;
     }
-    const items = visibleItems();
+    const items = passItems();
     const item = items[state.index];
     const before = decisionOf(item);
     if (decision === null && !before) {
@@ -1464,16 +1499,10 @@ async function decide(decision) {
     }
     state.pending = "reject";
     say(`${itemName(item)}: ${decision ?? "undone, undecided again"}`);
-    // With the "undecided" filter the decided item drops out, so the same index is the next one.
-    if (decision !== null && state.filter !== "undecided") {
+    // The pass is frozen, so a decided item stays in it: a decision moves on to the next one, and
+    // Previous comes back to it. Undo stays on the item.
+    if (decision !== null) {
         state.index = Math.min(state.index + 1, items.length - 1);
-    }
-    // Undo under the "undecided" filter brings the item back; stay on it.
-    if (decision === null && state.filter === "undecided") {
-        state.index = Math.max(
-            0,
-            visibleItems().findIndex((i) => i.file === item.file),
-        );
     }
     state.box = 0;
     showStory();
@@ -1544,6 +1573,8 @@ async function finishTarget(target) {
     await watchFinish();
 }
 
+const finishing = () =>
+    `Finishing ${state.job.pr === null ? "the master seed" : `#${state.job.pr}`}: ${state.job.step}...`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let watching = false;
 
@@ -1555,8 +1586,7 @@ async function watchFinish() {
     watching = true;
     try {
         while (running()) {
-            const label = state.job.pr === null ? "the master seed" : `#${state.job.pr}`;
-            say(`Finishing ${label}: ${state.job.step}...`);
+            say(finishing());
             await sleep(1000);
             try {
                 state.job = (await api("/api/finish-status")).job;
@@ -1609,6 +1639,118 @@ function finishOutcome() {
     );
 }
 
+// ---------------------------------------------------------------- the address
+
+// Every screen is in the address, after the session token, so a copied link opens it again:
+// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit&box=on&blink=off
+// Only the fragment holds it: a browser never sends a fragment to a server or in a Referer.
+function hashFor() {
+    const p = new URLSearchParams({ token });
+    if (state.screen !== "targets") {
+        p.set("target", state.target.id);
+        p.set("project", state.project);
+        p.set("filter", state.filter);
+        if (state.text) {
+            p.set("q", state.text);
+        }
+    }
+    if (state.screen === "story") {
+        p.set("item", current().file);
+        p.set("view", state.held ?? state.view);
+        p.set("zoom", String(state.zoom));
+        p.set("box", state.showBox ? "on" : "off");
+        p.set("blink", state.blink ? "on" : "off");
+    }
+    return `#${p}`;
+}
+
+// Writes the screen into the address: a new history entry when the screen changes (so Back
+// returns to the one before), in place when only the item, view, zoom or filter does.
+function remember() {
+    const hash = hashFor();
+    if (hash === location.hash) {
+        return;
+    }
+    const was = new URLSearchParams(location.hash.slice(1));
+    const screen = was.has("item") ? "story" : was.has("target") ? "grid" : "targets";
+    const moved =
+        screen !== state.screen ||
+        (screen !== "targets" &&
+            (was.get("target") !== String(state.target.id) || was.get("project") !== state.project));
+    const push = !routing && moved;
+    history[push ? "pushState" : "replaceState"](null, "", hash);
+}
+
+// Shows the screen the address names; what no longer exists (a closed pull request, a story gone
+// from a new CI run) lands on the nearest screen that does, with a line saying so.
+async function route() {
+    const p = new URLSearchParams(location.hash.slice(1));
+    routing = true;
+    try {
+        const id = p.get("target");
+        if (!id) {
+            await showTargets();
+            return;
+        }
+        if (!(await loadTargets())) {
+            return;
+        }
+        const target = state.targets.find((t) => String(t.id) === id);
+        const project = p.get("project");
+        if (!target || !target.projects.some((x) => x.project === project)) {
+            const what = target ? `${project} is not a project of ${id}` : `${id} is no longer listed`;
+            await showTargets(`${what}: showing every target.`);
+            return;
+        }
+        if (state.data === null || state.target?.id !== target.id || state.project !== project) {
+            state.sequence = [];
+            state.target = target;
+            state.project = project;
+            try {
+                await reload();
+            } catch (err) {
+                say(err.message, true);
+                return;
+            }
+        }
+        state.target = target;
+        state.filter = FILTERS.includes(p.get("filter")) ? p.get("filter") : "undecided";
+        state.text = p.get("q") ?? "";
+        const file = p.get("item");
+        if (!file) {
+            showGrid();
+            return;
+        }
+        const item = state.data.items.find((i) => i.file === file);
+        if (!item) {
+            showGrid();
+            say(`${file} is not in this CI run any more: showing the grid.`);
+            return;
+        }
+        // Back into the pass it came from keeps that pass; otherwise the grid's items, with this one.
+        if (!state.sequence.includes(file)) {
+            const shown = visibleItems();
+            state.sequence = (shown.includes(item) ? shown : ordered([...shown, item])).map((i) => i.file);
+        }
+        state.index = state.sequence.indexOf(file);
+        state.view = VIEWS.includes(p.get("view")) ? p.get("view") : "side";
+        const zoom = p.get("zoom") === "fit" ? "fit" : Number(p.get("zoom"));
+        state.zoom = ZOOMS.includes(zoom) ? zoom : "fit";
+        // A link's box and blink apply to this page; the browser's remembered choice is unchanged.
+        if (["on", "off"].includes(p.get("box"))) {
+            state.showBox = p.get("box") === "on";
+        }
+        if (["on", "off"].includes(p.get("blink"))) {
+            state.blink = p.get("blink") === "on";
+        }
+        state.box = 0;
+        say("");
+        showStory();
+    } finally {
+        routing = false;
+    }
+}
+
 // ---------------------------------------------------------------- keys and start
 
 // F, H and S switch to that view, or back to side by side when it is already shown.
@@ -1650,7 +1792,7 @@ document.addEventListener("keydown", (e) => {
     if (key === " ") {
         // Held: flash until released, then back to the view it came from.
         e.preventDefault();
-        const item = visibleItems()[state.index];
+        const item = current();
         if (!e.repeat && state.held === null && item?.baseline && item?.capture) {
             state.held = state.view;
             state.view = "flash";
@@ -1696,10 +1838,20 @@ document.addEventListener("keyup", (e) => {
         }
     }
 });
-document.getElementById("home").addEventListener("click", showTargets);
+document.getElementById("home").addEventListener("click", () => showTargets());
+document.getElementById("copy-link").addEventListener("click", async () => {
+    try {
+        await navigator.clipboard.writeText(location.href);
+        say("Link copied. It carries your session token: it opens this screen on any device.");
+    } catch {
+        // No clipboard (a page served over plain http to another device): the browser's own box.
+        prompt("Copy this link:", location.href);
+    }
+});
+window.addEventListener("popstate", () => route());
 
 if (token === "") {
     render(el("p", { class: "error" }, "No session token: open the URL that visual-review serve printed."));
 } else {
-    showTargets();
+    route();
 }

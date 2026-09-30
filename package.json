@@ -1,11 +1,28 @@
 {
     "name": "@graphty/visual-review",
-    "version": "0.0.0",
-    "private": true,
-    "description": "Visual review of Storybook stories: capture in CI, compare with baselines in git, accept in a local page",
+    "version": "0.1.0",
+    "description": "Self-hosted visual review of Storybook stories: capture in GitHub Actions, keep the baselines in git (Git LFS), accept or reject each change in a local page, and gate pull requests",
+    "author": "Adam Powers <apowers@ato.ms>",
     "type": "module",
     "bin": {
         "visual-review": "./trusted/cli.mjs"
+    },
+    "exports": {
+        "./package.json": "./package.json"
+    },
+    "files": [
+        "trusted/",
+        "capture/",
+        "templates/",
+        "README.md",
+        "LICENSE"
+    ],
+    "publishConfig": {
+        "access": "public",
+        "provenance": true
+    },
+    "engines": {
+        "node": ">=20.0.0"
     },
     "scripts": {
         "test": "vitest",
@@ -15,15 +32,40 @@
         "lint:knip": "cd .. && ./tools/run-knip.sh --workspace visual-review",
         "typecheck": "tsc -p tsconfig.json"
     },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/graphty-org/graphty-monorepo.git",
+        "directory": "visual-review"
+    },
+    "keywords": [
+        "storybook",
+        "visual-regression",
+        "visual-testing",
+        "screenshot",
+        "snapshot",
+        "playwright",
+        "github-actions",
+        "git-lfs",
+        "chromatic-alternative",
+        "review"
+    ],
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/graphty-org/graphty-monorepo/issues"
+    },
+    "homepage": "https://graphty.app/docs/visual-review/",
+    "dependencies": {
+        "pngjs": "7.0.0"
+    },
+    "peerDependencies": {
+        "playwright": ">=1.49.0"
+    },
     "devDependencies": {
         "@types/node": "^20.19.9",
         "@vitest/coverage-v8": "catalog:",
         "eslint": "^9.29.0",
+        "playwright": "1.57.0",
         "typescript": "^5.9.3",
         "vitest": "catalog:"
-    },
-    "dependencies": {
-        "playwright": "1.57.0",
-        "pngjs": "7.0.0"
     }
 }

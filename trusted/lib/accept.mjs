@@ -1,13 +1,15 @@
 /**
- * Finish: turns the owner's decisions on one pull request (or on master, for the seed) into one
- * commit, one push and one comment (on master, one issue).
+ * Finish: turns the owner's decisions on one pull request (or on the default branch, for the
+ * seed, which the page and this module call "master") into one commit, one push and one comment
+ * (on master, one issue).
  *
- * Accepts and exclusions are written as files under `visual-baselines/` in a throwaway worktree
+ * Accepts and exclusions are written as files under the baselines directory (the config's
+ * `baselines`) in a throwaway worktree
  * at the captured head, never in the main checkout, together with one review record, and pushed
  * to the pull request's branch. Rejects become one pull request comment. Every accepted PNG is
  * the artifact's file only when its bytes hash to the capture results.json names.
  *
- * Baseline PNGs are stored in Git LFS (the root .gitattributes). The commit must hold LFS pointers,
+ * Baseline PNGs are stored in Git LFS (the repository's .gitattributes). The commit must hold LFS pointers,
  * never raw PNGs, and the LFS objects must reach GitHub before the commit does; with hooks
  * switched off nothing else uploads them, so this module checks git-lfs is set up, checks every
  * committed PNG is a pointer, and runs `git lfs push` before `git push`.
@@ -24,7 +26,7 @@ import { isLfsPointer } from "./compare.mjs";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** The statuses an item can be accepted or rejected in; unstable and failed are only excluded. */
-const DECIDABLE = new Set(["changed", "new", "removed"]);
+const DECIDABLE = new Set(["changed", "moved", "new", "removed"]);
 const EXCLUDABLE = new Set([...DECIDABLE, "unstable", "failed"]);
 
 /**
@@ -39,11 +41,10 @@ export class AcceptError extends Error {
 /**
  * Runs git with every hook switched off.
  *
- * The shared hooks (`core.hooksPath=.husky/_`) run secretlint on pre-commit, commitlint on
- * commit-msg, Commitizen on prepare-commit-msg and the whole gate on pre-push; the accept worktree
- * has no node_modules for them, and some want a terminal. This commit holds only PNG and JSON
- * files the tool wrote under `visual-baselines/`, and its message is generated to pass commitlint
- * (a test checks it). `--no-verify` alone is not enough, because git runs prepare-commit-msg even
+ * A repository's hooks (husky's, say: secretlint, commitlint, Commitizen, a pre-push gate) would
+ * run in an accept worktree that has no node_modules for them, and some want a terminal. This
+ * commit holds only PNG and JSON files the tool wrote under the baselines directory, and its
+ * message is a conventional commit (`commitPrefix` in the config; a test checks it). `--no-verify` alone is not enough, because git runs prepare-commit-msg even
  * with it, so the hooks path points nowhere. Signing is left as the repository configures it, so
  * the commit carries the owner's identity and signature. GIT_LFS_SKIP_SMUDGE keeps the worktree's
  * checkout from downloading every baseline image: untouched baselines stay pointer files there.
@@ -68,11 +69,11 @@ const gitOk = (cwd, args) =>
         () => false,
     );
 
-/** How to set up git-lfs; the owner's guide is visual-review/README.md, "Setup". */
+/** How to set up git-lfs; the README of @graphty/visual-review, "Requirements", has more. */
 const LFS_SETUP =
     "on Ubuntu 22.04 run `sudo apt-get install git-lfs`, or put the git-lfs binary from " +
     "https://github.com/git-lfs/git-lfs/releases in ~/bin; then run `git lfs install` " +
-    '(visual-review/README.md, "Setup")';
+    '(the @graphty/visual-review README, "Requirements")';
 
 /**
  * Why an accept would commit raw PNGs instead of Git LFS pointers, if it would: git-lfs is
@@ -94,12 +95,12 @@ export async function lfsProblem(repo) {
 /**
  * The generated commit message.
  * @param {{ pr: number | null, counts: { accept: number, exclude: number, remove: number },
- *     runId: number, runAttempt: number, record: string }} input what the commit holds
+ *     runId: number, runAttempt: number, record: string, prefix: string }} input what the commit
+ *     holds, and the conventional-commit type and scope it starts with (`commitPrefix`)
  * @returns {string} a conventional commit message
  */
-export function commitMessage({ pr, counts, runId, runAttempt, record }) {
-    const subject =
-        pr === null ? "test(workspace): seed visual baselines" : `test(workspace): accept visual baselines for #${pr}`;
+export function commitMessage({ pr, counts, runId, runAttempt, record, prefix }) {
+    const subject = pr === null ? `${prefix}: seed visual baselines` : `${prefix}: accept visual baselines for #${pr}`;
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     return [
         subject,
@@ -186,6 +187,7 @@ function check(projects, decisions) {
  * @param {number} [input.undecided] how many reviewable items are left undecided, for the status
  * @param {Date} [input.now] the review time
  * @param {(step: string) => void} [input.progress] told each step as it starts, for the page
+ * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, status: string | null, statusError: string | null }>}
  *     what was pushed and posted (`issue`: master's rejects; `status`: the commit status's
@@ -200,6 +202,7 @@ export async function finish({
     undecided = 0,
     now = new Date(),
     progress = () => {},
+    config,
 }) {
     progress("checking");
     const { accepts, rejects } = check(projects, decisions);
@@ -214,13 +217,14 @@ export async function finish({
     let pullRequest = null;
     let issue = null;
     if (accepts.length > 0) {
-        ({ commit, branch } = await commitAccepts({ repo, target, accepts, first, now, progress }));
+        ({ commit, branch } = await commitAccepts({ repo, target, accepts, first, now, progress, config }));
         if (isMaster) {
             progress("opening the pull request");
             pullRequest = await createPullRequest(gh, {
-                title: "test(workspace): seed visual baselines",
+                title: `${config.commitPrefix}: seed visual baselines`,
                 head: branch,
-                body: seedBody(first, accepts, rejects),
+                base: config.defaultBranch,
+                body: seedBody(first, accepts, rejects, config.defaultBranch),
             });
         }
     }
@@ -229,12 +233,12 @@ export async function finish({
             // Master has no pull request to comment on: its rejects are stories that do not look
             // right yet, so they become one issue an agent can pick up.
             progress(isMaster ? "opening the issue for the rejects" : "posting the rejects");
-            const body = rejectComment(target.pr, first, rejects);
+            const body = rejectComment(target.pr, first, rejects, config.defaultBranch);
             if (isMaster) {
                 issue = await createIssue(gh, {
-                    title: `Visual review: ${rejects.length} ${rejects.length === 1 ? "story" : "stories"} rejected on master`,
+                    title: `Visual review: ${rejects.length} ${rejects.length === 1 ? "story" : "stories"} rejected on ${config.defaultBranch}`,
                     body,
-                    labels: ["bug", "priority:medium", "effort:low"],
+                    labels: config.issueLabels,
                 });
             } else {
                 await commentOnPullRequest(gh, target.pr, body);
@@ -278,9 +282,12 @@ export async function finish({
  * @param {object} input.first the results.json of the first decided project
  * @param {Date} input.now the review time
  * @param {(step: string) => void} input.progress as in finish
+ * @param {object} input.config as in finish
  * @returns {Promise<{ commit: string, branch: string }>} the pushed commit and branch
  */
-async function commitAccepts({ repo, target, accepts, first, now, progress }) {
+async function commitAccepts({ repo, target, accepts, first, now, progress, config }) {
+    const { baselines, defaultBranch } = config;
+    const tracking = `refs/remotes/origin/${defaultBranch}`;
     const isMaster = target.pr === null;
     const lfs = await lfsProblem(repo);
     if (lfs) {
@@ -312,7 +319,7 @@ async function commitAccepts({ repo, target, accepts, first, now, progress }) {
         }
     }
 
-    await git(repo, ["fetch", "-q", "origin", "+refs/heads/master:refs/remotes/origin/master"]);
+    await git(repo, ["fetch", "-q", "origin", `+refs/heads/${defaultBranch}:${tracking}`]);
     if (isMaster) {
         if ((await git(repo, ["ls-remote", "--heads", "origin", branch])) !== "") {
             throw new AcceptError(`${branch} already exists on origin: merge or delete it first`);
@@ -324,21 +331,21 @@ async function commitAccepts({ repo, target, accepts, first, now, progress }) {
         }
     }
     for (const project of new Set(accepts.map((a) => a.project))) {
-        if (await behindMaster(repo, base, project)) {
-            throw new AcceptError(`merge master into the branch first: master has newer ${project} baselines`);
+        if (await behindMaster(repo, base, project, config)) {
+            throw new AcceptError(
+                `merge ${defaultBranch} into the branch first: ${defaultBranch} has newer ${project} baselines`,
+            );
         }
     }
 
-    const tree = join(repo, ".worktrees", `visual-accept-${isMaster ? "master" : target.pr}`);
+    const tree = join(repo, config.workDir, "worktrees", `accept-${isMaster ? "master" : target.pr}`);
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, base]);
     try {
         // A seed may be built on a commit older than the rule that stores baselines in Git LFS.
-        // Carry master's .gitattributes into it, so the PNGs become pointers and the seed merges
-        // into master with the same rule.
-        const rules = isMaster
-            ? await git(repo, ["show", "refs/remotes/origin/master:.gitattributes"]).catch(() => "")
-            : "";
+        // Carry the default branch's .gitattributes into it, so the PNGs become pointers and the
+        // seed merges back with the same rule.
+        const rules = isMaster ? await git(repo, ["show", `${tracking}:.gitattributes`]).catch(() => "") : "";
         if (rules !== "") {
             await put(join(tree, ".gitattributes"), `${rules}\n`);
             await git(tree, ["add", "--", ".gitattributes"]);
@@ -347,10 +354,10 @@ async function commitAccepts({ repo, target, accepts, first, now, progress }) {
         const counts = { accept: 0, exclude: 0, remove: 0 };
         progress(`writing ${writes.length} ${writes.length === 1 ? "file" : "files"}`);
         for (const w of writes) {
-            items.push(await write(tree, w, counts));
+            items.push(...(await write(tree, w, counts, baselines)));
         }
         const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
-        const record = `visual-baselines/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
+        const record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
         const body = {
             version: 1,
             unproven: true,
@@ -368,13 +375,14 @@ async function commitAccepts({ repo, target, accepts, first, now, progress }) {
         };
         await put(join(tree, record), `${JSON.stringify(body, null, 2)}\n`);
         progress("committing");
-        await git(tree, ["add", "-A", "--", "visual-baselines"]);
+        await git(tree, ["add", "-A", "--", baselines]);
         const message = commitMessage({
             pr: target.pr,
             counts,
             runId: first.runId,
             runAttempt: first.runAttempt,
             record,
+            prefix: config.commitPrefix,
         });
         await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
         for (const { path, to } of items) {
@@ -408,20 +416,21 @@ async function commitAccepts({ repo, target, accepts, first, now, progress }) {
 }
 
 /**
- * Whether master holds a commit touching the project's baselines that `head` lacks.
- * @param {string} repo the repository, with origin/master fetched
+ * Whether the default branch holds a commit touching the project's baselines that `head` lacks.
+ * @param {string} repo the repository, with the default branch fetched
  * @param {string} head the captured head
  * @param {string} project the project id
- * @returns {Promise<boolean>} true when the branch must merge master before an accept
+ * @param {{ defaultBranch: string, baselines: string }} config the settings
+ * @returns {Promise<boolean>} true when the branch must merge the default branch before an accept
  */
-export async function behindMaster(repo, head, project) {
+export async function behindMaster(repo, head, project, { defaultBranch, baselines }) {
     const newest = await git(repo, [
         "log",
         "-1",
         "--format=%H",
-        "refs/remotes/origin/master",
+        `refs/remotes/origin/${defaultBranch}`,
         "--",
-        `visual-baselines/${project}/`,
+        `${baselines}/${project}/`,
     ]);
     return newest !== "" && !(await gitOk(repo, ["merge-base", "--is-ancestor", newest, head]));
 }
@@ -431,11 +440,13 @@ export async function behindMaster(repo, head, project) {
  * @param {string} tree the worktree
  * @param {object} w the decision, its results item, and for an accept the verified bytes
  * @param {{ accept: number, exclude: number, remove: number }} counts tallied here
- * @returns {Promise<{ path: string, from: string | null, to: string | null, reason: string | null }>}
- *     the record item
+ * @param {string} baselines the baselines directory
+ * @returns {Promise<{ path: string, from: string | null, to: string | null, reason: string | null,
+ *     movedFrom?: string, movedTo?: string }[]>} its record items: two for a renamed story, whose
+ *     baseline moves to its new name
  */
-async function write(tree, w, counts) {
-    const dir = `visual-baselines/${w.project}`;
+async function write(tree, w, counts, baselines) {
+    const dir = `${baselines}/${w.project}`;
     if (w.decision === "exclude") {
         const path = `${dir}/${w.item.id}.json`;
         const old = await readFile(join(tree, path)).catch(() => null);
@@ -443,17 +454,27 @@ async function write(tree, w, counts) {
         const bytes = `${JSON.stringify(settings, null, 2)}\n`;
         await put(join(tree, path), bytes);
         counts.exclude++;
-        return { path, from: old && sha256(old), to: sha256(bytes), reason: `exclude: ${w.reason}` };
+        return [{ path, from: old && sha256(old), to: sha256(bytes), reason: `exclude: ${w.reason}` }];
     }
     const path = `${dir}/${w.item.file}`;
     if (w.item.status === "removed") {
         await rm(join(tree, path), { force: true });
         counts.remove++;
-        return { path, from: w.item.baseline, to: null, reason: w.reason };
+        return [{ path, from: w.item.baseline, to: null, reason: w.reason }];
     }
     await put(join(tree, path), w.bytes);
     counts.accept++;
-    return { path, from: w.item.baseline, to: w.item.capture, reason: w.reason };
+    if (!w.item.from) {
+        return [{ path, from: w.item.baseline, to: w.item.capture, reason: w.reason }];
+    }
+    // A rename: the old id's baseline (of this mode) goes, the new one takes its place. For a
+    // moved item the bytes are the same, so git sees a rename and the LFS pointer is unchanged.
+    const oldPath = `${dir}/${w.item.mode === null ? w.item.from : `${w.item.from}.${w.item.mode}`}.png`;
+    await rm(join(tree, oldPath), { force: true });
+    return [
+        { path: oldPath, from: w.item.baseline, to: null, reason: w.reason, movedTo: path },
+        { path, from: null, to: w.item.capture, reason: w.reason, movedFrom: oldPath },
+    ];
 }
 
 // Two modes of one story excluded together write one settings file: keep one record item.
@@ -480,9 +501,10 @@ const oneLine = (s) => s.replace(/\s+/g, " ").slice(0, 2000);
  * @param {number | null} pr the pull request, or null for master
  * @param {object} results the capture's results.json
  * @param {object[]} rejects the rejects with their items
+ * @param {string} branch the default branch
  * @returns {string} Markdown with a machine-readable block at the end
  */
-function rejectComment(pr, results, rejects) {
+function rejectComment(pr, results, rejects, branch) {
     const items = rejects.map((r) => ({
         project: r.project,
         file: r.item.file,
@@ -492,7 +514,7 @@ function rejectComment(pr, results, rejects) {
     const head = results.headSha ?? results.commit;
     const block = { version: 1, pr, runId: results.runId, runAttempt: results.runAttempt, head, items };
     return [
-        `**Visual review: ${rejects.length} rejected** (CI run ${results.runId}, ${pr === null ? "master at" : "head"} ${head.slice(0, 10)}).`,
+        `**Visual review: ${rejects.length} rejected** (CI run ${results.runId}, ${pr === null ? `${branch} at` : "head"} ${head.slice(0, 10)}).`,
         "The reasons below are the reviewer's notes, quoted as data.",
         "",
         ...items.map((i) => `- \`${i.project}/${i.file}\`: ${JSON.stringify(i.reason)}`),
@@ -502,9 +524,9 @@ function rejectComment(pr, results, rejects) {
     ].join("\n");
 }
 
-function seedBody(results, accepts, rejects) {
+function seedBody(results, accepts, rejects, branch) {
     const lines = [
-        `Seeds visual baselines from master's CI run ${results.runId} at ${results.commit}.`,
+        `Seeds visual baselines from ${branch}'s CI run ${results.runId} at ${results.commit}.`,
         `${accepts.length} decisions accepted in the review page.`,
     ];
     if (rejects.length > 0) {

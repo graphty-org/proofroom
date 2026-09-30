@@ -8,9 +8,11 @@
 
 /**
  * Every status an item can have. `unseeded` ("no baseline yet") is a story with no baseline whose
- * capture matches master's newest capture of it, so the pull request did not change it.
+ * capture matches master's newest capture of it, so the pull request did not change it. `moved`
+ * is a story that looks exactly as the baseline of the id it was renamed from (`from`, named in
+ * the project's renames.json); a renamed story that looks different is `changed` with `from`.
  */
-const STATUSES = ["unchanged", "changed", "new", "unseeded", "removed", "unstable", "failed", "excluded"];
+const STATUSES = ["unchanged", "moved", "changed", "new", "unseeded", "removed", "unstable", "failed", "excluded"];
 
 /** The most items one file may hold (compact-mantine has about 830 today). */
 export const MAX_ITEMS = 5000;
@@ -26,6 +28,7 @@ const NAME = /^[a-z0-9][a-z0-9-]*$/;
 const HASHES = {
     unchanged: { baseline: true, capture: true },
     changed: { baseline: true, capture: true },
+    moved: { baseline: true, capture: true },
     new: { baseline: false, capture: true },
     unseeded: { baseline: false, capture: true },
     removed: { baseline: true, capture: false },
@@ -113,6 +116,14 @@ export function validateResults(r) {
         }
 
         check(STATUSES.includes(item.status), `${at}.status must be one of ${STATUSES.join(", ")}`);
+        // The story id a renamed story's baseline was read under (absent when it was not renamed).
+        check(
+            item.from === undefined ||
+                item.from === null ||
+                (typeof item.from === "string" && item.from.length <= 200 && NAME.test(item.from)),
+            `${at}.from must be a Storybook story id or null`,
+        );
+        check(item.status !== "moved" || typeof item.from === "string", `${at}.from is required for a moved item`);
         check(typeof item.flaky === "boolean", `${at}.flaky must be a boolean`);
         for (const key of ["baseline", "capture"]) {
             const v = item[key];
