@@ -10,8 +10,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { validateResults } from "./results.mjs";
 
@@ -114,9 +114,48 @@ export async function visualJobs(gh, run, attempt, projects) {
     );
 }
 
+// Downloads in flight, by target directory: concurrent refreshes of one run await the same one.
+const downloading = new Map();
+
+/**
+ * Downloads one artifact into `dir`, unless it is already there. It is extracted into a sibling
+ * temporary directory and renamed into place only once its results.json is there, so `dir` either
+ * does not exist or holds a whole artifact; a failed or interrupted download leaves nothing behind.
+ * An artifact without results.json is discarded, and its readers report the capture as failed.
+ * @param {Function} gh the gh runner
+ * @param {number} runId the run
+ * @param {string} name the artifact
+ * @param {string} dir where it goes
+ * @returns {Promise<void>} settles when `dir` is complete, or the artifact had no results.json
+ */
+function download(gh, runId, name, dir) {
+    if (existsSync(join(dir, "results.json"))) {
+        return Promise.resolve();
+    }
+    if (!downloading.has(dir)) {
+        const done = (async () => {
+            // A directory without results.json is left over from before downloads were atomic.
+            rmSync(dir, { recursive: true, force: true });
+            mkdirSync(dirname(dir), { recursive: true });
+            const part = mkdtempSync(`${dir}.part-`);
+            try {
+                await gh(["run", "download", String(runId), "-n", name, "-D", part]);
+                if (existsSync(join(part, "results.json"))) {
+                    renameSync(part, dir);
+                }
+            } finally {
+                rmSync(part, { recursive: true, force: true });
+            }
+        })().finally(() => downloading.delete(dir));
+        downloading.set(dir, done);
+    }
+    return downloading.get(dir);
+}
+
 /**
  * Downloads each project's capture artifact from the highest attempt that uploaded one, into
- * `<tmp>/<run>-<attempt>/<project>/`. An artifact already downloaded is not fetched again.
+ * `<tmp>/<run>-<attempt>/<project>/`. An artifact already downloaded is not fetched again, and
+ * concurrent calls for the same one share a single download.
  * @param {Function} gh the gh runner
  * @param {{ id: number }} run the run
  * @param {string[]} projects project ids
@@ -139,9 +178,7 @@ export async function downloadCaptures(gh, run, projects, tmp) {
             continue;
         }
         const dir = join(tmp, `${run.id}-${newest.attempt}`, project);
-        if (!existsSync(join(dir, "results.json"))) {
-            await gh(["run", "download", String(run.id), "-n", newest.name, "-D", dir]);
-        }
+        await download(gh, run.id, newest.name, dir);
         out[project] = { dir, attempt: newest.attempt };
     }
     return out;
