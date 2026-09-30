@@ -82,11 +82,11 @@ export function gatedProjects(config, seeded, headConfig) {
 
 /**
  * What blocks the pull request.
- * @param {{ config: { defaultBranch: string, projects: Record<string, {
- *     seedFromDefaultBranch: boolean }> }, headConfig?: { projects: Record<string, object> },
- *     seeded: Set<string>, captures: Record<string, { attempt: number, results: object | null }> }}
- *     input the base branch's config, the pull request's config, the projects with baselines on the
- *     base branch, and the newest capture of each project
+ * @param {{ config: { defaultBranch: string, projects: Record<string, { seedFromDefaultBranch: boolean }> },
+ *     headConfig: { projects: Record<string, object> } | undefined, seeded: Set<string>,
+ *     captures: Record<string, { attempt: number, results: object | null }> }} input the base
+ *     branch's config, the pull request's config (if any), the projects with baselines on the base
+ *     branch, and the newest capture of each project
  * @returns {string[]} one line per blocked project; empty when the gate passes
  */
 export function gateProblems({ config, headConfig, seeded, captures }) {

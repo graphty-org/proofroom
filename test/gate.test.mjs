@@ -175,7 +175,12 @@ describe("gateProblems fails closed", () => {
 
     it("gates every project of either config, and a seeded one dropped from both", () => {
         const head = normalizeConfig({ projects: { graphty: { storybook: "d" } } });
-        expect(gatedProjects(config, new Set(), head)).toEqual(["compact-mantine", "graphty-element", "layout", "graphty"]);
+        expect(gatedProjects(config, new Set(), head)).toEqual([
+            "compact-mantine",
+            "graphty-element",
+            "layout",
+            "graphty",
+        ]);
         // A seeded project dropped from the config is still gated.
         expect(gatedProjects(normalizeConfig({ projects: { layout: { storybook: "c" } } }), seeded)).toEqual([
             "compact-mantine",
