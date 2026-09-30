@@ -1,3 +1,17 @@
+## 0.1.1 (2026-09-30)
+
+### 🚀 Features
+
+- **visual-review:** pair renamed stories with their old baselines ([92f6a1be](https://github.com/graphty-org/graphty-monorepo/commit/92f6a1be))
+
+### 🩹 Fixes
+
+- **visual-review:** find master's newest capture through its commits ([a45d676f](https://github.com/graphty-org/graphty-monorepo/commit/a45d676f))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.1.0 (2026-09-30)
 
 ### 🚀 Features
