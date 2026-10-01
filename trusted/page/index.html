@@ -9,7 +9,7 @@
     </head>
     <body>
         <header id="top">
-            <button type="button" id="home" class="link">Visual review</button>
+            <h1><button type="button" id="home" class="link">Visual review</button></h1>
             <label class="picker"
                 ><span>Target</span
                 ><select id="pick-target"></select
@@ -22,8 +22,12 @@
             <button type="button" id="keys-button" aria-keyshortcuts="?">Keys <kbd aria-hidden="true">?</kbd></button>
             <button type="button" id="copy-link">Copy link</button>
         </header>
-        <div id="bar"></div>
-        <div id="status-row"><span id="status" role="status"></span><span id="alert" role="alert"></span></div>
+        <div id="bar" role="region" aria-label="Tools"></div>
+        <div id="status-row" role="region" aria-label="Messages">
+            <span id="status" role="status"></span><span id="elapsed" aria-hidden="true"></span
+            ><span id="alert" role="alert"></span
+            ><button type="button" id="status-more" class="link" hidden>More</button>
+        </div>
         <main id="app" tabindex="-1"><p>Loading...</p></main>
     </body>
 </html>

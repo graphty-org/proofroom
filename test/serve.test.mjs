@@ -17,6 +17,8 @@ import {
     makeRepo,
     onePr,
     pushCommit,
+    registerOnMaster,
+    testPasskey,
     withMoved,
 } from "./helpers.mjs";
 
@@ -803,6 +805,94 @@ describe("serve: what the page waits on", () => {
             status: 409,
             body: { error: "Decisions changed since this sheet opened: check the summary again." },
         });
+    });
+
+    it("fills each project in as its own download lands, counting them", async () => {
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        const s = await start({
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    if (args[0] === "run" && args[4] === "visual-graphty-element-1") {
+                        await held;
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        await s.api("GET", "/api/prs");
+        const half = await until(async () => {
+            const t = (await s.api("GET", "/api/prs?cached=1")).body.targets[0];
+            return t.download?.done === 1 && t;
+        });
+        expect(half.downloading).toBe(true);
+        expect(half.download).toMatchObject({ done: 1, total: 2, startedAt: expect.any(Number) });
+        expect(half.projects.map((p) => [p.project, p.downloading, p.reviewable])).toEqual([
+            ["compact-mantine", false, 6],
+            ["graphty-element", true, 0],
+        ]);
+        // The landed project opens while the other is still downloading.
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).status).toBe(200);
+        release();
+        await until(async () => !(await s.api("GET", "/api/prs?cached=1")).body.targets[0].downloading);
+    });
+
+    it("needs the owner's approval of the previewed record for a Finish that commits", async () => {
+        const key = testPasskey();
+        const r = makeRepo();
+        registerOnMaster(r, [key.entry]);
+        const s = await start({ ...r, gh: onePr() });
+        const listed = (await s.api("GET", "/api/prs")).body.targets[0];
+        expect(listed.passkey).toEqual({
+            required: true,
+            keys: [{ id: key.entry.id, label: "test key", rpId: "localhost" }],
+            problem: null,
+            waiting: null,
+        });
+        await decide(s, "badge--default.light.png", "accept", "intended");
+        await decide(s, "slider--sizes.png", "reject", "too tall");
+        const { finish: f } = (await s.api("GET", "/api/target/123?finish=1")).body;
+        expect(f.signing.hash).toMatch(/^[A-Za-z0-9_-]{43}$/);
+        const post = (approval) => s.api("POST", "/api/finish", { id: "123", digest: f.digest, approval });
+        expect((await post(undefined)).body.error).toMatch(/needs your passkey/);
+        expect((await post(key.sign(f.signing.hash, { uv: false }))).body.error).toMatch(
+            /approval was refused: .*without user verification/,
+        );
+        expect((await post(testPasskey().sign(f.signing.hash))).body.error).toMatch(/not registered/);
+        const begun = await post(key.sign(f.signing.hash));
+        expect(begun.status).toBe(202);
+        const job = await endedJob(s);
+        expect(job.error).toBeNull();
+        const name = git(s.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/").split("\n")[0];
+        const record = JSON.parse(git(s.remote, "show", `feature:${name}`));
+        expect(record).toMatchObject({ version: 2, approval: { credentialId: key.entry.id } });
+        expect(record.rejects).toHaveLength(1);
+    });
+
+    it("runs a Finish with only rejects without a passkey", async () => {
+        const r = makeRepo();
+        registerOnMaster(r, [testPasskey().entry]);
+        const s = await start({ ...r, gh: onePr() });
+        await s.api("GET", "/api/prs");
+        await decide(s, "slider--sizes.png", "reject", "too tall");
+        const { finish: f } = (await s.api("GET", "/api/target/123?finish=1")).body;
+        expect(f.signing).toBeNull();
+        expect((await s.api("POST", "/api/finish", { id: "123", digest: f.digest })).status).toBe(202);
+        expect((await endedJob(s)).error).toBeNull();
+    });
+
+    it("opens the pull request that registers a passkey, and says it is waiting", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        expect((await s.api("GET", "/api/target/123")).body.passkey).toMatchObject({ required: false, waiting: null });
+        const { entry } = testPasskey("dev.example.com");
+        expect((await s.api("POST", "/api/passkey", { entry: { id: "x" } })).status).toBe(409);
+        const opened = await s.api("POST", "/api/passkey", { entry });
+        expect(opened).toMatchObject({ status: 200, body: { pullRequest: "https://gh/pull/650" } });
+        const branch = git(s.remote, "branch", "--list", "visual/passkey-*").replace("*", "").trim();
+        expect(JSON.parse(git(s.remote, "show", `${branch}:visual-review.passkeys.json`))).toEqual([entry]);
+        expect((await s.api("GET", "/api/target/123")).body.passkey.waiting).toBe(650);
     });
 });
 

@@ -218,11 +218,13 @@ function download(gh, runId, name, dir) {
  * @param {string[]} projects project ids
  * @param {string} tmp the download root
  * @param {string[]} [others] receives the projects the run captured that are not in `projects`
+ * @param {(project: string, got: object | null) => void} [landed] told as each project's download
+ *     ends, with what the result holds for it, so a page can fill rows in one by one
  * @returns {Promise<Record<string, { dir: string | null, attempt: number, error?: string,
  *     expired?: true } | null>>} null for a project with no artifact; `error` (and no `dir`) when
  *     its download failed; `expired` (and no `dir`) when GitHub deleted it and it is not on disk
  */
-export async function downloadCaptures(gh, run, projects, tmp, others = []) {
+export async function downloadCaptures(gh, run, projects, tmp, others = [], landed = () => {}) {
     const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
     for (const a of artifacts) {
         const p = /^visual-(.+)-\d+$/.exec(a.name)?.[1];
@@ -240,21 +242,22 @@ export async function downloadCaptures(gh, run, projects, tmp, others = []) {
             .sort((a, b) => b.attempt - a.attempt)[0];
         if (!newest) {
             out[project] = null;
-            continue;
+        } else {
+            const dir = join(tmp, `${run.id}-${newest.attempt}`, project);
+            if (newest.expired) {
+                out[project] = existsSync(join(dir, "results.json"))
+                    ? { dir, attempt: newest.attempt }
+                    : { dir: null, attempt: newest.attempt, expired: true };
+            } else {
+                try {
+                    await download(gh, run.id, newest.name, dir);
+                    out[project] = { dir, attempt: newest.attempt };
+                } catch (err) {
+                    out[project] = { dir: null, attempt: newest.attempt, error: err.message };
+                }
+            }
         }
-        const dir = join(tmp, `${run.id}-${newest.attempt}`, project);
-        if (newest.expired) {
-            out[project] = existsSync(join(dir, "results.json"))
-                ? { dir, attempt: newest.attempt }
-                : { dir: null, attempt: newest.attempt, expired: true };
-            continue;
-        }
-        try {
-            await download(gh, run.id, newest.name, dir);
-            out[project] = { dir, attempt: newest.attempt };
-        } catch (err) {
-            out[project] = { dir: null, attempt: newest.attempt, error: err.message };
-        }
+        landed(project, out[project]);
     }
     return out;
 }

@@ -18,7 +18,7 @@ your login.
 - [The GitHub Actions workflows](#the-github-actions-workflows)
 - [Your first review: seeding baselines](#your-first-review-seeding-baselines)
 - [Opening the review page](#opening-the-review-page), [the screens](#the-screens), [keys](#keys),
-  [decisions](#what-each-decision-does), [Finish](#finish)
+  [decisions](#what-each-decision-does), [Finish](#finish), [the passkey](#the-passkey-owner-only-approval)
 - [Seeding one story at a time](#seeding-one-story-at-a-time)
 - [Iterating on a story before a pull request exists](#iterating-on-a-story-before-a-pull-request-exists)
 - [Story parameters](#story-parameters)
@@ -255,7 +255,8 @@ project, each with its count of undecided items), **Finish** with the number of 
 would publish ("Finish #201 (12)"; at 0 it is unavailable and says "Nothing new to finish"),
 **Keys** and **Copy link**. Under the header is the screen's own bar, then the status row: the one
 place the page writes messages, one line tall on a wide screen and two on an iPad, so a message
-never moves anything. Errors are shown there in red. **Keys** (or `?`) lists every key, the last
+never moves anything; a longer one shows **More**, which opens the row to its full length.
+Errors are shown there in red. **Keys** (or `?`) lists every key, the last
 20 messages in full, and a switch that turns the single-letter keys off.
 
 No wait is silent: anything that takes longer than a third of a second says what it is waiting
@@ -267,15 +268,18 @@ for, with a count or the time spent, and a failed one offers Retry.
    **Refresh**; it is checked again with GitHub when you press Refresh or when it is over a minute
    old, and the line above the cards shows the check's step ("Checking pull requests: Finding CI
    runs: 3 of 5, 12 s"). The first load after the server starts shows its step under a placeholder
-   card. Each card says which commit and CI run it captured, any warning the server has (with
-   Retry), how many decisions are not yet finished, and a table per project: **Project**,
+   card. Above the cards, one line says whether Finish is approved with your passkey, with
+   **Register passkey** ([the passkey](#the-passkey-owner-only-approval)). Each card says which
+   commit and CI run it captured, any warning the server has (with Retry), how many decisions
+   are not yet finished, and a table per project: **Project**,
    **Results** (count per status), **Decided** ("12 of 40") and **Review**. Projects with nothing
    to review are one line ("3 projects unchanged: ..."). Badges:
     - **merge master first**: the default branch has newer baselines for this project than the
       pull request. Merge the default branch into the pull request's branch (by merge, never
       rebase) and wait for CI.
-    - **Downloading...**: the captures are still downloading from GitHub. The row fills in by
-      itself when they land; the page checks every 3 seconds.
+    - **Downloading...**: the captures are still downloading from GitHub. The card says how many
+      projects have landed and for how long ("Downloading (2 of 5 projects), 14 s"), and each
+      row fills in by itself as its own download lands; the page checks every 3 seconds.
     - **capture failed**, **CI still running**, **waiting for CI**: there is nothing to review
       yet. **Job log** opens the capturing job; **Retry** checks GitHub again.
     - **artifact expired**: GitHub deleted the capture after 30 days and it was never
@@ -308,8 +312,8 @@ for, with a count or the time spent, and a failed one offers Retry.
    match, or the item with that number. Coming back from a story, its tile is outlined and
    scrolled into view.
 3. **Story.** One item, on one screen that never scrolls (only the panes do). From the top:
-    - **The decision bar**: **Grid** (Escape), **< K** (Previous), "12 of 230 -- 18 left in this
-      pass", **J >** (Next), **Accept** (A), **Reject** (R), **Exclude** (E), **Undo** (U) and the
+    - **The decision bar**: **Grid** (Escape), **Prev** (K), "12 of 230 -- 18 left in this
+      pass", **Next** (J), **Accept** (A), **Reject** (R), **Exclude** (E), **Undo** (U) and the
       **Note** box. On an iPad held upright it is two rows: the decisions, then the movement and
       the note. Every button is always there, in the same place on every item, at every zoom; one
       that does not apply is shown unavailable, the line under it says why, and pressing it says
@@ -324,7 +328,8 @@ for, with a count or the time spent, and a failed one offers Retry.
       **Blink** (L) while Highlight is on and **Spotlight flash** (F) while Spotlight is on;
       **Outline** (B); **Next change** (N) with "1 of 3"; the zoom, **Fit**, **1x**, **2x**,
       **4x**, **8x** (Z cycles it); and **Details** (the threshold, the anti-aliasing setting, the
-      capture's scale, and any console output).
+      capture's scale, and any console output). Below 1050 pixels wide (an iPad held upright) it
+      wraps to a second row, so the zoom is always on screen.
     - **The two panes**, the baseline on the left and the new capture on the right, filling the
       rest of the window. Both are drawn at once with "Loading baseline..." and "Loading new
       image..." in them, so nothing moves when the images arrive; Accept shows a spinner until
@@ -363,12 +368,14 @@ for, with a count or the time spent, and a failed one offers Retry.
 
     **The end of a pass.** Next on the last item, or deciding it, does not wrap to the first: it
     shows what is next in place of the panes. "End of graphty-element: 164 of 170 decided, 6
-    undecided." **Next project: layout (42 undecided)** (focused, so Enter takes it) opens that
-    project's first undecided item; **Review the 6 undecided** walks the ones left here; **Back
-    to the grid**; **Finish #201 (12)**. A project still downloading is listed under them. When
-    every project of the target is decided it says so, offers **Finish** first, and **Next: #202
-    (340 undecided)**, the next pull request with something to review. K comes back to the last
-    item.
+    undecided." **Review the 6 undecided** walks the ones left here; it comes first (focused, so
+    Enter takes it) whenever this project still has undecided items, so an Enter after skimming
+    with J never leaves them behind. **Next project: layout (42 undecided)** opens that project's
+    first undecided item, and comes first when nothing is left here; then **Back to the grid** and
+    **Finish #201 (12)**. A project still downloading is listed under them ("layout: downloading
+    (2 of 5 projects done)"). When every project of the target is decided it says so, offers
+    **Finish** first, and **Next: #202 (340 undecided)**, the next pull request with something to
+    review. K comes back to the last item.
 
 Statuses: `changed` (differs from its baseline), `moved` (a renamed story that looks exactly as
 its old id's baseline; see [renames](#reorganizing-stories-renames)), `new` (no baseline, and on a pull request the
@@ -408,6 +415,7 @@ single-letter keys off.
 | Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                |
 | Shift+A          | Grid: accept every undecided item of this project without opening it (asks first)             |
 | /                | Grid: Find story                                                                              |
+| Enter (end card) | Take the first offer: the undecided items left here, or the next project                      |
 | ?                | Show or hide the key list                                                                     |
 | Escape           | Story: back to the grid; in the note box, first leaves the box (its text stays with the item) |
 
@@ -419,7 +427,8 @@ the page says "Saving the last decision..." and waits for it before moving on; a
 leaves the item undecided, with its note.
 
 Text typed in the note box belongs to the item on screen: it stays with that item while you move
-away and back, and it is cleared when that item's decision is saved. After any decision, focus
+away and back, and it is cleared when that item's decision is saved. Undo puts a decision's note
+back in the box, so undoing to fix a typo does not lose it. After any decision, focus
 leaves the note box, so the next A accepts instead of typing an "a".
 
 ## What each decision does
@@ -460,8 +469,8 @@ Finish applies every decision on one target, across all its projects, at once:
   fails when anything was rejected, is pending while items are left undecided or a project did
   not load, and succeeds otherwise; its description counts the accepts, rejects, exclusions and
   undecided items. It is information for the pull request page, not a required check: the merge
-  gate is the "Visual gate" job. If posting it fails, the page says so, and Finish stays
-  available so it can post the status again; what was pushed and posted stays.
+  gate is the "Visual gate" job. If posting it fails, the page says so; what was pushed and
+  posted stays, and the next Finish on that pull request posts a new status.
 - **The default branch (seeding):** a branch `visual/seed-<date>` with the same commit and a pull
   request from it, whose description lists the accept notes, and one issue holding every reject
   (labeled with the config's `issueLabels`) with the same machine-readable block, for a person
@@ -473,13 +482,18 @@ what will be posted ("Post 3 rejects and 2 accept notes as a comment on #201."),
 will set ("Then set the commit status 'Visual review' to failure (3 rejected)."), how many were
 accepted without being opened, what is left undecided or was not loaded, every note it will
 publish, and the key that will sign. If any decision changes after the sheet opened (in another
-tab, say), Finish refuses, and the sheet comes back with the new summary.
+tab, say), Finish refuses, and the sheet comes back with the new summary. Once a passkey is
+registered, a Finish that commits anything reads **Sign and finish #201**, and pressing it asks
+for your passkey (Face ID, Touch ID or a security key) before anything runs; cancelling it says
+"Passkey cancelled: nothing was changed." and the sheet comes back. A Finish with only rejects
+commits nothing and needs no passkey.
 
 Finish runs on the server, not in the page. A seed of several hundred images takes minutes,
 most of it uploading the images to Git LFS, which is longer than a browser (Safari on an iPad in
 particular) keeps one request open. So pressing Finish only starts it, and the targets screen
 then lists its steps, each marked done, in progress or waiting, with the count of images
-uploaded and the time spent: checking, writing the files, committing, uploading images to LFS,
+uploaded and the time spent: confirming with your passkey, checking, writing the files,
+committing, uploading images to LFS,
 pushing, opening the pull request, posting the comment (or opening the issue), and posting the
 status. When it ends, the page shows what was pushed and posted, with links, or the error, and
 offers **Next: #202 (340 undecided)** and **Back to #201**. Closing or reloading the page does
@@ -498,8 +512,43 @@ message:
 - **merge master first**: see the badge above.
 - **failed to write commit object** or a signing error: unlock or plug in the signing key, then
   Finish again.
-- **the accepts were pushed ..., but the reject comment failed**: the accepts are done and cleared;
-  press Finish again to post the rejects.
+- **the accepts were pushed ..., but the comment with the rejects failed**: the accepts are done
+  and cleared; press Finish again to post the rejects. Accept notes that were in that comment are
+  not posted again: the message names each one, so you can post them by hand.
+- **The comment with the accept notes was not posted**: the accepts are done; the message names
+  the notes, which are not kept.
+
+## The passkey: owner-only approval
+
+Anything running as you on the development machine, an AI coding agent included, has your GitHub
+login and signing key, so neither a signed commit nor the review page's API proves that you
+accepted an image. A passkey does: Finish asks for it, your device asks for Face ID, Touch ID or
+the security key's PIN, and the signature it makes goes into the review record. The gate counts a
+record's accepts only when that signature verifies against a passkey listed in
+`visual-review.passkeys.json` at the repository root, as the file is on the default branch.
+
+- **Register it once.** On the targets screen, press **Register passkey**. Your device makes a
+  passkey for the review page's host (in iCloud Keychain it is then on your iPhone, iPad and Mac),
+  and the page shows its entry. **Open the pull request** pushes a branch adding the entry to
+  `visual-review.passkeys.json` and opens a pull request; merge it. (Or **Copy** the entry and add
+  it yourself: the file is a JSON array of entries.) Until it merges, the line reads "Passkey
+  waiting for #650 to merge."
+- **From then on**, every Finish that commits accepts or exclusions needs the passkey, and the
+  gate fails a pull request whose baseline changes are named only by records without a valid
+  approval ("not counted: no passkey approval"). The approval signs the SHA-256 of the record
+  (keys sorted, no whitespace, without the `approval` field), so it counts for exactly the files
+  and hashes that record names. The gate checks the passkey is registered on the base branch, the
+  signature, that the page was served over https from the passkey's host, and that the device
+  verified you (user verification), using Node's standard library only.
+- **Before you register one**, nothing is checked: the gate warns "accepts are not approved with a
+  passkey" and counts every record, as it did before passkeys.
+- **A pull request accepted before the passkey was merged** holds a record without an approval,
+  which no longer counts. Revert its accept commit on the branch (records the pull request itself
+  added may go) and Finish again with the passkey.
+- **To add a device or replace a lost key**, register again from that device and merge the new
+  pull request. Removing an entry is a pull request too.
+- The review page must be served over https from a host name, not an IP address (WebAuthn's
+  rule), and from the same host every time: a passkey belongs to the host it was made on.
 
 ## Seeding: one story at a time
 
@@ -663,20 +712,21 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   image's hash from the pointer, so it never downloads an image. Existing records may not be
   edited or deleted. This stops the shortcut of copying captured PNGs, or an exclusion, straight
   into the baselines directory.
-- **It does not prove a person reviewed anything.** A record is a plain JSON file: anyone who can
-  push to the branch can write one that names copied PNGs, and the gate cannot tell it from one
-  Finish wrote. Records are marked `"unproven": true` for that reason. What the gate shows is that
-  the captures match the pull request's baselines and that each baseline change carries a record.
-- **Only the repository owner should approve.** The page runs on a development machine, where
-  anything running as you (an AI coding agent included) has your GitHub login and signing key and
-  could press Accept or call the page's API. Nothing technical prevents that today; tell your
-  agents not to, and keep the review to yourself.
+- **Once a passkey is registered, a record counts only with the owner's approval**
+  ([the passkey](#the-passkey-owner-only-approval)): an agent that writes a record, presses
+  Accept or calls the page's API cannot produce it. It proves your device approved exactly that
+  record; it does not prove you looked at every image, and it does not defend against a review
+  page that was altered to show one set of images and sign another.
+- **Without a registered passkey, it does not prove a person reviewed anything.** A record is a
+  plain JSON file: anyone who can push to the branch can write one that names copied PNGs, and the
+  gate cannot tell it from one Finish wrote. Such records are marked `"unproven": true`.
 - The projects the gate checks are every project in the base branch's config and in the pull
   request's config, seeded or not, plus every project with baselines on the base branch. So
   removing a project from the config does not remove it from the gate.
 - The gate is part of a workflow file, which a pull request can edit, and a pull request can
   loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
-  without a review item. Read changes to those in code review.
+  without a review item. Read changes to those, and to `visual-review.passkeys.json`, in code
+  review.
 
 ## Troubleshooting
 
@@ -719,8 +769,14 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   commit stays as it was made) and wait for CI.
 - **Finish fails with "failed to write commit object"** or another signing error: unlock or plug
   in your signing key, then press Finish again. Your decisions are kept.
-- **"the accepts were pushed ..., but the reject comment failed".** The accepts are done; press
-  Finish again to post the rejects.
+- **"the accepts were pushed ..., but the comment with the rejects failed".** The accepts are
+  done; press Finish again to post the rejects. Accept notes it held are named in the message and
+  not posted again.
+- **"Passkey failed (This is an invalid domain.)"** or similar: the page is served from an IP
+  address or plain http. Serve it over https from a host name.
+- **"your passkey's approval was refused"** or **"not counted: approved by a passkey that is not
+  registered"**: that passkey is not in `visual-review.passkeys.json` on the default branch yet.
+  Merge its pull request first.
 - **Opening the seed issue fails.** Every label in `issueLabels` must exist in the repository.
 - **The pnpm setup step fails in CI.** `pnpm/action-setup` reads the pnpm version from the
   `packageManager` field of your root `package.json`; add one.

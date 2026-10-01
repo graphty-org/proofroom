@@ -17,6 +17,8 @@ const bar = document.getElementById("bar");
 const statusRow = document.getElementById("status-row");
 const statusLine = document.getElementById("status");
 const alertLine = document.getElementById("alert");
+const elapsedLine = document.getElementById("elapsed");
+const statusMore = document.getElementById("status-more");
 const pickTarget = document.getElementById("pick-target");
 const pickProject = document.getElementById("pick-project");
 const finishSlot = document.getElementById("finish-slot");
@@ -108,6 +110,10 @@ const THUMBS_KEPT = 400;
 const diffs = new Map();
 const DIFFS_KEPT = 4;
 let stageRender = 0; // the newest renderStage: an older one finishing late writes nothing
+let lastStageAt = 0; // when the last renderStage began
+let lastStageFile = null; // and for which item
+let lastShown = null; // the last item whose images were shown (never reset by a move)
+const SKIM_MS = 120;
 let stageShown = null; // the file whose images are on the stage: Accept waits for it
 let appearedAt = 0; // when the item on screen appeared, or its images did
 let saving = null; // the decision on its way to the server
@@ -155,11 +161,22 @@ function setBar(node = null) {
 // The status row. Clearing it during a Finish shows the Finish's step instead, so a screen that
 // opens while it runs (a reload, Visual review, a link) never blanks its progress. Errors go to
 // the row's alert, which a screen reader reads at once.
+// The same message again is not rewritten, so a screen reader does not read it again.
 function say(text, isError = false) {
     const shown = text === "" && running() ? finishing() : text;
-    statusRow.classList.remove("busy");
+    elapsedLine.textContent = "";
+    if (!isError && shown !== "" && statusLine.textContent === shown && alertLine.textContent === "") {
+        return;
+    }
+    statusRow.classList.remove("busy", "open");
     statusLine.replaceChildren(isError ? "" : shown);
     alertLine.textContent = isError ? shown : "";
+    // A message longer than the row shows More, which opens the row to its full height.
+    requestAnimationFrame(() => {
+        const cut = [statusLine, alertLine].some((n) => n.scrollHeight > n.clientHeight + 1);
+        statusMore.hidden = !cut;
+        statusMore.textContent = "More";
+    });
     if (shown && messages.at(-1) !== shown) {
         messages.push(shown);
         messages.splice(0, messages.length - 20);
@@ -168,20 +185,28 @@ function say(text, isError = false) {
 
 // A message with a spinner, for a wait under way.
 function sayBusy(text, ...extra) {
+    if (statusRow.classList.contains("busy") && statusLine.textContent === text && extra.length === 0) {
+        return;
+    }
+    statusLine.textContent = "";
     say(text);
     statusRow.classList.add("busy");
     statusLine.prepend(spinner());
     statusLine.append(...extra);
 }
 
-// Shows `label` with the time spent, once a wait has taken SLOW_MS; the returned function ends it.
+// Shows `label` once a wait has taken SLOW_MS, then the time spent beside it (outside the live
+// region, so it is not read out every second); the returned function ends it.
 function waiting(label) {
     const start = performance.now();
     let shown = false;
     let timer = setTimeout(function tick() {
+        if (!shown) {
+            sayBusy(label);
+        }
         shown = true;
         const s = Math.floor((performance.now() - start) / 1000);
-        sayBusy(s >= 1 ? `${label} ${s} s` : label);
+        elapsedLine.textContent = s >= 1 ? `${s} s` : "";
         timer = setTimeout(tick, 1000);
     }, SLOW_MS);
     return () => {
@@ -198,7 +223,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // page from creating additional dialogs"), confirm() returns false without showing anything, and
 // the button pressed seems to do nothing. Resolves true for `yes`, false for Cancel or Escape.
 // `onYes` runs inside the click on `yes` itself, for what a browser allows only there.
-function ask(message, yes, { onYes = () => {}, label = null } = {}) {
+function ask(message, yes, { onYes = () => {}, label = null, unavailable = null } = {}) {
     // Focus on the box, not a button: the Enter that asked (in the note box) must not answer it.
     const text = el("div", { class: "ask-text", id: "ask-text" }, message);
     const dialog = el("dialog", {
@@ -208,6 +233,10 @@ function ask(message, yes, { onYes = () => {}, label = null } = {}) {
         "aria-describedby": "ask-text",
     });
     const answer = (value) => () => {
+        if (value === "yes" && unavailable) {
+            say(unavailable);
+            return;
+        }
         if (value === "yes") {
             onYes();
         }
@@ -219,7 +248,17 @@ function ask(message, yes, { onYes = () => {}, label = null } = {}) {
             "p",
             { class: "actions" },
             el("button", { type: "button", onclick: answer("no") }, "Cancel"),
-            el("button", { type: "button", class: "primary", id: "ask-yes", onclick: answer("yes") }, yes),
+            el(
+                "button",
+                {
+                    type: "button",
+                    class: "primary",
+                    id: "ask-yes",
+                    "aria-disabled": unavailable ? "true" : null,
+                    onclick: answer("yes"),
+                },
+                yes,
+            ),
         ),
     );
     document.body.append(dialog);
@@ -510,11 +549,10 @@ function drawHeader() {
 }
 
 // Finish names its target and how many decisions it would publish. At 0 it is unavailable, and
-// says why, unless the last Finish of this target could not set the commit status.
+// says why beside it.
 function finishControl(t) {
     const count = t.unpublished ?? 0;
-    const statusAgain = state.job?.target === t.id && !running() && Boolean(state.job.result?.statusError);
-    const can = (count > 0 || statusAgain) && !running();
+    const can = count > 0 && !running();
     return [
         el(
             "button",
@@ -522,7 +560,7 @@ function finishControl(t) {
                 type: "button",
                 class: "primary finish",
                 "aria-disabled": String(!can),
-                "aria-describedby": count === 0 && !statusAgain ? `finish-why-${t.id}` : null,
+                "aria-describedby": count === 0 ? `finish-why-${t.id}` : null,
                 onclick: (e) => {
                     if (can) {
                         finishTarget(t.id, e.currentTarget);
@@ -533,12 +571,16 @@ function finishControl(t) {
             },
             `Finish ${labelOf(t)} (${count})`,
         ),
-        count === 0 && !statusAgain
+        count === 0
             ? el("span", { class: "meta finish-why", id: `finish-why-${t.id}` }, "Nothing new to finish")
             : null,
     ].filter(Boolean);
 }
 
+statusMore.addEventListener("click", () => {
+    const open = statusRow.classList.toggle("open");
+    statusMore.textContent = open ? "Less" : "More";
+});
 pickTarget.addEventListener("change", () => openTarget(pickTarget.value, false));
 pickProject.addEventListener("change", () => openProject(state.target.id, pickProject.value));
 
@@ -642,9 +684,11 @@ function drawTargets() {
         return;
     }
     const finishable = targets.find((t) => !t.local);
+    const focused = document.activeElement?.id;
     render(
         finishOutcome(),
         finishable ? signerBlock(finishable) : null,
+        finishable ? passkeyLine(finishable.passkey) : null,
         listLine(),
         targets.length === 0
             ? el("p", {}, "No open pull requests. To seed baselines, start the server with --master-run <run id>.")
@@ -654,6 +698,166 @@ function drawTargets() {
     if (running()) {
         drawFinishPanel();
     }
+    // A redraw (the list refreshing under the Finish result) keeps focus where it was.
+    if (focused && document.getElementById(focused) && focused !== "app") {
+        document.getElementById(focused).focus({ preventScroll: true });
+    }
+}
+
+// ---------------------------------------------------------------- the passkey
+
+const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+const toB64url = (buf) =>
+    btoa(String.fromCharCode(...new Uint8Array(buf)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+const hasKeys = (pk) => (pk?.keys ?? []).length > 0;
+
+// Whether Finish needs the passkey and has one: the targets screen's line, and Register passkey.
+function passkeyLine(pk) {
+    if (!pk) {
+        return null;
+    }
+    const register = el(
+        "button",
+        { type: "button", id: "register-passkey", onclick: registerPasskey },
+        "Register passkey",
+    );
+    if (pk.waiting !== null && !hasKeys(pk)) {
+        return el("p", { class: "meta passkey-line" }, `Passkey waiting for #${pk.waiting} to merge.`);
+    }
+    if (hasKeys(pk)) {
+        const names = pk.keys.map((k) => k.label).join(", ");
+        return el(
+            "p",
+            { class: "meta passkey-line" },
+            `Finish is approved with your passkey (${names}).`,
+            pk.waiting !== null ? ` Another is waiting for #${pk.waiting} to merge.` : " ",
+            pk.waiting !== null ? null : register,
+        );
+    }
+    return el(
+        "p",
+        { class: "warning passkey-line" },
+        pk.required
+            ? "No passkey registered: accepts cannot be finished. "
+            : "No passkey registered: Finish's accepts are not approved by you, and CI does not check who accepted them. ",
+        register,
+    );
+}
+
+// Register passkey: Face ID (or a security key) makes a passkey for this site, straight from the
+// tap, and the page shows its entry with a button that opens the pull request adding it.
+async function registerPasskey(e) {
+    const button = e.currentTarget;
+    let entry;
+    try {
+        const cred = await navigator.credentials.create({
+            publicKey: {
+                rp: { id: location.hostname, name: "Visual review" },
+                user: {
+                    id: crypto.getRandomValues(new Uint8Array(16)),
+                    name: "owner",
+                    displayName: "Visual review owner",
+                },
+                challenge: crypto.getRandomValues(new Uint8Array(32)),
+                pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+                authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
+                attestation: "none",
+                timeout: 120000,
+            },
+        });
+        const spki = cred.response.getPublicKey?.();
+        if (!spki || cred.response.getPublicKeyAlgorithm?.() !== -7) {
+            say("This browser made a passkey this page cannot use (it needs an ES256 key): nothing was changed.", true);
+            return;
+        }
+        const label = cred.authenticatorAttachment === "platform" ? "this device's passkey" : "security key";
+        entry = {
+            id: cred.id,
+            publicKey: toB64url(spki),
+            rpId: location.hostname,
+            label,
+            registeredAt: new Date().toISOString(),
+        };
+    } catch (err) {
+        say(
+            err?.name === "NotAllowedError"
+                ? "Passkey not created: nothing was changed."
+                : `Passkey not created: ${err.message}`,
+            true,
+        );
+        button.focus();
+        return;
+    }
+    const text = JSON.stringify(entry, null, 4);
+    const opened = await ask(
+        [
+            el("h2", { id: "passkey-title" }, `Passkey created (${entry.label}).`),
+            el(
+                "p",
+                {},
+                `It counts once it is in visual-review.passkeys.json on ${branchName()}. Open the pull request that ` +
+                    "adds it, and merge it; or add this entry yourself:",
+            ),
+            el("pre", { class: "console" }, text),
+            el(
+                "p",
+                {},
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        onclick: (ev) =>
+                            navigator.clipboard.writeText(text).then(
+                                () => (ev.target.textContent = "Copied"),
+                                () => (ev.target.textContent = "Could not copy: select the entry above"),
+                            ),
+                    },
+                    "Copy",
+                ),
+            ),
+        ],
+        "Open the pull request",
+        { label: "passkey-title" },
+    );
+    if (!opened) {
+        say("Pull request not opened. The passkey counts only once its entry is merged.");
+        return;
+    }
+    sayBusy("Opening the pull request for the passkey...");
+    try {
+        const { pullRequest } = await api("/api/passkey", { entry });
+        showTargets(`Opened ${pullRequest}: merge it, and Finish asks for this passkey from then on.`, true);
+    } catch (err) {
+        say(`The pull request was not opened: ${err.message}`, true);
+    }
+}
+
+// The passkey's approval of a Finish, called from the sheet's final button inside the tap itself:
+// iPad Safari allows WebAuthn only there, so nothing is awaited before navigator.credentials.get.
+// Resolves to the assertion the server checks, or rejects when it is cancelled or refused.
+function approveFinish(f, t) {
+    if (!f.signing?.hash) {
+        return null;
+    }
+    return navigator.credentials
+        .get({
+            publicKey: {
+                challenge: fromB64url(f.signing.hash),
+                rpId: t.passkey.keys[0]?.rpId ?? location.hostname,
+                allowCredentials: t.passkey.keys.map((k) => ({ type: "public-key", id: fromB64url(k.id) })),
+                userVerification: "required",
+                timeout: 120000,
+            },
+        })
+        .then((cred) => ({
+            credentialId: cred.id,
+            authenticatorData: toB64url(cred.response.authenticatorData),
+            clientDataJSON: toB64url(cred.response.clientDataJSON),
+            signature: toB64url(cred.response.signature),
+        }));
 }
 
 // The key Finish signs with comes from the server's environment, which is an agent's when an
@@ -724,7 +928,7 @@ function targetCard(t) {
                     : null,
             ),
         ),
-        t.downloading ? el("p", { class: "meta" }, spinner(), "Downloading the captures...") : null,
+        t.downloading ? el("p", { class: "meta" }, spinner(), downloadText(t)) : null,
         !t.local && t.unpublished > 0
             ? el("p", { class: "meta" }, `${plural(t.unpublished, "decision")} not yet finished`)
             : null,
@@ -750,7 +954,7 @@ function targetCard(t) {
                       el("th", {}, "Project"),
                       el("th", {}, "Results"),
                       el("th", {}, "Decided"),
-                      el("th", {}, el("span", { class: "meta" }, "")),
+                      el("th", {}, el("span", { class: "sr-only" }, "Action")),
                   ),
                   shown.map((p) => projectRow(t, p)),
               )
@@ -768,6 +972,16 @@ function targetCard(t) {
               ? el("p", { class: "finish-running" }, `Finish is running: ${state.job.step}...`)
               : el("p", { class: "finish-line" }, ...finishControl(t)),
     );
+}
+
+// "Downloading (1 of 3 projects), 12 s": the projects landed so far, and the time since it began.
+function downloadText(t) {
+    const d = t.download;
+    if (!d) {
+        return "Downloading the captures...";
+    }
+    const s = d.startedAt && state.list?.now ? `, ${secondsSince(d.startedAt, state.list.now)} s` : "";
+    return `Downloading (${d.done} of ${d.total} projects)${s}`;
 }
 
 function projectRow(t, p) {
@@ -995,7 +1209,9 @@ function tile(item) {
                 openItem(item.file);
             },
         },
-        img ? el("span", { class: "thumb-wait" }, "Loading...") : el("div", { class: "noimage" }, item.status),
+        img
+            ? el("span", { class: "thumb-wait", "aria-hidden": "true" }, "Loading...")
+            : el("div", { class: "noimage" }, item.status),
         img,
         el("span", { class: "name" }, el("span", { class: "number" }, `${number}`), " ", item.mode ?? ""),
         el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
@@ -1403,6 +1619,9 @@ function explanation(item, d) {
     if (isLocal()) {
         return "Local preview: look only. Only a CI capture of a pushed commit can be decided.";
     }
+    if (state.ended) {
+        return "End of this pass: choose what is next.";
+    }
     if (state.pending === "exclude") {
         return "Exclude stops capturing every mode of this story.";
     }
@@ -1431,6 +1650,9 @@ function explanation(item, d) {
         return "New story: no baseline yet.";
     }
     const parts = [];
+    if (item.from) {
+        parts.push(`Moved from ${item.from}: Accept moves its baseline to this id. `);
+    }
     if (item.changedPixels !== null && item.changedPixels !== undefined) {
         parts.push(`${item.changedPixels} pixels changed`);
         if (item.bbox) {
@@ -1535,7 +1757,7 @@ function decisionBar(item, items, d) {
                 type: "button",
                 id,
                 "aria-disabled": String(!ok),
-                "aria-describedby": ok ? null : "explain",
+                "aria-describedby": ok ? null : state.ended ? "end-heading" : "explain",
                 "aria-keyshortcuts": key,
                 ...extra,
             },
@@ -1555,8 +1777,9 @@ function decisionBar(item, items, d) {
         ),
         el(
             "button",
-            { type: "button", id: "prev", "aria-label": "Previous", "aria-keyshortcuts": "K", onclick: () => move(-1) },
-            "< K",
+            { type: "button", id: "prev", "aria-keyshortcuts": "K", onclick: () => move(-1) },
+            "Prev",
+            kbd("K"),
         ),
         el(
             "span",
@@ -1567,8 +1790,9 @@ function decisionBar(item, items, d) {
         ),
         el(
             "button",
-            { type: "button", id: "next", "aria-label": "Next", "aria-keyshortcuts": "J", onclick: () => move(1) },
-            "J >",
+            { type: "button", id: "next", "aria-keyshortcuts": "J", onclick: () => move(1) },
+            "Next",
+            kbd("J"),
         ),
         button(
             "accept",
@@ -1584,12 +1808,12 @@ function decisionBar(item, items, d) {
         ),
         button("reject", "Reject", "R", can.reject, {
             class: `reject ${state.pending === "reject" ? "waiting" : ""}`,
-            "aria-pressed": String(d?.decision === "reject" || state.pending === "reject"),
+            "aria-pressed": String(d?.decision === "reject"),
             onclick: () => decide("reject"),
         }),
         button("exclude", "Exclude", "E", can.exclude, {
             class: state.pending === "exclude" ? "waiting" : null,
-            "aria-pressed": String(d?.decision === "exclude" || state.pending === "exclude"),
+            "aria-pressed": String(d?.decision === "exclude"),
             onclick: () => decide("exclude"),
         }),
         button("undo", "Undo", "U", can.undo, { onclick: () => decide(null) }),
@@ -1607,7 +1831,7 @@ function decisionBar(item, items, d) {
                     ? ""
                     : state.pending
                       ? `Reason for the ${state.pending}, then Enter`
-                      : "Optional for Accept; required to Reject or Exclude",
+                      : "Needed to reject",
                 value: d ? (d.reason ?? "") : draft,
                 oninput: (e) => drafts.set(draftKey(item), e.target.value),
                 onkeydown: (e) => {
@@ -1846,6 +2070,19 @@ async function renderStage(item, view, keep) {
     if (!keep) {
         stage.replaceChildren(left, right);
     }
+    // Skimming (J held): the item before was left before its images even showed, so this one waits
+    // SKIM_MS before fetching; passed in that time, it fetches nothing, and the item stopped on is
+    // not queued behind every item skipped.
+    const now = performance.now();
+    const skimming = now - lastStageAt < SKIM_MS && lastShown !== lastStageFile;
+    lastStageAt = now;
+    lastStageFile = item.file;
+    if (skimming) {
+        await sleep(SKIM_MS);
+        if (seq !== stageRender) {
+            return;
+        }
+    }
     let diff = null;
     try {
         if (view === "side") {
@@ -1989,6 +2226,7 @@ async function renderStage(item, view, keep) {
 function shown(stage, item) {
     const first = stageShown !== item.file;
     stageShown = item.file;
+    lastShown = item.file;
     const accept = document.getElementById("accept");
     if (accept?.classList.contains("loading")) {
         accept.classList.remove("loading");
@@ -2148,23 +2386,26 @@ async function fillEnd(card, seq) {
               },
               `Finish ${labelOf(t)} (${t.unpublished})`,
           );
+    // Items of this project left undecided (a skim with J) come first, so Enter never leaves them behind.
+    if (here.undecided > 0) {
+        offers.push(offer(`Review the ${here.undecided} undecided`, () => startPass("undecided"), "primary"));
+    }
     if (next) {
         offers.push(
             offer(
                 `Next project: ${next.project} (${next.undecided} undecided)`,
                 () => openProject(t.id, next.project, true),
-                "primary",
+                here.undecided > 0 ? null : "primary",
             ),
         );
     }
-    if (here.undecided > 0) {
-        offers.push(offer(`Review the ${here.undecided} undecided`, () => startPass("undecided")));
-    }
-    if (!next && finish && t.unpublished > 0) {
+    const finishFirst = !next && here.undecided === 0;
+    if (finishFirst && finish && t.unpublished > 0) {
         offers.unshift(finish);
     }
     offers.push(offer("Back to the grid", () => toGrid()));
-    if (next && finish && t.unpublished > 0) {
+    if (!finishFirst && finish && t.unpublished > 0) {
+        finish.classList.remove("primary");
         offers.push(finish);
     }
     const after = !next ? nextTarget(t.id) : null;
@@ -2186,7 +2427,15 @@ async function fillEnd(card, seq) {
                 ? el(
                       "ul",
                       { class: "meta" },
-                      waitingFor.map((p) => el("li", {}, `${p.project}: downloading`)),
+                      waitingFor.map((p) =>
+                          el(
+                              "li",
+                              {},
+                              t.download
+                                  ? `${p.project}: downloading (${t.download.done} of ${t.download.total} projects done)`
+                                  : `${p.project}: downloading`,
+                          ),
+                      ),
                   )
                 : null,
         ].filter(Boolean),
@@ -2337,6 +2586,8 @@ function spotlight(diff, px = diff.b) {
 function toGrid() {
     say("");
     showGrid();
+    // Focus on the tile of the item just left, so Tab goes on from there, not from the top.
+    app.querySelector(".tile.current")?.focus({ preventScroll: true });
 }
 
 // Next and Previous walk the pass. Next on its last item shows the end card (it never wraps);
@@ -2405,6 +2656,10 @@ async function decide(decision) {
         }
     } else {
         // No press reverses a decision: changing one is an explicit Undo first.
+        if (before?.posted) {
+            say("Posted by an earlier Finish: it stays.");
+            return;
+        }
         if (before) {
             say(
                 decision === "accept" && before.decision === "accept" && before.wasBulk && draft !== ""
@@ -2474,6 +2729,10 @@ async function decide(decision) {
     }
     if (decision === null) {
         delete state.data.decisions[item.file];
+        // The note comes back as the item's draft, so an Undo to fix a typo does not lose it.
+        if (before.reason) {
+            drafts.set(draftKey(item), before.reason);
+        }
     } else {
         state.data.decisions[item.file] = { decision, reason };
         drafts.delete(draftKey(item));
@@ -2632,7 +2891,7 @@ function sheet(t, f, notice) {
         f.excludes > 0 ? plural(f.excludes, "exclusion") : null,
     ].filter(Boolean);
     if (kinds.length === 0) {
-        lines.push("Nothing is committed: only rejects.");
+        lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
     } else if (seed) {
         const day = new Date().toISOString().slice(0, 10);
         lines.push(
@@ -2696,16 +2955,35 @@ function sheet(t, f, notice) {
                   `To sign as yourself instead, cancel and start the server from your own shell:\n${t.startCommand}`,
               )
             : null,
+        passkeySentence(t, f),
     ].filter(Boolean);
 }
 
-// The passkey's place in Finish. The owner's passkey (Face ID or a security key) is to approve each
-// Finish through WebAuthn (design.md section 8). iPad Safari allows the WebAuthn call only inside
-// the tap itself, so it belongs in the sheet's final button's click handler, which runs this, with
-// the preview's digest; its assertion then goes to POST /api/finish with the digest. It is not
-// built yet, so Finish sends no approval.
-function approveFinish() {
-    return null;
+// What the passkey does for this Finish; null when it commits nothing, so there is nothing to approve.
+function passkeySentence(t, f) {
+    if (f.accepts + f.excludes === 0) {
+        return null;
+    }
+    if (f.signing?.error) {
+        return el("p", { class: "error" }, `Finish cannot be approved now: ${f.signing.error}`);
+    }
+    if (f.signing) {
+        return el("p", { class: "passkey" }, "Your passkey confirms this Finish (Face ID or a security key).");
+    }
+    if (t.passkey?.required) {
+        return el(
+            "p",
+            { class: "error" },
+            "Accepts need your passkey, and the CI gate refuses them without it. Register a passkey on the " +
+                "targets screen and merge its pull request first.",
+        );
+    }
+    return el(
+        "p",
+        { class: "meta" },
+        "No passkey is registered, so this Finish is not approved by you and CI does not check who accepted. " +
+            "Register one on the targets screen.",
+    );
 }
 
 // Finish publishes every decision of one target. It asks the server what it would do, states it
@@ -2738,27 +3016,56 @@ async function finishTarget(id, button) {
         }
         const f = t.finish;
         const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
+        const commits = f.accepts + f.excludes > 0;
+        // Commits need the passkey once one is registered: without one (or a record to sign) the
+        // final button is unavailable, and the sheet says why.
+        const blocked = commits && t.passkey?.required && !f.signing?.hash;
         let approval = null;
         const go = await ask(
             sheet(t, f, notice),
-            onlyRejects ? `Post ${plural(f.rejects, "reject")} to ${labelOf(t)}` : `Finish ${labelOf(t)}`,
-            { label: "sheet-title", onYes: () => (approval = approveFinish(f)) },
+            onlyRejects
+                ? `Post ${plural(f.rejects, "reject")} to ${labelOf(t)}`
+                : f.signing?.hash
+                  ? `Sign and finish ${labelOf(t)}`
+                  : `Finish ${labelOf(t)}`,
+            {
+                label: "sheet-title",
+                unavailable: blocked ? "Finish needs your passkey first: see the sheet." : null,
+                onYes: () => (approval = approveFinish(f, t)),
+            },
         );
         if (!go) {
             reset();
             say("Finish cancelled: nothing was changed.");
             return;
         }
+        if (approval) {
+            sayBusy("Waiting for your passkey...");
+            try {
+                approval = await approval;
+            } catch (err) {
+                notice =
+                    err?.name === "NotAllowedError" || err?.name === "AbortError"
+                        ? "Passkey cancelled: nothing was changed."
+                        : `Passkey failed (${err?.message ?? err}): nothing was changed.`;
+                say(notice);
+                continue;
+            }
+        }
         // Finish runs on the server and can take minutes; the page only starts it and then asks how
         // it is going, so a dropped connection or a reload loses nothing.
         sayBusy("Starting Finish...");
-        state.plan = { seed: t.pr === null, commits: f.accepts + f.excludes > 0, posts: f.rejects + f.acceptNotes > 0 };
+        state.plan = { seed: t.pr === null, commits, posts: f.rejects + f.acceptNotes > 0, signed: Boolean(approval) };
         try {
             state.job = (await api("/api/finish", { id, digest: f.digest, ...(approval ? { approval } : {}) })).job;
             break;
         } catch (err) {
             if (err.status === 409 && /Decisions changed/.test(err.message)) {
                 notice = err.message;
+                continue;
+            }
+            if (err.status === 400 && /passkey/.test(err.message)) {
+                notice = `${err.message}. Nothing was changed.`;
                 continue;
             }
             // The request may have been lost after the server started it: ask before calling it failed.
@@ -2814,6 +3121,7 @@ async function watchFinish() {
 
 // The steps a Finish goes through, as the server names them when each starts.
 const FINISH_STEPS = [
+    ["passkey", "Confirming with your passkey", /^confirming/],
     ["checking", "Checking", /^(starting|checking)/],
     ["writing", "Writing the files", /^writing/],
     ["committing", "Committing", /^committing/],
@@ -2833,7 +3141,7 @@ function drawFinishPanel() {
     const plan = state.plan;
     const steps = FINISH_STEPS.filter(([key]) => {
         if (!plan) {
-            return true;
+            return key !== "passkey";
         }
         if (["writing", "committing", "lfs", "pushing"].includes(key)) {
             return plan.commits;
@@ -2843,6 +3151,9 @@ function drawFinishPanel() {
         }
         if (key === "comment") {
             return plan.posts;
+        }
+        if (key === "passkey") {
+            return plan.signed;
         }
         return true;
     });
@@ -2974,7 +3285,7 @@ function finishOutcome() {
                 ".",
             ),
         );
-    } else if (out.rejects > 0 || (job.pr !== null && notes > 0)) {
+    } else if (out.rejects > 0 || (job.pr !== null && notes > 0 && !out.commentError)) {
         const posted = [
             out.rejects > 0 ? plural(out.rejects, "reject") : null,
             notes > 0 ? plural(notes, "accept note") : null,
@@ -2984,7 +3295,9 @@ function finishOutcome() {
         parts.push(el("p", {}, `Posted ${posted} as a comment.`));
     }
     if (out.commentError) {
-        parts.push(el("p", { class: "error" }, `The comment with the accept notes failed: ${out.commentError}`));
+        parts.push(
+            el("p", { class: "error" }, `The comment with the accept notes was not posted: ${out.commentError}`),
+        );
     }
     const counts = (out.status ?? "").replace(/^Reviewed: /, "").replace(" left undecided", " undecided");
     parts.push(
@@ -3108,6 +3421,7 @@ async function route() {
             }
             adopt(data, project);
             state.sequence = [];
+            listForPickers();
         }
         state.filter = FILTERS.includes(p.get("filter")) ? p.get("filter") : "undecided";
         state.text = p.get("q") ?? "";
@@ -3161,6 +3475,26 @@ async function route() {
     }
 }
 
+// A link straight into a project has only its own target: the list for the header's Target picker
+// is read from the server's cache (no GitHub call), asking again while its first load runs.
+async function listForPickers() {
+    for (let tries = 0; tries < 60 && !state.list?.targets; tries++) {
+        try {
+            const list = await api("/api/prs?cached=1");
+            if (list.targets) {
+                if (!state.list?.targets) {
+                    state.list = list;
+                }
+                drawHeader();
+                return;
+            }
+        } catch {
+            return;
+        }
+        await sleep(1000);
+    }
+}
+
 // ---------------------------------------------------------------- keys and start
 
 // F, H and S switch to that view, or back to side by side when it is already shown; a view opened
@@ -3200,6 +3534,7 @@ const KEYS = [
     ["/", "Grid: Find story"],
     ["?", "Show or hide this list"],
     ["Esc", "Story: back to the grid; in the note box, first leaves the box (its text stays)"],
+    ["Enter (end card)", "Take the first offer: the undecided items left, or the next project"],
 ];
 
 // The key overlay: every key, the last messages in full, and the single-key shortcuts switch.
@@ -3236,7 +3571,7 @@ function toggleKeys() {
         el("h3", {}, "Recent messages"),
         el(
             "ol",
-            { class: "recent" },
+            { class: "recent", tabindex: "0" },
             messages.length === 0 ? el("li", {}, "None yet.") : [...messages].reverse().map((m) => el("li", {}, m)),
         ),
         el("p", { class: "actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Close")),

@@ -16,6 +16,11 @@
  * step, then its result or error, so a reload finds the running Finish. The job is also written
  * to `<tmp>/state/finish.json`, so a server restarted during a Finish says it was interrupted.
  *
+ * Once the default branch lists passkeys (`visual-review.passkeys.json`), a Finish that commits
+ * needs the owner's approval: the Finish preview builds the record Finish would commit and gives
+ * its hash, the page has the passkey sign it, and POST /api/finish checks the assertion before it
+ * starts (design.md section 8). POST /api/passkey opens the pull request that registers one.
+ *
  * The list of targets is cached: `GET /api/prs?cached=1` answers at once with the cache, its age
  * and the progress of a refresh, and `?refresh=1` starts one in the background, so the page never
  * waits on GitHub to change screens. A target whose captures are still downloading is listed with
@@ -31,7 +36,17 @@ import { fileURLToPath } from "node:url";
 
 import { PNG } from "pngjs";
 
-import { AcceptError, behindMaster, cleanReason, commitStatus, decisionProblem, finish } from "./accept.mjs";
+import {
+    AcceptError,
+    behindMaster,
+    cleanReason,
+    commitStatus,
+    decisionProblem,
+    finish,
+    prepareFinish,
+    registerPasskey,
+} from "./accept.mjs";
+import { approvalProblem, passkeysAt } from "./approval.mjs";
 import { downloadCaptures, exec, getRun, newestCiRun, openPullRequests, visualJobs } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
 import { validateResults } from "./results.mjs";
@@ -58,7 +73,7 @@ const HEADERS = {
 const componentOf = (id) => id.split("--")[0];
 
 const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"]);
-const WRITES = new Set(["decide", "accept-all", "finish"]);
+const WRITES = new Set(["decide", "accept-all", "finish", "passkey"]);
 // How long a page load waits for a run's captures to download before it lists the target as
 // downloading; the download goes on, and a reload picks it up.
 const PATIENCE = 1000;
@@ -298,6 +313,16 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         }
     };
     let signer = null;
+    /** The passkeys on the default branch (null: none registered, approvals not required yet). */
+    let passkeys = null;
+    /** An open pull request that registers a passkey, waiting for the owner to merge it. */
+    let passkeyPr = null;
+    const readPasskeys = () => {
+        passkeys = results ? null : passkeysAt(`refs/remotes/origin/${defaultBranch}`, repo);
+    };
+    readPasskeys();
+    /** The record each target's Finish sheet showed, by target id, for its passkey to sign. */
+    const prepared = new Map();
     const busy = (t) => finishing && job?.target === t.id;
     const BUSY = "a Finish is running on this target: wait for it to end";
 
@@ -399,7 +424,23 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     async function build(info, run) {
         const jobs = await visualJobs(gh, run, run.attempt, names);
         const others = [];
-        const downloads = downloadCaptures(gh, run, names, tmp, others);
+        // Each project's capture as its download lands; `partial` is the target listed while the
+        // rest are still downloading, whose rows fill in one by one.
+        const landed = new Map();
+        let partial = null;
+        const fill = async (name) => {
+            const p = await project(name, landed.get(name)?.dir, problemOf(name, landed.get(name), run, jobs));
+            p.logUrl = jobs[name]?.url ?? run.url;
+            partial.projects[names.indexOf(name)] = p;
+            partial.downloaded = landed.size;
+            await decorate(partial);
+        };
+        const downloads = downloadCaptures(gh, run, names, tmp, others, (name, got) => {
+            landed.set(name, got);
+            if (partial) {
+                fill(name).catch((err) => console.error(`visual-review: ${name} of ${info.id}: ${err.message}`));
+            }
+        });
         downloads.catch(() => {}); // A download still running after PATIENCE fails on a later refresh.
         const downloaded = await Promise.race([
             downloads,
@@ -421,29 +462,22 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     }
                 })
                 .catch((err) => console.error(`visual-review: rebuilding ${info.id} failed: ${err.message}`));
-            const t = blank(info, null, run);
-            t.downloading = true;
-            for (const p of t.projects) {
+            partial = blank(info, null, run);
+            partial.downloading = true;
+            partial.downloadStartedAt = Date.now() - PATIENCE;
+            partial.downloaded = 0;
+            for (const p of partial.projects) {
                 p.downloading = true;
             }
-            return t;
+            for (const name of landed.keys()) {
+                await fill(name);
+            }
+            return partial;
         }
         const list = [];
         for (const name of names) {
-            const job = jobs[name];
-            const got = downloaded[name];
-            let problem = null;
-            if (got?.error) {
-                problem = retryLater("download failed", got.error);
-            } else if (got?.expired) {
-                problem = "artifact expired: re-run the visual job";
-            } else if (!got && run.status !== "completed" && job?.conclusion !== "failure") {
-                problem = "CI still running; reload when it finishes";
-            } else if (!got || job?.conclusion === "failure") {
-                problem = job ? "capture failed" : "no capture";
-            }
-            const p = await project(name, got?.dir, problem);
-            p.logUrl = job?.url ?? run.url;
+            const p = await project(name, downloaded[name]?.dir, problemOf(name, downloaded[name], run, jobs));
+            p.logUrl = jobs[name]?.url ?? run.url;
             list.push(p);
         }
         const warnings = others.map(
@@ -451,6 +485,24 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 `the run captured ${p}, which this server's ${CONFIG_FILE} does not list: serve from a checkout that has it`,
         );
         return { ...info, runId: run.id, runAttempt: run.attempt, runUrl: run.url, projects: list, warnings };
+    }
+
+    // Why a project's capture is missing, from its download and its CI job; null when it is there.
+    function problemOf(name, got, run, jobs) {
+        const job = jobs[name];
+        if (got?.error) {
+            return retryLater("download failed", got.error);
+        }
+        if (got?.expired) {
+            return "artifact expired: re-run the visual job";
+        }
+        if (!got && run.status !== "completed" && job?.conclusion !== "failure") {
+            return "CI still running; reload when it finishes";
+        }
+        if (!got || job?.conclusion === "failure") {
+            return job ? "capture failed" : "no capture";
+        }
+        return null;
     }
 
     const retryLater = (what, message) => `${what}: ${message.split("\n")[0]}; reload the page to retry`;
@@ -595,6 +647,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             );
             step("fetching branches");
             await fetched;
+            readPasskeys();
+            passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? null;
             for (const t of built) next.set(t.id, t);
             if (masterRun) {
                 step(`reading ${defaultBranch}'s CI run`);
@@ -685,12 +739,22 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             headSha: t.headSha,
             mergeMasterFirst: t.mergeMasterFirst,
             downloading: t.downloading === true,
+            // While downloading: how many projects have landed, and since when (server time).
+            download: t.downloading
+                ? { done: t.downloaded ?? 0, total: names.length, startedAt: t.downloadStartedAt ?? null }
+                : null,
             defaultBranch,
             // Decisions the next Finish would publish (a reject an earlier Finish posted is not).
             unpublished: [...decided.values()].filter((d) => !d.posted).length,
             warnings,
             signer,
             startCommand,
+            passkey: {
+                required: passkeys !== null,
+                keys: (passkeys?.keys ?? []).map(({ id, label, rpId }) => ({ id, label, rpId })),
+                problem: passkeys?.problem ?? null,
+                waiting: passkeyPr,
+            },
             projects: t.projects.map((p) => {
                 const counts = {};
                 for (const item of p.results?.items ?? []) {
@@ -771,9 +835,27 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     };
     const CHANGED_SINCE = "Decisions changed since this sheet opened: check the summary again.";
 
-    // What Finish's sheet states before it runs: what it commits and posts, and the status it sets.
-    const finishPreview = (t) => {
+    // What Finish's sheet states before it runs: what it commits and posts, the status it sets, and
+    // when a passkey must approve it, the hash of the record it would commit.
+    const finishPreview = async (t) => {
         const { list, digest } = finishList(t);
+        let signing = null;
+        if (passkeys?.keys.length > 0 && list.some((x) => x.decision !== "reject") && !t.local) {
+            try {
+                const ready = await prepareFinish({
+                    repo,
+                    target: { pr: t.pr, branch: t.branch },
+                    projects: capturesOf(t),
+                    decisions: list,
+                    now: new Date(),
+                    config,
+                });
+                prepared.set(t.id, { digest, ...ready });
+                signing = { hash: ready.hash };
+            } catch (err) {
+                signing = { error: err.message };
+            }
+        }
         const s = summary(t);
         const count = (d) => list.filter((x) => x.decision === d).length;
         const unloaded = t.projects.filter((p) => !p.results).map((p) => p.project);
@@ -800,8 +882,14 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 unloaded,
             }),
             digest,
+            signing,
         };
     };
+
+    const capturesOf = (t) =>
+        Object.fromEntries(
+            t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
+        );
 
     /** Thumbnails being made, by the file they are kept in. */
     const making = new Map();
@@ -878,7 +966,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (!t) {
                 return gone(id);
             }
-            return [200, query?.get("finish") === "1" ? { ...summary(t), finish: finishPreview(t) } : summary(t)];
+            return [200, query?.get("finish") === "1" ? { ...summary(t), finish: await finishPreview(t) } : summary(t)];
         },
         "GET /api/pr": async ([id, name]) => {
             const { t, p } = await projectOf(id, name);
@@ -1059,9 +1147,29 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (body.digest !== undefined && body.digest !== digest) {
                 return [409, { error: CHANGED_SINCE }];
             }
-            const captures = Object.fromEntries(
-                t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
-            );
+            // A Finish that commits needs the owner's passkey once one is registered: the approval
+            // must sign the record the sheet showed, for exactly these decisions.
+            let signed = {};
+            if (passkeys !== null && list.some((x) => x.decision !== "reject")) {
+                const ready = prepared.get(t.id);
+                if (!body.approval || !ready) {
+                    return [400, { error: "this Finish needs your passkey: open the Finish sheet again" }];
+                }
+                if (ready.digest !== digest) {
+                    return [409, { error: CHANGED_SINCE }];
+                }
+                const problem = approvalProblem({ ...ready.record, approval: body.approval }, passkeys.keys);
+                if (problem) {
+                    return [400, { error: `your passkey's approval was refused: ${problem}` }];
+                }
+                signed = {
+                    now: new Date(ready.record.reviewedAt),
+                    approval: body.approval,
+                    passkeys: passkeys.keys,
+                };
+                prepared.delete(t.id);
+            }
+            const captures = capturesOf(t);
             const undecided = summary(t).projects.reduce((n, p) => n + p.undecided, 0);
             finishing = true;
             job = {
@@ -1088,8 +1196,26 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 undecided,
                 unloaded: t.projects.filter((p) => !p.results).map((p) => p.project),
                 config,
+                ...signed,
             });
             return [202, { job }];
+        },
+        // Register passkey: a pull request adding the page's new passkey to the default branch's
+        // passkeys file. It counts once the owner merges it.
+        "POST /api/passkey": async (_, body) => {
+            if (results) {
+                return [403, { error: "a local preview registers no passkey" }];
+            }
+            try {
+                const pullRequest = await registerPasskey({ repo, gh, config, entry: body.entry ?? {} });
+                passkeyPr = Number(pullRequest.split("/").pop()) || passkeyPr;
+                return [200, { pullRequest }];
+            } catch (err) {
+                if (err instanceof AcceptError) {
+                    return [409, { error: err.message }];
+                }
+                throw err;
+            }
         },
         "GET /api/finish-status": async () => [200, { job }],
     };

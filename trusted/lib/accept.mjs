@@ -15,11 +15,13 @@
  * committed PNG is a pointer, and runs `git lfs push` before `git push`.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+import { approvalProblem, b64url, PASSKEYS_FILE, parsePasskeys, recordHash } from "./approval.mjs";
 import { commentOnPullRequest, createIssue, createPullRequest, exec, postStatus } from "./github.mjs";
 import { isLfsPointer } from "./compare.mjs";
 
@@ -179,6 +181,122 @@ function check(projects, decisions) {
 }
 
 /**
+ * The commit the accepts are written on (the captured head, or for master the captured commit),
+ * after checking every accepted project comes from one CI run.
+ * @param {object[]} accepts the checked accepts and exclusions
+ * @param {object} first the results.json of the first decided project
+ * @param {boolean} isMaster whether the target is the default branch
+ * @returns {string} the commit
+ */
+function baseOf(accepts, first, isMaster) {
+    const base = isMaster ? first.commit : first.headSha;
+    for (const { capture } of accepts) {
+        const r = capture.results;
+        if ((isMaster ? r.commit : r.headSha) !== base || r.runId !== first.runId) {
+            throw new AcceptError("the projects of one Finish must come from one CI run");
+        }
+    }
+    return base;
+}
+
+/**
+ * The review record a Finish would commit, built before anything is written, so the page can ask
+ * the owner's passkey to sign its hash (design.md section 8). The Finish that follows, given the
+ * same decisions and `now`, builds the same record in its worktree and refuses when it differs.
+ * @param {object} input the work, as finish's
+ * @param {string} input.repo the repository
+ * @param {{ pr: number | null, branch: string | null }} input.target the target
+ * @param {Record<string, { dir: string, results: object }>} input.projects the captures
+ * @param {object[]} input.decisions the owner's decisions
+ * @param {Date} input.now the review time the record states
+ * @param {object} input.config the settings
+ * @returns {Promise<{ record: object, hash: string } | null>} the record without its approval and
+ *     its hash (base64url, the WebAuthn challenge); null when the Finish commits nothing
+ */
+export async function prepareFinish({ repo, target, projects, decisions, now, config }) {
+    const { accepts, rejects } = check(projects, decisions);
+    if (accepts.length === 0) {
+        return null;
+    }
+    const first = accepts[0].capture.results;
+    const isMaster = target.pr === null;
+    const base = baseOf(accepts, first, isMaster);
+    const known = await gitOk(repo, ["cat-file", "-e", `${base}^{commit}`]);
+    if (!known) {
+        throw new AcceptError(
+            `the captured commit ${base.slice(0, 10)} is not fetched yet: press Refresh on the targets screen`,
+        );
+    }
+    // As the worktree would be: the base, with what earlier decisions of this Finish wrote.
+    const written = new Map();
+    const readOld = async (path) => {
+        if (written.has(path)) {
+            return Buffer.from(written.get(path));
+        }
+        try {
+            return execFileSync("git", ["cat-file", "blob", `${base}:${path}`], {
+                cwd: repo,
+                stdio: ["ignore", "pipe", "ignore"],
+            });
+        } catch {
+            return null;
+        }
+    };
+    const items = [];
+    for (const a of accepts) {
+        const planned = await plan(a, config.baselines, readOld);
+        for (const [path, data] of planned.put) {
+            written.set(path, data ?? "");
+        }
+        items.push(...planned.items);
+    }
+    const record = recordBody({ target, first, items, rejects, now, config, signed: true });
+    return { record, hash: b64url(recordHash(record)) };
+}
+
+/**
+ * The review record, without its approval. A record a passkey signs is version 2 and names the
+ * rejects too, so a reject's reason is the owner's; an unsigned one is version 1, marked unproven.
+ * @param {object} input what it holds
+ * @param {{ pr: number | null }} input.target the target
+ * @param {object} input.first the first decided project's results.json
+ * @param {object[]} input.items the record items
+ * @param {object[]} input.rejects the checked rejects
+ * @param {Date} input.now the review time
+ * @param {{ baselines: string }} input.config the settings
+ * @param {boolean} input.signed whether a passkey signs it
+ * @returns {object} the record
+ */
+function recordBody({ target, first, items, rejects, now, config, signed }) {
+    const subject = {
+        builtMerge: first.commit,
+        head: first.headSha,
+        runId: first.runId,
+        runAttempt: first.runAttempt,
+        environment: first.environment,
+        scale: first.scale ?? 1,
+    };
+    const sorted = dedupe(items).sort((a, b) => a.path.localeCompare(b.path));
+    if (!signed) {
+        return { version: 1, unproven: true, pr: target.pr, subject, items: sorted, reviewedAt: now.toISOString() };
+    }
+    return {
+        version: 2,
+        pr: target.pr,
+        subject,
+        items: sorted,
+        rejects: rejects
+            .map((r) => ({
+                path: `${config.baselines}/${r.project}/${r.item.file}`,
+                capture: r.item.capture,
+                reason: r.reason,
+            }))
+            .sort((a, b) => a.path.localeCompare(b.path)),
+        reviewedAt: now.toISOString(),
+    };
+}
+
+/**
  * Applies the owner's decisions for one target.
  * @param {object} input the work
  * @param {string} input.repo the repository (its `.worktrees/` holds the accept worktree)
@@ -193,6 +311,10 @@ function check(projects, decisions) {
  * @param {Date} [input.now] the review time
  * @param {(step: string) => void} [input.progress] told each step as it starts, for the page
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
+ * @param {{ credentialId: string, authenticatorData: string, clientDataJSON: string, signature: string } | null} [input.approval]
+ *     the owner's passkey assertion over the hash prepareFinish gave for these
+ *     decisions and this `now`; the record carries it
+ * @param {object[]} [input.passkeys] the registered passkeys the approval must verify against
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, acceptNotes: number, state: string, status: string | null,
  *     statusError: string | null, commentError: string | null }>} what was pushed and posted
@@ -212,6 +334,8 @@ export async function finish({
     now = new Date(),
     progress = () => {},
     config,
+    approval = null,
+    passkeys = [],
 }) {
     progress("checking");
     const { accepts, rejects } = check(projects, decisions);
@@ -228,7 +352,18 @@ export async function finish({
     let pullRequest = null;
     let issue = null;
     if (accepts.length > 0) {
-        ({ commit, branch } = await commitAccepts({ repo, target, accepts, first, now, progress, config }));
+        ({ commit, branch } = await commitAccepts({
+            repo,
+            target,
+            accepts,
+            rejects,
+            first,
+            now,
+            progress,
+            config,
+            approval,
+            passkeys,
+        }));
         if (isMaster) {
             progress("opening the pull request");
             try {
@@ -271,13 +406,17 @@ export async function finish({
             if (commit === null) {
                 throw err;
             }
+            // The accepts are pushed and cleared, so their notes are never posted again: name them.
+            const lost =
+                notes.length === 0 ? "" : ` These accept notes were not posted and are not kept: ${noteList(notes)}.`;
             if (rejects.length === 0) {
                 // Only accept notes: the accepts stand, and the page says the notes were not posted.
-                commentError = err.message;
+                commentError = `${err.message}.${lost}`;
             } else {
                 const e = new AcceptError(
-                    `the accepts were pushed as ${commit.slice(0, 10)}, but the reject comment failed: ${err.message}. ` +
-                        "Press Finish again to post the rejects.",
+                    `the accepts were pushed as ${commit.slice(0, 10)}, but the comment with the rejects` +
+                        `${notes.length > 0 ? ` and ${notes.length === 1 ? "1 accept note" : `${notes.length} accept notes`}` : ""} ` +
+                        `failed: ${err.message}. Press Finish again to post the rejects.${lost}`,
                 );
                 e.committed = commit;
                 throw e;
@@ -307,7 +446,7 @@ export async function finish({
         pullRequest,
         issue,
         rejects: rejects.length,
-        acceptNotes: comment || (isMaster && pullRequest) ? notes.length : 0,
+        acceptNotes: (comment && commentError === null) || (isMaster && pullRequest) ? notes.length : 0,
         state,
         status,
         statusError,
@@ -337,13 +476,16 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * @param {string} input.repo the repository
  * @param {{ pr: number | null, branch: string | null }} input.target as in finish
  * @param {object[]} input.accepts the checked accepts and exclusions
+ * @param {object[]} input.rejects the checked rejects, named in a signed record
  * @param {object} input.first the results.json of the first decided project
  * @param {Date} input.now the review time
  * @param {(step: string) => void} input.progress as in finish
  * @param {object} input.config as in finish
+ * @param {object | null} input.approval as in finish
+ * @param {object[]} input.passkeys as in finish
  * @returns {Promise<{ commit: string, branch: string }>} the pushed commit and branch
  */
-async function commitAccepts({ repo, target, accepts, first, now, progress, config }) {
+async function commitAccepts({ repo, target, accepts, rejects, first, now, progress, config, approval, passkeys }) {
     const { baselines, defaultBranch } = config;
     // Finish fetches into refs of its own, never the remote-tracking refs a page reload fetches
     // into at the same time (two fetches of one ref fail on its lock).
@@ -355,13 +497,7 @@ async function commitAccepts({ repo, target, accepts, first, now, progress, conf
     if (lfs) {
         throw new AcceptError(lfs);
     }
-    const base = isMaster ? first.commit : first.headSha;
-    for (const { capture } of accepts) {
-        const r = capture.results;
-        if ((isMaster ? r.commit : r.headSha) !== base || r.runId !== first.runId) {
-            throw new AcceptError("the projects of one Finish must come from one CI run");
-        }
-    }
+    const base = baseOf(accepts, first, isMaster);
     const branch = isMaster ? `visual/seed-${now.toISOString().slice(0, 10)}` : target.branch;
     if (!branch || !(await gitOk(repo, ["check-ref-format", `refs/heads/${branch}`]))) {
         throw new AcceptError(`no usable branch for this target: ${branch}`);
@@ -423,26 +559,31 @@ async function commitAccepts({ repo, target, accepts, first, now, progress, conf
         const items = [];
         const counts = { accept: 0, exclude: 0, remove: 0 };
         progress(`writing ${writes.length} ${writes.length === 1 ? "file" : "files"}`);
+        const readOld = (path) => readFile(join(tree, path)).catch(() => null);
         for (const w of writes) {
-            items.push(...(await write(tree, w, counts, baselines)));
+            const planned = await plan(w, baselines, readOld);
+            for (const [path, data] of planned.put) {
+                await put(join(tree, path), data);
+            }
+            for (const path of planned.rm) {
+                await rm(join(tree, path), { force: true });
+            }
+            counts[planned.kind]++;
+            items.push(...planned.items);
         }
         const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
         const record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
-        const body = {
-            version: 1,
-            unproven: true,
-            pr: target.pr,
-            subject: {
-                builtMerge: first.commit,
-                head: first.headSha,
-                runId: first.runId,
-                runAttempt: first.runAttempt,
-                environment: first.environment,
-                scale: first.scale ?? 1,
-            },
-            items: dedupe(items).sort((a, b) => a.path.localeCompare(b.path)),
-            reviewedAt: now.toISOString(),
-        };
+        let body = recordBody({ target, first, items, rejects, now, config, signed: approval !== null });
+        if (approval !== null) {
+            body = { ...body, approval };
+            const problem = approvalProblem(body, passkeys);
+            if (problem) {
+                throw new AcceptError(
+                    `your passkey's approval does not match what Finish would commit (${problem}); nothing was ` +
+                        "pushed. The baselines or decisions changed since the sheet opened: press Finish again.",
+                );
+            }
+        }
         await put(join(tree, record), `${JSON.stringify(body, null, 2)}\n`);
         progress("committing");
         await git(tree, ["add", "-A", "--", baselines]);
@@ -516,45 +657,127 @@ export async function behindMaster(
 }
 
 /**
- * Writes one decision into the worktree.
- * @param {string} tree the worktree
+ * What one decision writes: its record items, the files to put and remove, and its kind.
  * @param {object} w the decision, its results item, and for an accept the verified bytes
- * @param {{ accept: number, exclude: number, remove: number }} counts tallied here
  * @param {string} baselines the baselines directory
- * @returns {Promise<{ path: string, from: string | null, to: string | null, reason: string | null,
- *     movedFrom?: string, movedTo?: string }[]>} its record items: two for a renamed story, whose
- *     baseline moves to its new name
+ * @param {(path: string) => Promise<Buffer | null>} readOld reads a file as it is at the base
+ * @returns {Promise<{ kind: "accept" | "exclude" | "remove", put: [string, string | Buffer][],
+ *     rm: string[], items: { path: string, from: string | null, to: string | null,
+ *     reason: string | null, movedFrom?: string, movedTo?: string }[] }>} its record items: two for
+ *     a renamed story, whose baseline moves to its new name
  */
-async function write(tree, w, counts, baselines) {
+async function plan(w, baselines, readOld) {
     const dir = `${baselines}/${w.project}`;
     if (w.decision === "exclude") {
         const path = `${dir}/${w.item.id}.json`;
-        const old = await readFile(join(tree, path)).catch(() => null);
-        const settings = { ...(old ? JSON.parse(old) : {}), disableSnapshot: true, reason: w.reason };
+        const old = await readOld(path);
+        const settings = { ...(old ? JSON.parse(old.toString("utf8")) : {}), disableSnapshot: true, reason: w.reason };
         const bytes = `${JSON.stringify(settings, null, 2)}\n`;
-        await put(join(tree, path), bytes);
-        counts.exclude++;
-        return [{ path, from: old && sha256(old), to: sha256(bytes), reason: `exclude: ${w.reason}` }];
+        return {
+            kind: "exclude",
+            put: [[path, bytes]],
+            rm: [],
+            items: [{ path, from: old && sha256(old), to: sha256(bytes), reason: `exclude: ${w.reason}` }],
+        };
     }
     const path = `${dir}/${w.item.file}`;
     if (w.item.status === "removed") {
-        await rm(join(tree, path), { force: true });
-        counts.remove++;
-        return [{ path, from: w.item.baseline, to: null, reason: w.reason }];
+        return {
+            kind: "remove",
+            put: [],
+            rm: [path],
+            items: [{ path, from: w.item.baseline, to: null, reason: w.reason }],
+        };
     }
-    await put(join(tree, path), w.bytes);
-    counts.accept++;
     if (!w.item.from) {
-        return [{ path, from: w.item.baseline, to: w.item.capture, reason: w.reason }];
+        return {
+            kind: "accept",
+            put: [[path, w.bytes]],
+            rm: [],
+            items: [{ path, from: w.item.baseline, to: w.item.capture, reason: w.reason }],
+        };
     }
     // A rename: the old id's baseline (of this mode) goes, the new one takes its place. For a
     // moved item the bytes are the same, so git sees a rename and the LFS pointer is unchanged.
     const oldPath = `${dir}/${w.item.mode === null ? w.item.from : `${w.item.from}.${w.item.mode}`}.png`;
-    await rm(join(tree, oldPath), { force: true });
-    return [
-        { path: oldPath, from: w.item.baseline, to: null, reason: w.reason, movedTo: path },
-        { path, from: null, to: w.item.capture, reason: w.reason, movedFrom: oldPath },
-    ];
+    return {
+        kind: "accept",
+        put: [[path, w.bytes]],
+        rm: [oldPath],
+        items: [
+            { path: oldPath, from: w.item.baseline, to: null, reason: w.reason, movedTo: path },
+            { path, from: null, to: w.item.capture, reason: w.reason, movedFrom: oldPath },
+        ],
+    };
+}
+
+/**
+ * Opens a pull request that adds a passkey to the passkeys file on the default branch. It changes
+ * nothing until the owner merges it; from then on the gate and Finish accept approvals from it.
+ * @param {object} input the work
+ * @param {string} input.repo the repository
+ * @param {Function} input.gh the gh runner
+ * @param {object} input.config the settings
+ * @param {{ id: string, publicKey: string, rpId: string, label: string, registeredAt: string }} input.entry
+ *     the passkey, as the page made it
+ * @param {Date} [input.now] when
+ * @returns {Promise<string>} the pull request's URL
+ */
+export async function registerPasskey({ repo, gh, config, entry, now = new Date() }) {
+    const { keys } = parsePasskeys([entry]);
+    if (keys.length !== 1 || typeof entry.registeredAt !== "string") {
+        throw new AcceptError("not a passkey entry: it needs id, publicKey, rpId, label and registeredAt");
+    }
+    const clean = {
+        id: entry.id,
+        publicKey: entry.publicKey,
+        rpId: entry.rpId,
+        label: keys[0].label,
+        registeredAt: entry.registeredAt,
+    };
+    const { defaultBranch } = config;
+    const ref = `refs/visual-review/origin/${defaultBranch}`;
+    await git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${defaultBranch}:${ref}`]);
+    const branch = `visual/passkey-${now.toISOString().slice(0, 10)}-${sha256(clean.id).slice(0, 8)}`;
+    const tree = join(repo, config.workDir, "worktrees", "passkey");
+    await removeWorktree(repo, tree);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, ref]);
+    try {
+        const old = await readFile(join(tree, PASSKEYS_FILE), "utf8").catch(() => "[]");
+        let list;
+        try {
+            list = JSON.parse(old);
+        } catch {
+            throw new AcceptError(`${PASSKEYS_FILE} on ${defaultBranch} is not valid JSON: fix it first`);
+        }
+        list = Array.isArray(list) ? list : [];
+        if (list.some((k) => k?.id === clean.id)) {
+            throw new AcceptError(`this passkey is already in ${PASSKEYS_FILE} on ${defaultBranch}`);
+        }
+        await put(join(tree, PASSKEYS_FILE), `${JSON.stringify([...list, clean], null, 4)}\n`);
+        await git(tree, ["add", "--", PASSKEYS_FILE]);
+        const subject = `${config.commitPrefix}: register a passkey for visual review`;
+        await git(
+            tree,
+            ["commit", "-q", "--no-verify", "-F", "-"],
+            `${subject}\n\nPasskey: ${clean.label}, for ${clean.rpId}.\n`,
+        );
+        await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]);
+        return await createPullRequest(gh, {
+            title: subject,
+            head: branch,
+            base: defaultBranch,
+            body:
+                `Adds the passkey "${clean.label}" (registered ${clean.registeredAt} on ${clean.rpId}) to ` +
+                `\`${PASSKEYS_FILE}\`. Once merged, every Finish with accepts must be approved with a ` +
+                "registered passkey, and the visual gate counts only accepts so approved.\n\n" +
+                "Merge it only if you registered this passkey yourself on the review page.",
+        });
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    } finally {
+        await removeWorktree(repo, tree).catch(() => {});
+    }
 }
 
 // Two modes of one story excluded together write one settings file: keep one record item.
@@ -619,6 +842,8 @@ function rejectComment(pr, results, rejects, notes, branch) {
 
 const noteLines = (notes) =>
     notes.map((a) => `- \`${a.project}/${a.item.file}\`: ${JSON.stringify(oneLine(a.reason))}`);
+const noteList = (notes) =>
+    notes.map((a) => `${a.project}/${a.item.file}: ${JSON.stringify(oneLine(a.reason))}`).join("; ");
 
 function seedBody(results, accepts, rejects, notes, branch) {
     const lines = [

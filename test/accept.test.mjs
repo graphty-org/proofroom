@@ -5,9 +5,20 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { contentHash, unrecordedChanges } from "../trusted/gate.mjs";
-import { commitMessage, finish, lfsProblem } from "../trusted/lib/accept.mjs";
+import { commitMessage, finish, lfsProblem, prepareFinish } from "../trusted/lib/accept.mjs";
+import { approvalProblem } from "../trusted/lib/approval.mjs";
 import { isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
-import { CONFIG, copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
+import {
+    CONFIG,
+    copyFixture,
+    git,
+    isolateGit,
+    lfsObject,
+    makeRepo,
+    pushCommit,
+    ROOT,
+    testPasskey,
+} from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
@@ -476,7 +487,11 @@ describe("finish: rejects", () => {
             now: NOW,
             config: CONFIG,
         });
-        expect(out).toMatchObject({ commentError: "HTTP 502" });
+        // Not reported as posted, and named, since the cleared accepts never post them again.
+        expect(out).toMatchObject({ acceptNotes: 0 });
+        expect(out.commentError).toBe(
+            'HTTP 502. These accept notes were not posted and are not kept: compact-mantine/badge--default.light.png: "intended".',
+        );
         expect(out.commit).toBe(remoteLog(s, "feature")[0]);
     });
 
@@ -491,13 +506,18 @@ describe("finish: rejects", () => {
             target: { pr: 123, branch: "feature" },
             projects: s.projects,
             decisions: [
-                accept("badge--default.light.png"),
+                accept("badge--default.light.png", "compact-mantine", "intended"),
                 { project: "compact-mantine", file: "button--primary.dark.png", decision: "reject", reason: "red" },
             ],
             now: NOW,
             config: CONFIG,
         }).catch((e) => e);
-        expect(err.message).toMatch(/accepts were pushed .* reject comment failed: HTTP 502/);
+        expect(err.message).toMatch(
+            /accepts were pushed .* comment with the rejects and 1 accept note failed: HTTP 502/,
+        );
+        expect(err.message).toContain(
+            'These accept notes were not posted and are not kept: compact-mantine/badge--default.light.png: "intended".',
+        );
         expect(err.committed).toBe(remoteLog(s, "feature")[0]);
     });
 
@@ -584,5 +604,64 @@ describe("finish and the gate's record check", () => {
             "visual-baselines/compact-mantine/badge--default.light.png: changed with no review record naming its new contents",
             "visual-baselines/compact-mantine/slider--sizes.json: changed with no review record naming its new contents",
         ]);
+    });
+});
+
+describe("finish: approved with the owner's passkey", () => {
+    const decisions = [
+        accept("badge--default.light.png", "compact-mantine", "intended"),
+        { project: "compact-mantine", file: "tooltip--hover.png", decision: "exclude", reason: "flaky" },
+        { project: "compact-mantine", file: "button--primary.dark.png", decision: "reject", reason: "red" },
+    ];
+
+    it("commits the record prepared before Finish, with the approval the gate verifies", async () => {
+        const s = setup();
+        const key = testPasskey();
+        const target = { pr: 123, branch: "feature" };
+        const input = { repo: s.repo, target, projects: s.projects, decisions, now: NOW, config: CONFIG };
+        const prepared = await prepareFinish(input);
+        expect(prepared.record).toMatchObject({ version: 2, pr: 123, reviewedAt: NOW.toISOString() });
+        expect(prepared.record.unproven).toBeUndefined();
+        expect(prepared.record.rejects).toEqual([
+            {
+                path: "visual-baselines/compact-mantine/button--primary.dark.png",
+                capture: expect.stringMatching(/^[0-9a-f]{64}$/),
+                reason: "red",
+            },
+        ]);
+        const approval = key.sign(prepared.hash);
+        await finish({ ...input, gh: async () => "{}", approval, passkeys: [key.entry] });
+        const committed = JSON.parse(show(s, "feature", "visual-baselines/reviews/20260927T150405Z-pr123.json"));
+        expect(committed).toEqual({ ...prepared.record, approval });
+        expect(approvalProblem(committed, [key.entry])).toBeNull();
+    });
+
+    it("refuses, pushing nothing, when what it would commit is not what was signed", async () => {
+        const s = setup();
+        const key = testPasskey();
+        const target = { pr: 123, branch: "feature" };
+        const input = { repo: s.repo, target, projects: s.projects, decisions, now: NOW, config: CONFIG };
+        const prepared = await prepareFinish({ ...input, decisions: decisions.slice(1) });
+        const before = remoteLog(s, "feature")[0];
+        const err = await finish({
+            ...input,
+            gh: async () => "{}",
+            approval: key.sign(prepared.hash),
+            passkeys: [key.entry],
+        }).catch((e) => e);
+        expect(err.message).toMatch(/approval does not match what Finish would commit .*nothing was pushed/);
+        expect(remoteLog(s, "feature")[0]).toBe(before);
+    });
+
+    it("prepares nothing to sign when only rejects are decided", async () => {
+        const s = setup();
+        const input = {
+            repo: s.repo,
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            now: NOW,
+            config: CONFIG,
+        };
+        expect(await prepareFinish({ ...input, decisions: decisions.slice(2) })).toBeNull();
     });
 });

@@ -13,7 +13,18 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
-import { CONFIG, FIXTURE, fakeGh, isolateGit, job, makeRepo, onePr, withMoved } from "./helpers.mjs";
+import {
+    CONFIG,
+    FIXTURE,
+    fakeGh,
+    git,
+    isolateGit,
+    job,
+    makeRepo,
+    onePr,
+    registerOnMaster,
+    withMoved,
+} from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
@@ -49,11 +60,12 @@ const twoPrs = (r) =>
         },
     });
 
-async function open(options, { viewport = { width: 1000, height: 800 }, review = true } = {}) {
+// `host` localhost: WebAuthn needs a host name (an IP address is never a passkey's site).
+async function open(options, { viewport = { width: 1000, height: 800 }, review = true, host = "127.0.0.1" } = {}) {
     const r = makeRepo();
     server = createServer();
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    origin = `http://127.0.0.1:${server.address().port}`;
+    origin = `http://${host}:${server.address().port}`;
     const app = createApp({
         repo: r.repo,
         tmp: join(r.repo, "tmp/visual-review"),
@@ -112,7 +124,14 @@ async function openStory(number) {
 }
 
 const stageClass = () => page.locator("#stage").getAttribute("class");
-const status = () => page.locator("#status-row").textContent();
+// The status row's message: the live line, the time spent beside it, and the alert.
+const status = () =>
+    page.evaluate(() =>
+        ["status", "elapsed", "alert"]
+            .map((id) => globalThis.document.getElementById(id).textContent)
+            .filter(Boolean)
+            .join(" "),
+    );
 const position = () => page.locator("#position").textContent();
 // The item's images have been on screen long enough for a decision to count.
 const ready = () => page.locator("#stage[data-ready]").waitFor();
@@ -989,7 +1008,8 @@ describe("review page: waits that say what they wait for", () => {
         await expect.poll(() => downloading.count(), { timeout: 10000 }).toBe(5);
         expect(await downloading.first().isDisabled()).toBe(true);
         const card = await page.locator('.card[data-target="123"]').textContent();
-        expect(card).toContain("Downloading the captures...");
+        // How many projects have landed, and for how long it has been downloading.
+        expect(card).toMatch(/Downloading \(0 of 5 projects\), \d+ s/);
         expect(card).not.toContain("none");
         release();
         await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
@@ -1041,9 +1061,10 @@ describe("review page: moving on", () => {
             .poll(() => page.locator("#end-heading").textContent())
             .toBe("End of compact-mantine: 0 of 6 decided, 6 undecided.");
         const offers = await page.locator("#endcard .offers button").allTextContents();
+        // Items left undecided here come first, so an Enter after a skim never leaves them behind.
         expect(offers).toEqual([
-            "Next project: graphty-element (1 undecided)",
             "Review the 6 undecided",
+            "Next project: graphty-element (1 undecided)",
             "Back to the grid",
         ]);
         expect(await page.evaluate(() => globalThis.document.activeElement.textContent)).toBe(offers[0]);
@@ -1052,7 +1073,7 @@ describe("review page: moving on", () => {
         await expect.poll(position).toMatch(/^6 of /);
         await page.keyboard.press("j");
         await page.locator("#endcard .offers button").first().waitFor();
-        await page.keyboard.press("Enter");
+        await page.getByRole("button", { name: "Next project: graphty-element (1 undecided)" }).click();
         await expect.poll(() => page.locator("#pick-project").inputValue()).toBe("graphty-element");
         await expect.poll(position).toMatch(/^1 of 1 /);
         // Deciding the last item of a pass shows the same card.
@@ -1255,7 +1276,7 @@ describe("review page: links and the frozen pass", () => {
         await ready();
         await page.getByRole("button", { name: "Accept", exact: true }).click();
         await expect.poll(position).toMatch(/^4 of 6 /);
-        await page.getByRole("button", { name: "Previous" }).click();
+        await page.getByRole("button", { name: "Prev", exact: true }).click();
         await expect.poll(position).toMatch(/^3 of 6 /);
         expect(await page.locator("#accept").getAttribute("aria-pressed")).toBe("true");
         await page.keyboard.press("u");
@@ -1386,6 +1407,8 @@ describe("review page: Finish", () => {
                 /^Finished #123\.Committed \w{10} to feature\.Commit status: pending -- 4 accepted, 0 rejected, 0 excluded, 3 undecided, not loaded: layout, algorithms, graphty\./,
             );
         expect(await page.locator(".finish-running").count()).toBe(0);
+        // Focus is on the result, so a screen reader reads it.
+        await expect.poll(() => page.evaluate(() => globalThis.document.activeElement.id)).toBe("outcome-heading");
         expect(await page.locator(".finish-outcome .offers button").allTextContents()).toEqual([
             "Next: #124 (7 undecided)",
             "Back to #123",
@@ -1398,6 +1421,79 @@ describe("review page: Finish", () => {
                 .getAttribute("aria-disabled"),
         ).toBe("true");
     }, 60000);
+});
+
+describe("review page: the passkey", () => {
+    it("registers a passkey, then signs Finish with it, and the record carries the approval", async () => {
+        const r = await open((repo) => ({ gh: onePr()(repo) }), { review: false, host: "localhost" });
+        // Face ID, as Chromium's virtual authenticator: user verification passes.
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("WebAuthn.enable");
+        await cdp.send("WebAuthn.addVirtualAuthenticator", {
+            options: {
+                protocol: "ctap2",
+                transport: "internal",
+                hasResidentKey: true,
+                hasUserVerification: true,
+                isUserVerified: true,
+                automaticPresenceSimulation: true,
+            },
+        });
+        const line = page.locator(".passkey-line");
+        await expect
+            .poll(() => line.textContent())
+            .toBe(
+                "No passkey registered: Finish's accepts are not approved by you, and CI does not check who accepted them. Register passkey",
+            );
+        await page.getByRole("button", { name: "Register passkey" }).click();
+        await expect.poll(() => dialogs.length).toBe(1);
+        expect(dialogs[0]).toMatch(/^Passkey created \(this device's passkey\)\./);
+        const entry = JSON.parse(dialogs[0].slice(dialogs[0].indexOf("{"), dialogs[0].lastIndexOf("}") + 1));
+        expect(entry).toMatchObject({ rpId: "localhost", label: "this device's passkey" });
+        await expect.poll(status).toMatch(/^Opened https:\/\/gh\/pull\/650: merge it/);
+
+        // The owner merges it; the next refresh reads it from the default branch.
+        registerOnMaster(r, [entry]);
+        await page.getByRole("button", { name: "Refresh" }).click();
+        await expect.poll(() => line.textContent()).toMatch(/^Finish is approved with your passkey/);
+        await page.getByRole("button", { name: "Review", exact: true }).first().click();
+        await page.locator(".component").first().waitFor();
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("4 of 6 decided");
+        confirmFinish = true;
+        await page.getByRole("button", { name: /^Finish/ }).click();
+        await expect.poll(() => dialogs.length).toBe(3);
+        expect(dialogs[2]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
+        expect(await page.locator("#ask-yes").count()).toBe(0);
+        await expect
+            .poll(() => page.locator(".finish-outcome h2").textContent(), { timeout: 30000 })
+            .toBe("Finished #123.");
+        const name = git(r.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/");
+        const record = JSON.parse(git(r.remote, "show", `feature:${name}`));
+        expect(record).toMatchObject({ version: 2, approval: { credentialId: entry.id } });
+    }, 60000);
+
+    it("refuses accepts without a registered passkey once the default branch requires one", async () => {
+        await open(
+            (r) => {
+                registerOnMaster(r, []);
+                return { gh: onePr()(r) };
+            },
+            { review: true },
+        );
+        await page.locator(".component").first().waitFor();
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("4 of 6 decided");
+        confirmFinish = true;
+        await page.getByRole("button", { name: /^Finish/ }).click();
+        await expect.poll(() => dialogs.length).toBe(2);
+        expect(dialogs[1]).toContain(
+            "Accepts need your passkey, and the CI gate refuses them without it. Register a passkey on the targets screen and merge its pull request first.",
+        );
+        // The final button is unavailable, says why, and the sheet stays.
+        await expect.poll(status).toBe("Finish needs your passkey first: see the sheet.");
+        expect(await page.locator("#ask-yes").getAttribute("aria-disabled")).toBe("true");
+    });
 });
 
 describe("review page: renamed stories", () => {

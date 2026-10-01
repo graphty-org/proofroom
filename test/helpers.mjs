@@ -4,6 +4,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash, generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -218,6 +219,10 @@ export function fakeGh({
             posted.push({ path, body: JSON.parse(args.length > 2 ? (input ?? "{}") : "{}") });
             return "{}";
         }
+        if (path === "repos/{owner}/{repo}/pulls") {
+            posted.push({ path, body: JSON.parse(input ?? "{}") });
+            return JSON.stringify({ html_url: "https://gh/pull/650", number: 650 });
+        }
         if (args[0] === "run" && args[1] === "download") {
             const name = args[4];
             const project = /^visual-(.+)-\d+$/.exec(name)[1];
@@ -276,3 +281,51 @@ export const withMoved = (r, extra = []) => {
     const at = { commit: r.head, headSha: r.head };
     return onePr({ results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at } })(r);
 };
+
+/**
+ * A passkey made in Node, standing in for the owner's Face ID: its entry for the passkeys file,
+ * and `sign`, which answers a challenge as navigator.credentials.get would.
+ * @param {string} [rpId] the site it is registered on
+ * @returns {{ entry: object, sign: (challenge: string, options?: { origin?: string, uv?: boolean,
+ *     rpId?: string }) => object }} the entry, and the assertion maker
+ */
+export function testPasskey(rpId = "localhost") {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const id = randomBytes(16).toString("base64url");
+    const entry = {
+        id,
+        publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
+        rpId,
+        label: "test key",
+        registeredAt: "2026-10-01T00:00:00.000Z",
+    };
+    const sign = (challenge, { origin = `https://${rpId}`, uv = true, rpId: signedFor = rpId } = {}) => {
+        const authData = Buffer.concat([
+            createHash("sha256").update(signedFor).digest(),
+            Buffer.from([uv ? 0x05 : 0x01]),
+            Buffer.from([0, 0, 0, 1]),
+        ]);
+        const clientDataJSON = Buffer.from(JSON.stringify({ type: "webauthn.get", challenge, origin }));
+        const signed = Buffer.concat([authData, createHash("sha256").update(clientDataJSON).digest()]);
+        return {
+            credentialId: id,
+            authenticatorData: authData.toString("base64url"),
+            clientDataJSON: clientDataJSON.toString("base64url"),
+            signature: cryptoSign("sha256", signed, privateKey).toString("base64url"),
+        };
+    };
+    return { entry, sign };
+}
+
+/**
+ * Registers passkeys on the repository's default branch, as merging the pull request Register
+ * passkey opens would.
+ * @param {{ repo: string }} r the repository from makeRepo
+ * @param {object[]} entries the passkeys file's entries
+ */
+export function registerOnMaster(r, entries) {
+    put(join(r.repo, "visual-review.passkeys.json"), `${JSON.stringify(entries)}\n`);
+    git(r.repo, "add", "visual-review.passkeys.json");
+    git(r.repo, "commit", "-q", "-m", "register a passkey");
+    git(r.repo, "push", "-q", "origin", "master");
+}

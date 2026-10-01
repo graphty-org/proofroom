@@ -15,7 +15,7 @@ import {
     unrecordedChanges,
 } from "../trusted/gate.mjs";
 import { normalizeConfig } from "../trusted/lib/config.mjs";
-import { CONFIG, FIXTURE, git, isolateGit, makeRepo } from "./helpers.mjs";
+import { CONFIG, FIXTURE, git, isolateGit, makeRepo, registerOnMaster, testPasskey } from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
@@ -249,6 +249,27 @@ describe("gate command", () => {
         );
         expect(out.stdout).toMatch(
             /::error::visual changes not accepted -- layout: 1 new \(not accepted; layout has no baselines/,
+        );
+        expect(out.status).toBe(1);
+    });
+
+    it("warns while no passkey is registered, and once one is, counts only approved records", () => {
+        const r = makeRepo();
+        const captures = artifacts({ "visual-compact-mantine-1": results(["unchanged"]), ...unseededCaptures });
+        expect(run(r.repo, captures).stdout).toMatch(/::warning::accepts are not approved with a passkey/);
+        registerOnMaster(r, [testPasskey().entry]);
+        git(r.repo, "checkout", "-q", "feature");
+        const path = "visual-baselines/compact-mantine/card--legacy.png";
+        writeFileSync(join(r.repo, path), "new image");
+        const to = createHash("sha256").update("new image").digest("hex");
+        mkdirSync(join(r.repo, "visual-baselines/reviews"));
+        writeFileSync(join(r.repo, "visual-baselines/reviews/r.json"), JSON.stringify({ items: [{ path, to }] }));
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "accept without the passkey");
+        const out = run(r.repo, captures);
+        expect(out.stdout).not.toMatch(/::warning::accepts are not approved/);
+        expect(out.stdout).toMatch(
+            /::error::baseline without a review -- visual-baselines\/reviews\/r.json: not counted: no passkey approval/,
         );
         expect(out.status).toBe(1);
     });
