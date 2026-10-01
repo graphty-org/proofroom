@@ -314,10 +314,12 @@ describe("review page: a pull request", () => {
         const canvases = page.locator("#stage .flashing canvas");
         const shown = async () => {
             await expect.poll(() => canvases.count()).toBe(2);
-            const label = await page.locator("#stage .flashing .label").textContent();
-            const [index, far] = await canvases.evaluateAll((cs) => {
+            // The label and the shown canvas are read in one task: read apart, a flip between the
+            // two reads paired one image's label with the other's canvas.
+            const [index, far, label] = await canvases.evaluateAll((cs) => {
                 const i = cs.findIndex((c) => c.style.visibility !== "hidden");
-                return [i, [...cs[i].getContext("2d").getImageData(5, 5, 1, 1).data]];
+                const text = globalThis.document.querySelector("#stage .flashing .label").textContent;
+                return [i, [...cs[i].getContext("2d").getImageData(5, 5, 1, 1).data], text];
             });
             // Both images are dimmed outside the changed pixels.
             expect(far[0]).toBeLessThanOrEqual(Math.ceil(255 * (1 - 190 / 255)));
