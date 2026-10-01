@@ -146,7 +146,8 @@ Per project:
 | `seedFromDefaultBranch` | `true`     | `false`: the project's first baselines are accepted on a pull request, not seeded from the default branch                                                                                                                                      |
 | `waitFor`               | none       | After a story renders, call `method()` on every element matching `selector` and wait for the promise it returns, for a component that keeps drawing after Storybook says it is done. A console line containing `failOnConsole` fails the story |
 
-Project ids are letters, digits, `.`, `_` and `-`. The pull request gate reads the config as it is
+Project ids are lowercase letters, digits and `-` (results.json allows no others), and so are
+the names of Chromatic modes, which a capture refuses before it starts. The pull request gate reads the config as it is
 on the base branch, so a pull request cannot move `baselines` out from under it.
 
 ## The GitHub Actions workflows

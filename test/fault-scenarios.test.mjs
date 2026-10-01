@@ -813,32 +813,24 @@ describe("the session token", () => {
 });
 
 describe("the gate and the config", () => {
-    // Fails today: newestResults parses without a catch, so one bad file throws for every project.
-    it.fails(
-        "The gate throws a stack trace on an unparseable results.json, hiding every other project's verdict",
-        () => {
-            const dir = mkdtempSync(join(tmpdir(), "vr-gate-"));
-            mkdirSync(join(dir, "visual-a-1"));
-            mkdirSync(join(dir, "visual-b-1"));
-            writeFileSync(join(dir, "visual-a-1/results.json"), "{");
-            writeFileSync(
-                join(dir, "visual-b-1/results.json"),
-                readFileSync(join(FIXTURE, "compact-mantine/results.json")),
-            );
-            const out = newestResults(dir);
-            expect(out.a).toMatchObject({ attempt: 1, results: null });
-            expect(out.b.results.items.length).toBeGreaterThan(0);
-        },
-    );
+    it("The gate throws a stack trace on an unparseable results.json, hiding every other project's verdict", () => {
+        const dir = mkdtempSync(join(tmpdir(), "vr-gate-"));
+        mkdirSync(join(dir, "visual-a-1"));
+        mkdirSync(join(dir, "visual-b-1"));
+        writeFileSync(join(dir, "visual-a-1/results.json"), "{");
+        writeFileSync(
+            join(dir, "visual-b-1/results.json"),
+            readFileSync(join(FIXTURE, "compact-mantine/results.json")),
+        );
+        const out = newestResults(dir);
+        expect(out.a).toMatchObject({ attempt: 1, results: null });
+        expect(out.b.results.items.length).toBeGreaterThan(0);
+    });
 
-    // Fails today: the config allows ids results.json rejects, and modes are copied as they are.
-    it.fails(
-        "A project id or mode name that results.json rejects fails the capture only after every story has run, and the gate says 're-run'",
-        () => {
-            expect(() => normalizeConfig({ projects: { Web: { storybook: "s" } } })).toThrow(/Web/);
-            expect(() => storySettings({ chromatic: { modes: { "Dark Mobile": { theme: "dark" } } } }, null)).toThrow(
-                /Dark Mobile/,
-            );
-        },
-    );
+    it("A project id or mode name that results.json rejects fails the capture only after every story has run, and the gate says 're-run'", () => {
+        expect(() => normalizeConfig({ projects: { Web: { storybook: "s" } } })).toThrow(/Web/);
+        expect(() => storySettings({ chromatic: { modes: { "Dark Mobile": { theme: "dark" } } } }, null)).toThrow(
+            /Dark Mobile/,
+        );
+    });
 });
