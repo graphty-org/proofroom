@@ -3,7 +3,10 @@
  * `visual-review init` writes, and ci.yml's visual job and gate step run the template's commands.
  */
 
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { renderTemplate } from "../trusted/lib/init.mjs";
@@ -39,5 +42,57 @@ describe("the monorepo's workflows", () => {
     it("ci.yml's gate step runs the gate with the template's arguments", () => {
         const args = /gate (--captures .*)$/m.exec(renderTemplate("visual-review.yml", values))[1];
         expect(workflow("ci.yml")).toContain(`node visual-review/trusted/cli.mjs gate ${args}`);
+    });
+});
+
+describe("visual-seed.yml", () => {
+    const seed = renderTemplate("visual-seed.yml", values);
+    const ROOT = new URL("../..", import.meta.url).pathname;
+
+    // The plan step's shell script, run against this repository's config as Actions runs it.
+    const plan = (want) => {
+        const body = seed.slice(seed.indexOf("- name: List the projects"));
+        const lines = body.slice(body.indexOf("run: |\n") + 7).split("\n");
+        const end = lines.findIndex((l) => l.trim() !== "" && !l.startsWith(" ".repeat(18)));
+        const script = lines
+            .slice(0, end)
+            .map((l) => l.slice(18))
+            .join("\n");
+        const output = join(mkdtempSync(join(tmpdir(), "vr-seed-")), "out");
+        const r = spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], {
+            cwd: ROOT,
+            env: { ...process.env, WANT: want, GITHUB_OUTPUT: output },
+            encoding: "utf8",
+        });
+        const text = r.status === 0 ? readFileSync(output, "utf8") : "";
+        const projects = text ? JSON.parse(text.replace(/^projects=/, "")).map((p) => p.project) : null;
+        return { status: r.status, stderr: r.stderr, projects };
+    };
+    const seedable = Object.entries(CONFIG.projects)
+        .filter(([, p]) => p.seedFromDefaultBranch)
+        .map(([id]) => id);
+
+    it("captures every project seeded from the default branch when none is named", () => {
+        expect(plan("").projects).toEqual(seedable);
+    });
+
+    it("captures only the projects named, separated by spaces or commas", () => {
+        const two = seedable.slice(0, 2);
+        expect(plan(two.join(" ")).projects).toEqual(two);
+        expect(plan(` ${two.join(",")}, `).projects).toEqual(two);
+    });
+
+    it("stops on a name that is not a project seeded from the default branch", () => {
+        const r = plan(`${seedable[0]} nope`);
+        expect(r.status).not.toBe(0);
+        expect(r.stderr).toMatch(/not a project seeded from the default branch: nope/);
+    });
+
+    it("captures each project whose Storybook built, whatever another project's build did", () => {
+        const visual = job(seed, "visual");
+        expect(visual).toContain("if: ${{ !cancelled() && needs.plan.result == 'success' }}");
+        // The download comes first, so a project whose own build failed stops before installing.
+        const steps = [...visual.matchAll(/^ {12}- (?:name: (.+)|uses: (.+))$/gm)].map((m) => m[1] ?? m[2]);
+        expect(steps.slice(0, 2)).toEqual(["actions/checkout@v4", "Download Storybook build"]);
     });
 });

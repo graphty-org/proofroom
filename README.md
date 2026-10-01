@@ -170,8 +170,10 @@ copy the `visual` job and the gate's steps into it, keep those names, and set `w
 file.
 
 **`visual-seed.yml`** is started by hand to capture an older commit with the default branch's
-tool: `gh workflow run visual-seed.yml --ref main -f ref=<sha>`. See
-[Seeding](#seeding-one-story-at-a-time).
+tool: `gh workflow run visual-seed.yml --ref main -f ref=<sha>`. It captures every project seeded
+from the default branch; add `-f projects="web charts"` to capture only those. Each project is
+built and captured on its own, so one whose Storybook does not build at that commit fails alone.
+See [Seeding](#seeding-one-story-at-a-time).
 
 Both need nothing but the default `GITHUB_TOKEN`: the capture job reads Actions artifacts
 (`actions: read`); nothing in CI writes to the repository.
