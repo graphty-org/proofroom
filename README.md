@@ -246,6 +246,10 @@ starts the same server from your own shell.
       pull request. Merge the default branch into the pull request's branch (by merge, never
       rebase) and wait for CI.
     - **capture failed**: the `visual` job produced no results. Re-run that job in GitHub Actions.
+    - **CI still running**, **waiting for CI**, **downloading the captures**: there is nothing
+      to review yet; reload the page in a moment.
+    - **artifact expired**: GitHub deleted the capture after 30 days and it was never
+      downloaded here. Re-run the `visual` job.
     - **incomplete: N of M stories**: the capture stopped part way. Re-run the job.
     - **not seeded from master**: this project is not reviewed on the default branch
       (`"seedFromDefaultBranch": false` in the config); its first baselines are accepted on a pull
@@ -355,7 +359,9 @@ so; to change a decision, press U (or the Undo button) first. The same key twice
   runner), re-run the `visual` job instead, since the newest attempt replaces the old results.
 - **Undo** (U, or a tile's Undo on the grid) clears a decision before Finish; it is the only way
   to change one. The grid also undoes a whole component or project, after a second press.
-  Decisions are kept across server restarts.
+  Decisions are kept across server restarts. A decision applies only to the image it was taken
+  on: when a new run or a re-run attempt captures that item differently, it is undecided again
+  (the old decision stays saved, and comes back if the image does).
 - After Finish, accepts and exclusions are cleared; rejects stay, marked as already posted, and
   still show as rejected on the next CI run while the capture is unchanged. Finish does not post
   them twice. They live in the work directory's `state/` (the config's `workDir`), not in the
@@ -590,8 +596,16 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   (DNS, a dropped connection, a GitHub 5xx) three times over about 20 seconds; it logs each failed
   call and each retry to stderr. A project whose download still fails shows "download failed", a
   pull request (or the default branch's run) GitHub would not answer for shows "failed to load",
-  and everything else loads as usual. Reload the page to try again; captures already downloaded
-  are kept.
+  or, when it loaded before, keeps what it showed with "could not refresh", and everything else
+  loads as usual. Reload the page to try again; captures already downloaded are kept, and a
+  damaged one is downloaded again.
+- **A gh or git call hangs.** Every gh and git call `serve` and Finish make is stopped after 10
+  minutes (`VISUAL_REVIEW_TIMEOUT_MS` sets another limit, in milliseconds), and git never waits
+  for a credential prompt. A stopped Finish names the step it was on and keeps your decisions.
+- **"the server stopped while this Finish was at ..."** The server restarted during a Finish.
+  Look at the branch on origin to see whether its commit was pushed before pressing Finish again.
+- **"... was pushed as ..., but opening its pull request failed"** (the seed). Press Finish
+  again: it opens the pull request for the branch already pushed.
 - **capture failed / no capture** on a target. The `visual` job produced no results. Open its
   log from the page and re-run the job. **incomplete: N of M stories**: the job stopped part way
   (a timeout); re-run it.

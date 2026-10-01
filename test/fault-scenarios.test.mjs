@@ -104,200 +104,182 @@ function finishSetup(config = CONFIG) {
 const accept = (file, project = "compact-mantine") => ({ project, file, decision: "accept", reason: null });
 
 describe("decisions across runs, attempts and restarts", () => {
-    // Fails today: decisionsOf caches the map built while the project had no results.
-    it.fails(
-        "Saved decisions are erased when a project has no results the first time a run is summarized (CI still running, or one download failed)",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            expect((await decide(s, "compact-mantine", "slider--sizes.png", "reject", "thumb moved")).status).toBe(200);
-            // A new run on the same head, still capturing: no artifact yet.
-            w.data.runs[r.head] = { id: 2000, attempt: 1, status: "in_progress", conclusion: null };
-            w.data.jobs[2000] = [job("compact-mantine", null), job("graphty-element", null)];
-            w.data.artifacts[2000] = [];
-            await s.api("GET", "/api/prs");
-            // The run completes, with the same images.
-            w.data.runs[r.head] = { id: 2000, attempt: 1 };
-            w.data.jobs[2000] = [job("compact-mantine"), job("graphty-element")];
-            w.data.artifacts[2000] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
-            await s.api("GET", "/api/prs");
-            expect((await decide(s, "graphty-element", "graph--basic.png", "accept")).status).toBe(200);
-            const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
-            expect(body.decisions["slider--sizes.png"]).toMatchObject({ decision: "reject", reason: "thumb moved" });
-            expect(saved(s)["compact-mantine/slider--sizes.png"]).toMatchObject({ decision: "reject" });
-        },
-    );
+    it("Saved decisions are erased when a project has no results the first time a run is summarized (CI still running, or one download failed)", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "compact-mantine", "slider--sizes.png", "reject", "thumb moved")).status).toBe(200);
+        // A new run on the same head, still capturing: no artifact yet.
+        w.data.runs[r.head] = { id: 2000, attempt: 1, status: "in_progress", conclusion: null };
+        w.data.jobs[2000] = [job("compact-mantine", null), job("graphty-element", null)];
+        w.data.artifacts[2000] = [];
+        await s.api("GET", "/api/prs");
+        // The run completes, with the same images.
+        w.data.runs[r.head] = { id: 2000, attempt: 1 };
+        w.data.jobs[2000] = [job("compact-mantine"), job("graphty-element")];
+        w.data.artifacts[2000] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "graphty-element", "graph--basic.png", "accept")).status).toBe(200);
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.decisions["slider--sizes.png"]).toMatchObject({ decision: "reject", reason: "thumb moved" });
+        expect(saved(s)["compact-mantine/slider--sizes.png"]).toMatchObject({ decision: "reject" });
+    });
 
-    // Fails today: the same, when the first summary after a restart meets a failed download.
-    it.fails(
-        "Saved decisions are erased when a project has no results the first time a run is summarized (one download failed after a restart)",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const first = await serve(r, w);
-            await first.api("GET", "/api/prs");
-            expect((await decide(first, "compact-mantine", "slider--sizes.png", "reject", "thumb moved")).status).toBe(
-                200,
-            );
-            await first.close();
-            // The restarted server downloads again, and the network drops through every retry.
-            rmSync(join(first.tmp, "1000-1"), { recursive: true, force: true });
-            // The first attempt and its three retries fail: one page load's worth.
-            const inj = injector({
-                rules: [1, 2, 3, 4].map((nth) => ({
-                    on: "gh",
-                    match: "run download 1000 -n visual-compact-mantine-1",
-                    nth,
-                    kind: "network",
-                })),
-            });
-            const second = await serve(r, w, { gh: withRetries(inj.gh(w.gh), [0, 0, 0]) });
-            const res = await second.api("GET", "/api/prs");
-            expect(projectOf(res.body, "123", "compact-mantine").problem).toMatch(/^download failed/);
-            const reloaded = await second.api("GET", "/api/prs");
-            expect(projectOf(reloaded.body, "123", "compact-mantine").problem).toBeNull();
-            expect((await decide(second, "graphty-element", "graph--basic.png", "accept")).status).toBe(200);
-            expect(saved(second)["compact-mantine/slider--sizes.png"]).toMatchObject({ decision: "reject" });
-        },
-    );
+    it("Saved decisions are erased when a project has no results the first time a run is summarized (one download failed after a restart)", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const first = await serve(r, w);
+        await first.api("GET", "/api/prs");
+        expect((await decide(first, "compact-mantine", "slider--sizes.png", "reject", "thumb moved")).status).toBe(200);
+        await first.close();
+        // The restarted server downloads again, and the network drops through every retry.
+        rmSync(join(first.tmp, "1000-1"), { recursive: true, force: true });
+        // The first attempt and its three retries fail: one page load's worth.
+        const inj = injector({
+            rules: [1, 2, 3, 4].map((nth) => ({
+                on: "gh",
+                match: "run download 1000 -n visual-compact-mantine-1",
+                nth,
+                kind: "network",
+            })),
+        });
+        const second = await serve(r, w, { gh: withRetries(inj.gh(w.gh), [0, 0, 0]) });
+        const res = await second.api("GET", "/api/prs");
+        expect(projectOf(res.body, "123", "compact-mantine").problem).toMatch(/^download failed/);
+        const reloaded = await second.api("GET", "/api/prs");
+        expect(projectOf(reloaded.body, "123", "compact-mantine").problem).toBeNull();
+        expect((await decide(second, "graphty-element", "graph--basic.png", "accept")).status).toBe(200);
+        expect(saved(second)["compact-mantine/slider--sizes.png"]).toMatchObject({ decision: "reject" });
+    });
 
-    // Fails today: the decision cache ignores the attempt, and save() stamps the new image's hash.
-    it.fails(
-        "A re-run attempt reuses decisions taken on the previous attempt's images, restamps them with the new hashes, and Finish commits bytes nobody saw",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
-            // The visual job is re-run, and attempt 2 captured the badge differently.
-            w.data.runs[r.head] = { id: 1000, attempt: 2 };
-            w.data.artifacts[1000].push("visual-compact-mantine-2");
-            w.data.results["visual-compact-mantine-2"] = {
-                items: CM_ITEMS.map((i) => (i.file === "badge--default.light.png" ? { ...i, capture: OTHER_HASH } : i)),
-            };
-            w.data.files["visual-compact-mantine-2"] = { "badge--default.light.png": OTHER_PNG };
-            await s.api("GET", "/api/prs");
-            const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
-            expect(body.results.runAttempt).toBe(2);
-            expect(body.decisions["badge--default.light.png"]).toBeUndefined();
-            expect((await decide(s, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
-            expect(saved(s)["compact-mantine/badge--default.light.png"]?.hash).not.toBe(OTHER_HASH);
-            const j = await finishJob(s);
-            const files = git(r.remote, "show", "--name-only", "--format=", "feature");
-            expect(j.error ?? "").not.toMatch(/badge/);
-            expect(files).not.toContain("visual-baselines/compact-mantine/badge--default.light.png");
-        },
-    );
+    it("A re-run attempt reuses decisions taken on the previous attempt's images, restamps them with the new hashes, and Finish commits bytes nobody saw", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
+        // The visual job is re-run, and attempt 2 captured the badge differently.
+        w.data.runs[r.head] = { id: 1000, attempt: 2 };
+        w.data.artifacts[1000].push("visual-compact-mantine-2");
+        w.data.results["visual-compact-mantine-2"] = {
+            items: CM_ITEMS.map((i) => (i.file === "badge--default.light.png" ? { ...i, capture: OTHER_HASH } : i)),
+        };
+        w.data.files["visual-compact-mantine-2"] = { "badge--default.light.png": OTHER_PNG };
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.results.runAttempt).toBe(2);
+        expect(body.decisions["badge--default.light.png"]).toBeUndefined();
+        expect((await decide(s, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
+        expect(saved(s)["compact-mantine/badge--default.light.png"]?.hash).not.toBe(OTHER_HASH);
+        const j = await finishJob(s);
+        const files = git(r.remote, "show", "--name-only", "--format=", "feature");
+        expect(j.error ?? "").not.toMatch(/badge/);
+        expect(files).not.toContain("visual-baselines/compact-mantine/badge--default.light.png");
+    });
 
-    // Fails today: save() dereferences the absent item and every decide answers 500.
-    it.fails(
-        "A re-run attempt reuses decisions taken on the previous attempt's images, restamps them with the new hashes, and Finish commits bytes nobody saw (the new attempt lacks a decided item)",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
-            w.data.runs[r.head] = { id: 1000, attempt: 2 };
-            w.data.artifacts[1000].push("visual-compact-mantine-2");
-            const items = CM_ITEMS.filter((i) => i.file !== "badge--default.light.png");
-            w.data.results["visual-compact-mantine-2"] = { items, expected: items.length };
-            await s.api("GET", "/api/prs");
-            const res = await decide(s, "compact-mantine", "button--primary.dark.png", "accept");
-            expect(res).toMatchObject({ status: 200 });
-        },
-    );
+    it("A re-run attempt reuses decisions taken on the previous attempt's images, restamps them with the new hashes, and Finish commits bytes nobody saw (the new attempt lacks a decided item)", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
+        w.data.runs[r.head] = { id: 1000, attempt: 2 };
+        w.data.artifacts[1000].push("visual-compact-mantine-2");
+        const items = CM_ITEMS.filter((i) => i.file !== "badge--default.light.png");
+        w.data.results["visual-compact-mantine-2"] = { items, expected: items.length };
+        await s.api("GET", "/api/prs");
+        const res = await decide(s, "compact-mantine", "button--primary.dark.png", "accept");
+        expect(res).toMatchObject({ status: 200 });
+    });
 
-    // Fails today: /api/decide ignores the image the page showed.
-    it.fails(
-        "The page shows an earlier run's cached images while decisions are recorded against the server's current run",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            const shown = CM_ITEMS.find((i) => i.file === "button--primary.dark.png").capture;
-            // Another tab loads the list: the server moves to run 1001, whose button differs.
-            w.data.runs[r.head] = { id: 1001, attempt: 1 };
-            w.data.jobs[1001] = [job("compact-mantine"), job("graphty-element")];
-            w.data.artifacts[1001] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
-            w.data.results["1001/visual-compact-mantine-1"] = {
-                items: CM_ITEMS.map((i) =>
-                    i.file === "button--primary.dark.png" ? { ...i, capture: BUTTON_BASELINE_HASH } : i,
-                ),
-            };
-            w.data.files["1001/visual-compact-mantine-1"] = { "button--primary.dark.png": BUTTON_BASELINE };
-            await s.api("GET", "/api/prs");
-            const res = await s.api("POST", "/api/decide", {
-                id: "123",
-                project: "compact-mantine",
-                file: "button--primary.dark.png",
-                decision: "accept",
-                reason: null,
-                hash: shown,
-                runId: 1000,
-                runAttempt: 1,
-            });
-            expect(res.status).toBe(409);
-        },
-    );
+    it("The page shows an earlier run's cached images while decisions are recorded against the server's current run", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        const shown = CM_ITEMS.find((i) => i.file === "button--primary.dark.png").capture;
+        // Another tab loads the list: the server moves to run 1001, whose button differs.
+        w.data.runs[r.head] = { id: 1001, attempt: 1 };
+        w.data.jobs[1001] = [job("compact-mantine"), job("graphty-element")];
+        w.data.artifacts[1001] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
+        w.data.results["1001/visual-compact-mantine-1"] = {
+            items: CM_ITEMS.map((i) =>
+                i.file === "button--primary.dark.png" ? { ...i, capture: BUTTON_BASELINE_HASH } : i,
+            ),
+        };
+        w.data.files["1001/visual-compact-mantine-1"] = { "button--primary.dark.png": BUTTON_BASELINE };
+        await s.api("GET", "/api/prs");
+        const res = await s.api("POST", "/api/decide", {
+            id: "123",
+            project: "compact-mantine",
+            file: "button--primary.dark.png",
+            decision: "accept",
+            reason: null,
+            hash: shown,
+            runId: 1000,
+            runAttempt: 1,
+        });
+        expect(res.status).toBe(409);
+    });
 
-    // Fails today: a kept decision on an unchanged item counts as decided and fails Finish.
-    it.fails(
-        "A kept decision on an item that is no longer decidable (unchanged, unseeded) is invisible, skews the counts, and makes every Finish fail",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const tmp = join(r.repo, "tmp/visual-review");
-            mkdirSync(join(tmp, "state"), { recursive: true });
-            const input = CM_ITEMS.find((i) => i.file === "input--default.png");
-            writeFileSync(
-                join(tmp, "state/123.json"),
-                JSON.stringify({
-                    "compact-mantine/input--default.png": { decision: "accept", reason: null, hash: input.capture },
-                }),
-            );
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            const cm = (await s.api("GET", "/api/target/123")).body.projects.find(
-                (p) => p.project === "compact-mantine",
-            );
-            expect(cm).toMatchObject({ reviewable: 6, decided: 0, undecided: 6 });
-            expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
-            const j = await finishJob(s);
-            expect(j.error).toBeNull();
-        },
-    );
+    it("A stale grid re-creates an accept that was undone in another tab or already committed by Finish (server)", async () => {
+        const r = makeRepo();
+        const s = await serve(r, world(r));
+        await s.api("GET", "/api/prs");
+        const opened = { id: "123", project: "compact-mantine", file: "badge--default.light.png", opened: true };
+        expect((await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" })).status).toBe(200);
+        expect((await s.api("POST", "/api/decide", { ...opened, decision: "accept", reason: null })).status).toBe(200);
+        expect(saved(s)["compact-mantine/badge--default.light.png"]).not.toHaveProperty("bulk");
+        await decide(s, "compact-mantine", "badge--default.light.png", null);
+        expect((await s.api("POST", "/api/decide", { ...opened, decision: "accept", reason: null })).status).toBe(200);
+        expect(saved(s)).not.toHaveProperty(["compact-mantine/badge--default.light.png"]);
+        const stale = { id: "123", project: "compact-mantine", runId: 999, runAttempt: 1 };
+        expect((await s.api("POST", "/api/accept-all", stale)).status).toBe(409);
+    });
 
-    // Fails today: decisionsOf swallows the parse error, and the next save overwrites the file.
-    it.fails(
-        "The state file is rewritten in place, and an unreadable one is silently treated as empty and then overwritten",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const first = await serve(r, w);
-            await first.api("GET", "/api/prs");
-            await decide(first, "compact-mantine", "badge--default.light.png", "accept");
-            await first.close();
-            const file = join(first.tmp, "state/123.json");
-            const broken = readFileSync(file).subarray(0, 20);
-            writeFileSync(file, broken);
-            log = captureLog(vi);
-            const second = await serve(r, w);
-            await second.api("GET", "/api/prs");
-            expect(log.lines.some((l) => l.includes("123.json"))).toBe(true);
-            expect((await decide(second, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
-            const dir = join(first.tmp, "state");
-            const kept = readdirSync(dir).some((f) => readFileSync(join(dir, f)).equals(broken));
-            expect(kept).toBe(true);
-        },
-    );
+    it("A kept decision on an item that is no longer decidable (unchanged, unseeded) is invisible, skews the counts, and makes every Finish fail", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const tmp = join(r.repo, "tmp/visual-review");
+        mkdirSync(join(tmp, "state"), { recursive: true });
+        const input = CM_ITEMS.find((i) => i.file === "input--default.png");
+        writeFileSync(
+            join(tmp, "state/123.json"),
+            JSON.stringify({
+                "compact-mantine/input--default.png": { decision: "accept", reason: null, hash: input.capture },
+            }),
+        );
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        const cm = (await s.api("GET", "/api/target/123")).body.projects.find((p) => p.project === "compact-mantine");
+        expect(cm).toMatchObject({ reviewable: 6, decided: 0, undecided: 6 });
+        expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
+        const j = await finishJob(s);
+        expect(j.error).toBeNull();
+    });
 
-    // Fails today: the null entry is destructured outside the try, and the whole list answers 500.
-    it.fails("A malformed entry in a state file blanks every target with a 500", async () => {
+    it("The state file is rewritten in place, and an unreadable one is silently treated as empty and then overwritten", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const first = await serve(r, w);
+        await first.api("GET", "/api/prs");
+        await decide(first, "compact-mantine", "badge--default.light.png", "accept");
+        await first.close();
+        const file = join(first.tmp, "state/123.json");
+        const broken = readFileSync(file).subarray(0, 20);
+        writeFileSync(file, broken);
+        log = captureLog(vi);
+        const second = await serve(r, w);
+        await second.api("GET", "/api/prs");
+        expect(log.lines.some((l) => l.includes("123.json"))).toBe(true);
+        expect((await decide(second, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
+        const dir = join(first.tmp, "state");
+        const kept = readdirSync(dir).some((f) => readFileSync(join(dir, f)).equals(broken));
+        expect(kept).toBe(true);
+    });
+
+    it("A malformed entry in a state file blanks every target with a 500", async () => {
         const r = makeRepo();
         const w = world(r);
         const tmp = join(r.repo, "tmp/visual-review");
@@ -310,123 +292,102 @@ describe("decisions across runs, attempts and restarts", () => {
         expect(log.lines.some((l) => l.includes("123.json"))).toBe(true);
     });
 
-    // Fails today: the decision is deleted from memory before the write that fails.
-    it.fails(
-        "A failed state write still changes the server's memory, so the page, the server and the disk disagree",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
-            injector({
-                rules: [{ on: "fs", match: /^fs\.writeFileSync .*state\/123\.json/, kind: "denied" }],
-            }).install();
-            expect((await decide(s, "compact-mantine", "badge--default.light.png", null)).status).toBe(500);
-            const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
-            expect(body.decisions).toHaveProperty("badge--default.light.png");
-        },
-    );
+    it("A failed state write still changes the server's memory, so the page, the server and the disk disagree", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
+        injector({
+            rules: [{ on: "fs", match: /^fs\.writeFileSync .*state\/123\.json/, kind: "denied" }],
+        }).install();
+        expect((await decide(s, "compact-mantine", "badge--default.light.png", null)).status).toBe(500);
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.decisions).toHaveProperty("badge--default.light.png");
+    });
 
-    // Fails today: each process caches the whole file and writes its own map back.
-    it.fails(
-        "Two servers on one work directory overwrite each other's decisions and share the accept worktree path",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const a = await serve(r, w);
-            let b;
-            try {
-                b = await serve(r, w);
-            } catch {
-                return; // Refusing to start a second server is one of the two fixes.
-            }
-            await a.api("GET", "/api/prs");
-            await b.api("GET", "/api/prs");
-            expect((await decide(a, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
-            expect((await decide(b, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
-            expect(Object.keys(saved(a)).sort()).toEqual([
-                "compact-mantine/badge--default.light.png",
-                "compact-mantine/button--primary.dark.png",
-            ]);
-        },
-    );
+    it("Two servers on one work directory overwrite each other's decisions and share the accept worktree path", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const a = await serve(r, w);
+        let b;
+        try {
+            b = await serve(r, w);
+        } catch {
+            return; // Refusing to start a second server is one of the two fixes.
+        }
+        await a.api("GET", "/api/prs");
+        await b.api("GET", "/api/prs");
+        expect((await decide(a, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
+        expect((await decide(b, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
+        expect(Object.keys(saved(a)).sort()).toEqual([
+            "compact-mantine/badge--default.light.png",
+            "compact-mantine/button--primary.dark.png",
+        ]);
+    });
 });
 
 describe("refreshing the targets", () => {
-    // Fails today: one PR's failed refresh replaces its loaded target with a blank failed one.
-    it.fails(
-        "One failed refresh discards targets that had already loaded (all PRs with --master-run, or one PR's target), with misleading 404s afterwards",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            let down = false;
-            const gh = async (args, input) => {
-                if (down && args[1]?.includes("head_sha=")) {
-                    throw new Error("HTTP 403: API rate limit exceeded for user ID 1.");
-                }
-                return w.gh(args, input);
-            };
-            const s = await serve(r, w, { gh: withRetries(gh, [0, 0, 0]) });
-            log = captureLog(vi);
-            await s.api("GET", "/api/prs");
-            expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
-            down = true;
-            const res = await s.api("GET", "/api/prs");
-            const t = res.body.targets.find((x) => x.id === "123");
-            expect(t).toMatchObject({ runId: 1000 });
-            expect(t.projects.reduce((n, p) => n + p.decided, 0)).toBe(1);
-            expect(JSON.stringify(t)).toMatch(/rate limit/);
-            expect((await decide(s, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
-        },
-    );
+    it("One failed refresh discards targets that had already loaded (all PRs with --master-run, or one PR's target), with misleading 404s afterwards", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        let down = false;
+        const gh = async (args, input) => {
+            if (down && args[1]?.includes("head_sha=")) {
+                throw new Error("HTTP 403: API rate limit exceeded for user ID 1.");
+            }
+            return w.gh(args, input);
+        };
+        const s = await serve(r, w, { gh: withRetries(gh, [0, 0, 0]) });
+        log = captureLog(vi);
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "compact-mantine", "badge--default.light.png", "accept")).status).toBe(200);
+        down = true;
+        const res = await s.api("GET", "/api/prs");
+        const t = res.body.targets.find((x) => x.id === "123");
+        expect(t).toMatchObject({ runId: 1000 });
+        expect(t.projects.reduce((n, p) => n + p.decided, 0)).toBe(1);
+        expect(JSON.stringify(t)).toMatch(/rate limit/);
+        expect((await decide(s, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
+    });
 
-    // Fails today: with --master-run, an unreadable pull request list empties the list of PRs.
-    it.fails(
-        "One failed refresh discards targets that had already loaded (all PRs with --master-run, or one PR's target), with misleading 404s afterwards (--master-run)",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            w.data.runs[r.master] = { id: 2000, attempt: 1 };
-            w.data.jobs[2000] = [job("compact-mantine"), job("graphty-element")];
-            w.data.artifacts[2000] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
-            let down = false;
-            const gh = async (args, input) => {
-                if (down && args[1]?.includes("/pulls?state=open")) {
-                    throw new Error("HTTP 502: Bad Gateway");
-                }
-                return w.gh(args, input);
-            };
-            const s = await startApp(r, { gh: withRetries(gh, [0, 0, 0]), masterRun: 2000 });
-            servers.push(s);
-            log = captureLog(vi);
-            await s.api("GET", "/api/prs");
-            down = true;
-            const res = await s.api("GET", "/api/prs");
-            expect(res.body.targets.map((t) => t.id).sort()).toEqual(["123", "master"]);
-            expect(JSON.stringify(res.body)).toMatch(/502/);
-        },
-    );
+    it("One failed refresh discards targets that had already loaded (all PRs with --master-run, or one PR's target), with misleading 404s afterwards (--master-run)", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        w.data.runs[r.master] = { id: 2000, attempt: 1 };
+        w.data.jobs[2000] = [job("compact-mantine"), job("graphty-element")];
+        w.data.artifacts[2000] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
+        let down = false;
+        const gh = async (args, input) => {
+            if (down && args[1]?.includes("/pulls?state=open")) {
+                throw new Error("HTTP 502: Bad Gateway");
+            }
+            return w.gh(args, input);
+        };
+        const s = await startApp(r, { gh: withRetries(gh, [0, 0, 0]), masterRun: 2000 });
+        servers.push(s);
+        log = captureLog(vi);
+        await s.api("GET", "/api/prs");
+        down = true;
+        const res = await s.api("GET", "/api/prs");
+        expect(res.body.targets.map((t) => t.id).sort()).toEqual(["123", "master"]);
+        expect(JSON.stringify(res.body)).toMatch(/502/);
+    });
 
-    // Fails today: run.status is never read, and a head without a run drops its PR.
-    it.fails(
-        "A CI run still in progress reads 'capture failed', and a new head with no run yet drops the PR from the list",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            w.data.runs[r.head] = { id: 1000, attempt: 1, status: "in_progress", conclusion: null };
-            w.data.jobs[1000] = [job("compact-mantine", null), job("graphty-element", null)];
-            w.data.artifacts[1000] = [];
-            w.data.prs.push({ number: 124, head: OTHER, branch: "other" });
-            const s = await serve(r, w);
-            const { body } = await s.api("GET", "/api/prs");
-            expect(projectOf(body, "123", "compact-mantine").problem).not.toBe("capture failed");
-            expect(body.targets.map((t) => t.id)).toContain("124");
-        },
-    );
+    it("A CI run still in progress reads 'capture failed', and a new head with no run yet drops the PR from the list", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        w.data.runs[r.head] = { id: 1000, attempt: 1, status: "in_progress", conclusion: null };
+        w.data.jobs[1000] = [job("compact-mantine", null), job("graphty-element", null)];
+        w.data.artifacts[1000] = [];
+        w.data.prs.push({ number: 124, head: OTHER, branch: "other" });
+        const s = await serve(r, w);
+        const { body } = await s.api("GET", "/api/prs");
+        expect(projectOf(body, "123", "compact-mantine").problem).not.toBe("capture failed");
+        expect(body.targets.map((t) => t.id)).toContain("124");
+    });
 
-    // Fails today: `includes` matches the first job whose name contains the project id.
-    it.fails("The graphty project is matched to the 'visual (graphty-element)' job", async () => {
+    it("The graphty project is matched to the 'visual (graphty-element)' job", async () => {
         const gh = async () =>
             JSON.stringify({
                 jobs: [
@@ -438,8 +399,7 @@ describe("refreshing the targets", () => {
         expect(out.graphty).toEqual({ conclusion: "success", url: "https://gh/job/g" });
     });
 
-    // Fails today: neither git fetch failure is logged, and a head that is not local reads as behind.
-    it.fails("Swallowed git fetch failures make the 'merge master first' badge wrong with no log", async () => {
+    it("Swallowed git fetch failures make the 'merge master first' badge wrong with no log", async () => {
         const r = makeRepo();
         const w = world(r);
         addPr124(w, OTHER, "deleted-branch");
@@ -452,25 +412,20 @@ describe("refreshing the targets", () => {
         expect(log.lines.some((l) => /fetch/.test(l))).toBe(true);
     });
 
-    // Fails today: `unexpected EOF` is not in the list of transient errors.
-    it.fails(
-        "Common gh transfer errors are not treated as transient, and git network steps are never retried",
-        async () => {
-            log = captureLog(vi);
-            let calls = 0;
-            const gh = withRetries(async () => {
-                if (++calls === 1) {
-                    throw new Error("unexpected EOF");
-                }
-                return "ok";
-            }, [0]);
-            expect(await gh(["run", "download", "1"])).toBe("ok");
-            expect(log.lines.some((l) => l.includes("retrying"))).toBe(true);
-        },
-    );
+    it("Common gh transfer errors are not treated as transient, and git network steps are never retried", async () => {
+        log = captureLog(vi);
+        let calls = 0;
+        const gh = withRetries(async () => {
+            if (++calls === 1) {
+                throw new Error("unexpected EOF");
+            }
+            return "ok";
+        }, [0]);
+        expect(await gh(["run", "download", "1"])).toBe("ok");
+        expect(log.lines.some((l) => l.includes("retrying"))).toBe(true);
+    });
 
-    // Fails today: an expired artifact is filtered out before the copy on disk is looked for.
-    it.fails("An expired artifact hides a capture already on disk and reads as 'capture failed'", async () => {
+    it("An expired artifact hides a capture already on disk and reads as 'capture failed'", async () => {
         const r = makeRepo();
         const w = world(r);
         copyFixture("compact-mantine", join(r.repo, "tmp/visual-review/1000-1/compact-mantine"), {
@@ -483,26 +438,21 @@ describe("refreshing the targets", () => {
         expect(projectOf(body, "123", "compact-mantine").problem).toBeNull();
     });
 
-    // Fails today: a cached results.json is trusted forever and its damage reads as "capture failed".
-    it.fails(
-        "A damaged cached artifact (bad results.json or a bad PNG) is never re-downloaded and is misreported",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            writeFileSync(join(s.tmp, "1000-1/compact-mantine/results.json"), "{");
-            log = captureLog(vi);
-            const { body } = await s.api("GET", "/api/prs");
-            const downloads = w.data.calls.filter((c) => c.startsWith("run download 1000 -n visual-compact-mantine-1"));
-            expect(downloads).toHaveLength(2);
-            expect(projectOf(body, "123", "compact-mantine").problem).toBeNull();
-            expect(log.lines.some((l) => l.includes("results.json"))).toBe(true);
-        },
-    );
+    it("A damaged cached artifact (bad results.json or a bad PNG) is never re-downloaded and is misreported", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        writeFileSync(join(s.tmp, "1000-1/compact-mantine/results.json"), "{");
+        log = captureLog(vi);
+        const { body } = await s.api("GET", "/api/prs");
+        const downloads = w.data.calls.filter((c) => c.startsWith("run download 1000 -n visual-compact-mantine-1"));
+        expect(downloads).toHaveLength(2);
+        expect(projectOf(body, "123", "compact-mantine").problem).toBeNull();
+        expect(log.lines.some((l) => l.includes("results.json"))).toBe(true);
+    });
 
-    // Fails today: only the running download removes its own .part- directory.
-    it.fails("Interrupted downloads leave .part- directories, and superseded runs are never pruned", async () => {
+    it("Interrupted downloads leave .part- directories, and superseded runs are never pruned", async () => {
         const r = makeRepo();
         const w = world(r);
         const tmp = join(r.dir, "downloads");
@@ -512,8 +462,7 @@ describe("refreshing the targets", () => {
         expect(existsSync(stale)).toBe(false);
     });
 
-    // Fails today: GET /api/prs awaits every target's downloads.
-    it.fails("One slow download holds the whole target list with no progress", async () => {
+    it("One slow download holds the whole target list with no progress", async () => {
         const r = makeRepo();
         const w = world(r);
         addPr124(w);
@@ -537,8 +486,7 @@ describe("refreshing the targets", () => {
         }
     });
 
-    // Fails today: every request for an unknown id runs a full refresh and answers a bare 404.
-    it.fails("Requests for a vanished target each run a full GitHub refresh and then answer a bare 404", async () => {
+    it("Requests for a vanished target each run a full GitHub refresh and then answer a bare 404", async () => {
         const r = makeRepo();
         const w = world(r);
         const s = await serve(r, w);
@@ -553,8 +501,7 @@ describe("refreshing the targets", () => {
         expect(last.body.error).not.toMatch(/^no such/);
     });
 
-    // Fails today: the review page lists only the projects in the server's own config.
-    it.fails("The review page lists only the projects in the server's local config", async () => {
+    it("The review page lists only the projects in the server's local config", async () => {
         const r = makeRepo();
         const w = world(r);
         w.data.artifacts[1000].push("visual-newproj-1");
@@ -568,119 +515,99 @@ describe("stalls", () => {
     // The knob a fix reads for its per-call timeout; rename it here if the fix names it otherwise.
     const TIMEOUT = "VISUAL_REVIEW_TIMEOUT_MS";
 
-    // Fails today: exec has no timeout, so a stalled fetch holds every page load.
-    it.fails(
-        "A stalled gh or git call hangs every page load, or holds the Finish lock forever, with no log line",
-        async () => {
-            process.env[TIMEOUT] = "500";
-            try {
-                const r = makeRepo();
-                const w = world(r);
-                log = captureLog(vi);
-                injector({
-                    rules: [{ on: "git", match: /^git fetch -q origin \+refs\/heads\/feature/, kind: "stall" }],
-                }).install();
-                const s = await serve(r, w);
-                const res = await within(3000, s.api("GET", "/api/prs"));
-                expect(res, "GET /api/prs never answered").not.toBeNull();
-                expect(log.lines.some((l) => l.includes("fetch"))).toBe(true);
-            } finally {
-                delete process.env[TIMEOUT];
-            }
-        },
-    );
+    it("A stalled gh or git call hangs every page load, or holds the Finish lock forever, with no log line", async () => {
+        process.env[TIMEOUT] = "500";
+        try {
+            const r = makeRepo();
+            const w = world(r);
+            log = captureLog(vi);
+            injector({
+                rules: [{ on: "git", match: /^git fetch -q origin \+refs\/heads\/feature/, kind: "stall" }],
+            }).install();
+            const s = await serve(r, w);
+            const res = await within(3000, s.api("GET", "/api/prs"));
+            expect(res, "GET /api/prs never answered").not.toBeNull();
+            expect(log.lines.some((l) => l.includes("fetch"))).toBe(true);
+        } finally {
+            delete process.env[TIMEOUT];
+        }
+    });
 
-    // Fails today: a stalled push keeps `finishing` set, so every decide answers BUSY.
-    it.fails(
-        "A stalled gh or git call hangs every page load, or holds the Finish lock forever, with no log line (Finish)",
-        async () => {
-            process.env[TIMEOUT] = "500";
-            try {
-                const r = makeRepo();
-                const w = world(r);
-                const s = await serve(r, w);
-                await s.api("GET", "/api/prs");
-                await decide(s, "compact-mantine", "badge--default.light.png", "accept");
-                injector({ rules: [{ on: "git", match: /^git push /, kind: "stall" }] }).install();
-                await s.api("POST", "/api/finish", { id: "123" });
-                const j = await within(3000, endedJob(s));
-                expect(j, "the Finish never ended").not.toBeNull();
-                expect(j.error).toMatch(/push/);
-                expect((await decide(s, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
-            } finally {
-                delete process.env[TIMEOUT];
-            }
-        },
-    );
+    it("A stalled gh or git call hangs every page load, or holds the Finish lock forever, with no log line (Finish)", async () => {
+        process.env[TIMEOUT] = "500";
+        try {
+            const r = makeRepo();
+            const w = world(r);
+            const s = await serve(r, w);
+            await s.api("GET", "/api/prs");
+            await decide(s, "compact-mantine", "badge--default.light.png", "accept");
+            injector({ rules: [{ on: "git", match: /^git push /, kind: "stall" }] }).install();
+            await s.api("POST", "/api/finish", { id: "123" });
+            const j = await within(3000, endedJob(s));
+            expect(j, "the Finish never ended").not.toBeNull();
+            expect(j.error).toMatch(/push/);
+            expect((await decide(s, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
+        } finally {
+            delete process.env[TIMEOUT];
+        }
+    });
 });
 
 describe("Finish", () => {
-    // Fails today: the pull request is opened outside the committed error path, and a retry
-    // refuses the branch it pushed.
-    it.fails(
-        "Master seed: the branch is pushed but opening its pull request fails, and every retry is refused with 'already exists on origin'",
-        async () => {
-            const r = makeRepo();
-            const master = { commit: r.master, headSha: null, pr: null };
-            const projects = {
-                "compact-mantine": copyFixture("compact-mantine", join(r.dir, "m/compact-mantine"), master),
-            };
-            let down = true;
-            const calls = [];
-            const gh = async (args) => {
-                calls.push(args.join(" "));
-                if (down && args[1] === "repos/{owner}/{repo}/pulls") {
-                    throw new Error(NET);
-                }
-                return JSON.stringify({ html_url: "https://gh/pull/9" });
-            };
-            const run = () =>
-                finish({
-                    repo: r.repo,
-                    gh,
-                    target: { pr: null, branch: null },
-                    projects,
-                    decisions: [accept("badge--default.light.png")],
-                    now: NOW,
-                    config: CONFIG,
-                });
-            const branch = "visual/seed-2026-09-27";
-            const err = await run().catch((e) => e);
-            const pushed = git(r.remote, "rev-parse", `refs/heads/${branch}`);
-            expect(err.committed).toBe(pushed);
-            expect(err.message).toContain(branch);
-            down = false;
-            calls.length = 0;
-            const out = await run();
-            expect(calls).toContain("api repos/{owner}/{repo}/pulls --input -");
-            expect(out.pullRequest).toBe("https://gh/pull/9");
-            expect(git(r.remote, "rev-parse", `refs/heads/${branch}`)).toBe(pushed);
-        },
-    );
+    it("Master seed: the branch is pushed but opening its pull request fails, and every retry is refused with 'already exists on origin'", async () => {
+        const r = makeRepo();
+        const master = { commit: r.master, headSha: null, pr: null };
+        const projects = {
+            "compact-mantine": copyFixture("compact-mantine", join(r.dir, "m/compact-mantine"), master),
+        };
+        let down = true;
+        const calls = [];
+        const gh = async (args) => {
+            calls.push(args.join(" "));
+            if (down && args[1] === "repos/{owner}/{repo}/pulls") {
+                throw new Error(NET);
+            }
+            return JSON.stringify({ html_url: "https://gh/pull/9" });
+        };
+        const run = () =>
+            finish({
+                repo: r.repo,
+                gh,
+                target: { pr: null, branch: null },
+                projects,
+                decisions: [accept("badge--default.light.png")],
+                now: NOW,
+                config: CONFIG,
+            });
+        const branch = "visual/seed-2026-09-27";
+        const err = await run().catch((e) => e);
+        const pushed = git(r.remote, "rev-parse", `refs/heads/${branch}`);
+        expect(err.committed).toBe(pushed);
+        expect(err.message).toContain(branch);
+        down = false;
+        calls.length = 0;
+        const out = await run();
+        expect(calls).toContain("api repos/{owner}/{repo}/pulls --input -");
+        expect(out.pullRequest).toBe("https://gh/pull/9");
+        expect(git(r.remote, "rev-parse", `refs/heads/${branch}`)).toBe(pushed);
+    });
 
-    // Fails today: a project that failed to load counts as nothing left undecided.
-    it.fails(
-        "Finish posts 'success, 0 left undecided' and its confirm says nothing while a project failed to load",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            w.data.artifacts[1000] = ["visual-compact-mantine-1"];
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            expect((await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" })).status).toBe(
-                200,
-            );
-            await decide(s, "compact-mantine", "tooltip--hover.png", "exclude", "races");
-            await decide(s, "compact-mantine", "menu--open.png", "exclude", "times out");
-            const j = await finishJob(s);
-            expect(j.error).toBeNull();
-            const status = w.data.posted.find((p) => p.path.includes("/statuses/"));
-            expect(status.body.state).toBe("pending");
-        },
-    );
+    it("Finish posts 'success, 0 left undecided' and its confirm says nothing while a project failed to load", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        w.data.artifacts[1000] = ["visual-compact-mantine-1"];
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        expect((await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" })).status).toBe(200);
+        await decide(s, "compact-mantine", "tooltip--hover.png", "exclude", "races");
+        await decide(s, "compact-mantine", "menu--open.png", "exclude", "times out");
+        const j = await finishJob(s);
+        expect(j.error).toBeNull();
+        const status = w.data.posted.find((p) => p.path.includes("/statuses/"));
+        expect(status.body.state).toBe("pending");
+    });
 
-    // Fails today: runFinish only stores the error; nothing reaches the log.
-    it.fails("Finish and other server failures are never written to the server log", async () => {
+    it("Finish and other server failures are never written to the server log", async () => {
         const r = makeRepo();
         const w = world(r);
         const s = await serve(r, w);
@@ -694,27 +621,22 @@ describe("Finish", () => {
         expect(log.lines.some((l) => l.includes("123") && l.includes(first))).toBe(true);
     });
 
-    // Fails today: the save after a successful push turns the whole Finish into a failure.
-    it.fails(
-        "A save failure after a successful push reports the Finish as failed, and can crash the server on an unhandled rejection",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            await decide(s, "compact-mantine", "badge--default.light.png", "accept");
-            injector({
-                rules: [{ on: "fs", match: /^fs\.writeFileSync .*state\/123\.json/, kind: "denied" }],
-            }).install();
-            const j = await finishJob(s);
-            expect(j.result?.commit).toBe(git(r.remote, "rev-parse", "feature"));
-            expect(j.error).toBeNull();
-            expect(JSON.stringify(j)).toMatch(/EACCES/);
-        },
-    );
+    it("A save failure after a successful push reports the Finish as failed, and can crash the server on an unhandled rejection", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        await decide(s, "compact-mantine", "badge--default.light.png", "accept");
+        injector({
+            rules: [{ on: "fs", match: /^fs\.writeFileSync .*state\/123\.json/, kind: "denied" }],
+        }).install();
+        const j = await finishJob(s);
+        expect(j.result?.commit).toBe(git(r.remote, "rev-parse", "feature"));
+        expect(j.error).toBeNull();
+        expect(JSON.stringify(j)).toMatch(/EACCES/);
+    });
 
-    // Fails today: the throw from finally replaces the pushed commit.
-    it.fails("A removeWorktree failure in finally hides a successful push", async () => {
+    it("A removeWorktree failure in finally hides a successful push", async () => {
         const s = finishSetup();
         injector({ rules: [{ on: "git", match: /^git worktree prune/, nth: 2, kind: "partial write" }] }).install();
         const out = await s.run([accept("badge--default.light.png")]).catch((e) => e);
@@ -724,73 +646,76 @@ describe("Finish", () => {
         expect(out.commit).toBe(tip);
     });
 
-    // Fails today: `worktree remove --force` refuses a locked tree.
-    it.fails(
-        "A server killed during `git worktree add` leaves a locked worktree that blocks every later Finish on that target",
-        async () => {
-            const s = finishSetup();
-            const tree = join(s.repo, CONFIG.workDir, "worktrees", "accept-123");
-            git(s.repo, "worktree", "add", "-q", "--detach", tree, s.head);
-            git(s.repo, "worktree", "lock", "--reason", "initializing", tree);
-            const out = await s.run([accept("badge--default.light.png")]).catch((e) => e);
-            expect(out).not.toBeInstanceOf(Error);
-            expect(out.commit).toBe(git(s.remote, "rev-parse", "feature"));
-        },
-    );
+    it("A server killed during `git worktree add` leaves a locked worktree that blocks every later Finish on that target", async () => {
+        const s = finishSetup();
+        const tree = join(s.repo, CONFIG.workDir, "worktrees", "accept-123");
+        git(s.repo, "worktree", "add", "-q", "--detach", tree, s.head);
+        git(s.repo, "worktree", "lock", "--reason", "initializing", tree);
+        const out = await s.run([accept("badge--default.light.png")]).catch((e) => e);
+        expect(out).not.toBeInstanceOf(Error);
+        expect(out.commit).toBe(git(s.remote, "rev-parse", "feature"));
+    });
 
-    // Fails today: the refresh and Finish fetch the same remote-tracking ref with no coordination.
-    it.fails(
-        "A reload during Finish runs a concurrent git fetch into the same remote-tracking refs, which can fail Finish on a ref lock",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const s = await serve(r, w);
-            await s.api("GET", "/api/prs");
-            await decide(s, "compact-mantine", "badge--default.light.png", "accept");
-            // git takes a lock on each ref it updates; a second fetch of the same ref while the first
-            // holds it fails as git does. The page's reload holds its fetch of master open.
-            const locked = new Set();
-            let reached;
-            const atFetch = new Promise((resolve) => (reached = resolve));
-            let release;
-            const gate = new Promise((resolve) => (release = resolve));
-            hooks.exec = async (real, cmd, args, options) => {
-                const ref =
-                    cmd === "git" &&
-                    args.includes("fetch") &&
-                    args.find((a) => a.endsWith(":refs/remotes/origin/master"));
-                if (!ref) {
-                    return real(cmd, args, options);
+    it("A reload during Finish runs a concurrent git fetch into the same remote-tracking refs, which can fail Finish on a ref lock", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const s = await serve(r, w);
+        await s.api("GET", "/api/prs");
+        await decide(s, "compact-mantine", "badge--default.light.png", "accept");
+        // git takes a lock on each ref it updates; a second fetch of the same ref while the first
+        // holds it fails as git does. The page's reload holds its fetch of master open.
+        const locked = new Set();
+        let reached;
+        const atFetch = new Promise((resolve) => (reached = resolve));
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        hooks.exec = async (real, cmd, args, options) => {
+            const ref =
+                cmd === "git" && args.includes("fetch") && args.find((a) => a.endsWith(":refs/remotes/origin/master"));
+            if (!ref) {
+                return real(cmd, args, options);
+            }
+            if (locked.has(ref)) {
+                throw new Error(
+                    "error: cannot lock ref 'refs/remotes/origin/master': Unable to create '.git/refs/remotes/origin/master.lock': File exists.",
+                );
+            }
+            locked.add(ref);
+            try {
+                if (!args.includes("-c")) {
+                    reached();
+                    await gate;
                 }
-                if (locked.has(ref)) {
-                    throw new Error(
-                        "error: cannot lock ref 'refs/remotes/origin/master': Unable to create '.git/refs/remotes/origin/master.lock': File exists.",
-                    );
-                }
-                locked.add(ref);
-                try {
-                    if (!args.includes("-c")) {
-                        reached();
-                        await gate;
-                    }
-                    return await real(cmd, args, options);
-                } finally {
-                    locked.delete(ref);
-                }
-            };
-            const reload = s.api("GET", "/api/prs");
-            await atFetch;
-            const begun = s.api("POST", "/api/finish", { id: "123" });
-            await begun;
-            const j = await endedJob(s);
-            release();
-            await reload;
-            expect(j.error).toBeNull();
-        },
-    );
+                return await real(cmd, args, options);
+            } finally {
+                locked.delete(ref);
+            }
+        };
+        const reload = s.api("GET", "/api/prs");
+        await atFetch;
+        const begun = s.api("POST", "/api/finish", { id: "123" });
+        await begun;
+        const j = await endedJob(s);
+        release();
+        await reload;
+        expect(j.error).toBeNull();
+    });
 
-    // Fails today: git's own "[rejected] ... git pull" text is shown as the instruction.
-    it.fails("A non-fast-forward push rejection shows git's 'git pull' hint as the instruction", async () => {
+    it("A restart during Finish loses the job: the page shows the plain target list and the server log says nothing (server)", async () => {
+        const r = makeRepo();
+        const tmp = join(r.repo, "tmp/visual-review");
+        mkdirSync(join(tmp, "state"), { recursive: true });
+        const running = { id: 3, target: "123", pr: 123, branch: "feature", running: true, step: "pushing" };
+        writeFileSync(join(tmp, "state/finish.json"), JSON.stringify({ ...running, result: null, error: null }));
+        log = captureLog(vi);
+        const s = await serve(r, world(r));
+        const { job: j } = (await s.api("GET", "/api/finish-status")).body;
+        expect(j).toMatchObject({ id: 3, running: false, interrupted: true });
+        expect(j.error).toMatch(/pushing.*feature/);
+        expect(log.lines.some((l) => l.includes("feature"))).toBe(true);
+    });
+
+    it("A non-fast-forward push rejection shows git's 'git pull' hint as the instruction", async () => {
         const s = finishSetup();
         injector({
             rules: [{ on: "git", match: /^git push /, before: () => pushCommit(s.remote, "feature", "late.txt") }],
@@ -800,8 +725,7 @@ describe("Finish", () => {
 });
 
 describe("the session token", () => {
-    // Fails today: an empty token file yields an empty token, which every request matches.
-    it.fails("An empty token file disables authentication", async () => {
+    it("An empty token file disables authentication", async () => {
         const dir = mkdtempSync(join(tmpdir(), "vr-token-"));
         writeFileSync(join(dir, "token"), "\n");
         expect(sessionToken(dir).length).toBeGreaterThan(20);

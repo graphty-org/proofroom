@@ -83,7 +83,7 @@ async function finishJob(s, id) {
 }
 
 describe("serve: pull requests", () => {
-    it("lists every open pull request with a CI run, with counts per project", async () => {
+    it("lists every open pull request, with counts per project, and one without a CI run as waiting", async () => {
         const s = await start({
             gh: (r) =>
                 fakeGh({
@@ -102,7 +102,8 @@ describe("serve: pull requests", () => {
         });
         const { status, body } = await s.api("GET", "/api/prs");
         expect(status).toBe(200);
-        expect(body.targets.map((t) => t.id)).toEqual(["123"]);
+        expect(body.targets.map((t) => t.id)).toEqual(["123", "124"]);
+        expect(body.targets[1].projects[0].problem).toBe("waiting for CI on 4444444444");
         const [pr] = body.targets;
         expect(pr).toMatchObject({ pr: 123, runId: 1000, branch: "feature", mergeMasterFirst: false });
         const cm = pr.projects.find((p) => p.project === "compact-mantine");

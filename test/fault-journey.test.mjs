@@ -59,16 +59,13 @@ async function journey(seed, faults = {}, length = 9) {
     w.data.jobs[1001] = [job("compact-mantine"), job("graphty-element")];
     w.data.artifacts[1001] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
 
-    let finishing = false;
     const where = faults.where ?? (() => false);
     const quiet = faults.quiet === true;
     const inj = injector({
         seed,
         rate: faults.rate ?? 0,
         kinds: faults.kinds ?? null,
-        // A state write failing inside a Finish can crash the test process today (an unhandled
-        // rejection, a scenario of its own), so the state file never fails while one runs.
-        where: (on, label, n) => where(on, label, n) && !(finishing && on === "fs"),
+        where,
         normalize: (l) =>
             l
                 .replaceAll(r.dir, "<dir>")
@@ -146,7 +143,11 @@ async function journey(seed, faults = {}, length = 9) {
                 assertVisible("GET /api/prs", res, got.lines, got.faults, false, quiet);
                 return res.status;
             }
-            const shown = res.body.targets.some((t) => t.projects.some((p) => p.problem !== null));
+            // Shown: a project's problem, a target kept from before with why it was not refreshed,
+            // or the pull request list that could not be read.
+            const shown =
+                res.body.warning !== null ||
+                res.body.targets.some((t) => t.warnings.length > 0 || t.projects.some((p) => p.problem !== null));
             assertVisible("GET /api/prs", res, got.lines, got.faults, shown, quiet);
             assertOthersIntact(listed, res.body.targets, faultedIds(got.faults));
             listed = new Map(res.body.targets.map((t) => [t.id, t]));
@@ -225,17 +226,15 @@ async function journey(seed, faults = {}, length = 9) {
             .filter(([k, d]) => d.decision === "accept" && itemOf(k)?.status !== "removed")
             .map(([k]) => `visual-baselines/${k.split("|")[1]}/${k.split("|")[2]}`);
         const m = mark();
-        finishing = true;
         const res = await s.api("POST", "/api/finish", { id: "123" });
         const j = res.status === 202 ? await endedJob(s) : null;
-        finishing = false;
         const got = since(m);
         if (!j) {
             assertVisible("POST /api/finish", res, got.lines, got.faults, false, quiet);
             return { status: res.status, error: res.body.error };
         }
         assertOneCommitOrNone(r.remote, "feature", r.head, j, paths);
-        const problem = j.error ?? j.result?.statusError ?? null;
+        const problem = j.error ?? j.result?.statusError ?? (j.warnings.join("; ") || null);
         assertVisible(
             "Finish",
             { status: 202, body: { error: problem } },
@@ -329,26 +328,17 @@ describe("random journeys", () => {
     });
 
     const SEEDS = only ?? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    const everySeed = async (faults) => {
-        for (const seed of SEEDS) {
-            const violation = report(await journey(seed, faults));
-            if (violation) {
-                throw new Error(violation);
-            }
-        }
-    };
 
-    // Fails today, mostly on failures the server never logs or swallows (a failed state write
-    // answered 500 with no log line, a refresh fetch that fails silently, an unreadable state file
-    // read as empty). Each fix removes violations; when none is left, this becomes a plain it().
-    it.fails("keeps every invariant under random gh, git and state-file failures", () =>
-        everySeed({ rate: 0.12, where: () => true }),
-    );
+    it.each(SEEDS)("keeps every invariant under random gh, git and state-file failures (seed %i)", async (seed) => {
+        expect(report(await journey(seed, { rate: 0.12, where: () => true }))).toBeNull();
+    });
 
     // The same journeys, looking past unlogged and swallowed failures to the decisions and the
-    // commits. Fails today: a state write that fails still changes the server's memory, so a
-    // decision the page was told failed is kept (and Finish would commit it).
-    it.fails("keeps every decision and every commit whole under random gh, git and state-file failures", () =>
-        everySeed({ rate: 0.12, where: () => true, quiet: true }),
+    // commits.
+    it.each(SEEDS)(
+        "keeps every decision and every commit whole under random gh, git and state-file failures (seed %i)",
+        async (seed) => {
+            expect(report(await journey(seed, { rate: 0.12, where: () => true, quiet: true }))).toBeNull();
+        },
     );
 });

@@ -32,10 +32,13 @@ const EXCLUDABLE = new Set([...DECIDABLE, "unstable", "failed"]);
 /**
  * Refused decisions and failed git commands; the message is shown to the owner as is.
  * `committed` is set when the accepts were already pushed and only the reject comment failed,
- * so the caller drops the accepts and keeps the rejects for a retry that only comments.
+ * so the caller drops the accepts and keeps the rejects for a retry that only comments. On
+ * master, `pullRequestMissing` is set too when opening the seed's pull request failed: the caller
+ * keeps the accepts, and the retry opens the pull request for the branch already pushed.
  */
 export class AcceptError extends Error {
     committed = null;
+    pullRequestMissing = false;
 }
 
 /**
@@ -48,6 +51,7 @@ export class AcceptError extends Error {
  * with it, so the hooks path points nowhere. Signing is left as the repository configures it, so
  * the commit carries the owner's identity and signature. GIT_LFS_SKIP_SMUDGE keeps the worktree's
  * checkout from downloading every baseline image: untouched baselines stay pointer files there.
+ * GIT_TERMINAL_PROMPT=0 makes a credential prompt fail instead of waiting on a terminal.
  * @param {string} cwd the repository or worktree
  * @param {string[]} args git's arguments
  * @param {string} [input] stdin
@@ -57,7 +61,7 @@ const git = (cwd, args, input) =>
     exec("git", ["-c", "core.hooksPath=/dev/null", ...args], {
         cwd,
         input,
-        env: { ...process.env, HUSKY: "0", GIT_LFS_SKIP_SMUDGE: "1" },
+        env: { ...process.env, HUSKY: "0", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0" },
     });
 
 /** Images per `git lfs push --object-id`, so a large seed reports its upload as it goes. */
@@ -185,6 +189,7 @@ function check(projects, decisions) {
  * @param {{ project: string, file: string, decision: string, reason: string | null }[]} input.decisions
  *     what the owner decided: accept, reject or exclude (checked here)
  * @param {number} [input.undecided] how many reviewable items are left undecided, for the status
+ * @param {string[]} [input.unloaded] the projects whose capture did not load, so nobody reviewed them
  * @param {Date} [input.now] the review time
  * @param {(step: string) => void} [input.progress] told each step as it starts, for the page
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
@@ -200,6 +205,7 @@ export async function finish({
     projects,
     decisions,
     undecided = 0,
+    unloaded = [],
     now = new Date(),
     progress = () => {},
     config,
@@ -220,12 +226,22 @@ export async function finish({
         ({ commit, branch } = await commitAccepts({ repo, target, accepts, first, now, progress, config }));
         if (isMaster) {
             progress("opening the pull request");
-            pullRequest = await createPullRequest(gh, {
-                title: `${config.commitPrefix}: seed visual baselines`,
-                head: branch,
-                base: config.defaultBranch,
-                body: seedBody(first, accepts, rejects, config.defaultBranch),
-            });
+            try {
+                pullRequest = await createPullRequest(gh, {
+                    title: `${config.commitPrefix}: seed visual baselines`,
+                    head: branch,
+                    base: config.defaultBranch,
+                    body: seedBody(first, accepts, rejects, config.defaultBranch),
+                });
+            } catch (err) {
+                const e = new AcceptError(
+                    `${branch} was pushed as ${commit.slice(0, 10)}, but opening its pull request failed: ` +
+                        `${err.message}. Press Finish again to open it.`,
+                );
+                e.committed = commit;
+                e.pullRequestMissing = true;
+                throw e;
+            }
         }
     }
     if (rejects.length > 0) {
@@ -259,10 +275,10 @@ export async function finish({
     // none. A failure here does not undo what was pushed and posted; the page shows it.
     const accepted = accepts.filter((a) => a.decision === "accept").length;
     const excluded = accepts.length - accepted;
-    const state = rejects.length > 0 ? "failure" : undecided > 0 ? "pending" : "success";
+    const state = rejects.length > 0 ? "failure" : undecided > 0 || unloaded.length > 0 ? "pending" : "success";
     const status =
         `Reviewed: ${accepted} accepted, ${rejects.length} rejected, ${excluded} excluded, ` +
-        `${undecided} left undecided`;
+        `${undecided} left undecided${unloaded.length > 0 ? `, not loaded: ${unloaded.join(", ")}` : ""}`;
     let statusError = null;
     progress("posting the status");
     try {
@@ -287,7 +303,11 @@ export async function finish({
  */
 async function commitAccepts({ repo, target, accepts, first, now, progress, config }) {
     const { baselines, defaultBranch } = config;
-    const tracking = `refs/remotes/origin/${defaultBranch}`;
+    // Finish fetches into refs of its own, never the remote-tracking refs a page reload fetches
+    // into at the same time (two fetches of one ref fail on its lock).
+    const own = (b) => `refs/visual-review/origin/${b}`;
+    const fetch = (b) => git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${own(b)}`]);
+    const tracking = own(defaultBranch);
     const isMaster = target.pr === null;
     const lfs = await lfsProblem(repo);
     if (lfs) {
@@ -319,19 +339,27 @@ async function commitAccepts({ repo, target, accepts, first, now, progress, conf
         }
     }
 
-    await git(repo, ["fetch", "-q", "origin", `+refs/heads/${defaultBranch}:${tracking}`]);
+    await fetch(defaultBranch);
     if (isMaster) {
         if ((await git(repo, ["ls-remote", "--heads", "origin", branch])) !== "") {
+            // A seed this tool pushed whose pull request failed to open is used as it is.
+            // ponytail: assumes the decisions did not change since that push; compare the trees if
+            // they can.
+            await fetch(branch);
+            const [subject, parent] = (await git(repo, ["log", "-1", "--format=%s%n%P", own(branch)])).split("\n");
+            if (subject === `${config.commitPrefix}: seed visual baselines` && parent === base) {
+                return { commit: await git(repo, ["rev-parse", own(branch)]), branch };
+            }
             throw new AcceptError(`${branch} already exists on origin: merge or delete it first`);
         }
     } else {
-        await git(repo, ["fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
-        if ((await git(repo, ["rev-parse", `refs/remotes/origin/${branch}`])) !== base) {
+        await fetch(branch);
+        if ((await git(repo, ["rev-parse", own(branch)])) !== base) {
             throw new AcceptError("capture is stale, wait for CI: the branch has moved past the captured head");
         }
     }
     for (const project of new Set(accepts.map((a) => a.project))) {
-        if (await behindMaster(repo, base, project, config)) {
+        if (await behindMaster(repo, base, project, config, tracking)) {
             throw new AcceptError(
                 `merge ${defaultBranch} into the branch first: ${defaultBranch} has newer ${project} baselines`,
             );
@@ -406,12 +434,22 @@ async function commitAccepts({ repo, target, accepts, first, now, progress, conf
         progress("uploading images to LFS (checking the commit has them all)");
         await git(tree, ["lfs", "push", "origin", "HEAD"]);
         progress("pushing");
-        await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]);
+        await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]).catch((err) => {
+            // git's own advice ("git pull") is wrong here: the capture no longer matches the branch.
+            throw /\[rejected\].*\((fetch first|non-fast-forward)\)/.test(err.message)
+                ? new AcceptError(
+                      "capture is stale, wait for CI: the branch moved past the captured head while Finish ran; nothing was pushed",
+                  )
+                : err;
+        });
         return { commit: await git(tree, ["rev-parse", "HEAD"]), branch };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
-        await removeWorktree(repo, tree);
+        // A cleanup failure must not hide what was pushed; the next Finish removes the tree.
+        await removeWorktree(repo, tree).catch((err) =>
+            console.error(`visual-review: could not remove the accept worktree ${tree}: ${err.message}`),
+        );
     }
 }
 
@@ -421,17 +459,17 @@ async function commitAccepts({ repo, target, accepts, first, now, progress, conf
  * @param {string} head the captured head
  * @param {string} project the project id
  * @param {{ defaultBranch: string, baselines: string }} config the settings
+ * @param {string} [tracking] the fetched default branch
  * @returns {Promise<boolean>} true when the branch must merge the default branch before an accept
  */
-export async function behindMaster(repo, head, project, { defaultBranch, baselines }) {
-    const newest = await git(repo, [
-        "log",
-        "-1",
-        "--format=%H",
-        `refs/remotes/origin/${defaultBranch}`,
-        "--",
-        `${baselines}/${project}/`,
-    ]);
+export async function behindMaster(
+    repo,
+    head,
+    project,
+    { defaultBranch, baselines },
+    tracking = `refs/remotes/origin/${defaultBranch}`,
+) {
+    const newest = await git(repo, ["log", "-1", "--format=%H", tracking, "--", `${baselines}/${project}/`]);
     return newest !== "" && !(await gitOk(repo, ["merge-base", "--is-ancestor", newest, head]));
 }
 
@@ -487,7 +525,8 @@ async function put(path, data) {
 
 async function removeWorktree(repo, tree) {
     if (existsSync(tree)) {
-        await git(repo, ["worktree", "remove", "--force", tree]);
+        // Twice: a server killed during `worktree add` leaves the tree locked ("initializing").
+        await git(repo, ["worktree", "remove", "--force", "--force", tree]);
     }
     await git(repo, ["worktree", "prune"]);
 }
