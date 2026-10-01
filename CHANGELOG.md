@@ -1,3 +1,17 @@
+## 0.1.2 (2026-10-01)
+
+### 🚀 Features
+
+- **workspace:** lay the changed pixels over the images, blink them, make the box optional ([1b12ba88](https://github.com/graphty-org/graphty-monorepo/commit/1b12ba88))
+
+### 🩹 Fixes
+
+- **visual-review:** download each capture once and atomically ([d86b594e](https://github.com/graphty-org/graphty-monorepo/commit/d86b594e))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.1.1 (2026-09-30)
 
 ### 🚀 Features
