@@ -15,6 +15,12 @@
  * iPad) keeps one request open. POST /api/finish starts it and GET /api/finish-status reports its
  * step, then its result or error, so a reload finds the running Finish. The job is also written
  * to `<tmp>/state/finish.json`, so a server restarted during a Finish says it was interrupted.
+ *
+ * The list of targets is cached: `GET /api/prs?cached=1` answers at once with the cache, its age
+ * and the progress of a refresh, and `?refresh=1` starts one in the background, so the page never
+ * waits on GitHub to change screens. A target whose captures are still downloading is listed with
+ * `downloading: true` and rebuilt in the cache when they land. Grid tiles load thumbnails
+ * (`GET /api/thumb/...`) that the server scales down once and keeps on disk.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -23,7 +29,9 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AcceptError, behindMaster, cleanReason, decisionProblem, finish } from "./accept.mjs";
+import { PNG } from "pngjs";
+
+import { AcceptError, behindMaster, cleanReason, commitStatus, decisionProblem, finish } from "./accept.mjs";
 import { downloadCaptures, exec, getRun, newestCiRun, openPullRequests, visualJobs } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
 import { validateResults } from "./results.mjs";
@@ -57,6 +65,50 @@ const PATIENCE = 1000;
 // An unknown target id refreshes from GitHub at most this often: a closed pull request's open
 // grid asks for dozens of images at once.
 const UNKNOWN_REFRESH = 60000;
+// A grid tile is about 190 CSS pixels wide: 400 image pixels keep it sharp on a 2x screen, at
+// about a thirtieth of a 2400 x 1800 capture's memory once decoded.
+const THUMB_WIDTH = 400;
+
+/**
+ * A PNG scaled down to `width` pixels across (never up), each output pixel the average of the
+ * source pixels under it. For display in the grid only: comparisons use the full images.
+ * @param {Buffer} bytes the PNG
+ * @param {number} width the widest the result may be
+ * @returns {Buffer} the smaller PNG
+ */
+export function thumbnail(bytes, width = THUMB_WIDTH) {
+    const src = PNG.sync.read(bytes);
+    const w = Math.min(width, src.width);
+    const h = Math.max(1, Math.round((src.height * w) / src.width));
+    const out = new PNG({ width: w, height: h });
+    for (let y = 0; y < h; y++) {
+        const [y0, y1] = [
+            Math.floor((y * src.height) / h),
+            Math.max(Math.floor(((y + 1) * src.height) / h), 1 + Math.floor((y * src.height) / h)),
+        ];
+        for (let x = 0; x < w; x++) {
+            const [x0, x1] = [
+                Math.floor((x * src.width) / w),
+                Math.max(Math.floor(((x + 1) * src.width) / w), 1 + Math.floor((x * src.width) / w)),
+            ];
+            const sum = [0, 0, 0, 0];
+            for (let sy = y0; sy < y1; sy++) {
+                for (let sx = x0; sx < x1; sx++) {
+                    const i = (sy * src.width + sx) * 4;
+                    for (let c = 0; c < 4; c++) {
+                        sum[c] += src.data[i + c];
+                    }
+                }
+            }
+            const n = (y1 - y0) * (x1 - x0);
+            const o = (y * w + x) * 4;
+            for (let c = 0; c < 4; c++) {
+                out.data[o + c] = Math.round(sum[c] / n);
+            }
+        }
+    }
+    return PNG.sync.write(out);
+}
 
 /**
  * The image a decision was taken on: the capture, or for a removed item its baseline.
@@ -354,7 +406,27 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             new Promise((resolve) => setTimeout(resolve, PATIENCE, null).unref()),
         ]);
         if (!downloaded) {
-            return blank(info, "downloading the captures: reload in a moment", run);
+            // Listed as downloading, and rebuilt in the cache when the download lands, so the page
+            // (which asks again every few seconds) fills the rows in without a refresh.
+            downloads
+                .then(async () => {
+                    await refreshing?.catch(() => {});
+                    const shown = targets.get(info.id);
+                    if (shown?.downloading && shown.runId === run.id && shown.runAttempt === run.attempt) {
+                        const built = await build(info, run);
+                        await decorate(built);
+                        if (targets.get(info.id) === shown) {
+                            targets.set(info.id, built);
+                        }
+                    }
+                })
+                .catch((err) => console.error(`visual-review: rebuilding ${info.id} failed: ${err.message}`));
+            const t = blank(info, null, run);
+            t.downloading = true;
+            for (const p of t.projects) {
+                p.downloading = true;
+            }
+            return t;
         }
         const list = [];
         for (const name of names) {
@@ -405,11 +477,26 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     // Concurrent callers (the startup refresh, the page's first request) share one refresh.
     let refreshing = null;
     let refreshedAt = 0;
+    let loadedOnce = false;
+    /** What the running refresh is doing, for the page: a step, a count, and when it began. */
+    let progress = null;
+    const step = (name, done = null, total = null) => {
+        if (progress) {
+            Object.assign(progress, { step: name, done, total });
+        }
+    };
     const refresh = () =>
-        (refreshing ??= load().finally(() => {
-            refreshing = null;
-            refreshedAt = Date.now();
-        }));
+        (refreshing ??= (async () => {
+            progress = { step: "starting", done: null, total: null, startedAt: Date.now() };
+            try {
+                await load();
+                loadedOnce = true;
+            } finally {
+                refreshing = null;
+                refreshedAt = Date.now();
+                progress = null;
+            }
+        })());
 
     async function load() {
         const next = new Map();
@@ -442,6 +529,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             // master seed still loads.
             listWarnings = [];
             const kept = [...targets.values()].filter((t) => t.pr !== null);
+            step("listing pull requests");
             const prs = await openPullRequests(gh).catch((err) => {
                 if (!masterRun && kept.length === 0) {
                     throw err;
@@ -482,6 +570,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 }
             })();
             // Every pull request at once: one after another took about 40 s for 18 of them.
+            let found = 0;
+            step("finding CI runs", 0, prs.length);
             const built = await Promise.all(
                 prs.map(async (pr) => {
                     const info = {
@@ -498,12 +588,16 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                             : blank(info, `waiting for CI on ${pr.headSha.slice(0, 10)}`);
                     } catch (err) {
                         return keptOr(info, err);
+                    } finally {
+                        step("finding CI runs", ++found, prs.length);
                     }
                 }),
             );
+            step("fetching branches");
             await fetched;
             for (const t of built) next.set(t.id, t);
             if (masterRun) {
+                step(`reading ${defaultBranch}'s CI run`);
                 const info = { id: "master", pr: null, title: defaultBranch, url: null, branch: null };
                 next.set(
                     "master",
@@ -513,32 +607,40 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 );
             }
         }
+        step("checking the baselines", 0, next.size);
+        let checked = 0;
         for (const t of next.values()) {
-            const first = t.projects.find((p) => p.results)?.results;
-            t.commit = first?.commit ?? null;
-            t.headSha = first?.headSha ?? null;
-            const base = t.pr === null ? t.commit : t.headSha;
-            t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config.baselines);
-            // null: unknown, when the captured head was never fetched or git fails.
-            const known =
-                base !== null &&
-                (await exec("git", ["cat-file", "-e", `${base}^{commit}`], { cwd: repo }).then(
-                    () => true,
-                    () => false,
-                ));
-            t.mergeMasterFirst = false;
-            for (const p of t.projects) {
-                if (!t.local && p.results && base) {
-                    const behind = known ? await behindMaster(repo, base, p.project, config).catch(() => null) : null;
-                    if (behind !== false && t.mergeMasterFirst !== true) {
-                        t.mergeMasterFirst = behind;
-                    }
-                }
-            }
+            await decorate(t);
+            step("checking the baselines", ++checked, next.size);
         }
         signer = await signingIdentity(repo);
         targets = next;
         prune();
+    }
+
+    // A target's captured commits, its earlier accepts and whether it is behind the default branch.
+    async function decorate(t) {
+        const first = t.projects.find((p) => p.results)?.results;
+        t.commit = first?.commit ?? null;
+        t.headSha = first?.headSha ?? null;
+        const base = t.pr === null ? t.commit : t.headSha;
+        t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config.baselines);
+        // null: unknown, when the captured head was never fetched or git fails.
+        const known =
+            base !== null &&
+            (await exec("git", ["cat-file", "-e", `${base}^{commit}`], { cwd: repo }).then(
+                () => true,
+                () => false,
+            ));
+        t.mergeMasterFirst = false;
+        for (const p of t.projects) {
+            if (!t.local && p.results && base) {
+                const behind = known ? await behindMaster(repo, base, p.project, config).catch(() => null) : null;
+                if (behind !== false && t.mergeMasterFirst !== true) {
+                    t.mergeMasterFirst = behind;
+                }
+            }
+        }
     }
 
     // Deletes the downloads of runs no target shows any more (never state/). Not while a Finish
@@ -582,6 +684,10 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             commit: t.commit,
             headSha: t.headSha,
             mergeMasterFirst: t.mergeMasterFirst,
+            downloading: t.downloading === true,
+            defaultBranch,
+            // Decisions the next Finish would publish (a reject an earlier Finish posted is not).
+            unpublished: [...decided.values()].filter((d) => !d.posted).length,
             warnings,
             signer,
             startCommand,
@@ -596,6 +702,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 return {
                     project: p.project,
                     problem: p.problem,
+                    downloading: p.downloading === true,
                     logUrl: p.logUrl,
                     counts,
                     reviewable,
@@ -645,15 +752,122 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             : body.runId === undefined || (body.runId === t.runId && body.runAttempt === t.runAttempt);
     const CHANGED = "the capture changed since the page loaded it (a new CI run or attempt): reload the page";
 
+    /**
+     * The decisions a Finish of `t` would apply now: every one but the rejects an earlier Finish
+     * already posted, in a fixed order, and a digest of them that changes when any of them does.
+     * @param {object} t the target
+     * @returns {{ list: { project: string, file: string, decision: string, reason: string | null }[],
+     *     digest: string }} the decisions and their digest
+     */
+    const finishList = (t) => {
+        const list = [...decisionsOf(t)]
+            .filter(([, v]) => !v.posted)
+            .sort(([a], [b]) => (a < b ? -1 : 1))
+            .map(([k, v]) => {
+                const at = k.indexOf("/");
+                return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
+            });
+        return { list, digest: createHash("sha256").update(JSON.stringify(list)).digest("hex") };
+    };
+    const CHANGED_SINCE = "Decisions changed since this sheet opened: check the summary again.";
+
+    // What Finish's sheet states before it runs: what it commits and posts, and the status it sets.
+    const finishPreview = (t) => {
+        const { list, digest } = finishList(t);
+        const s = summary(t);
+        const count = (d) => list.filter((x) => x.decision === d).length;
+        const unloaded = t.projects.filter((p) => !p.results).map((p) => p.project);
+        const undecided = s.projects.reduce((n, p) => n + p.undecided, 0);
+        const notes = list
+            .filter((x) => x.reason !== null && x.decision !== "exclude")
+            .map((x) => ({ decision: x.decision, project: x.project, file: x.file, note: x.reason }));
+        return {
+            accepts: count("accept"),
+            excludes: count("exclude"),
+            rejects: count("reject"),
+            acceptNotes: notes.filter((n) => n.decision === "accept").length,
+            notes,
+            notOpened: s.projects.reduce((n, p) => n + p.notOpened, 0),
+            undecided: s.projects
+                .filter((p) => p.undecided > 0)
+                .map((p) => ({ project: p.project, undecided: p.undecided })),
+            unloaded,
+            status: commitStatus({
+                accepted: count("accept"),
+                rejected: count("reject"),
+                excluded: count("exclude"),
+                undecided,
+                unloaded,
+            }),
+            digest,
+        };
+    };
+
+    // The unpublished count after a write, so the page's Finish button stays current.
+    const unpublishedOf = (t) => finishList(t).list.length;
+
+    // Where a target's image is on this disk, by results.json: [200, where] or [status, error].
+    async function imageOf(id, name, kind, file) {
+        const { t, p } = await projectOf(id, name);
+        if (!t) {
+            return gone(id);
+        }
+        const item = p?.results.items.find((i) => i.file === file);
+        const hash = item && { capture: item.capture, baseline: item.baseline }[kind];
+        if (!hash) {
+            return [404, { error: "no such image" }];
+        }
+        // A moved item's baseline is its capture's bytes, so the artifact holds only the capture.
+        const own = kind === "capture" || item.baseline === item.capture;
+        const path = own ? join(p.dir, file) : join(p.dir, "baselines", file);
+        return [200, { path, hash, file, dir: p.dir }];
+    }
+
+    async function readImage({ path, hash, file, dir }) {
+        const bytes = await readFile(path).catch(() => null);
+        if (!bytes || createHash("sha256").update(bytes).digest("hex") !== hash) {
+            // CI hashed the bytes it uploaded, so the copy on this disk is damaged: drop it,
+            // and the next reload downloads it again.
+            console.error(
+                `visual-review: ${path} does not match results.json: downloading it again on the next reload`,
+            );
+            rmSync(join(dir, "results.json"), { force: true });
+            return [409, { error: `${file}: the downloaded copy is damaged; reload the page to download it again` }];
+        }
+        return [200, bytes, "image/png"];
+    }
+
     const routes = {
-        "GET /api/prs": async () => {
-            await refresh();
-            return [200, { targets: [...targets.values()].map(summary), warning: listWarnings.join("\n") || null }];
+        "GET /api/prs": async (_, __, query) => {
+            // ?cached=1 answers at once (starting the first load if there is none); ?refresh=1
+            // also starts a refresh. Neither waits for GitHub.
+            const cachedOnly = query?.get("cached") === "1" || query?.get("refresh") === "1";
+            if (cachedOnly) {
+                if (query.get("refresh") === "1" || !loadedOnce) {
+                    refresh().catch((err) => console.error(`visual-review: refresh failed: ${err.message}`));
+                }
+            } else {
+                await refresh();
+            }
+            return [
+                200,
+                {
+                    targets: loadedOnce || !cachedOnly ? [...targets.values()].map(summary) : null,
+                    warning: listWarnings.join("\n") || null,
+                    defaultBranch,
+                    updatedAt: refreshedAt || null,
+                    now: Date.now(),
+                    refreshing: progress,
+                },
+            ];
         },
-        // One target's counts without refetching from GitHub, for Finish's confirmation.
-        "GET /api/target": async ([id]) => {
+        // One target's counts without refetching from GitHub; with ?finish=1, what Finish would do.
+        "GET /api/target": async ([id], _, query) => {
             const t = await targetOf(id);
-            return t ? [200, summary(t)] : gone(id);
+            if (!t) {
+                return gone(id);
+            }
+            return [200, query?.get("finish") === "1" ? { ...summary(t), finish: finishPreview(t) } : summary(t)];
         },
         "GET /api/pr": async ([id, name]) => {
             const { t, p } = await projectOf(id, name);
@@ -682,32 +896,33 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             ];
         },
         "GET /api/img": async ([id, name, kind, file]) => {
-            const { t, p } = await projectOf(id, name);
-            if (!t) {
-                return gone(id);
+            const [status, where] = await imageOf(id, name, kind, file);
+            return status === 200 ? readImage(where) : [status, where];
+        },
+        // The same image scaled down for a grid tile, made once and kept by the image's hash.
+        "GET /api/thumb": async ([id, name, kind, file]) => {
+            const [status, where] = await imageOf(id, name, kind, file);
+            if (status !== 200) {
+                return [status, where];
             }
-            const item = p?.results.items.find((i) => i.file === file);
-            const hash = item && { capture: item.capture, baseline: item.baseline }[kind];
-            if (!hash) {
-                return [404, { error: "no such image" }];
+            const kept = join(tmp, "thumbs", `${where.hash}.png`);
+            const cached = await readFile(kept).catch(() => null);
+            if (cached) {
+                return [200, cached, "image/png"];
             }
-            // A moved item's baseline is its capture's bytes, so the artifact holds only the capture.
-            const own = kind === "capture" || item.baseline === item.capture;
-            const path = own ? join(p.dir, file) : join(p.dir, "baselines", file);
-            const bytes = await readFile(path).catch(() => null);
-            if (!bytes || createHash("sha256").update(bytes).digest("hex") !== hash) {
-                // CI hashed the bytes it uploaded, so the copy on this disk is damaged: drop it,
-                // and the next reload downloads it again.
-                console.error(
-                    `visual-review: ${path} does not match results.json: downloading it again on the next reload`,
-                );
-                rmSync(join(p.dir, "results.json"), { force: true });
-                return [
-                    409,
-                    { error: `${file}: the downloaded copy is damaged; reload the page to download it again` },
-                ];
+            const full = await readImage(where);
+            if (full[0] !== 200) {
+                return full;
             }
-            return [200, bytes, "image/png"];
+            const small = thumbnail(full[1]);
+            try {
+                mkdirSync(dirname(kept), { recursive: true });
+                writeFileSync(`${kept}.tmp`, small);
+                renameSync(`${kept}.tmp`, kept);
+            } catch (err) {
+                warnOnce(`could not keep thumbnails in ${dirname(kept)}: ${err.message}`);
+            }
+            return [200, small, "image/png"];
         },
         "POST /api/decide": async (_, body) => {
             const { p, t } = await projectOf(String(body.id), body.project);
@@ -729,7 +944,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 update(t, (saved) => {
                     delete saved[key];
                 });
-                return [200, { ok: true }];
+                return [200, { ok: true, unpublished: unpublishedOf(t) }];
             }
             if (!sameCapture(t, body, item)) {
                 return [409, { error: `${body.file}: ${CHANGED}` }];
@@ -767,7 +982,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             update(t, (saved) => {
                 saved[key] = { decision: body.decision, reason, hash: imageHash(item) };
             });
-            return [200, { ok: true }];
+            return [200, { ok: true, unpublished: unpublishedOf(t) }];
         },
         "POST /api/accept-all": async (_, body) => {
             const { p, t } = await projectOf(String(body.id), body.project);
@@ -804,7 +1019,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     }
                 }
             });
-            return [200, { accepted }];
+            return [200, { accepted, unpublished: unpublishedOf(t) }];
         },
         "POST /api/finish": async (_, body) => {
             const t = await targetOf(String(body.id));
@@ -817,14 +1032,13 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];
             }
-            const mine = decisionsOf(t);
             // A reject already posted by an earlier Finish stays shown as rejected, not posted again.
-            const list = [...mine]
-                .filter(([, v]) => !v.posted)
-                .map(([k, v]) => {
-                    const at = k.indexOf("/");
-                    return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
-                });
+            const { list, digest } = finishList(t);
+            // The page's sheet stated what Finish would do; a decision changed since (in another
+            // tab, say) would make that statement wrong.
+            if (body.digest !== undefined && body.digest !== digest) {
+                return [409, { error: CHANGED_SINCE }];
+            }
             const captures = Object.fromEntries(
                 t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
             );
@@ -982,7 +1196,11 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (writes && req.headers.origin !== origin) {
                 return send(res, 403, { error: "foreign origin" });
             }
-            const [status, body, type] = await handler(args, writes ? await readBody(req) : undefined);
+            const [status, body, type] = await handler(
+                args,
+                writes ? await readBody(req) : undefined,
+                url.searchParams,
+            );
             return send(res, status, body, type);
         } catch (err) {
             // A malformed request (bad JSON, bad escape, oversized body) is the client's; the rest,

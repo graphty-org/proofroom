@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { downloadCaptures, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
-import { createApp } from "../trusted/lib/serve.mjs";
+import { createApp, thumbnail } from "../trusted/lib/serve.mjs";
+import { PNG } from "pngjs";
 import {
     copyFixture,
     FIXTURE,
@@ -568,7 +569,7 @@ describe("serve: review extras", () => {
             project: "compact-mantine",
             component: "badge",
         });
-        expect(one.body).toEqual({ accepted: 1 });
+        expect(one.body).toEqual({ accepted: 1, unpublished: 1 });
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         expect(Object.keys(body.decisions)).toEqual(["badge--default.light.png"]);
     });
@@ -635,7 +636,7 @@ describe("serve: review extras", () => {
         });
         expect(one.status).toBe(200);
         const all = await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" });
-        expect(all.body).toEqual({ accepted: 3 });
+        expect(all.body).toEqual({ accepted: 3, unpublished: 4 });
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         expect(body.decisions["badge--default.light.png"]).toMatchObject({ decision: "accept" });
         const target = (await s.api("GET", "/api/target/123")).body.projects[0];
@@ -672,6 +673,136 @@ describe("serve: review extras", () => {
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         const flagged = body.items.filter((i) => i.reReview).map((i) => i.file);
         expect(flagged).toEqual(["button--primary.dark.png"]);
+    });
+});
+
+describe("serve: what the page waits on", () => {
+    const decide = (s, file, decision, reason, project = "compact-mantine") =>
+        s.api("POST", "/api/decide", { id: "123", project, file, decision, reason });
+    const until = async (check) => {
+        for (let i = 0; i < 300; i++) {
+            const value = await check();
+            if (value) {
+                return value;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error("timed out");
+    };
+
+    it("answers the cached list at once, with the refresh's step while one runs", async () => {
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        const s = await start({
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    if ((args[1] ?? "").includes("/pulls?")) {
+                        await held;
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        const first = (await s.api("GET", "/api/prs?cached=1")).body;
+        expect(first.targets).toBeNull();
+        expect(first.refreshing).toMatchObject({ step: "listing pull requests" });
+        expect(first.defaultBranch).toBe("master");
+        release();
+        const loaded = await until(async () => {
+            const b = (await s.api("GET", "/api/prs?cached=1")).body;
+            return b.targets && b;
+        });
+        expect(loaded.targets.map((t) => t.id)).toEqual(["123"]);
+        expect(loaded.refreshing).toBeNull();
+        expect(loaded.updatedAt).toBeLessThanOrEqual(loaded.now);
+        // ?refresh=1 starts one in the background and answers with the cache meanwhile.
+        const again = (await s.api("GET", "/api/prs?refresh=1")).body;
+        expect(again.targets.map((t) => t.id)).toEqual(["123"]);
+        expect(again.refreshing).not.toBeNull();
+    });
+
+    it("lists captures still downloading as downloading, and fills them in when they land", async () => {
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        const s = await start({
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    if (args[0] === "run") {
+                        await held;
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets[0].downloading).toBe(true);
+        expect(body.targets[0].projects.map((p) => [p.downloading, p.problem])).toEqual([
+            [true, null],
+            [true, null],
+        ]);
+        release();
+        const landed = await until(async () => {
+            const t = (await s.api("GET", "/api/prs?cached=1")).body.targets[0];
+            return !t.downloading && t;
+        });
+        expect(landed.projects.find((p) => p.project === "compact-mantine")).toMatchObject({
+            downloading: false,
+            problem: null,
+            reviewable: 6,
+        });
+    });
+
+    it("serves a grid thumbnail no wider than 400 pixels, made once", async () => {
+        const wide = new PNG({ width: 1000, height: 500 });
+        for (let i = 0; i < 1000 * 500; i++) {
+            wide.data.set(i % 1000 < 500 ? [255, 0, 0, 255] : [0, 0, 255, 255], i * 4);
+        }
+        const small = PNG.sync.read(thumbnail(PNG.sync.write(wide)));
+        expect([small.width, small.height]).toEqual([400, 200]);
+        expect([...small.data.slice(0, 4)]).toEqual([255, 0, 0, 255]);
+        expect([...small.data.slice(399 * 4, 400 * 4)]).toEqual([0, 0, 255, 255]);
+
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const thumb = await s.api("GET", "/api/thumb/123/compact-mantine/capture/button--primary.dark.png");
+        expect(thumb.type).toBe("image/png");
+        expect(PNG.sync.read(thumb.body).width).toBeLessThanOrEqual(400);
+        expect(readdirSync(join(s.tmp, "thumbs"))).toHaveLength(1);
+        expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
+    });
+
+    it("states what Finish would do, and refuses a Finish whose decisions changed since", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "badge--default.light.png", "accept", "intended")).body.unpublished).toBe(1);
+        await decide(s, "slider--sizes.png", "reject", "too tall");
+        await decide(s, "tooltip--hover.png", "exclude", "races");
+        const { body } = await s.api("GET", "/api/target/123?finish=1");
+        expect(body.unpublished).toBe(3);
+        expect(body.finish).toMatchObject({
+            accepts: 1,
+            rejects: 1,
+            excludes: 1,
+            acceptNotes: 1,
+            notes: [
+                { decision: "accept", project: "compact-mantine", file: "badge--default.light.png", note: "intended" },
+                { decision: "reject", project: "compact-mantine", file: "slider--sizes.png", note: "too tall" },
+            ],
+            status: { state: "failure" },
+            unloaded: [],
+        });
+        expect(body.finish.undecided).toEqual([
+            { project: "compact-mantine", undecided: 3 },
+            { project: "graphty-element", undecided: 1 },
+        ]);
+        await decide(s, "card--legacy.png", "accept");
+        const refused = await s.api("POST", "/api/finish", { id: "123", digest: body.finish.digest });
+        expect(refused).toMatchObject({
+            status: 409,
+            body: { error: "Decisions changed since this sheet opened: check the summary again." },
+        });
     });
 });
 
