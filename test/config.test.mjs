@@ -84,6 +84,7 @@ describe("normalizeConfig", () => {
         [{ projects: { a: { storybook: "/abs" } } }, /storybook must be/],
         [{ baselines: "../up", projects: { a: { storybook: "s" } } }, /baselines must be a path/],
         [{ projects: { a: { storybook: "s", workers: 0 } } }, /workers/],
+        [{ projects: { a: { storybook: "s", gate: false } } }, /gate is not a setting/],
         [{ projects: { a: { storybook: "s", waitFor: { selector: "x" } } } }, /waitFor needs/],
         [{ defaultBranch: "", projects: { a: { storybook: "s" } } }, /defaultBranch must be/],
         [{ issueLabels: "bug", projects: { a: { storybook: "s" } } }, /issueLabels/],

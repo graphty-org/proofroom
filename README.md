@@ -43,8 +43,9 @@ your login.
 4. **Gate (CI).** The "Visual gate" job fails while a pull request holds a difference nobody
    accepted, or a baseline file changed without a review record naming it.
 
-A story with no baseline yet does not block anything until a pull request changes it, so you can
-seed baselines a few stories at a time.
+Every story needs a baseline you approved before a pull request can merge. A story with no
+baseline blocks every pull request until you accept it, either on a pull request or by seeding it
+from the default branch, so seed a project's baselines before its stories start blocking work.
 
 ## Requirements
 
@@ -146,8 +147,10 @@ Per project:
 | `seedFromDefaultBranch` | `true`     | `false`: the project's first baselines are accepted on a pull request, not seeded from the default branch                                                                                                                                      |
 | `waitFor`               | none       | After a story renders, call `method()` on every element matching `selector` and wait for the promise it returns, for a component that keeps drawing after Storybook says it is done. A console line containing `failOnConsole` fails the story |
 
-Project ids are letters, digits, `.`, `_` and `-`. The pull request gate reads the config as it is
-on the base branch, so a pull request cannot move `baselines` out from under it.
+Project ids are letters, digits, `.`, `_` and `-`. Every project is gated; there is no setting
+that turns the gate off, and a config that sets `gate` is refused. The pull request gate reads the
+config as it is on the base branch, so a pull request cannot move `baselines` out from under it or
+drop a project from the gate; a project that a pull request adds to its own config is gated too.
 
 ## The GitHub Actions workflows
 
@@ -180,8 +183,10 @@ Both need nothing but the default `GITHUB_TOKEN`: the capture job reads Actions 
 
 ## Your first review: seeding baselines
 
-A project has no baselines until you accept some, and until it has one the gate ignores it. After
-the setup pull request merges, the default branch's push runs the capture:
+A project has no baselines until you accept some, and the gate fails closed until it has them:
+every pull request is blocked by each of its stories (`new` or `no baseline yet`), with a message
+saying to seed the project. After the setup pull request merges, the default branch's push runs
+the capture:
 
 1. Find that run's id: `gh run list --workflow visual-review.yml --branch main --limit 1`.
 2. Start the page with `--master-run <run id>` ([Opening the review page](#opening-the-review-page))
@@ -311,9 +316,10 @@ story is new or looks different from the default branch's newest capture of it),
 story no longer exists, lost a mode, or whose story's own parameters now exclude it), `unstable`
 (two captures of the same commit differed), `failed` (did not render, even after one retry).
 
-`no baseline yet` items are listed under their own filter in the grid and never need a decision:
-they do not block the pull request, Accept all skips them, and the story screen offers no buttons
-for them. Seed them from the default branch (below), or accept them on the pull request that changes them.
+`no baseline yet` items block the pull request like `new` ones: they count as needing a decision,
+Accept all includes them, and the story screen offers Accept, Reject and Exclude for them. Accepting
+one makes its capture the story's first baseline. The grid also lists them under their own filter.
+Seed them from the default branch (below), or accept them on the pull request.
 
 ## Keys
 
@@ -424,15 +430,23 @@ names the captured commit, so Finish's seed branch starts from that commit.
 A story with no baseline on the default branch is in the "no baseline yet" state. On every pull
 request, CI compares its capture with the default branch's newest capture of that story:
 
-- **The pull request does not change it:** `no baseline yet` (`unseeded`). It is shown, it does
-  not block the pull request, and it is never accepted by Accept all.
+- **The pull request does not change it:** `no baseline yet` (`unseeded`).
 - **The pull request adds the story, or changes how it looks** (for example an agent fixing a
-  story you rejected): `new`. It blocks that pull request until you decide. Review it there;
-  accepting it creates its first baseline in that pull request's accept commit.
+  story you rejected): `new`.
 
-So seeding never restarts from scratch: each round accepts what now looks right, and the rest
-waits, blocking nothing, until a pull request touches it. A project enters the merge gate when its
-first baseline lands on the default branch; before that the gate ignores it entirely.
+Both block the pull request until you decide. Review them there; accepting one creates its first
+baseline in that pull request's accept commit. Seeding never restarts from scratch: each round
+accepts what now looks right, and every story still without a baseline keeps blocking pull
+requests until it is accepted or seeded.
+
+The same holds for a project with no baselines at all: the gate fails closed. Every project in the
+config is gated from the start, so every pull request is blocked by the stories of an unseeded
+project, and the gate's message says how to unblock it: seed the project (capture a known-good
+commit with `visual-seed.yml`, or take the default branch's newest run, review it with
+`serve --master-run <run id>`, merge the seed pull request, then merge the default branch into the
+blocked one), or accept the items on that pull request. A project with
+`"seedFromDefaultBranch": false` is told to accept them on the pull request. Seed only from a commit
+whose images a person already reviewed.
 
 If the default branch's capture could not be downloaded (its artifacts expired, or no run there has
 finished one), every story without a baseline is `new` on that pull request. Re-run its `visual` job
@@ -543,14 +557,13 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
 
 ## What the gate does and does not guarantee
 
-- A pull request cannot pass the gate while its capture of a seeded project holds anything but
-  `unchanged`, `excluded` or `no baseline yet` items, including after "Re-run failed jobs" (the
+- A pull request cannot pass the gate while its capture of a gated project holds anything but
+  `unchanged` or `excluded` items, including after "Re-run failed jobs" (the
   highest attempt's artifact counts); a missing, unfinished or invalid capture blocks it too. A
   rejected item stays blocking until a code change makes it match the baseline.
-- `no baseline yet` rests on the default branch's capture being honest and recent: a story is
-  `new` (blocking) only when it looks different from the default branch's newest complete capture
-  of it. That capture may be a few merges older than the pull request's base; a story changed in
-  between shows as `new`, which blocks rather than passes.
+- A story with no baseline always blocks. `new` and `no baseline yet` only tell the reviewer
+  whether the pull request changed it, measured against the default branch's newest complete
+  capture, which may be a few merges older than the pull request's base.
 - Every baseline PNG, and every settings file that excludes a story, that the pull request adds,
   changes or deletes must be named with its new hash in a review record the pull request adds
   under `<baselines>/reviews/`. A baseline PNG is a Git LFS pointer in git, and the gate reads the
@@ -565,8 +578,9 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   anything running as you (an AI coding agent included) has your GitHub login and signing key and
   could press Accept or call the page's API. Nothing technical prevents that today; tell your
   agents not to, and keep the review to yourself.
-- The projects the gate checks are the ones with baselines on the base branch, so removing a
-  project from the config does not remove it from the gate.
+- The projects the gate checks are every project in the base branch's config and in the pull
+  request's config, seeded or not, plus every project with baselines on the base branch. So
+  removing a project from the config does not remove it from the gate.
 - The gate is part of a workflow file, which a pull request can edit, and a pull request can
   loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
   without a review item. Read changes to those in code review.

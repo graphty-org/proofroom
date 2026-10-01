@@ -603,7 +603,7 @@ describe("serve: review extras", () => {
         ]);
     });
 
-    it("shows a story with no baseline yet but never accepts it, one by one or all at once", async () => {
+    it("accepts a story with no baseline yet, one by one or all at once", async () => {
         const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
         const items = fixture.items.map((i) =>
             i.file === "badge--default.light.png" ? { ...i, status: "unseeded" } : i,
@@ -619,14 +619,13 @@ describe("serve: review extras", () => {
             file: "badge--default.light.png",
             decision: "accept",
         });
-        expect(one.status).toBe(409);
+        expect(one.status).toBe(200);
         const all = await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" });
         expect(all.body).toEqual({ accepted: 3 });
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
-        expect(body.decisions["badge--default.light.png"]).toBeUndefined();
-        expect(body.items.find((i) => i.file === "badge--default.light.png").status).toBe("unseeded");
+        expect(body.decisions["badge--default.light.png"]).toMatchObject({ decision: "accept" });
         const target = (await s.api("GET", "/api/target/123")).body.projects[0];
-        expect(target).toMatchObject({ counts: { unseeded: 1 }, reviewable: 5, undecided: 2 });
+        expect(target).toMatchObject({ counts: { unseeded: 1 }, reviewable: 6, undecided: 2 });
     });
 
     it("flags an item whose earlier accept on this branch was replaced by master's baseline", async () => {

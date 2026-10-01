@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 /**
- * The pull request gate: fails while a project that has baselines on the base branch holds visual
- * changes the owner has not reviewed.
+ * The pull request gate: fails while a project holds visual changes the owner has not reviewed.
  *
- * Seeding is per story, so a seeded project can hold stories with no baseline yet. Those that the
- * pull request did not change are `unseeded` (capture compared them with master's newest capture)
- * and pass; a story the pull request adds or changes is `new` and blocks until the owner accepts
- * it there, which creates its first baseline.
+ * It fails closed: nothing merges with an image nobody approved. Every project with baselines on the
+ * base branch, and every project in the base branch's config or the pull request's, is gated, seeded
+ * or not. Every story needs an approved baseline. A story with none blocks: `new` when the pull
+ * request adds or changes it, `unseeded` when it looks as in master's newest capture. Either way
+ * the owner accepts it (on the pull request, or by seeding it from the default branch), which
+ * creates its first baseline.
  *
  * <dir> holds the downloaded `visual-<project>-<attempt>` artifacts of this CI run, every attempt
  * of it. For each project only the highest attempt counts, so re-running failed jobs (which
  * leaves the visual jobs' old attempt as the newest) can neither hide nor resurrect a capture.
  * Which projects exist and are seeded is read from <ref> (the base branch tip, fetched by the
- * caller), not from the pull request, and so is visual-review.config.json (where the baselines
- * live), so neither deleting a project's baselines nor moving the baselines directory in the pull
- * request turns the gate off. A seeded project with no results.json, or an incomplete one, fails: a capture that
+ * caller), and so is visual-review.config.json (the projects and where the baselines live), so
+ * neither deleting a project's baselines, nor removing it from the config, nor moving the baselines
+ * directory in the pull request turns the gate off. The pull request's config can only add projects. A gated project with no results.json, or an incomplete one, fails: a capture that
  * crashed has shown the owner nothing. An invalid results.json counts as missing.
  *
  * It also fails when a baseline PNG, or a settings file that excludes a story, differs from the
@@ -40,7 +41,7 @@ import { parseArgs } from "node:util";
 import { loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { validateResults } from "./lib/results.mjs";
 
-const PASSING = new Set(["unchanged", "excluded", "unseeded"]);
+const PASSING = new Set(["unchanged", "excluded"]);
 
 /**
  * The newest attempt's results.json of every project in a directory of downloaded artifacts.
@@ -68,18 +69,29 @@ export function newestResults(dir) {
 }
 
 /**
+ * The projects the gate checks: every project with baselines at the base, and every project of the
+ * base's config and of the pull request's.
+ * @param {{ projects: Record<string, object> }} config the base branch's config
+ * @param {Set<string>} seeded the projects with baselines at the base
+ * @param {{ projects: Record<string, object> }} [headConfig] the pull request's config
+ * @returns {string[]} the gated project ids
+ */
+export function gatedProjects(config, seeded, headConfig) {
+    return [...new Set([...seeded, ...Object.keys(config.projects), ...Object.keys(headConfig?.projects ?? {})])];
+}
+
+/**
  * What blocks the pull request.
- * @param {{ projects: string[], seeded: Set<string>, captures: Record<string, { attempt: number,
- *     results: object | null }> }} input every captured project, those with baselines on the base
- *     branch, and the newest capture of each
+ * @param {{ config: { defaultBranch: string, projects: Record<string, { seedFromDefaultBranch: boolean }> },
+ *     headConfig: { projects: Record<string, object> } | undefined, seeded: Set<string>,
+ *     captures: Record<string, { attempt: number, results: object | null }> }} input the base
+ *     branch's config, the pull request's config (if any), the projects with baselines on the base
+ *     branch, and the newest capture of each project
  * @returns {string[]} one line per blocked project; empty when the gate passes
  */
-export function gateProblems({ projects, seeded, captures }) {
+export function gateProblems({ config, headConfig, seeded, captures }) {
     const problems = [];
-    for (const p of projects) {
-        if (!seeded.has(p)) {
-            continue;
-        }
+    for (const p of gatedProjects(config, seeded, headConfig)) {
         const r = captures[p]?.results;
         if (!r) {
             problems.push(`${p}: no capture results (the visual job failed or uploaded nothing); re-run it`);
@@ -101,13 +113,34 @@ export function gateProblems({ projects, seeded, captures }) {
             for (const s of open) {
                 counts.set(s, (counts.get(s) ?? 0) + 1);
             }
-            problems.push(
-                `${p}: ${[...counts].map(([s, n]) => `${n} ${s}`).join(", ")} ` +
-                    "(not accepted; a rejected item needs a code change, not another review)",
-            );
+            const what = [...counts].map(([s, n]) => `${n} ${s}`).join(", ");
+            problems.push(`${p}: ${what} ${seeded.has(p) ? NOT_ACCEPTED : notSeeded(config, p)}`);
         }
     }
     return problems;
+}
+
+const NOT_ACCEPTED = "(not accepted; a rejected item needs a code change, not another review)";
+
+/**
+ * Why an unseeded project blocks, and how to seed it.
+ * @param {{ defaultBranch: string, projects: Record<string, { seedFromDefaultBranch: boolean }> }} config the
+ *     base branch's config
+ * @param {string} p the project
+ * @returns {string} the rest of the gate's line
+ */
+function notSeeded(config, p) {
+    const branch = config.defaultBranch;
+    const here = "accept them on this pull request with `visual-review serve`";
+    if (config.projects[p]?.seedFromDefaultBranch === false) {
+        return `(not accepted; ${p} has no baselines on ${branch} yet, so ${here} to create its first ones)`;
+    }
+    return (
+        `(not accepted; ${p} has no baselines on ${branch} yet. Seed it: capture a known-good commit with ` +
+        `\`gh workflow run visual-seed.yml --ref ${branch} -f ref=<sha>\` (or take ${branch}'s newest run), ` +
+        `review that run with \`visual-review serve --master-run <run id>\` and merge the seed pull ` +
+        `request, then merge ${branch} into this branch; or ${here})`
+    );
 }
 
 const gitOut = (cwd, args) => execFileSync("git", args, { cwd, maxBuffer: 1 << 28 });
@@ -189,8 +222,7 @@ function parseOr(bytes) {
 
 /**
  * The projects with at least one baseline PNG at a git ref: the directories under the baselines
- * directory at the base tip, so a pull request cannot drop a project from the gate by editing
- * visual-review.config.json.
+ * directory at the base tip. They are gated whatever the config says.
  * @param {string} ref the base branch tip
  * @param {string} [cwd] the repository
  * @param {string} [baselines] the baselines directory
@@ -245,17 +277,14 @@ export function runGate(args) {
         return 2;
     }
     const root = repoRoot();
-    const { baselines } = loadConfigAt(values.base, root);
-    const seeded = seededAt(values.base, root, baselines);
-    const problems = gateProblems({
-        projects: [...seeded],
-        seeded,
-        captures: newestResults(values.captures),
-    });
+    const config = loadConfigAt(values.base, root);
+    const seeded = seededAt(values.base, root, config.baselines);
+    const headConfig = loadConfigAt(values.head, root);
+    const problems = gateProblems({ config, headConfig, seeded, captures: newestResults(values.captures) });
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);
     }
-    const unrecorded = unrecordedChanges(values.base, values.head, root, baselines);
+    const unrecorded = unrecordedChanges(values.base, values.head, root, config.baselines);
     for (const line of unrecorded) {
         console.log(`::error::baseline without a review -- ${line}`);
     }
