@@ -21,14 +21,19 @@
  * It also fails when a baseline PNG, or a settings file that excludes a story, differs from the
  * base without a review record added in the pull request (<baselines>/reviews/*.json) naming
  * that path and its new hash. Without that, committing the captured PNGs straight into
- * the baselines directory would turn the capture check green with no review at all. Only a
- * record's items[].path and items[].to are read, so this proves a record names the change, not
- * that Finish wrote it or the owner pressed it (the README, "What the gate does and does not
- * guarantee").
+ * the baselines directory would turn the capture check green with no review at all.
  *
- * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>], or node gate.mjs with
- * the same options. Standard library only (results.mjs and config.mjs have no dependencies), so
- * it runs from a checkout of this package without an install.
+ * Once visual-review/passkeys.json on the base branch holds a key, every record the pull request
+ * adds must also be version 2, for this pull request (`--pr`), with a passkey approval by one of
+ * the base branch's keys over exactly that record (approval.mjs); a record that fails is reported
+ * and names nothing. Keys are never read from the pull request, and a pull request that would
+ * leave no key fails. Records already on the base branch are never checked again. Before that,
+ * only a record's items[].path and items[].to are read, so the gate proves a record names the
+ * change, not that the owner approved it (the README, "What the gate does and does not guarantee").
+ *
+ * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number>], or node
+ * gate.mjs with the same options. Standard library only (results.mjs, config.mjs and approval.mjs
+ * have no dependencies), so it runs from a checkout of this package without an install.
  */
 
 import { execFileSync } from "node:child_process";
@@ -38,6 +43,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { PASSKEYS_FILE, parsePasskeys, verifyRecord } from "./lib/approval.mjs";
 import { loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { validateResults } from "./lib/results.mjs";
 
@@ -157,9 +163,12 @@ const gitOut = (cwd, args) => execFileSync("git", args, { cwd, maxBuffer: 1 << 2
  * @param {string} head the pull request's checkout
  * @param {string} [cwd] the repository
  * @param {string} [baselines] the baselines directory
+ * @param {{ keys?: object[] | null, pr?: number }} [approvals] with `keys`, every added record must
+ *     carry a passkey approval by one of them for pull request `pr` (verifyRecord), or it counts for
+ *     nothing
  * @returns {string[]} one line per unaccounted change; empty when every change has a record
  */
-export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "visual-baselines") {
+export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "visual-baselines", approvals = {}) {
     const fields = gitOut(cwd, ["diff", "-z", "--no-renames", "--name-status", base, head, "--", `${baselines}/`])
         .toString("utf8")
         .split("\0");
@@ -188,7 +197,15 @@ export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "
     }
     const reviewed = new Set();
     for (const path of records) {
-        const items = parseOr(show(path))?.items;
+        const record = parseOr(show(path));
+        if (approvals.keys) {
+            const why = record === null ? "not valid JSON" : verifyRecord(record, approvals.keys, { pr: approvals.pr });
+            if (why) {
+                problems.push(`${path}: ${why}`);
+                continue;
+            }
+        }
+        const items = record?.items;
         for (const item of Array.isArray(items) ? items : []) {
             reviewed.add(`${item?.path}\0${item?.to ?? null}`);
         }
@@ -250,14 +267,94 @@ export function seededAt(ref, cwd = process.cwd(), baselines = "visual-baselines
     );
 }
 
-export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>]
+/**
+ * A file at a git ref, or null when the ref does not hold it.
+ * @param {string} ref the commit
+ * @param {string} path the path
+ * @param {string} cwd the repository
+ * @returns {string | null} its text
+ */
+function fileAt(ref, path, cwd) {
+    const listed = gitOut(cwd, ["ls-tree", "--name-only", ref, "--", path]).toString("utf8").trim();
+    return listed === "" ? null : gitOut(cwd, ["show", `${ref}:${path}`]).toString("utf8");
+}
+
+/**
+ * Whether approvals are enforced, and the keys they must come from: those of passkeys.json on the
+ * base branch, never the pull request's. Absent, or with no key, enforcement is off.
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @param {number | undefined} pr the pull request (`--pr`)
+ * @param {string} [cwd] the repository
+ * @returns {{ keys: object[] | null, problems: string[] }} the keys (null when off), and what fails
+ *     the gate: an invalid base file, no `--pr`, or a pull request that would switch enforcement off
+ */
+export function approvalKeys(base, head, pr, cwd = process.cwd()) {
+    const text = fileAt(base, PASSKEYS_FILE, cwd);
+    let keys = [];
+    try {
+        keys = text === null ? [] : parsePasskeys(text);
+    } catch (err) {
+        return { keys: null, problems: [`${PASSKEYS_FILE} on the base branch is invalid: ${err.message}`] };
+    }
+    if (keys.length === 0) {
+        return { keys: null, problems: [] };
+    }
+    const problems = [];
+    if (pr === undefined) {
+        problems.push(
+            `approvals are enforced (${PASSKEYS_FILE} on the base branch holds a key), so the gate needs --pr <number>`,
+        );
+    }
+    let left = 0;
+    try {
+        const own = fileAt(head, PASSKEYS_FILE, cwd);
+        left = own === null ? 0 : parsePasskeys(own).length;
+    } catch {
+        // Invalid: counts as no key.
+    }
+    if (left === 0) {
+        problems.push(
+            `this pull request would switch approval enforcement off: its ${PASSKEYS_FILE} is missing, invalid or holds no key`,
+        );
+    }
+    return { keys, problems };
+}
+
+/**
+ * The files a pull request could loosen the gate with: passkeys.json, the gate and its verifier,
+ * and the workflow that runs it. A change to one is a warning, never a failure (registering a
+ * passkey changes passkeys.json), so code review looks at it.
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @param {string} workflow the workflow file that runs the gate
+ * @param {string} [cwd] the repository
+ * @returns {string[]} the changed ones
+ */
+export function trustFilesChanged(base, head, workflow, cwd = process.cwd()) {
+    const files = [
+        PASSKEYS_FILE,
+        "visual-review/trusted/gate.mjs",
+        "visual-review/trusted/lib/approval.mjs",
+        `.github/workflows/${workflow}`,
+    ];
+    return gitOut(cwd, ["diff", "--name-only", base, head, "--", ...files])
+        .toString("utf8")
+        .split("\n")
+        .filter(Boolean);
+}
+
+export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number>]
 
 Fails (exit 1) while a pull request holds visual changes nobody accepted, or a baseline change
-with no review record. Run it in CI after the capture jobs, on the pull request's merge commit.
+with no review record. Once ${PASSKEYS_FILE} on the base branch holds a key, every review
+record the pull request adds must also carry a passkey approval for this pull request. Run it in
+CI after the capture jobs, on the pull request's merge commit.
 
   --captures <dir>  the downloaded visual-<project>-<attempt> artifacts of this run
   --base <ref>      the base branch tip (HEAD^1 on a pull request's merge commit)
-  --head <ref>      the pull request's checkout (default HEAD)`;
+  --head <ref>      the pull request's checkout (default HEAD)
+  --pr <number>     the pull request's number (required once approvals are enforced)`;
 
 /**
  * The gate as a command.
@@ -271,6 +368,7 @@ export function runGate(args) {
             captures: { type: "string" },
             base: { type: "string" },
             head: { type: "string", default: "HEAD" },
+            pr: { type: "string" },
             help: { type: "boolean", default: false },
         },
     });
@@ -278,7 +376,8 @@ export function runGate(args) {
         console.log(GATE_USAGE);
         return 0;
     }
-    if (!values.captures || !values.base) {
+    const pr = values.pr === undefined ? undefined : Number(values.pr);
+    if (!values.captures || !values.base || (pr !== undefined && !(Number.isInteger(pr) && pr > 0))) {
         console.error(GATE_USAGE);
         return 2;
     }
@@ -290,11 +389,20 @@ export function runGate(args) {
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);
     }
-    const unrecorded = unrecordedChanges(values.base, values.head, root, config.baselines);
+    const { keys, problems: approval } = approvalKeys(values.base, values.head, pr, root);
+    for (const line of approval) {
+        console.log(`::error::passkey approval -- ${line}`);
+    }
+    const unrecorded = unrecordedChanges(values.base, values.head, root, config.baselines, { keys, pr });
     for (const line of unrecorded) {
         console.log(`::error::baseline without a review -- ${line}`);
     }
-    if (problems.length + unrecorded.length > 0) {
+    for (const file of trustFilesChanged(values.base, values.head, config.workflow, root)) {
+        console.log(
+            `::warning::this pull request changes ${file}, which decides what the visual gate accepts: review that change with care`,
+        );
+    }
+    if (problems.length + approval.length + unrecorded.length > 0) {
         console.log("Review them with `visual-review serve` (the @graphty/visual-review README).");
         return 1;
     }
