@@ -362,38 +362,67 @@ describe("review page: rendering and routing", () => {
         // Item 3's two images arrive one after the other, a second each.
         await sleep(3500);
         expect(await boxCount()).toBe("No changed area at this threshold");
-    });
+        // The 3.5 s wait is most of the default 5 s, which opening a story on a loaded runner overruns.
+    }, 15000);
 
     // A superseded route stops after its wait, and no route pushes a history entry.
     it("Fast Back/Forward presses race on the shared `routing` flag and can leave the address and the screen out of step", async () => {
         const r = makeRepo();
         const w = world(r);
-        let slow = false;
-        const gh = async (args, input) => {
-            if (slow && args[1]?.includes("/pulls?")) {
-                await sleep(700);
-            }
-            return w.gh(args, input);
-        };
-        await open(r, w, { gh });
+        await open(r, w);
         await review();
         await openStory(2);
         const before = await page.evaluate(() => globalThis.history.length);
-        slow = true;
-        // Back twice, without waiting for the first to land: story -> grid -> targets.
+        // The targets screen waits on the page's own read of the target list (the server answers it
+        // from its cache, never asking GitHub), so that read is the one slowed. A decision from
+        // another tab lands during the wait, so the answer differs from the list the page holds and
+        // a route that went on would redraw the targets. Counted asked and answered, to know when
+        // the superseded route has had its answer.
+        let asked = 0;
+        let answered = 0;
+        await page.route("**/api/prs?*", async (route) => {
+            asked++;
+            await sleep(700);
+            const decided = await s.api("POST", "/api/decide", {
+                id: "123",
+                project: "compact-mantine",
+                file: BUTTON,
+                decision: "reject",
+                reason: "from another tab",
+            });
+            expect(decided.status).toBe(200);
+            await route.continue().catch(() => {});
+            answered++;
+        });
+        // Back twice and Forward once, without waiting for any to land: story -> grid -> targets,
+        // whose route waits, -> grid again before that wait ends.
         await page.evaluate(() => {
             globalThis.history.back();
             setTimeout(() => globalThis.history.back(), 50);
+            setTimeout(() => globalThis.history.forward(), 150);
         });
-        await sleep(3500);
+        // The grid is shown and the targets route has its answer; a superseded route that went on
+        // would now draw the targets or push an entry, within a moment of its answer. The wait is
+        // counted from the answer, not from the presses, so a slow machine waits longer instead of
+        // running out of the test's time.
+        await expect
+            .poll(async () => asked >= 1 && answered === asked && (await page.locator(".component").count()) > 0, {
+                timeout: 8000,
+            })
+            .toBe(true);
+        await sleep(500);
         const after = await page.evaluate(() => ({
             length: globalThis.history.length,
             hash: globalThis.location.hash,
         }));
         expect(after.length).toBe(before);
-        expect(new URLSearchParams(after.hash.slice(1)).has("target")).toBe(false);
-        expect(await page.locator(".component").count()).toBe(0);
-    });
+        const address = new URLSearchParams(after.hash.slice(1));
+        expect(address.get("target")).toBe("123");
+        expect(address.has("item")).toBe(false);
+        expect(await page.locator(".component").count()).toBeGreaterThan(0);
+        expect(await page.locator(".card[data-target]").count()).toBe(0);
+        // Opening a story and the slowed answer on a loaded runner can take most of 5 s.
+    }, 15000);
 
     // The targets screen, with the project's problem, instead of an empty page.
     it("A deep link or reload into a project that failed to load shows an empty page with 'no such capture'", async () => {
