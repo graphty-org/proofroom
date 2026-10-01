@@ -18,7 +18,7 @@ your login.
 - [The GitHub Actions workflows](#the-github-actions-workflows)
 - [Your first review: seeding baselines](#your-first-review-seeding-baselines)
 - [Opening the review page](#opening-the-review-page), [the screens](#the-screens), [keys](#keys),
-  [decisions](#what-each-decision-does), [Finish](#finish), [the passkey](#the-passkey-owner-only-approval)
+  [decisions](#what-each-decision-does), [Finish](#finish), [the passkey](#approving-with-a-passkey)
 - [Seeding one story at a time](#seeding-one-story-at-a-time)
 - [Iterating on a story before a pull request exists](#iterating-on-a-story-before-a-pull-request-exists)
 - [Story parameters](#story-parameters)
@@ -166,7 +166,9 @@ to its own config is gated too.
   difference; `continue-on-error` keeps even a crash of the tool from failing the run.
 - **Visual gate** (pull requests only) downloads every capture of the run and runs
   `visual-review gate` at the version `init` pinned, with `npx`, so a pull request's own
-  dependencies cannot change it. Make it a required check.
+  dependencies cannot change it. It passes `--pr` with the pull request's number, which the
+  passkey check needs (see [Approving with a passkey](#approving-with-a-passkey)). Make it a
+  required check.
 
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
@@ -253,8 +255,8 @@ Every screen has the same frame. The header holds **Visual review** (the targets
 **Target** and **Project** menus (on the grid and story screens: jump to any pull request or
 project, each with its count of undecided items), **Finish** with the number of decisions it
 would publish ("Finish #201 (12)"; at 0 it is unavailable and says "Nothing new to finish",
-shortened to "Nothing new" on an iPad; with a passkey required and none registered it says
-"Passkey needed first"), **Keys** and **Copy link**. Finish never shrinks: on a narrow window the
+shortened to "Nothing new" on an iPad; whether a passkey must approve it is said in Finish's
+sheet), **Keys** and **Copy link**. Finish never shrinks: on a narrow window the
 menus give up their width first. Under the header is the screen's own bar, then the status row: the one
 place the page writes messages, one line tall on a wide screen and two on an iPad, so a message
 never moves anything; a longer one shows **More**, which opens the row to its full length.
@@ -271,10 +273,11 @@ for, with a count or the time spent, and a failed one offers Retry.
    old, and the line above the cards shows the check's step ("Checking pull requests: Finding CI
    runs: 3 of 5, 12 s"). The first load after the server starts shows its step under a placeholder
    card. Above the cards, one line says whether Finish is approved with your passkey ("Finish is
-   approved with your passkey (iPad passkey, 2026-10-01)."), with **Register passkey**, or
-   **Register another device** once one is registered
-   ([the passkey](#the-passkey-owner-only-approval)); a problem in `visual-review.passkeys.json`
-   is named there too. Each card says which commit and CI run it captured, any warning the server
+   approved with your passkey (iPad passkey, 2026-10-01), and the CI gate refuses accepts
+   without it."), or that accepts are not yet protected ("No passkey registered: accepts are not
+   yet protected. ..."), with **Register passkey**, or **Register another device** once one is
+   registered ([the passkey](#approving-with-a-passkey)); a problem reading
+   `visual-review/passkeys.json` is named there too. Each card says which commit and CI run it captured, any warning the server
    has (with Retry), how many decisions are not yet finished, how many an earlier Finish already
    put on the branch ("Finished: 266 decisions already on the branch, waiting for the next CI
    run, which no longer shows them."), and a table per project: **Project**,
@@ -474,6 +477,18 @@ Finish applies every decision on one target, across all its projects, at once:
   record in `<baselines>/reviews/`, pushed to the pull request's branch, plus one comment
   holding every reject and every accept note (the machine-readable block holds the rejects
   only). CI then recaptures, and the accepted items read `unchanged`.
+- **Your passkey first, once one is known** (see [Approving with a passkey](#approving-with-a-passkey)):
+  the Finish sheet says "Your passkey confirms this Finish (Face ID or a security key)." and its
+  final button reads **Sign and finish #201**. Pressing it opens the Face ID (or Touch ID)
+  prompt at once; your device signs the record, and Finish commits exactly that record, as
+  version 2 with the approval in it. The comment names the committed record and its commit. A
+  rejects-only Finish commits nothing, so the comment's machine-readable block carries the
+  approved record itself. Cancelling the prompt changes nothing: the sheet comes back saying
+  "Passkey cancelled: nothing was changed." with its final button focused, so Enter tries again.
+- **Before a passkey is registered, accepts are not yet protected.** Finish commits them with an
+  unapproved (version 1) record, and both the targets screen ("No passkey registered: accepts
+  are not yet protected.") and the Finish sheet ("Not yet protected: ...") say so. Rejects never
+  wait for a passkey to be registered.
 - **One commit status**, "Visual review", posted once when Finish completes (never per
   decision), on the commit Finish pushed, or on the captured commit when it pushed none. It
   fails when anything was rejected, is pending while items are left undecided or a project did
@@ -493,10 +508,12 @@ will set ("Then set the commit status 'Visual review' to failure (3 rejected).")
 accepted without being opened, what is left undecided or was not loaded, every note it will
 publish, and the key that will sign. If any decision changes after the sheet opened (in another
 tab, say), Finish refuses, and the sheet comes back with the new summary. Once a passkey is
-registered, a Finish that commits anything reads **Sign and finish #201**, and pressing it asks
-for your passkey (Face ID, Touch ID or a security key) before anything runs; cancelling it says
-"Passkey cancelled: nothing was changed." and the sheet comes back with its final button
-focused, so Enter tries again. A Finish with only rejects commits nothing and needs no passkey.
+known, the final button reads **Sign and finish #201**, and pressing it asks for your passkey
+(Face ID, Touch ID or a security key) before anything runs; the approval covers the rejects too,
+so their reasons are yours. Cancelling it says "Passkey cancelled: nothing was changed." and the
+sheet comes back with its final button focused, so Enter tries again. Before a passkey is
+registered the sheet says accepts are not yet protected, and a Finish with only rejects never
+waits for one.
 
 Finish runs on the server, not in the page. A seed of several hundred images takes minutes,
 most of it uploading the images to Git LFS, which is longer than a browser (Safari on an iPad in
@@ -530,40 +547,77 @@ message:
 - **The comment with the accept notes was not posted**: the accepts are done; the message names
   the notes, which are not kept.
 
-## The passkey: owner-only approval
+## Approving with a passkey
 
-Anything running as you on the development machine, an AI coding agent included, has your GitHub
-login and signing key, so neither a signed commit nor the review page's API proves that you
-accepted an image. A passkey does: Finish asks for it, your device asks for Face ID, Touch ID or
-the security key's PIN, and the signature it makes goes into the review record. The gate counts a
-record's accepts only when that signature verifies against a passkey listed in
-`visual-review.passkeys.json` at the repository root, as the file is on the default branch.
+A passkey (Face ID or Touch ID, kept in iCloud Keychain or another passkey manager) proves that
+an accept came from your own device, for exactly the record Finish commits. Once your passkey is
+in `visual-review/passkeys.json` on the default branch, the gate refuses every review record a
+pull request adds unless it carries such an approval. Until then the gate enforces nothing.
 
-- **Register it once.** On the targets screen, press **Register passkey**. Your device makes a
-  passkey for the review page's host (in iCloud Keychain it is then on your iPhone, iPad and Mac),
-  and the page shows its entry, named by the kind of device that made it and the day ("iPad
-  passkey, 2026-10-01", or "security key, 2026-10-01"), so every device shows which key is which. **Open the pull request** pushes a branch adding the entry to
-  `visual-review.passkeys.json` and opens a pull request; merge it. (Or **Copy** the entry and add
-  it yourself: the file is a JSON array of entries.) Until it merges, the line reads "Passkey
-  waiting for #650 to merge."
-- **From then on**, every Finish that commits accepts or exclusions needs the passkey, and the
-  gate fails a pull request whose baseline changes are named only by records without a valid
-  approval ("not counted: no passkey approval"). The approval signs the SHA-256 of the record
-  (keys sorted, no whitespace, without the `approval` field), so it counts for exactly the files
-  and hashes that record names. The gate checks the passkey is registered on the base branch, the
-  signature, that the page was served over https from the passkey's host, and that the device
-  verified you (user verification), using Node's standard library only.
-- **Before you register one**, nothing is checked: the gate warns "accepts are not approved with a
-  passkey" and counts every record, as it did before passkeys.
-- **A pull request accepted before the passkey was merged** holds a record without an approval,
-  which no longer counts. Revert its accept commit on the branch (records the pull request itself
-  added may go) and Finish again with the passkey.
-- **To add a device or replace a lost key**, press **Register another device** from that device
-  and merge the new pull request. Removing an entry is a pull request too.
-- The review page must be served over https from a host name, not an IP address (WebAuthn's
-  rule), and from the same host every time: a passkey belongs to the host it was made on. Opened
-  from another host, Finish says "Your passkey belongs to <host>, and this page is open at
-  <other host>: open it from https://<host> instead."
+### Registering the passkey
+
+Do this once, yourself, never through an agent.
+
+1. Start the page from your own shell on the host the passkey is for, over HTTPS, for example
+   `https://dev.example.com:9443`. The passkey belongs to that host name (its "rpId"), so serve
+   the page from the same host every time; the port may change.
+2. On the targets screen press **Register passkey**, then **Create the passkey**, and confirm on
+   your device. The key is named by the kind of device that made it and the day ("iPad passkey,
+   2026-10-01", or "security key, 2026-10-01"), so every device shows which key is which.
+3. The server opens a pull request adding the key to `visual-review/passkeys.json`, and the page
+   names the new key's credential id and that pull request. Check that the pull request names the
+   same id, then merge it. From that merge on, approvals are enforced.
+
+The first key is trusted because you merged it: the server cannot check that a passkey was made
+on a real device (Apple's passkeys give no attestation), so a key added by anything else that
+can reach the page would look the same. Merge a key's pull request only right after you pressed
+Register yourself and only when the ids match. Until the first key is merged, the server that
+registered it already asks for it at Finish. Once the default branch holds a key, the server
+trusts only the default branch's keys, never one registered since.
+
+Until it merges, the targets screen reads "Passkey waiting for #650 to merge: Finish asks for it
+already, but the CI gate checks approvals only once it is merged." Afterwards it reads "Finish is
+approved with your passkey (<name>), and the CI gate refuses accepts without it." and offers
+**Register another device**. Before any passkey is registered it reads "No passkey registered:
+accepts are not yet protected.", and Finish commits accepts unapproved, as before passkeys.
+
+### Finishing with Face ID
+
+Finish asks for your passkey as soon as the server knows of a key. The record is built on the
+server first, its SHA-256 is the challenge your device signs, and Finish refuses to commit a
+record that differs from the one you approved ("the record changed after you approved it; press
+Finish again"). Immediately before committing, Finish checks the approval with the gate's own
+code. On a Mac, Touch ID or your login password takes Face ID's place.
+
+### What the gate checks
+
+For each review record a pull request adds, with `node:crypto` alone:
+
+- it is version 2, names this pull request (or none, for a seed), and is not a copy of a record
+  already on the base branch;
+- its approval is by a key in `visual-review/passkeys.json` as the base branch has it, over the
+  SHA-256 of exactly this record, made on an HTTPS page whose host is exactly the key's host,
+  with user verification (Face ID, Touch ID or the device's passcode).
+
+A record that fails counts for nothing. Then every changed baseline PNG, every added or changed
+settings file and any change to `visual-review/passkeys.json` must be accounted for: the records'
+items, oldest first, must take the file from its contents on the base branch to its contents in
+the pull request. A record approved for other contents (an old seed, or a decision you replaced
+later in the same pull request) therefore moves nothing. Records already on the base branch are
+never checked again, so baselines accepted before the passkey are kept as they are.
+
+### Replacing the passkey
+
+An iCloud Keychain passkey is on every device signed in to your Apple account, so a lost device
+loses nothing. Once the default branch holds a key, the gate fails any pull request that changes
+`visual-review/passkeys.json`, so no pull request can swap in another key. To add or replace one
+anyway (another passkey manager, another host, a lost Apple account), register it on the page;
+the pull request it opens says the gate fails it. Check the credential id, and merge it as an
+administrator past the failing check. Removing every key is refused the same way.
+
+`visual-review/passkeys.json` sits at that path in every repository that uses this tool. It
+holds public keys only: `{ "version": 1, "keys": [{ "id", "publicKey", "rpId", "label",
+"registeredAt" }] }`, with the public key as base64url SubjectPublicKeyInfo (P-256).
 
 ## Seeding: one story at a time
 
@@ -664,14 +718,16 @@ written for Chromatic work unchanged:
 | Parameter                       | Effect                                                                                                                     |
 | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `disableSnapshot: true`         | The story is not captured (a baseline it still has is reported `removed`)                                                  |
-| `diffThreshold`                 | pixelmatch's per-pixel colour threshold, 0 to 1 (default 0.063)                                                            |
+| `diffThreshold`                 | pixelmatch's per-pixel color threshold, 0 to 1 (default 0.063); the gate fails a story above 0.8                           |
 | `diffIncludeAntiAliasing: true` | Count anti-aliased pixels as changes                                                                                       |
 | `delay`                         | Milliseconds to wait after the render before the screenshot                                                                |
 | `modes`                         | `{ "<name>": { <Storybook globals> } }`: one capture per mode, named `<story id>.<name>.png`; `disable: true` drops a mode |
 
 Inside a story, `isChromatic()` from `chromatic/isChromatic` is true during capture (the URL carries
 `chromatic=true`). A settings file `<baselines>/<project>/<story id>.json` overrides the story's
-parameters; the page's Exclude writes one with `disableSnapshot: true` and your reason.
+parameters; the page's Exclude writes one with `disableSnapshot: true` and your reason. A
+pull request that adds or changes a settings file needs a review record for it, like a baseline,
+so set the other keys in the story's parameters, where code review sees them.
 
 ## Reorganizing stories: renames
 
@@ -721,27 +777,57 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
 - A story with no baseline always blocks. `new` and `no baseline yet` only tell the reviewer
   whether the pull request changed it, measured against the default branch's newest complete
   capture, which may be a few merges older than the pull request's base.
-- Every baseline PNG, and every settings file that excludes a story, that the pull request adds,
-  changes or deletes must be named with its new hash in a review record the pull request adds
-  under `<baselines>/reviews/`. A baseline PNG is a Git LFS pointer in git, and the gate reads the
-  image's hash from the pointer, so it never downloads an image. Existing records may not be
-  edited or deleted. This stops the shortcut of copying captured PNGs, or an exclusion, straight
-  into the baselines directory.
-- **Once a passkey is registered, a record counts only with the owner's approval**
-  ([the passkey](#the-passkey-owner-only-approval)): an agent that writes a record, presses
-  Accept or calls the page's API cannot produce it. It proves your device approved exactly that
-  record; it does not prove you looked at every image, and it does not defend against a review
-  page that was altered to show one set of images and sign another.
-- **Without a registered passkey, it does not prove a person reviewed anything.** A record is a
-  plain JSON file: anyone who can push to the branch can write one that names copied PNGs, and the
-  gate cannot tell it from one Finish wrote. Such records are marked `"unproven": true`.
+- Every baseline PNG the pull request adds, changes or deletes, and every settings file it adds
+  or changes, must be taken from its contents on the base branch to its new contents by the
+  review records the pull request adds under `<baselines>/reviews/` (each item names a path, its
+  `from` hash and its `to` hash). A baseline PNG is a Git LFS pointer in git, and the gate reads
+  the image's hash from the pointer, so it never downloads an image. Existing records may not be
+  edited or deleted. This stops the shortcut of copying captured PNGs, or a settings file that
+  excludes a story or loosens its comparison, straight into the baselines directory. Deleting a
+  settings file and editing `renames.json` need no record: the captures they cause are reviewed.
+- A story compared at a `diffThreshold` above 0.8 fails the gate (at 1 nothing ever reads as
+  changed), and so does a pull request that moves the baselines directory in its config.
+- **Before a passkey is registered, it does not prove a person reviewed anything.** A record is a
+  plain JSON file: anyone who can push to the branch can write one that names copied PNGs, and
+  the gate cannot tell it from one Finish wrote. Such records are marked `"unproven": true`.
+- **Once `visual-review/passkeys.json` on the base branch holds a key**, every record the pull
+  request adds must be version 2, name this pull request (or none, for a seed), and carry a
+  passkey approval over exactly that record by one of the base branch's keys, made on an HTTPS
+  page on the key's host, with user verification (Face ID, Touch ID or a PIN). A record that
+  fails, an old-format record, or one copied from another pull request counts for nothing, so
+  the baselines it names are reported as unreviewed. Keys are read only from the base branch,
+  never from the pull request, and a pull request that would leave no key fails.
+- **It does not prove you looked at every image.** It proves your device approved the record,
+  which lists every accepted and rejected image by hash. A page altered on your machine could ask
+  you to approve something other than what it shows; read the counts in Finish's question.
+- **An approved seed that was never merged can be applied by another pull request.** A seed's
+  record names no pull request. Copying one already on the base branch fails, and so does one
+  whose `from` hashes are no longer the base branch's; but a seed you approved and then abandoned
+  without merging still matches, and would apply exactly the images you approved for it. Delete a
+  seed branch you do not want, and close its pull request.
+- **Only the repository owner should approve.** The page runs on a development machine, where
+  anything running as you (an AI coding agent included) has your GitHub login and signing key and
+  could press Accept or call the page's API. Before a passkey is registered nothing technical
+  prevents that; afterwards an agent can still decide, but cannot produce the approval Face ID
+  gives. Tell your agents not to register passkeys or use the page.
 - The projects the gate checks are every project in the base branch's config and in the pull
   request's config, seeded or not, plus every project with baselines on the base branch. So
   removing a project from the config does not remove it from the gate.
-- The gate is part of a workflow file, which a pull request can edit, and a pull request can
-  loosen a story's own `diffThreshold` or `delay`, or a settings file's non-excluding keys,
-  without a review item. Read changes to those, and to `visual-review.passkeys.json`, in code
-  review.
+- In this repository's CI, the gate and the capture run as the base branch has them, never the
+  pull request's copy, so a pull request cannot loosen the code that judges it; a change to
+  either is first exercised by the pull request after it. The `npx` gate of the workflow `init`
+  writes runs a pinned published version, to the same end.
+- **The workflow file itself can be edited by the pull request**, which could drop the gate
+  step. Closing that needs a check the pull request cannot edit (a ruleset-required workflow).
+  The gate prints a warning when a pull request changes `visual-review/passkeys.json`, the tool's
+  trusted code or capture, or the workflow that runs it; read those changes in code review.
+- A pull request can still loosen a story's own `diffThreshold` (up to 0.8) or `delay` in the
+  story's source, and a story's code runs in the capture browser, so it could draw anything.
+  Read story changes in code review.
+- **Every page on the passkey's host can ask for it.** The rpId is a host name, and every server
+  on that host (another dev server, a Storybook on another port) can call the passkey prompt with
+  a challenge of its choosing; the prompt names only the host. Approve only from the review page,
+  right after pressing Finish. A host that serves nothing but the review page closes this.
 
 ## Troubleshooting
 
@@ -789,9 +875,32 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   not posted again.
 - **"Passkey failed (This is an invalid domain.)"** or similar: the page is served from an IP
   address or plain http. Serve it over https from a host name.
-- **"your passkey's approval was refused"** or **"not counted: approved by a passkey that is not
-  registered"**: that passkey is not in `visual-review.passkeys.json` on the default branch yet.
-  Merge its pull request first.
+- **"the record changed after you approved it; press Finish again".** The decisions, the capture
+  or the default branch changed between your Face ID and the commit. Press Finish again and
+  approve the new record. **"the approval is stale"** means the same, from another tab or after
+  ten minutes.
+- **"no passkey is registered for <host>".** Passkeys belong to the host name the page is served
+  from. Serve the page from the host your passkey is for, or register one for this host.
+- **"Not approved (the passkey prompt was cancelled or refused): nothing was changed".** Press
+  Finish again.
+- **The gate says "changed with no review record taking it from its base branch contents to
+  these".** Either nothing approved the change, or the default branch changed the same file
+  after your Finish, so the record starts from contents the base no longer has. Merge the default
+  branch into the pull request, let CI capture again, and review the file again.
+- **The gate says a record is "a copy of a record already on the base branch".** An approval
+  counts once. Remove the copied record and its files, and review the change on this pull
+  request.
+- **The gate says a story is compared at a diffThreshold above 0.8.** Lower it in the story's
+  parameters or its settings file.
+- **The gate fails a change to `visual-review/passkeys.json`.** See [Replacing the
+  passkey](#replacing-the-passkey).
+- **The gate says "approval is from a key not in passkeys.json on the base branch".** The record
+  was approved with a key that the base branch does not hold yet: merge the pull request that
+  registers it first, then review again.
+- **The gate says a record has no passkey approval** on a pull request Finished before your
+  passkey was registered. Revert its accept commit (which takes the record and the baselines out
+  of the diff), let CI capture again, and review it again with Face ID. Never edit a record by
+  hand: the gate only accepts what your device approved.
 - **Opening the seed issue fails.** Every label in `issueLabels` must exist in the repository.
 - **The pnpm setup step fails in CI.** `pnpm/action-setup` reads the pnpm version from the
   `packageManager` field of your root `package.json`; add one.

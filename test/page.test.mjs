@@ -6,12 +6,14 @@
  * last block serves the fixture as a local preview.
  */
 
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import {
     CONFIG,
@@ -22,7 +24,6 @@ import {
     job,
     makeRepo,
     onePr,
-    registerOnMaster,
     withMoved,
 } from "./helpers.mjs";
 
@@ -1439,13 +1440,38 @@ describe("review page: Finish", () => {
     }, 60000);
 });
 
+// The passkeys file on the default branch, as merging a registration pull request leaves it.
+function passkeysOnMaster(r, keys) {
+    mkdirSync(join(r.repo, "visual-review"), { recursive: true });
+    writeFileSync(join(r.repo, "visual-review/passkeys.json"), `${JSON.stringify({ version: 1, keys })}\n`);
+    git(r.repo, "add", "visual-review/passkeys.json");
+    git(r.repo, "commit", "-q", "-m", "register a passkey");
+    git(r.repo, "push", "-q", "origin", "master");
+}
+
 describe("review page: the passkey", () => {
-    it("registers a passkey, then signs Finish with it, and the record carries the approval", async () => {
-        const r = await open((repo) => ({ gh: onePr()(repo) }), { review: false, host: "localhost" });
-        // Face ID, as Chromium's virtual authenticator: user verification passes.
+    // Chromium's virtual authenticator (CDP) stands in for Face ID: a real browser makes the
+    // registration and the approval, and the server's own checks verify them.
+    it("registers a passkey, then Finish asks for it; a refused approval changes nothing", async () => {
+        const opened = [];
+        const r = await open(
+            (repo) => {
+                const gh = onePr()(repo);
+                return {
+                    gh: async (args, input) => {
+                        if (args[1] === "repos/{owner}/{repo}/pulls") {
+                            opened.push(JSON.parse(input));
+                            return JSON.stringify({ html_url: "https://gh/pull/500" });
+                        }
+                        return gh(args, input);
+                    },
+                };
+            },
+            { review: false, host: "localhost" },
+        );
         const cdp = await page.context().newCDPSession(page);
         await cdp.send("WebAuthn.enable");
-        await cdp.send("WebAuthn.addVirtualAuthenticator", {
+        const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
             options: {
                 protocol: "ctap2",
                 transport: "internal",
@@ -1455,66 +1481,113 @@ describe("review page: the passkey", () => {
                 automaticPresenceSimulation: true,
             },
         });
-        const line = page.locator(".passkey-line");
-        await expect
-            .poll(() => line.textContent())
-            .toBe(
-                "No passkey registered: Finish's accepts are not approved by you, and CI does not check who accepted them. Register passkey",
-            );
-        await page.getByRole("button", { name: "Register passkey" }).click();
-        await expect.poll(() => dialogs.length).toBe(1);
-        expect(dialogs[0]).toMatch(/^Passkey created \((Linux|Mac|Windows) passkey, \d{4}-\d\d-\d\d\)\./);
-        const entry = JSON.parse(dialogs[0].slice(dialogs[0].indexOf("{"), dialogs[0].lastIndexOf("}") + 1));
-        expect(entry).toMatchObject({
-            rpId: "localhost",
-            label: expect.stringMatching(/^(Linux|Mac|Windows) passkey, /),
+        // Safari starts WebAuthn only from the press itself: each prompt must begin while the
+        // dialog is still open, inside the yes button's click, not after its close event.
+        await page.evaluate(() => {
+            const { document, navigator } = globalThis;
+            globalThis.whileAsking = [];
+            for (const name of ["create", "get"]) {
+                const real = navigator.credentials[name].bind(navigator.credentials);
+                navigator.credentials[name] = (o) => {
+                    globalThis.whileAsking.push(document.querySelector("dialog.ask[open]") !== null);
+                    return real(o);
+                };
+            }
         });
-        await expect.poll(status).toMatch(/^Opened https:\/\/gh\/pull\/650: merge it/);
 
-        // The owner merges it; the next refresh reads it from the default branch.
-        registerOnMaster(r, [entry]);
-        await page.getByRole("button", { name: "Refresh" }).click();
-        await expect.poll(() => line.textContent()).toMatch(/^Finish is approved with your passkey/);
+        await page.getByRole("button", { name: "Register passkey" }).click();
+        await expect.poll(status, { timeout: 30000 }).toMatch(/^Passkey registered \((Linux|Mac|Windows) passkey, /);
+        const { credentials } = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
+        expect(credentials).toHaveLength(1);
+        const id = Buffer.from(credentials[0].credentialId, "base64").toString("base64url");
+        expect(await status()).toContain(`credential id ${id}. Opened https://gh/pull/500: check it names this id`);
+        const [entry] = parsePasskeys(git(r.remote, "show", `${opened[0].head}:visual-review/passkeys.json`));
+        expect(entry).toMatchObject({ id, rpId: "localhost" });
+        // Not merged yet: Finish asks for it already, and the line says the gate does not check yet.
+        await expect
+            .poll(() => page.locator(".passkey-line").textContent())
+            .toBe(
+                "Passkey waiting for #500 to merge: Finish asks for it already, but the CI gate checks approvals only once it is merged.",
+            );
+
         await page.getByRole("button", { name: "Review", exact: true }).first().click();
         await page.locator(".component").first().waitFor();
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
         confirmFinish = true;
-        await page.getByRole("button", { name: /^Finish/ }).click();
-        await expect.poll(() => dialogs.length).toBe(3);
-        expect(dialogs[2]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
-        expect(await page.locator("#ask-yes").count()).toBe(0);
+        const finish = page.getByRole("button", { name: /^Finish #123/ });
+
+        // Face ID refused: nothing is pushed, and the sheet stays to try again.
+        await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: false });
+        const asked = dialogs.length;
+        await finish.click();
+        await expect.poll(() => dialogs.length, { timeout: 30000 }).toBeGreaterThan(asked + 1);
+        expect(dialogs[asked]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
+        expect(dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
+        expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
+
+        // The retry, with Face ID passing, signs and finishes.
+        await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: true });
         await expect
             .poll(() => page.locator(".finish-outcome h2").textContent(), { timeout: 30000 })
             .toBe("Finished #123.");
-        const name = git(r.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/");
-        const record = JSON.parse(git(r.remote, "show", `feature:${name}`));
-        expect(record).toMatchObject({ version: 2, approval: { credentialId: entry.id } });
-    }, 60000);
+        const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
+        expect(record).toMatchObject({ version: 2, pr: 123 });
+        expect(verifyApproval(record, [entry], { origin })).toBeNull();
+        expect(new Set(await page.evaluate(() => globalThis.whileAsking))).toEqual(new Set([true]));
+    }, 90000);
 
-    it("refuses accepts without a registered passkey once the default branch requires one", async () => {
-        await open(
-            (r) => {
-                registerOnMaster(r, []);
-                return { gh: onePr()(r) };
-            },
-            { review: true },
-        );
+    it("says plainly that accepts are not yet protected while no passkey is registered", async () => {
+        const r = await open((repo) => ({ gh: onePr()(repo) }), { review: false });
+        await expect
+            .poll(() => page.locator(".passkey-line").textContent())
+            .toBe(
+                "No passkey registered: accepts are not yet protected. Finish commits them without your approval, and the CI gate does not check who accepted them until a passkey is on master. Register passkey",
+            );
+        await page.getByRole("button", { name: "Review", exact: true }).first().click();
         await page.locator(".component").first().waitFor();
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
         confirmFinish = true;
-        await page.getByRole("button", { name: /^Finish/ }).click();
-        await expect.poll(() => dialogs.length).toBe(2);
-        expect(dialogs[1]).toContain(
-            "Accepts and exclusions need your passkey, and the CI gate refuses them without it. Register a passkey on the targets screen and merge its pull request first.",
-        );
-        // The final button is unavailable, says why, and the sheet stays.
+        await page.getByRole("button", { name: /^Finish #123/ }).click();
         await expect
-            .poll(() => page.locator("#ask-alert").textContent())
-            .toBe("Finish needs your passkey first: see the sheet.");
-        expect(await page.locator("#ask-yes").getAttribute("aria-disabled")).toBe("true");
-    });
+            .poll(() => page.locator(".finish-outcome h2").textContent(), { timeout: 30000 })
+            .toBe("Finished #123.");
+        expect(dialogs.at(-1)).toContain(
+            "Not yet protected: no passkey is registered, so this Finish is not approved by you and the CI gate does not check who accepted.",
+        );
+        const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
+        expect(record).toMatchObject({ version: 1, unproven: true });
+    }, 60000);
+
+    it("finishes rejects alone without asking for a passkey to be registered first", async () => {
+        // The passkeys file is on the default branch with no key yet: what master holds once this
+        // tool's passkey support merges, before the owner registers one.
+        await open(
+            (r) => {
+                passkeysOnMaster(r, []);
+                return { gh: onePr()(r) };
+            },
+            { review: true },
+        );
+        await page.locator("#review-undecided").click();
+        await page.keyboard.press("j");
+        await ready();
+        await page.keyboard.press("r");
+        await page.keyboard.type("text is clipped");
+        await page.keyboard.press("Enter");
+        await expect.poll(status).toMatch(/^Rejected #2\./);
+        const header = page.locator("header");
+        expect(await header.textContent()).not.toContain("Passkey");
+        confirmFinish = true;
+        await page.getByRole("button", { name: /^Finish #123/ }).click();
+        await expect
+            .poll(() => page.locator(".finish-outcome h2").textContent(), { timeout: 30000 })
+            .toBe("Finished #123.");
+        expect(dialogs.at(-1)).not.toContain("passkey");
+    }, 60000);
 });
 
 describe("review page: renamed stories", () => {

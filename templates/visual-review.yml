@@ -117,8 +117,9 @@ jobs:
 
     # Fails while a project of the base branch's or the pull request's config, or with baselines on
     # the base branch (seeded or not), holds anything but unchanged or excluded items in its newest
-    # capture, or a baseline file changed without a review record (once visual-review.passkeys.json
-    # lists a passkey on the base branch, a record approved with one of them).
+    # capture, or a baseline file changed without a review record. Once visual-review/passkeys.json
+    # on the base branch holds a key, every review record the pull request adds must carry a passkey
+    # approval for this pull request (--pr) by one of the base branch's keys.
     # It runs the published gate at a pinned version, so a pull request's own dependencies cannot
     # change it. Depth 2: HEAD^1, the merge commit's first parent, is the base branch tip.
     visual-gate:
@@ -140,4 +141,4 @@ jobs:
                   path: ${{ runner.temp }}/visual
 
             - name: Check visual changes were accepted
-              run: npx --yes @graphty/visual-review@__VERSION__ gate --captures "$RUNNER_TEMP/visual" --base HEAD^1 --head HEAD
+              run: npx --yes @graphty/visual-review@__VERSION__ gate --captures "$RUNNER_TEMP/visual" --pr "${{ github.event.pull_request.number }}" --base HEAD^1 --head HEAD

@@ -9,6 +9,7 @@
  * scrolls: only its two panes do, so its buttons stay where the reader's hand already is.
  */
 
+import { approve, prepareRegistration, registerPasskey } from "/passkey.js";
 import pixelmatch from "/pixelmatch.mjs";
 
 const token = new URLSearchParams(location.hash.slice(1)).get("token") ?? "";
@@ -555,13 +556,13 @@ function drawHeader() {
 }
 
 // Finish names its target and how many decisions it would publish. At 0 it is unavailable, and
-// says why beside it; with a passkey required and none registered, it says that beside it too. The
+// says why beside it. Whether a passkey must approve it is the sheet's to say: the server decides
+// that when the sheet opens, and rejects alone never wait for a passkey to be registered. The
 // reason's tail is only for wide windows and screen readers, so a narrow header keeps Finish whole.
 function finishControl(t) {
     const count = t.unpublished ?? 0;
     const can = count > 0 && !running();
-    const needsKey = count > 0 && t.passkey?.required && !hasKeys(t.passkey);
-    const why = count === 0 ? ["Nothing new", " to finish"] : needsKey ? ["Passkey", " needed first"] : null;
+    const why = count === 0 ? ["Nothing new", " to finish"] : null;
     return [
         el(
             "button",
@@ -720,47 +721,47 @@ function drawTargets() {
 
 // ---------------------------------------------------------------- the passkey
 
-const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
-const toB64url = (buf) =>
-    btoa(String.fromCharCode(...new Uint8Array(buf)))
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=+$/, "");
 const hasKeys = (pk) => (pk?.keys ?? []).length > 0;
 
 // Whether Finish needs the passkey and has one: the targets screen's line, and Register passkey.
+// Until a passkey is on the default branch the gate does not check approvals, and the line says so.
 function passkeyLine(pk) {
     if (!pk) {
         return null;
     }
-    const register = (name) => el("button", { type: "button", id: "register-passkey", onclick: registerPasskey }, name);
-    const problem = pk.problem ? el("span", { class: "error" }, ` visual-review.passkeys.json: ${pk.problem}.`) : null;
-    if (pk.waiting !== null && !hasKeys(pk)) {
-        return el("p", { class: "meta passkey-line" }, `Passkey waiting for #${pk.waiting} to merge.`, problem);
-    }
-    if (hasKeys(pk)) {
-        const names = pk.keys.map((k) => k.label).join("; ");
+    const register = (name) => el("button", { type: "button", id: "register-passkey", onclick: registerOwnPasskey }, name);
+    const problem = pk.problem ? el("span", { class: "error" }, ` ${pk.problem}.`) : null;
+    const main = pk.keys.filter((k) => !k.pending);
+    if (main.length > 0) {
+        const names = main.map((k) => k.label).join("; ");
         return el(
             "p",
             { class: "meta passkey-line" },
-            `Finish is approved with your passkey (${names}).`,
-            pk.waiting !== null ? ` Another is waiting for #${pk.waiting} to merge.` : " ",
-            pk.waiting !== null ? null : register("Register another device"),
+            `Finish is approved with your passkey (${names}), and the CI gate refuses accepts without it. `,
+            register("Register another device"),
+            problem,
+        );
+    }
+    if (hasKeys(pk)) {
+        return el(
+            "p",
+            { class: "warning passkey-line" },
+            `Passkey waiting for ${pk.waiting !== null ? `#${pk.waiting}` : "its pull request"} to merge: Finish ` +
+                "asks for it already, but the CI gate checks approvals only once it is merged.",
             problem,
         );
     }
     return el(
         "p",
         { class: "warning passkey-line" },
-        pk.required
-            ? "No passkey registered: accepts and exclusions cannot be finished. "
-            : "No passkey registered: Finish's accepts are not approved by you, and CI does not check who accepted them. ",
+        "No passkey registered: accepts are not yet protected. Finish commits them without your approval, " +
+            `and the CI gate does not check who accepted them until a passkey is on ${branchName()}. `,
         register("Register passkey"),
         problem,
     );
 }
 
-// What a passkey is called in visual-review.passkeys.json and on every device: the kind of device
+// What a passkey is called in visual-review/passkeys.json and on every device: the kind of device
 // that made it and the day, never "this device" (the file is read on every device).
 function passkeyName(platform) {
     const day = new Date().toISOString().slice(0, 10);
@@ -798,40 +799,51 @@ function passkeyFailure(err, pk) {
     return `Passkey failed (${err?.message ?? err}): nothing was changed.`;
 }
 
-// Register passkey: Face ID (or a security key) makes a passkey for this site, straight from the
-// tap, and the page shows its entry with a button that opens the pull request adding it.
-async function registerPasskey(e) {
+// Register passkey: the server's challenge is fetched first, so the sheet's button can start Face
+// ID (or a security key) inside the tap, as iPad Safari requires. The server checks the new
+// passkey and opens the pull request that adds it to the default branch's passkeys file.
+async function registerOwnPasskey(e) {
     const button = e.currentTarget;
-    let entry;
+    let prepared;
     try {
-        const cred = await navigator.credentials.create({
-            publicKey: {
-                rp: { id: location.hostname, name: "Visual review" },
-                user: {
-                    id: crypto.getRandomValues(new Uint8Array(16)),
-                    name: "owner",
-                    displayName: "Visual review owner",
-                },
-                challenge: crypto.getRandomValues(new Uint8Array(32)),
-                pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-                authenticatorSelection: { userVerification: "required", residentKey: "preferred" },
-                attestation: "none",
-                timeout: 120000,
-            },
-        });
-        const spki = cred.response.getPublicKey?.();
-        if (!spki || cred.response.getPublicKeyAlgorithm?.() !== -7) {
-            say("This browser made a passkey this page cannot use (it needs an ES256 key): nothing was changed.", true);
-            return;
-        }
-        const label = passkeyName(cred.authenticatorAttachment === "platform");
-        entry = {
-            id: cred.id,
-            publicKey: toB64url(spki),
-            rpId: location.hostname,
-            label,
-            registeredAt: new Date().toISOString(),
-        };
+        prepared = await prepareRegistration(api);
+    } catch (err) {
+        say(`Passkey not created: ${err.message}`, true);
+        return;
+    }
+    let making = null;
+    const go = await ask(
+        [
+            el("h2", { id: "passkey-title" }, `Register a passkey for ${prepared.rpId}`),
+            el(
+                "p",
+                {},
+                "Face ID (or a security key) makes the passkey; then a pull request adds it to " +
+                    `visual-review/passkeys.json on ${branchName()}. Merge it only if it names the credential ` +
+                    "id this page shows next.",
+            ),
+        ],
+        "Create the passkey",
+        {
+            label: "passkey-title",
+            onYes: () => (making = registerPasskey(api, prepared, (made) => passkeyName(made.authenticatorAttachment === "platform"))),
+        },
+    );
+    if (!go) {
+        say("Passkey not created: nothing was changed.");
+        button.focus();
+        return;
+    }
+    sayBusy("Creating the passkey and opening its pull request...");
+    try {
+        const r = await making;
+        showTargets(
+            `Passkey registered (${r.entry.label}), credential id ${r.entry.id}. Opened ${r.pullRequest}: check it ` +
+                (r.gated
+                    ? "names this id. A passkey is already on the default branch, so the gate fails that pull request: it takes an administrator's merge."
+                    : "names this id, then merge it to make the CI gate require your approval."),
+            true,
+        );
     } catch (err) {
         say(
             err?.name === "NotAllowedError"
@@ -842,80 +854,8 @@ async function registerPasskey(e) {
                   : `Passkey not created: ${err.message}`,
             true,
         );
-        button.focus();
-        return;
+        button.focus?.();
     }
-    const text = JSON.stringify(entry, null, 4);
-    const opened = await ask(
-        [
-            el("h2", { id: "passkey-title" }, `Passkey created (${entry.label}).`),
-            el(
-                "p",
-                {},
-                `It counts once it is in visual-review.passkeys.json on ${branchName()}. Open the pull request that ` +
-                    "adds it, and merge it; or add this entry yourself:",
-            ),
-            el("pre", { class: "console" }, text),
-            el(
-                "p",
-                {},
-                el(
-                    "button",
-                    {
-                        type: "button",
-                        onclick: (ev) =>
-                            navigator.clipboard.writeText(text).then(
-                                () => (ev.target.textContent = "Copied"),
-                                () => (ev.target.textContent = "Could not copy: select the entry above"),
-                            ),
-                    },
-                    "Copy",
-                ),
-            ),
-        ],
-        "Open the pull request",
-        { label: "passkey-title" },
-    );
-    if (!opened) {
-        say("Pull request not opened. The passkey counts only once its entry is merged.");
-        return;
-    }
-    sayBusy("Opening the pull request for the passkey...");
-    try {
-        const { pullRequest } = await api("/api/passkey", { entry });
-        showTargets(`Opened ${pullRequest}: merge it, and Finish asks for this passkey from then on.`, true);
-    } catch (err) {
-        say(`The pull request was not opened: ${err.message}`, true);
-    }
-}
-
-// The passkey's approval of a Finish, called from the sheet's final button inside the tap itself:
-// iPad Safari allows WebAuthn only there, so nothing is awaited before navigator.credentials.get.
-// Resolves to the assertion the server checks, or rejects when it is cancelled or refused.
-function approveFinish(f, t) {
-    if (!f.signing?.hash) {
-        return null;
-    }
-    // The keys made for this page's address; when none were, the first key's, which the browser
-    // refuses with an error the page then explains.
-    const here = t.passkey.keys.filter((k) => k.rpId === location.hostname);
-    const keys = here.length > 0 ? here : t.passkey.keys.filter((k) => k.rpId === t.passkey.keys[0]?.rpId);
-    return navigator.credentials
-        .get({
-            publicKey: {
-                challenge: fromB64url(f.signing.hash),
-                rpId: keys[0]?.rpId ?? location.hostname,
-                allowCredentials: keys.map((k) => ({ type: "public-key", id: fromB64url(k.id) })),
-                userVerification: "required",
-                timeout: 120000,
-            },
-        })
-        .then((cred) => ({
-            credentialId: cred.id,
-            authenticatorData: toB64url(cred.response.authenticatorData),
-            clientDataJSON: toB64url(cred.response.clientDataJSON),
-            signature: toB64url(cred.response.signature),
-        }));
 }
 
 // The key Finish signs with comes from the server's environment, which is an agent's when an
@@ -2969,7 +2909,7 @@ const finishing = () =>
     `Finishing ${state.job.pr === null ? `${branchName()} seed` : `#${state.job.pr}`}: ${state.job.step}...`;
 
 // What Finish's sheet says it will do, from the server's preview: every line is the server's count.
-function sheet(t, f, notice) {
+function sheet(t, f, prepared, notice) {
     const label = labelOf(t);
     const seed = t.pr === null;
     const lines = [];
@@ -3042,34 +2982,29 @@ function sheet(t, f, notice) {
                   `To sign as yourself instead, cancel and start the server from your own shell:\n${t.startCommand}`,
               )
             : null,
-        passkeySentence(t, f),
+        passkeySentence(f, prepared),
     ].filter(Boolean);
 }
 
-// What the passkey does for this Finish; null when it commits nothing, so there is nothing to approve.
-function passkeySentence(t, f) {
+// What the passkey does for this Finish, from POST /api/finish-prepare: once a passkey is known it
+// approves the whole record (rejects too); before that, accepts are not yet protected, and the
+// sheet says so. Rejects alone never wait for a passkey to be registered.
+function passkeySentence(f, prepared) {
+    if (prepared.error) {
+        return el("p", { class: "error", id: "sheet-passkey" }, `Finish cannot be approved now: ${prepared.error}`);
+    }
+    if (prepared.required) {
+        return el("p", { class: "passkey" }, "Your passkey confirms this Finish (Face ID or a security key).");
+    }
     if (f.accepts + f.excludes === 0) {
         return null;
     }
-    if (f.signing?.error) {
-        return el("p", { class: "error" }, `Finish cannot be approved now: ${f.signing.error}`);
-    }
-    if (f.signing) {
-        return el("p", { class: "passkey" }, "Your passkey confirms this Finish (Face ID or a security key).");
-    }
-    if (t.passkey?.required) {
-        return el(
-            "p",
-            { class: "error", id: "sheet-passkey" },
-            "Accepts and exclusions need your passkey, and the CI gate refuses them without it. Register a " +
-                "passkey on the targets screen and merge its pull request first.",
-        );
-    }
     return el(
         "p",
-        { class: "meta" },
-        "No passkey is registered, so this Finish is not approved by you and CI does not check who accepted. " +
-            "Register one on the targets screen.",
+        { class: "warning" },
+        "Not yet protected: no passkey is registered, so this Finish is not approved by you and the CI gate " +
+            "does not check who accepted. Register a passkey on the targets screen and merge its pull request " +
+            "to turn that on.",
     );
 }
 
@@ -3094,8 +3029,20 @@ async function finishTarget(id, button) {
     let notice = "";
     for (;;) {
         let t;
+        let prepared;
         try {
-            t = await api(`/api/target/${encodeURIComponent(id)}?finish=1`);
+            // The passkey's challenge is fetched before the sheet shows its button, so the button
+            // can start Face ID inside the tap. A refusal (a passkey for another host) is shown in
+            // the sheet, not thrown.
+            [t, prepared] = await Promise.all([
+                api(`/api/target/${encodeURIComponent(id)}?finish=1`),
+                api("/api/finish-prepare", { id }).catch((err) => {
+                    if (err.status === 409) {
+                        return { error: err.message };
+                    }
+                    throw err;
+                }),
+            ]);
         } catch (err) {
             reset();
             say(`Finish not started: ${err.message}`, true);
@@ -3104,23 +3051,22 @@ async function finishTarget(id, button) {
         const f = t.finish;
         const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
         const commits = f.accepts + f.excludes > 0;
-        // Commits need the passkey once one is registered: without one (or a record to sign) the
-        // final button is unavailable, and the sheet says why.
-        const blocked = commits && t.passkey?.required && !f.signing?.hash;
+        // When the server cannot prepare an approval the final button is unavailable, and the sheet
+        // says why.
         let approval = null;
         const go = await ask(
-            sheet(t, f, notice),
-            onlyRejects
-                ? `Post ${plural(f.rejects, "reject")} to ${labelOf(t)}`
-                : f.signing?.hash
-                  ? `Sign and finish ${labelOf(t)}`
+            sheet(t, f, prepared, notice),
+            prepared.required
+                ? `Sign and finish ${labelOf(t)}`
+                : onlyRejects
+                  ? `Post ${plural(f.rejects, "reject")} to ${labelOf(t)}`
                   : `Finish ${labelOf(t)}`,
             {
                 label: "sheet-title",
-                unavailable: blocked ? "Finish needs your passkey first: see the sheet." : null,
+                unavailable: prepared.error ? "Finish cannot be approved now: see the sheet." : null,
                 why: "sheet-passkey",
                 focusYes: notice !== "",
-                onYes: () => (approval = approveFinish(f, t)),
+                onYes: () => (approval = prepared.required ? approve(prepared) : null),
             },
         );
         if (!go) {
@@ -3148,7 +3094,13 @@ async function finishTarget(id, button) {
         const posts = t.pr === null ? f.rejects > 0 : f.rejects + f.acceptNotes > 0;
         state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) };
         try {
-            state.job = (await api("/api/finish", { id, digest: f.digest, ...(approval ? { approval } : {}) })).job;
+            state.job = (
+                await api("/api/finish", {
+                    id,
+                    digest: f.digest,
+                    ...(approval ? { challenge: prepared.challenge, approval } : {}),
+                })
+            ).job;
             break;
         } catch (err) {
             if (err.status === 409 && /Decisions changed/.test(err.message)) {
@@ -3156,7 +3108,7 @@ async function finishTarget(id, button) {
                 say(notice);
                 continue;
             }
-            if (err.status === 400 && /passkey/.test(err.message)) {
+            if ((err.status === 400 || err.status === 403 || err.status === 409) && /passkey|approval/.test(err.message)) {
                 notice = `${err.message}. Nothing was changed.`;
                 say(notice);
                 continue;

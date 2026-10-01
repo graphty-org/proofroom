@@ -257,10 +257,10 @@ async function journey(seed, faults = {}, length = 9) {
         }
         if ([...model.keys()].some((k) => k.startsWith("123|"))) {
             let out = await finishOnce();
-            steps.push(`finish ${out.status} ${out.error ?? ""}`.trim());
+            steps.push(`finish ${out.status} ${(out.error ?? "").replaceAll(r.dir, "<dir>")}`.trim());
             if (out.error) {
                 out = await finishOnce();
-                steps.push(`finish again ${out.status} ${out.error ?? ""}`.trim());
+                steps.push(`finish again ${out.status} ${(out.error ?? "").replaceAll(r.dir, "<dir>")}`.trim());
             }
         }
         steps.push(`load ${await act.load()}`);

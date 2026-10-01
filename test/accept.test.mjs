@@ -5,20 +5,11 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { contentHash, unrecordedChanges } from "../trusted/gate.mjs";
-import { commitMessage, finish, lfsProblem, prepareFinish } from "../trusted/lib/accept.mjs";
-import { approvalProblem } from "../trusted/lib/approval.mjs";
+import { commitMessage, finish, lfsProblem, prepareRecord, proposeKey, rejectComment } from "../trusted/lib/accept.mjs";
+import { parsePasskeys, recordHash, verifyRecord } from "../trusted/lib/approval.mjs";
 import { isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
-import {
-    CONFIG,
-    copyFixture,
-    git,
-    isolateGit,
-    lfsObject,
-    makeRepo,
-    pushCommit,
-    ROOT,
-    testPasskey,
-} from "./helpers.mjs";
+import { CONFIG, copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
+import { approve, makeKey, passkeysJson } from "./passkey-vectors.mjs";
 
 beforeAll(isolateGit);
 
@@ -54,7 +45,7 @@ function setup() {
             progress: (s) => steps.push(s),
             config: CONFIG,
         });
-    return { ...r, projects, calls, steps, run };
+    return { ...r, projects, calls, steps, run, gh };
 }
 
 const accept = (file, project = "compact-mantine", reason = null) => ({ project, file, decision: "accept", reason });
@@ -619,7 +610,7 @@ describe("finish and the gate's record check", () => {
         git(s.repo, "fetch", "-q", "origin");
         expect(unrecordedChanges(s.master, "origin/feature", s.repo)).toEqual([]);
 
-        // A PNG and an excluding settings file without Finish; a delay-only settings file needs none.
+        // A PNG and two settings files without Finish: any settings file can loosen the comparison.
         const clone = mkdtempSync(join(tmpdir(), "vr-forge-"));
         git(clone, "clone", "-q", "-b", "feature", s.remote, ".");
         const dir = join(clone, "visual-baselines/compact-mantine");
@@ -628,68 +619,284 @@ describe("finish and the gate's record check", () => {
         writeFileSync(join(dir, "button--primary.json"), JSON.stringify({ delay: 100 }));
         git(clone, "add", "-A");
         git(clone, "-c", "user.name=A", "-c", "user.email=a@example.com", "commit", "-q", "-m", "forge");
+        const why = "changed with no review record taking it from its base branch contents to these";
         expect(unrecordedChanges(s.master, "HEAD", clone)).toEqual([
-            "visual-baselines/compact-mantine/badge--default.light.png: changed with no review record naming its new contents",
-            "visual-baselines/compact-mantine/slider--sizes.json: changed with no review record naming its new contents",
+            `visual-baselines/compact-mantine/badge--default.light.png: ${why}`,
+            `visual-baselines/compact-mantine/button--primary.json: ${why}`,
+            `visual-baselines/compact-mantine/slider--sizes.json: ${why}`,
         ]);
     });
 });
 
-describe("finish: approved with the owner's passkey", () => {
-    const decisions = [
-        accept("badge--default.light.png", "compact-mantine", "intended"),
-        { project: "compact-mantine", file: "tooltip--hover.png", decision: "exclude", reason: "flaky" },
-        { project: "compact-mantine", file: "button--primary.dark.png", decision: "reject", reason: "red" },
+describe("finish with a passkey approval", () => {
+    const KEY = makeKey();
+    const ORIGIN = "https://dev.ato.ms:9443";
+    const RECORD = "visual-baselines/reviews/20260927T150405Z-pr123.json";
+    const DECISIONS = [
+        accept("button--primary.dark.png", "compact-mantine", "wider"),
+        accept("card--legacy.png"),
+        { project: "compact-mantine", file: "tooltip--hover.png", decision: "exclude", reason: "hover races" },
+        { project: "compact-mantine", file: "slider--sizes.png", decision: "reject", reason: "tall" },
+        accept("graph--basic.png", "graphty-element"),
     ];
 
-    it("commits the record prepared before Finish, with the approval the gate verifies", async () => {
+    /**
+     * prepareRecord, signed by the key.
+     * @param {object} s the setup
+     * @param {object[]} decisions the decisions
+     * @param {object} [target] the target
+     * @returns {Promise<object>} finish's `approval`
+     */
+    async function approved(s, decisions, target = { pr: 123, branch: "feature" }) {
+        const { record } = await prepareRecord({
+            repo: s.repo,
+            target,
+            projects: s.projects,
+            decisions,
+            now: NOW,
+            config: CONFIG,
+        });
+        return {
+            record: { ...record, approval: approve(record, KEY, { origin: ORIGIN }) },
+            pendingKeys: [KEY.entry],
+            origin: ORIGIN,
+        };
+    }
+    const run = (s, decisions, approval) =>
+        finish({
+            repo: s.repo,
+            gh: async () => "{}",
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions,
+            now: NOW,
+            config: CONFIG,
+            approval,
+        });
+
+    it("commits exactly the version 2 record it prepared, with the approval, and the gate's check passes it", async () => {
         const s = setup();
-        const key = testPasskey();
-        const target = { pr: 123, branch: "feature" };
-        const input = { repo: s.repo, target, projects: s.projects, decisions, now: NOW, config: CONFIG };
-        const prepared = await prepareFinish(input);
-        expect(prepared.record).toMatchObject({ version: 2, pr: 123, reviewedAt: NOW.toISOString() });
-        expect(prepared.record.unproven).toBeUndefined();
-        expect(prepared.record.rejects).toEqual([
+        const approval = await approved(s, DECISIONS);
+        expect(approval.record).toMatchObject({ version: 2, pr: 123, reviewedAt: NOW.toISOString() });
+        expect(approval.record.rejects).toEqual([
             {
-                path: "visual-baselines/compact-mantine/button--primary.dark.png",
-                capture: expect.stringMatching(/^[0-9a-f]{64}$/),
-                reason: "red",
+                path: "visual-baselines/compact-mantine/slider--sizes.png",
+                capture: s.projects["compact-mantine"].results.items.find((i) => i.file === "slider--sizes.png")
+                    .capture,
+                reason: "tall",
             },
         ]);
-        const approval = key.sign(prepared.hash);
-        await finish({ ...input, gh: async () => "{}", approval, passkeys: [key.entry] });
-        const committed = JSON.parse(show(s, "feature", "visual-baselines/reviews/20260927T150405Z-pr123.json"));
-        expect(committed).toEqual({ ...prepared.record, approval });
-        expect(approvalProblem(committed, [key.entry])).toBeNull();
+        await run(s, DECISIONS, approval);
+        const committed = JSON.parse(show(s, "feature", RECORD));
+        expect(committed).toEqual(approval.record);
+        expect(recordHash(committed)).toEqual(recordHash(approval.record));
+        expect(committed.unproven).toBeUndefined();
+        expect(verifyRecord(committed, [KEY.entry], { pr: 123 })).toBeNull();
+        git(s.repo, "fetch", "-q", "origin");
+        expect(
+            unrecordedChanges(s.master, "origin/feature", s.repo, "visual-baselines", { keys: [KEY.entry], pr: 123 }),
+        ).toEqual([]);
     });
 
-    it("refuses, pushing nothing, when what it would commit is not what was signed", async () => {
+    it("prepares the same items for a rename as it commits", async () => {
         const s = setup();
-        const key = testPasskey();
-        const target = { pr: 123, branch: "feature" };
-        const input = { repo: s.repo, target, projects: s.projects, decisions, now: NOW, config: CONFIG };
-        const prepared = await prepareFinish({ ...input, decisions: decisions.slice(1) });
-        const before = remoteLog(s, "feature")[0];
-        const err = await finish({
-            ...input,
-            gh: async () => "{}",
-            approval: key.sign(prepared.hash),
-            passkeys: [key.entry],
-        }).catch((e) => e);
-        expect(err.message).toMatch(/approval does not match what Finish would commit .*nothing was pushed/);
-        expect(remoteLog(s, "feature")[0]).toBe(before);
+        const cm = s.projects["compact-mantine"];
+        const bytes = readFileSync(join(cm.dir, "baselines/button--primary.dark.png"));
+        writeFileSync(join(cm.dir, "button--main.dark.png"), bytes);
+        const item = cm.results.items.find((i) => i.file === "button--primary.dark.png");
+        cm.results.items.push({
+            ...item,
+            id: "button--main",
+            file: "button--main.dark.png",
+            status: "moved",
+            from: "button--primary",
+            capture: sha256(bytes),
+            baseline: sha256(bytes),
+            changedPixels: 0,
+            bbox: null,
+        });
+        const approval = await approved(s, [accept("button--main.dark.png")]);
+        await run(s, [accept("button--main.dark.png")], approval);
+        expect(JSON.parse(show(s, "feature", RECORD))).toEqual(approval.record);
     });
 
-    it("prepares nothing to sign when only rejects are decided", async () => {
+    it("refuses, before committing, a record that differs from the approved one", async () => {
         const s = setup();
-        const input = {
+        const approval = await approved(s, [accept("badge--default.light.png")]);
+        await expect(
+            run(s, [accept("badge--default.light.png"), accept("card--legacy.png")], approval),
+        ).rejects.toThrow("the record changed after you approved it; press Finish again");
+        expect(remoteLog(s, "feature")[0]).toBe(s.head);
+    });
+
+    it("refuses, before committing, an approval that does not verify", async () => {
+        const s = setup();
+        const approval = await approved(s, [accept("badge--default.light.png")]);
+        await expect(run(s, [accept("badge--default.light.png")], { ...approval, pendingKeys: [] })).rejects.toThrow(
+            /the approval does not verify \(approval is from a key not in passkeys.json/,
+        );
+        await expect(
+            run(s, [accept("badge--default.light.png")], { ...approval, origin: "https://other:1" }),
+        ).rejects.toThrow(/not on the review page's origin/);
+        expect(remoteLog(s, "feature")[0]).toBe(s.head);
+    });
+
+    it("takes the keys from the default branch as fetched", async () => {
+        const s = setup();
+        const other = mkdtempSync(join(tmpdir(), "vr-keys-"));
+        git(other, "clone", "-q", "-b", "master", s.remote, ".");
+        mkdirSync(join(other, "visual-review"));
+        writeFileSync(join(other, "visual-review/passkeys.json"), passkeysJson(KEY));
+        git(other, "add", "-A");
+        git(other, "-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-q", "-m", "keys");
+        git(other, "push", "-q", "origin", "master");
+        const approval = await approved(s, [accept("badge--default.light.png")]);
+        await run(s, [accept("badge--default.light.png")], { ...approval, pendingKeys: [] });
+        expect(JSON.parse(show(s, "feature", RECORD)).approval).toEqual(approval.record.approval);
+    });
+
+    it("puts the approved record in the reject comment when only rejects are decided", async () => {
+        const s = setup();
+        const decisions = [
+            { project: "compact-mantine", file: "slider--sizes.png", decision: "reject", reason: "tall" },
+        ];
+        const approval = await approved(s, decisions);
+        await finish({
+            repo: s.repo,
+            gh: s.gh,
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions,
+            now: NOW,
+            config: CONFIG,
+            approval,
+        });
+        const comment = s.calls.find((c) => c.args[1].includes("/comments"));
+        const block = JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(JSON.parse(comment.input).body)[1]);
+        expect(block.record).toEqual(approval.record);
+        expect(remoteLog(s, "feature")[0]).toBe(s.head);
+    });
+
+    it("names the committed record and its commit in the reject comment, rather than copying it", async () => {
+        const s = setup();
+        const approval = await approved(s, DECISIONS);
+        await finish({
+            repo: s.repo,
+            gh: s.gh,
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions: DECISIONS,
+            now: NOW,
+            config: CONFIG,
+            approval,
+        });
+        const comment = s.calls.find((c) => c.args[1].includes("/comments"));
+        const block = JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(JSON.parse(comment.input).body)[1]);
+        expect(block.record).toBeUndefined();
+        expect(block.recordFile).toBe(RECORD);
+        expect(block.commit).toBe(remoteLog(s, "feature")[0]);
+    });
+
+    it("leaves out a record that would pass GitHub's comment limit", () => {
+        const results = { runId: 1, runAttempt: 1, headSha: "a".repeat(40) };
+        const rejects = [{ project: "p", item: { file: "s.png", capture: "c".repeat(64) }, reason: "tall" }];
+        const items = Array.from({ length: 900 }, (_, i) => ({
+            path: `visual-baselines/p/s${i}.png`,
+            from: null,
+            to: "f".repeat(64),
+            reason: null,
+        }));
+        const body = rejectComment(5, results, rejects, [], "master", { record: { version: 2, items } });
+        expect(body.length).toBeLessThan(65536);
+        expect(JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(body)[1]).record).toBeUndefined();
+        const small = rejectComment(5, results, rejects, [], "master", { record: { version: 2, items: [] } });
+        expect(JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(small)[1]).record).toEqual({
+            version: 2,
+            items: [],
+        });
+    });
+
+    it("counts accepts, exclusions and rejects as Finish's status does", async () => {
+        const s = setup();
+        const out = await prepareRecord({
             repo: s.repo,
             target: { pr: 123, branch: "feature" },
             projects: s.projects,
+            decisions: DECISIONS,
             now: NOW,
             config: CONFIG,
-        };
-        expect(await prepareFinish({ ...input, decisions: decisions.slice(2) })).toBeNull();
+        });
+        expect([out.accepts, out.excludes, out.rejects]).toEqual([3, 1, 1]);
+    });
+
+    it("refuses to prepare nothing", async () => {
+        const s = setup();
+        await expect(
+            prepareRecord({
+                repo: s.repo,
+                target: { pr: 123 },
+                projects: s.projects,
+                decisions: [],
+                now: NOW,
+                config: CONFIG,
+            }),
+        ).rejects.toThrow("nothing decided");
+    });
+});
+
+describe("proposeKey", () => {
+    it("pushes passkeys.json with the key appended on a new branch and opens its pull request", async () => {
+        const s = setup();
+        const first = makeKey();
+        const second = makeKey();
+        const out = await proposeKey({
+            repo: s.repo,
+            gh: s.gh,
+            entry: first.entry,
+            now: NOW,
+            config: CONFIG,
+        });
+        expect(out).toEqual({
+            branch: "visual/passkey-20260927T150405Z",
+            pullRequest: "https://github.com/o/r/pull/9",
+            gated: false,
+        });
+        expect(parsePasskeys(show(s, out.branch, "visual-review/passkeys.json").toString())).toEqual([first.entry]);
+        expect(git(s.remote, "log", "-1", "--format=%s", out.branch)).toBe(
+            "test(workspace): register a visual review passkey",
+        );
+        const pr = JSON.parse(s.calls.find((c) => c.args[1].endsWith("/pulls")).input);
+        expect(pr).toMatchObject({ head: out.branch, base: "master" });
+        expect(pr.body).toContain(first.entry.id);
+        expect(pr.body).toContain("turns approval enforcement on");
+
+        // A second key is appended to what master holds.
+        pushCommit(s.remote, "master", "unrelated.txt");
+        const clone = mkdtempSync(join(tmpdir(), "vr-keys-"));
+        git(clone, "clone", "-q", "-b", "master", s.remote, ".");
+        mkdirSync(join(clone, "visual-review"));
+        writeFileSync(join(clone, "visual-review/passkeys.json"), passkeysJson(first));
+        git(clone, "add", "-A");
+        git(clone, "-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-q", "-m", "keys");
+        git(clone, "push", "-q", "origin", "master");
+        const later = new Date(NOW.getTime() + 1000);
+        const asked = [];
+        const two = await proposeKey({
+            repo: s.repo,
+            gh: async (args, input) => (asked.push(input), JSON.stringify({ html_url: "x" })),
+            entry: second.entry,
+            now: later,
+            config: CONFIG,
+        });
+        // master already holds a key, so the gate fails this pull request, and it says so.
+        expect(two.gated).toBe(true);
+        expect(JSON.parse(asked[0]).body).toContain("the visual gate fails this pull request");
+        expect(parsePasskeys(show(s, two.branch, "visual-review/passkeys.json").toString())).toEqual([
+            first.entry,
+            second.entry,
+        ]);
+        await expect(
+            proposeKey({ repo: s.repo, gh: async () => "{}", entry: first.entry, now: later, config: CONFIG }),
+        ).rejects.toThrow("already registered");
     });
 });

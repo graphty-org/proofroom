@@ -3,6 +3,7 @@ import { createServer, request } from "node:http";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { parsePasskeys, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
 import { downloadCaptures, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
 import { createApp, thumbnail } from "../trusted/lib/serve.mjs";
 import { PNG } from "pngjs";
@@ -17,10 +18,9 @@ import {
     makeRepo,
     onePr,
     pushCommit,
-    registerOnMaster,
-    testPasskey,
     withMoved,
 } from "./helpers.mjs";
+import { approve, makeKey, passkeysJson, register } from "./passkey-vectors.mjs";
 
 beforeAll(isolateGit);
 
@@ -841,63 +841,6 @@ describe("serve: what the page waits on", () => {
         release();
         await until(async () => !(await s.api("GET", "/api/prs?cached=1")).body.targets[0].downloading);
     });
-
-    it("needs the owner's approval of the previewed record for a Finish that commits", async () => {
-        const key = testPasskey();
-        const r = makeRepo();
-        registerOnMaster(r, [key.entry]);
-        const s = await start({ ...r, gh: onePr() });
-        const listed = (await s.api("GET", "/api/prs")).body.targets[0];
-        expect(listed.passkey).toEqual({
-            required: true,
-            keys: [{ id: key.entry.id, label: "test key", rpId: "localhost" }],
-            problem: null,
-            waiting: null,
-        });
-        await decide(s, "badge--default.light.png", "accept", "intended");
-        await decide(s, "slider--sizes.png", "reject", "too tall");
-        const { finish: f } = (await s.api("GET", "/api/target/123?finish=1")).body;
-        expect(f.signing.hash).toMatch(/^[A-Za-z0-9_-]{43}$/);
-        const post = (approval) => s.api("POST", "/api/finish", { id: "123", digest: f.digest, approval });
-        expect((await post(undefined)).body.error).toMatch(/needs your passkey/);
-        expect((await post(key.sign(f.signing.hash, { uv: false }))).body.error).toMatch(
-            /approval was refused: .*without user verification/,
-        );
-        expect((await post(testPasskey().sign(f.signing.hash))).body.error).toMatch(/not registered/);
-        const begun = await post(key.sign(f.signing.hash));
-        expect(begun.status).toBe(202);
-        const job = await endedJob(s);
-        expect(job.error).toBeNull();
-        const name = git(s.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/").split("\n")[0];
-        const record = JSON.parse(git(s.remote, "show", `feature:${name}`));
-        expect(record).toMatchObject({ version: 2, approval: { credentialId: key.entry.id } });
-        expect(record.rejects).toHaveLength(1);
-    });
-
-    it("runs a Finish with only rejects without a passkey", async () => {
-        const r = makeRepo();
-        registerOnMaster(r, [testPasskey().entry]);
-        const s = await start({ ...r, gh: onePr() });
-        await s.api("GET", "/api/prs");
-        await decide(s, "slider--sizes.png", "reject", "too tall");
-        const { finish: f } = (await s.api("GET", "/api/target/123?finish=1")).body;
-        expect(f.signing).toBeNull();
-        expect((await s.api("POST", "/api/finish", { id: "123", digest: f.digest })).status).toBe(202);
-        expect((await endedJob(s)).error).toBeNull();
-    });
-
-    it("opens the pull request that registers a passkey, and says it is waiting", async () => {
-        const s = await start({ gh: onePr() });
-        await s.api("GET", "/api/prs");
-        expect((await s.api("GET", "/api/target/123")).body.passkey).toMatchObject({ required: false, waiting: null });
-        const { entry } = testPasskey("dev.example.com");
-        expect((await s.api("POST", "/api/passkey", { entry: { id: "x" } })).status).toBe(409);
-        const opened = await s.api("POST", "/api/passkey", { entry });
-        expect(opened).toMatchObject({ status: 200, body: { pullRequest: "https://gh/pull/650" } });
-        const branch = git(s.remote, "branch", "--list", "visual/passkey-*").replace("*", "").trim();
-        expect(JSON.parse(git(s.remote, "show", `${branch}:visual-review.passkeys.json`))).toEqual([entry]);
-        expect((await s.api("GET", "/api/target/123")).body.passkey.waiting).toBe(650);
-    });
 });
 
 describe("newestMasterCapture", () => {
@@ -1137,5 +1080,245 @@ describe("network failures", () => {
         expect(status).toBe(200);
         expect(body.targets.map((t) => t.id)).toEqual(["master"]);
         expect(lines()).toContain("visual-review: pull requests not listed: error connecting to api.github.com");
+    });
+});
+
+describe("serve: passkeys", () => {
+    const KEY = makeKey("127.0.0.1");
+    const quiet = () => {
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => out.mockRestore());
+    };
+
+    /**
+     * Pull request #123, with a gh that also opens pull requests and records them.
+     * @returns {Promise<object>} the started app, plus `opened`, the pull requests opened
+     */
+    async function startWithPulls() {
+        const opened = [];
+        const s = await start({
+            gh: (r) => {
+                const gh = onePr()(r);
+                return async (args, input) => {
+                    if (args[1] === "repos/{owner}/{repo}/pulls") {
+                        opened.push(JSON.parse(input));
+                        return JSON.stringify({ html_url: "https://gh/pull/500" });
+                    }
+                    return gh(args, input);
+                };
+            },
+        });
+        await s.api("GET", "/api/prs");
+        return { ...s, opened };
+    }
+
+    async function registerKey(s, key = KEY) {
+        const { challenge } = (await s.api("POST", "/api/passkey-challenge", {})).body;
+        return s.api("POST", "/api/register", {
+            ...register(key, { challenge, origin: s.origin }),
+            label: "iPad\nKeychain",
+        });
+    }
+
+    const decide = (s, file, decision = "accept", reason = null) =>
+        s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
+
+    it("takes the session token and the served origin on every passkey route", async () => {
+        const s = await startWithPulls();
+        for (const route of ["passkey-challenge", "register", "finish-prepare"]) {
+            expect((await s.api("POST", `/api/${route}`, {}, { "x-review-token": "x" })).status).toBe(401);
+            expect((await s.api("POST", `/api/${route}`, {}, { origin: "https://evil.example" })).status).toBe(403);
+        }
+        expect((await s.api("GET", "/api/passkeys", undefined, { "x-review-token": "x" })).status).toBe(401);
+    });
+
+    it("needs nothing while no key is known", async () => {
+        const s = await startWithPulls();
+        expect((await s.api("GET", "/api/passkeys")).body).toEqual({ rpId: "127.0.0.1", keys: [], required: false });
+        await decide(s, "badge--default.light.png");
+        expect((await s.api("POST", "/api/finish-prepare", { id: "123" })).body).toEqual({ required: false });
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        expect(
+            JSON.parse(
+                git(
+                    s.remote,
+                    "show",
+                    `feature:${git(s.remote, "show", "--name-only", "--format=", "feature")
+                        .split("\n")
+                        .find((f) => f.includes("reviews/"))}`,
+                ),
+            ).version,
+        ).toBe(1);
+    });
+
+    it("registers a passkey: a pull request adding it, and approval required from then on", async () => {
+        quiet();
+        const s = await startWithPulls();
+        const { status, body } = await registerKey(s);
+        expect(status).toBe(200);
+        expect(body.entry).toMatchObject({
+            id: KEY.entry.id,
+            publicKey: KEY.entry.publicKey,
+            rpId: "127.0.0.1",
+            label: "iPad Keychain",
+        });
+        expect(body.pullRequest).toBe("https://gh/pull/500");
+        expect(body.branch).toMatch(/^visual\/passkey-\d{8}T\d{6}Z$/);
+        expect(parsePasskeys(git(s.remote, "show", `${body.branch}:visual-review/passkeys.json`))[0].id).toBe(
+            KEY.entry.id,
+        );
+        expect(s.opened[0]).toMatchObject({ head: body.branch, base: "master" });
+        expect((await s.api("GET", "/api/passkeys")).body).toEqual({
+            rpId: "127.0.0.1",
+            keys: [{ id: KEY.entry.id, rpId: "127.0.0.1", label: "iPad Keychain", pending: true }],
+            required: true,
+        });
+        expect((await registerKey(s)).body.error).toBe("this passkey is already registered");
+
+        // Merged: master holds it, so it is no longer pending.
+        const clone = join(s.dir, "merge");
+        git(s.dir, "clone", "-q", "-b", "master", s.remote, clone);
+        mkdirSync(join(clone, "visual-review"));
+        writeFileSync(join(clone, "visual-review/passkeys.json"), passkeysJson(KEY));
+        git(clone, "add", "-A");
+        git(clone, "-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-q", "-m", "keys");
+        git(clone, "push", "-q", "origin", "master");
+        await s.api("GET", "/api/prs");
+        expect((await s.api("GET", "/api/passkeys")).body.keys).toEqual([
+            { id: KEY.entry.id, rpId: "127.0.0.1", label: "test", pending: false },
+        ]);
+    });
+
+    it("trusts only the default branch's keys once it holds one, never a key registered since", async () => {
+        quiet();
+        const s = await startWithPulls();
+        const clone = join(s.dir, "merge");
+        git(s.dir, "clone", "-q", "-b", "master", s.remote, clone);
+        mkdirSync(join(clone, "visual-review"));
+        writeFileSync(join(clone, "visual-review/passkeys.json"), passkeysJson(KEY));
+        git(clone, "add", "-A");
+        git(clone, "-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-q", "-m", "keys");
+        git(clone, "push", "-q", "origin", "master");
+        await s.api("GET", "/api/prs");
+        // Anyone who can reach the page could register a key; it is pending, and approves nothing.
+        const later = makeKey("127.0.0.1");
+        const added = await registerKey(s, later);
+        expect(added.status).toBe(200);
+        expect(added.body.gated).toBe(true);
+        await decide(s, "badge--default.light.png");
+        const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        expect(prepared.allowCredentials).toEqual([KEY.entry.id]);
+        const refused = await s.api("POST", "/api/finish", {
+            id: "123",
+            challenge: prepared.challenge,
+            approval: approve(prepared.record, later, { origin: s.origin }),
+        });
+        expect(refused.status).toBe(403);
+        expect(refused.body.error).toMatch(/key not in passkeys.json/);
+    });
+
+    it("uses a registration challenge once and only for five minutes, and refuses a bad registration", async () => {
+        const s = await startWithPulls();
+        const { challenge } = (await s.api("POST", "/api/passkey-challenge", {})).body;
+        const bad = await s.api("POST", "/api/register", register(KEY, { challenge, origin: "https://evil.example" }));
+        expect(bad.status).toBe(400);
+        expect(bad.body.error).toMatch(/^the passkey was not accepted: .*origin/);
+        // Used, even though it failed.
+        expect((await s.api("POST", "/api/register", register(KEY, { challenge, origin: s.origin }))).status).toBe(409);
+        const other = (await s.api("POST", "/api/passkey-challenge", {})).body.challenge;
+        expect(
+            (
+                await s.api(
+                    "POST",
+                    "/api/register",
+                    register(KEY, { challenge: other, origin: s.origin, algorithm: -257 }),
+                )
+            ).status,
+        ).toBe(400);
+        const late = (await s.api("POST", "/api/passkey-challenge", {})).body.challenge;
+        const now = Date.now();
+        vi.spyOn(Date, "now").mockReturnValue(now + 5 * 60000 + 1000);
+        onTestFinished(() => vi.restoreAllMocks());
+        expect(
+            (await s.api("POST", "/api/register", register(KEY, { challenge: late, origin: s.origin }))).status,
+        ).toBe(409);
+        expect(s.opened).toEqual([]);
+    });
+
+    it("finishes only with a fresh, valid approval of the prepared record", async () => {
+        quiet();
+        const s = await startWithPulls();
+        await registerKey(s);
+        await decide(s, "badge--default.light.png");
+        await decide(s, "slider--sizes.png", "reject", "tall");
+
+        expect((await s.api("POST", "/api/finish", { id: "123" })).status).toBe(400);
+        const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        expect(prepared).toMatchObject({
+            required: true,
+            rpId: "127.0.0.1",
+            allowCredentials: [KEY.entry.id],
+            accepts: 1,
+            excludes: 0,
+            rejects: 1,
+        });
+        const approval = approve(prepared.record, KEY, { origin: s.origin });
+        // Another key's signature, and an approval for another origin.
+        const forged = approve(prepared.record, makeKey("127.0.0.1"), { origin: s.origin });
+        forged.credentialId = KEY.entry.id;
+        const refused = await s.api("POST", "/api/finish", {
+            id: "123",
+            challenge: prepared.challenge,
+            approval: forged,
+        });
+        expect(refused.status).toBe(403);
+        expect(refused.body.error).toMatch(/signature does not verify/);
+        const elsewhere = approve(prepared.record, KEY, { origin: "https://127.0.0.1:1" });
+        expect(
+            (await s.api("POST", "/api/finish", { id: "123", challenge: prepared.challenge, approval: elsewhere }))
+                .status,
+        ).toBe(403);
+        expect((await s.api("POST", "/api/finish", { id: "123", challenge: "x", approval })).status).toBe(409);
+
+        // A decision changed after the prepare: the approval is stale.
+        await decide(s, "card--legacy.png");
+        expect(
+            (await s.api("POST", "/api/finish", { id: "123", challenge: prepared.challenge, approval })).status,
+        ).toBe(409);
+        await decide(s, "card--legacy.png", null);
+
+        const fresh = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        const begun = await s.api("POST", "/api/finish", {
+            id: "123",
+            challenge: fresh.challenge,
+            approval: approve(fresh.record, KEY, { origin: s.origin }),
+        });
+        expect(begun.status).toBe(202);
+        const job = await endedJob(s);
+        expect(job.error).toBeNull();
+        const files = git(s.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const record = JSON.parse(git(s.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
+        expect(record).toMatchObject({ version: 2, pr: 123, reviewedAt: fresh.record.reviewedAt });
+        expect(record.rejects).toHaveLength(1);
+        expect(verifyApproval(record, [KEY.entry], { origin: s.origin })).toBeNull();
+        // The gate takes only an https origin; this test server is plain http.
+        expect(verifyRecord(record, [KEY.entry], { pr: 123 })).toMatch(/not on the review page's origin/);
+        // Used once.
+        expect(
+            (await s.api("POST", "/api/finish", { id: "123", challenge: fresh.challenge, approval: record.approval }))
+                .status,
+        ).toBe(409);
+    });
+
+    it("says so when no key is registered for the page's host", async () => {
+        quiet();
+        const s = await startWithPulls();
+        mkdirSync(join(s.tmp, "state"), { recursive: true });
+        writeFileSync(join(s.tmp, "state/passkeys-pending.json"), passkeysJson(makeKey("dev.ato.ms")));
+        await decide(s, "badge--default.light.png");
+        const r = await s.api("POST", "/api/finish-prepare", { id: "123" });
+        expect(r.status).toBe(409);
+        expect(r.body.error).toMatch(/^no passkey is registered for 127\.0\.0\.1: .*\(dev\.ato\.ms\)/);
     });
 });

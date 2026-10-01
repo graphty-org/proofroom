@@ -1,27 +1,42 @@
 /**
- * Passkey approval of a review record (design.md section 8): the record hash a Finish signs, and the
- * checks an approval must pass for the gate to count the record's accepts. Standard library only:
- * the gate runs this on CI from a checkout without an install.
+ * Passkey approvals of review records: the owner's device (Face ID or Touch ID, a passkey in
+ * iCloud Keychain) signs the SHA-256 of a review record, and this module checks that signature.
+ * The gate runs it on every record a pull request adds; the server runs it at Finish, immediately
+ * before the record is committed.
  *
- * The owner's passkeys are listed in `visual-review.passkeys.json` at the repository root, as it is
- * on the default branch: a JSON array of `{ id, publicKey, rpId, label, registeredAt }`, where `id`
- * is the credential id and `publicKey` its SubjectPublicKeyInfo (DER), both base64url. While the
- * file does not exist, approvals are not required; once it exists, every new accept needs one.
+ * WebAuthn's ES256 signature is over `authenticatorData || SHA-256(clientDataJSON)`, and the
+ * challenge inside clientDataJSON is the record's hash, so the signature covers the record. Only
+ * `node:crypto`, so the gate still runs from a checkout without an install.
  */
 
-import { execFileSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
 
-export const PASSKEYS_FILE = "visual-review.passkeys.json";
+/** Where the registered public keys live, relative to the repository root. */
+export const PASSKEYS_FILE = "visual-review/passkeys.json";
+
+const B64U = /^[A-Za-z0-9_-]+$/;
+const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
+const FIELDS = ["credentialId", "authenticatorData", "clientDataJSON", "signature"];
+const UP = 0x01;
+const UV = 0x04;
+const AT = 0x40;
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest();
-export const b64url = (bytes) => Buffer.from(bytes).toString("base64url");
-const fromB64url = (s) => (typeof s === "string" && /^[A-Za-z0-9_-]*$/.test(s) ? Buffer.from(s, "base64url") : null);
+const b64u = (s) => Buffer.from(s, "base64url");
 
-// JSON with every object's keys sorted and no whitespace; undefined fields left out, as JSON does.
-function canonical(value) {
+/**
+ * JSON with object keys sorted and no whitespace, so one record has exactly one byte form. A
+ * number JSON cannot write back as it was read (1e999 is Infinity, -0 is 0) throws, so two
+ * different records never hash the same.
+ * @param {unknown} value a JSON value
+ * @returns {string} its canonical text
+ */
+export function canonical(value) {
+    if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0))) {
+        throw new Error(`${value} has no canonical JSON form`);
+    }
     if (Array.isArray(value)) {
-        return `[${value.map((v) => (v === undefined ? "null" : canonical(v))).join(",")}]`;
+        return `[${value.map((v) => canonical(v ?? null)).join(",")}]`;
     }
     if (value !== null && typeof value === "object") {
         const keys = Object.keys(value)
@@ -33,123 +48,253 @@ function canonical(value) {
 }
 
 /**
- * The record hash: SHA-256 of the record's canonical JSON with `approval` removed. It is the
- * WebAuthn challenge a Finish signs.
+ * The bytes an approval signs: SHA-256 of the canonical record without its `approval`.
  * @param {object} record the review record
- * @returns {Buffer} the 32-byte hash
+ * @returns {Buffer} 32 bytes
  */
 export function recordHash(record) {
     const rest = { ...record };
     delete rest.approval;
-    return sha256(canonical(rest));
+    return sha256(Buffer.from(canonical(rest), "utf8"));
 }
 
 /**
- * Checks a passkeys file's entries.
- * @param {unknown} list the parsed file
- * @returns {{ keys: { id: string, publicKey: string, rpId: string, label: string }[], problem: string | null }}
- *     the usable keys, and what was wrong with the file, if anything
+ * Loads a key's SubjectPublicKeyInfo; only P-256 (ES256) is accepted.
+ * @param {string} spki base64url DER
+ * @returns {import("node:crypto").KeyObject} the key
  */
-export function parsePasskeys(list) {
-    if (!Array.isArray(list)) {
-        return { keys: [], problem: `${PASSKEYS_FILE} must be a JSON array` };
+function loadKey(spki) {
+    const key = createPublicKey({ key: b64u(spki), format: "der", type: "spki" });
+    if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
+        throw new Error("the public key is not a P-256 (ES256) key");
     }
-    const keys = list.filter(
-        (k) =>
-            typeof k?.id === "string" &&
-            fromB64url(k.publicKey) !== null &&
-            typeof k.rpId === "string" &&
-            /^[a-z0-9.-]+$/i.test(k.rpId),
-    );
-    const problem =
-        keys.length === list.length
-            ? null
-            : `${PASSKEYS_FILE}: ignoring ${list.length - keys.length} malformed entries`;
-    return { keys: keys.map((k) => ({ ...k, label: typeof k.label === "string" ? k.label : "passkey" })), problem };
+    return key;
 }
 
 /**
- * The registered passkeys at a git ref.
- * @param {string} ref the default branch's tip (the base, in the gate)
- * @param {string} root the repository
- * @returns {{ keys: object[], problem: string | null } | null} null when the file does not exist
- *     there, so approvals are not required yet
+ * Parses passkeys.json. One bad entry makes the whole file invalid, so the gate fails closed.
+ * @param {string} text the file
+ * @returns {{ id: string, publicKey: string, rpId: string, label?: string, registeredAt?: string }[]}
+ *     the keys
  */
-export function passkeysAt(ref, root) {
-    let text;
+export function parsePasskeys(text) {
+    const doc = JSON.parse(text);
+    if (doc?.version !== 1) {
+        throw new Error("version must be 1");
+    }
+    if (!Array.isArray(doc.keys)) {
+        throw new Error("keys must be an array");
+    }
+    const seen = new Set();
+    for (const [i, k] of doc.keys.entries()) {
+        const where = `keys[${i}]`;
+        if (typeof k?.id !== "string" || !B64U.test(k.id)) {
+            throw new Error(`${where}.id must be a non-empty base64url string`);
+        }
+        if (seen.has(k.id)) {
+            throw new Error(`${where}.id is a duplicate`);
+        }
+        seen.add(k.id);
+        if (typeof k.rpId !== "string" || !HOST.test(k.rpId)) {
+            throw new Error(`${where}.rpId must be a host name`);
+        }
+        if (typeof k.publicKey !== "string" || !B64U.test(k.publicKey)) {
+            throw new Error(`${where}.publicKey must be base64url`);
+        }
+        try {
+            loadKey(k.publicKey);
+        } catch (err) {
+            throw new Error(`${where}.publicKey: ${err.message}`);
+        }
+    }
+    return doc.keys;
+}
+
+/**
+ * Checks clientDataJSON and authenticatorData shared by registration and approval.
+ * @param {object} c the ceremony
+ * @param {any} c.clientData the parsed clientDataJSON
+ * @param {Buffer} c.authData authenticatorData
+ * @param {string} c.type webauthn.get or webauthn.create
+ * @param {string} c.challenge the expected challenge, base64url
+ * @param {string} c.rpId the relying party id
+ * @param {(origin: unknown) => boolean} c.originOk whether the origin is acceptable
+ * @returns {string | null} why not, or null
+ */
+function checkCeremony({ clientData, authData, type, challenge, rpId, originOk }) {
+    if (clientData?.type !== type) {
+        return `clientDataJSON.type is not ${type}`;
+    }
+    if (clientData.challenge !== challenge) {
+        return "the challenge does not match: it was signed for other contents than these";
+    }
+    if (clientData.crossOrigin === true) {
+        return "the approval was made in a cross-origin frame";
+    }
+    if (!originOk(clientData.origin)) {
+        return `the approval was made on ${JSON.stringify(clientData.origin)}, not on the review page's origin`;
+    }
+    if (authData.length < 37) {
+        return "authenticatorData is too short";
+    }
+    if (!authData.subarray(0, 32).equals(sha256(rpId))) {
+        return `authenticatorData is not for the rpId ${rpId}`;
+    }
+    if (!(authData[32] & UP)) {
+        return "the authenticator did not confirm user presence";
+    }
+    if (!(authData[32] & UV)) {
+        return "the authenticator did not verify the user (no Face ID, Touch ID or PIN)";
+    }
+    return null;
+}
+
+const jsonOf = (s) => {
     try {
-        text = execFileSync("git", ["show", `${ref}:${PASSKEYS_FILE}`], {
-            cwd: root,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-        });
+        return JSON.parse(b64u(s).toString("utf8"));
     } catch {
-        return null;
+        return undefined;
     }
-    try {
-        return parsePasskeys(JSON.parse(text));
-    } catch {
-        return { keys: [], problem: `${PASSKEYS_FILE} is not valid JSON` };
-    }
-}
+};
 
 /**
- * Why a record's approval does not count, if it does not: the checks of design.md section 8.
- * @param {object} record the record as committed, with its `approval`
- * @param {{ id: string, publicKey: string, rpId: string }[]} keys the registered passkeys
- * @returns {string | null} the problem, or null when the approval is valid
+ * Whether a record's approval is a valid passkey signature over that record. Never throws.
+ * @param {object} record the review record, with `approval`
+ * @param {{ id: string, publicKey: string, rpId: string }[]} keys the keys to accept
+ * @param {{ origin?: string }} [options] the exact origin required (the server's); without it any
+ *     https origin whose host is exactly the key's rpId, on any port (servherd assigns the review
+ *     server's), never a subdomain
+ * @returns {string | null} why it fails, or null when it verifies
  */
-export function approvalProblem(record, keys) {
+export function verifyApproval(record, keys, { origin } = {}) {
     const a = record?.approval;
-    if (!a || typeof a !== "object") {
-        return "no passkey approval";
+    if (typeof a !== "object" || a === null) {
+        return "the record has no passkey approval";
+    }
+    for (const f of FIELDS) {
+        if (typeof a[f] !== "string" || !B64U.test(a[f])) {
+            return `approval.${f} is not base64url`;
+        }
     }
     const key = keys.find((k) => k.id === a.credentialId);
     if (!key) {
-        return "approved by a passkey that is not registered";
+        return "approval is from a key not in passkeys.json on the base branch";
     }
-    const authData = fromB64url(a.authenticatorData);
-    const clientBytes = fromB64url(a.clientDataJSON);
-    const signature = fromB64url(a.signature);
-    if (!authData || !clientBytes || !signature || authData.length < 37) {
-        return "the approval is malformed";
+    const clientDataBytes = b64u(a.clientDataJSON);
+    const clientData = jsonOf(a.clientDataJSON);
+    if (clientData === undefined) {
+        return "approval.clientDataJSON is not JSON";
     }
-    let client;
+    const authData = b64u(a.authenticatorData);
+    let challenge;
     try {
-        client = JSON.parse(clientBytes.toString("utf8"));
-    } catch {
-        return "the approval's client data is not JSON";
+        challenge = recordHash(record).toString("base64url");
+    } catch (err) {
+        return `the record cannot be hashed: ${err.message}`;
     }
-    if (client?.type !== "webauthn.get") {
-        return "the approval is not a WebAuthn assertion";
-    }
-    if (client.challenge !== b64url(recordHash(record))) {
-        return "the approval was given for different contents: the record was changed after it was signed";
-    }
-    let origin;
-    try {
-        origin = new URL(client.origin);
-    } catch {
-        return "the approval has no origin";
-    }
-    const onRp = origin.hostname === key.rpId || origin.hostname.endsWith(`.${key.rpId}`);
-    const secure = origin.protocol === "https:" || (origin.protocol === "http:" && origin.hostname === "localhost");
-    if (!onRp || !secure) {
-        return `the approval came from ${client.origin}, not from an https page on ${key.rpId}`;
-    }
-    if (!authData.subarray(0, 32).equals(sha256(key.rpId))) {
-        return `the approval is for another site than ${key.rpId}`;
-    }
-    // Flags: bit 0 user present, bit 2 user verified (Face ID, Touch ID or the device passcode).
-    if ((authData[32] & 0x05) !== 0x05) {
-        return "the approval was given without user verification (Face ID, Touch ID or a PIN)";
+    const why = checkCeremony({
+        clientData,
+        authData,
+        type: "webauthn.get",
+        challenge,
+        rpId: key.rpId,
+        originOk: (o) => {
+            if (origin !== undefined) {
+                return o === origin;
+            }
+            try {
+                // u.origin === o refuses anything a browser never writes as an origin (a user, a path).
+                const u = new URL(String(o));
+                return u.origin === o && u.protocol === "https:" && u.hostname === key.rpId;
+            } catch {
+                return false;
+            }
+        },
+    });
+    if (why) {
+        return why;
     }
     let ok = false;
     try {
-        const publicKey = createPublicKey({ key: fromB64url(key.publicKey), format: "der", type: "spki" });
-        ok = verify("sha256", Buffer.concat([authData, sha256(clientBytes)]), publicKey, signature);
+        ok = verify(
+            "sha256",
+            Buffer.concat([authData, sha256(clientDataBytes)]),
+            loadKey(key.publicKey),
+            b64u(a.signature),
+        );
     } catch {
         ok = false;
     }
-    return ok ? null : "the approval's signature does not verify with the registered passkey";
+    return ok ? null : "the approval's signature does not verify";
+}
+
+/**
+ * The gate's check of one record a pull request adds, once approvals are enforced.
+ * @param {object} record the parsed record
+ * @param {{ id: string, publicKey: string, rpId: string }[]} keys the base branch's keys
+ * @param {{ pr: number }} options the pull request the gate runs on
+ * @returns {string | null} why it fails, or null
+ */
+export function verifyRecord(record, keys, { pr }) {
+    if (typeof record !== "object" || record === null || Array.isArray(record)) {
+        return "not a review record";
+    }
+    if (record.version !== 2) {
+        return `a version ${JSON.stringify(record.version)} record has no passkey approval; review it again with Face ID`;
+    }
+    if (!Array.isArray(record.items) || !Array.isArray(record.rejects)) {
+        return "items and rejects must be arrays";
+    }
+    if (record.pr !== pr && record.pr !== null) {
+        return `the record is for pull request #${record.pr}, not #${pr}`;
+    }
+    return verifyApproval(record, keys);
+}
+
+/**
+ * The server's check of a `navigator.credentials.create` response. Attestation is not checked
+ * (Apple passkeys give "none"): the owner merging the key's pull request is the trust step.
+ * @param {{ credentialId: string, publicKey: string, algorithm: number, authenticatorData: string,
+ *     clientDataJSON: string }} input what the page sent
+ * @param {{ challenge: string, origin: string, rpId: string }} expected the server's challenge
+ *     (base64url), its origin and rpId
+ * @returns {string | null} why it fails, or null
+ */
+export function verifyRegistration(input, { challenge, origin, rpId }) {
+    for (const f of ["credentialId", "publicKey", "authenticatorData", "clientDataJSON"]) {
+        if (typeof input?.[f] !== "string" || !B64U.test(input[f])) {
+            return `${f} is not base64url`;
+        }
+    }
+    if (input.algorithm !== -7) {
+        return `algorithm ${input.algorithm} is not ES256 (-7)`;
+    }
+    const clientData = jsonOf(input.clientDataJSON);
+    if (clientData === undefined) {
+        return "clientDataJSON is not JSON";
+    }
+    const authData = b64u(input.authenticatorData);
+    const why = checkCeremony({
+        clientData,
+        authData,
+        type: "webauthn.create",
+        challenge,
+        rpId,
+        originOk: (o) => o === origin,
+    });
+    if (why) {
+        return why;
+    }
+    // The attested credential data names the credential: it must be the id sent.
+    const id = b64u(input.credentialId);
+    const length = authData.length >= 55 ? authData.readUInt16BE(53) : -1;
+    if (!(authData[32] & AT) || length !== id.length || !authData.subarray(55, 55 + length).equals(id)) {
+        return "authenticatorData does not hold this credential id";
+    }
+    try {
+        loadKey(input.publicKey);
+    } catch (err) {
+        return err.message;
+    }
+    return null;
 }
