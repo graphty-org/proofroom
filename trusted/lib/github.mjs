@@ -51,7 +51,8 @@ const TRANSIENT =
 
 /**
  * Retries a gh runner's calls that failed on the network, after each delay in turn. A write
- * (`--input`) is never retried: GitHub may have applied it before the connection dropped.
+ * (`--input`) is never retried: GitHub may have applied it before the connection dropped. Every
+ * failure and retry is logged to stderr, so the server's log shows what happened.
  * @param {(args: string[], input?: string) => Promise<string>} gh the gh runner
  * @param {number[]} [delays] milliseconds before each retry
  * @returns {(args: string[], input?: string) => Promise<string>} the retrying runner
@@ -63,7 +64,11 @@ export const withRetries =
             try {
                 return await gh(args, input);
             } catch (err) {
-                if (i >= delays.length || args.includes("--input") || !TRANSIENT.test(err.message)) {
+                const retry = i < delays.length && !args.includes("--input") && TRANSIENT.test(err.message);
+                // gh's arguments never hold a token (gh keeps its own login), so they are logged whole.
+                const next = retry ? `; retrying in ${delays[i] / 1000} s` : "";
+                console.error(`visual-review: gh ${args.join(" ")} failed${next}: ${err.message}`);
+                if (!retry) {
                     throw err;
                 }
                 await new Promise((resolve) => setTimeout(resolve, delays[i]));

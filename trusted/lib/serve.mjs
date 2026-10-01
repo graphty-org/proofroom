@@ -247,16 +247,29 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             const error = downloaded[name]?.error;
             const failed = !downloaded[name] || job?.conclusion === "failure";
             const reason = failed ? (job ? "capture failed" : "no capture") : null;
-            const p = await project(
-                name,
-                downloaded[name]?.dir,
-                error ? `download failed: ${error.split("\n")[0]}; reload the page to retry` : reason,
-            );
+            const p = await project(name, downloaded[name]?.dir, error ? retryLater("download failed", error) : reason);
             p.logUrl = job?.url ?? run.url;
             list.push(p);
         }
         return { ...info, runId: run.id, runAttempt: run.attempt, runUrl: run.url, projects: list };
     }
+
+    const retryLater = (what, message) => `${what}: ${message.split("\n")[0]}; reload the page to retry`;
+
+    // A target GitHub would not give us (after gh's retries) is shown failed; the others still load.
+    const failed = (info, err) => ({
+        ...info,
+        runId: null,
+        runAttempt: null,
+        runUrl: null,
+        projects: names.map((n) => ({
+            project: n,
+            dir: null,
+            results: null,
+            problem: retryLater("failed to load", err.message),
+            logUrl: null,
+        })),
+    });
 
     // Concurrent callers (the startup refresh, the page's first request) share one refresh.
     let refreshing = null;
@@ -289,7 +302,14 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 });
             }
         } else {
-            const prs = await openPullRequests(gh);
+            // The master seed still loads when the list of pull requests cannot be read.
+            const prs = await openPullRequests(gh).catch((err) => {
+                if (!masterRun) {
+                    throw err;
+                }
+                console.error(`visual-review: pull requests not listed: ${err.message}`);
+                return [];
+            });
             // Best effort: the default branch and the pull requests' branches, so the badge below
             // sees what accept will see. A fork's branch is not on origin and fails its fetch, so
             // the default branch is fetched alone first.
@@ -300,20 +320,30 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             // Every pull request at once: one after another took about 40 s for 18 of them.
             const built = await Promise.all(
                 prs.map(async (pr) => {
-                    const run = await newestCiRun(gh, pr.headSha, config);
-                    const id = String(pr.number);
-                    return run
-                        ? build({ id, pr: pr.number, title: pr.title, url: pr.url, branch: pr.branch }, run)
-                        : null;
+                    const info = {
+                        id: String(pr.number),
+                        pr: pr.number,
+                        title: pr.title,
+                        url: pr.url,
+                        branch: pr.branch,
+                    };
+                    try {
+                        const run = await newestCiRun(gh, pr.headSha, config);
+                        return run ? await build(info, run) : null;
+                    } catch (err) {
+                        return failed(info, err);
+                    }
                 }),
             );
             await fetched;
             for (const t of built) if (t) next.set(t.id, t);
             if (masterRun) {
-                const run = await getRun(gh, masterRun);
+                const info = { id: "master", pr: null, title: defaultBranch, url: null, branch: null };
                 next.set(
                     "master",
-                    await build({ id: "master", pr: null, title: defaultBranch, url: null, branch: null }, run),
+                    await getRun(gh, masterRun)
+                        .then((run) => build(info, run))
+                        .catch((err) => failed(info, err)),
                 );
             }
         }

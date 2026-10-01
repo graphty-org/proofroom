@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { join } from "node:path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { downloadCaptures, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
@@ -765,6 +765,12 @@ describe("downloadCaptures", () => {
 
 describe("network failures", () => {
     const NET = "error connecting to productionresultssa0.blob.core.windows.net\ncheck your internet connection";
+    let logged;
+    beforeEach(() => {
+        logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+    afterEach(() => logged.mockRestore());
+    const lines = () => logged.mock.calls.map(([line]) => line.split("\n")[0]);
 
     it("retries a gh call that failed on the network, then returns its answer", async () => {
         let calls = 0;
@@ -776,6 +782,10 @@ describe("network failures", () => {
         }, [0, 0, 0]);
         expect(await gh(["run", "download", "1"])).toBe("ok");
         expect(calls).toBe(3);
+        expect(lines()).toEqual([
+            "visual-review: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
+            "visual-review: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
+        ]);
     });
 
     it("gives up after the last delay", async () => {
@@ -800,6 +810,7 @@ describe("network failures", () => {
         }, [0, 0, 0]);
         await expect(gh(args)).rejects.toThrow(message.split("\n")[0]);
         expect(calls).toBe(1);
+        expect(lines()).toEqual([`visual-review: gh ${args.join(" ")} failed: ${message.split("\n")[0]}`]);
     });
 
     it("shows a project whose download failed, loads the others, and retries it on the next request", async () => {
@@ -845,5 +856,48 @@ describe("network failures", () => {
         expect(body.targets.map((t) => t.id)).toEqual(["123"]);
         expect(calls.filter((c) => c === "run download")).toHaveLength(2);
         expect(calls.filter((c) => c.startsWith("api repos/{owner}/{repo}/pulls"))).toHaveLength(1);
+    });
+
+    // Pull request #123 loads; #124's CI run cannot be read; master run 2000 loads.
+    const twoPrsAndMaster = (fail) => (r) => {
+        const inner = fakeGh({
+            prs: [
+                { number: 123, head: r.head, branch: "feature" },
+                { number: 124, head: "4".repeat(40), branch: "other" },
+            ],
+            runs: { [r.head]: { id: 1000, head: r.head } },
+            runsById: { 2000: { id: 2000, head: r.master } },
+            jobs: { 1000: [job("compact-mantine"), job("graphty-element")], 2000: [job("compact-mantine")] },
+            artifacts: { 1000: ["visual-compact-mantine-1"], 2000: ["visual-compact-mantine-1"] },
+        });
+        return async (args, input) => {
+            if (fail(args[1] ?? "")) {
+                throw new Error("error connecting to api.github.com");
+            }
+            return inner(args, input);
+        };
+    };
+
+    it("shows one pull request that cannot be loaded as failed, and loads the rest and master", async () => {
+        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path.includes("head_sha=4444")) });
+        const { status, body } = await s.api("GET", "/api/prs");
+        expect(status).toBe(200);
+        const byId = Object.fromEntries(body.targets.map((t) => [t.id, t]));
+        expect(Object.keys(byId).sort()).toEqual(["123", "124", "master"]);
+        expect(byId["124"]).toMatchObject({ pr: 124, runId: null, branch: "other" });
+        expect(byId["124"].projects.map((p) => p.problem)).toEqual([
+            "failed to load: error connecting to api.github.com; reload the page to retry",
+            "failed to load: error connecting to api.github.com; reload the page to retry",
+        ]);
+        expect(byId["123"].projects.find((p) => p.project === "compact-mantine").problem).toBeNull();
+        expect(byId.master.projects.find((p) => p.project === "compact-mantine").problem).toBeNull();
+    });
+
+    it("still loads master when the list of pull requests cannot be read", async () => {
+        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path.includes("/pulls?")) });
+        const { status, body } = await s.api("GET", "/api/prs");
+        expect(status).toBe(200);
+        expect(body.targets.map((t) => t.id)).toEqual(["master"]);
+        expect(lines()).toContain("visual-review: pull requests not listed: error connecting to api.github.com");
     });
 });
