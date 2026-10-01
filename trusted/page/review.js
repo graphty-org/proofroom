@@ -59,9 +59,21 @@ const state = {
 const running = () => state.job?.running === true;
 const VIEWS = ["side", "flash", "highlight", "spotlight"];
 const FILTERS = ["undecided", "all", ...REVIEWABLE, UNSEEDED, ...Object.keys(DECISIONS)];
-let routing = false; // true while the page follows the address (a link opened, Back, Forward)
+let routes = 0; // how many routes are running: the page follows the address (a link, Back, Forward)
+let nav = 0; // bumped by each screen change that waits on the server: a superseded one stops there
+// The least recently used last-opened images and diffs are dropped past these, so a long session
+// stays small: an object URL holds its image, and a diff about 13 bytes per image pixel.
 const images = new Map();
+const IMAGES_KEPT = 50;
 const diffs = new Map();
+const DIFFS_KEPT = 4;
+let stageRender = 0; // the newest renderStage: an older one finishing late writes nothing
+let stageShown = null; // the file whose two panes are on the stage: Accept waits for it
+let deciding = false; // a decision is on its way to the server
+// A decision moves on to the next item, whose buttons are in the same place: the second click of
+// a double click, this soon after the first, lands there and is ignored.
+const DOUBLE_CLICK_MS = 500;
+let clickedAt = -Infinity; // when a decision button was last clicked
 let flashTimer = null;
 let factor = 1; // CSS pixels per image pixel of the pictures on the stage
 let shownBoxes = []; // the changed boxes of the item on the stage
@@ -115,29 +127,55 @@ async function api(path, body) {
     return json;
 }
 
-// Loads an image through the API (it needs the token header) and returns an object URL.
-function image(kind, file) {
-    const key = `${state.target.id}/${state.project}/${kind}/${file}`;
-    if (!images.has(key)) {
-        const path = ["img", state.target.id, state.project, kind, file].map(encodeURIComponent).join("/");
-        images.set(
-            key,
-            fetch(`/api/${path}`, { headers: { "x-review-token": token } }).then(async (res) => {
+// The promise `make` returns for `key`, kept in `map` with the least recently used dropped past
+// `limit` (and handed to `drop`). A promise that fails is dropped at once, so the next use retries.
+function cached(map, key, limit, make, drop = () => {}) {
+    let value = map.get(key);
+    if (value === undefined) {
+        value = make();
+        value.catch(() => {
+            if (map.get(key) === value) {
+                map.delete(key);
+            }
+        });
+    }
+    map.delete(key);
+    map.set(key, value);
+    for (const [k, old] of map) {
+        if (map.size <= limit) {
+            break;
+        }
+        map.delete(k);
+        drop(old);
+    }
+    return value;
+}
+
+// Loads an image through the API (it needs the token header) and returns an object URL. Keyed by
+// the image's hash too, so a newer CI run's image is never answered with an older one.
+function image(kind, file, hash) {
+    return cached(
+        images,
+        `${state.target.id}/${state.project}/${kind}/${file}/${hash}`,
+        IMAGES_KEPT,
+        () => {
+            const path = ["img", state.target.id, state.project, kind, file].map(encodeURIComponent).join("/");
+            return fetch(`/api/${path}`, { headers: { "x-review-token": token } }).then(async (res) => {
                 if (!res.ok) {
                     throw new Error(`${file}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
                 }
                 return URL.createObjectURL(await res.blob());
-            }),
-        );
-    }
-    return images.get(key);
+            });
+        },
+        (url) => url.then(URL.revokeObjectURL, () => {}),
+    );
 }
 
-function loaded(url) {
+function loaded(url, what) {
     return new Promise((resolve, reject) => {
         const img = new Image();
         img.onload = () => resolve(img);
-        img.onerror = reject;
+        img.onerror = () => reject(new Error(`${what}: the image could not be shown`));
         img.src = url;
     });
 }
@@ -265,10 +303,11 @@ async function loadTargets() {
 }
 
 async function showTargets(notice = "") {
+    const seq = ++nav;
     stopFlash();
     state.screen = "targets";
     setCrumbs();
-    if (!(await loadTargets())) {
+    if (!(await loadTargets()) || seq !== nav) {
         return;
     }
     remember();
@@ -415,6 +454,7 @@ function targetCard(t) {
 // ---------------------------------------------------------------- screen: project grid
 
 async function openProject(target, project) {
+    const seq = ++nav;
     state.target = target;
     state.project = project;
     state.filter = "undecided";
@@ -427,6 +467,9 @@ async function openProject(target, project) {
         say("");
     } catch (err) {
         say(err.message, true);
+        return;
+    }
+    if (seq !== nav) {
         return;
     }
     // Nothing left to decide (or a local preview): show everything instead of an empty grid.
@@ -448,8 +491,8 @@ const thumbs = new IntersectionObserver((entries) => {
     for (const e of entries) {
         if (e.isIntersecting) {
             thumbs.unobserve(e.target);
-            const { kind, file } = e.target.dataset;
-            image(kind, file).then(
+            const { kind, file, hash } = e.target.dataset;
+            image(kind, file, hash).then(
                 (url) => (e.target.src = url),
                 (err) => (e.target.alt = err.message),
             );
@@ -470,7 +513,7 @@ function openItem(index) {
 function tile(item, number) {
     const kind = item.capture ? "capture" : item.baseline ? "baseline" : null;
     const img = kind
-        ? el("img", { "data-kind": kind, "data-file": item.file, alt: itemName(item) })
+        ? el("img", { "data-kind": kind, "data-file": item.file, "data-hash": item[kind], alt: itemName(item) })
         : el("div", { class: "noimage" }, item.status);
     if (kind) {
         thumbs.observe(img);
@@ -625,7 +668,9 @@ async function undo(files, where, one = false) {
 
 function showGrid() {
     stopFlash();
+    thumbs.disconnect();
     state.screen = "grid";
+    state.pending = "reject";
     setCrumbs(el("span", {}, targetLabel()), el("span", {}, state.project));
     const items = visibleItems();
     const counts = {};
@@ -851,6 +896,11 @@ function showStory() {
     }
     state.index = Math.max(0, Math.min(state.index, items.length - 1));
     const item = items[state.index];
+    if (item.file !== state.lastFile) {
+        // An Exclude (or reject) left waiting for a reason on another item is abandoned.
+        state.pending = "reject";
+        stageShown = null;
+    }
     state.lastFile = item.file;
     const d = decisionOf(item);
     if (d?.bulk && !isLocal()) {
@@ -905,11 +955,11 @@ function showStory() {
     const reason = el("input", {
         id: "reason",
         type: "text",
-        placeholder: "Reason (needed to reject or exclude)",
+        placeholder: reasonHint(),
         value: d?.reason ?? "",
         maxlength: "2000",
         onkeydown: (e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !e.repeat) {
                 decide(state.pending);
             }
         },
@@ -923,14 +973,21 @@ function showStory() {
               state.data.acceptable && !onlyExclude
                   ? el(
                         "button",
-                        { type: "button", class: "accept", onclick: () => decide("accept"), title: "A" },
+                        {
+                            type: "button",
+                            class: "accept",
+                            onclick: () => clicked("accept"),
+                            title: "A",
+                            // Until both images are shown: renderStage enables it.
+                            disabled: true,
+                        },
                         "Accept",
                     )
                   : null,
               !onlyExclude
                   ? el(
                         "button",
-                        { type: "button", class: "reject", onclick: () => decide("reject"), title: "R" },
+                        { type: "button", class: "reject", onclick: () => clicked("reject"), title: "R" },
                         "Reject",
                     )
                   : null,
@@ -939,7 +996,7 @@ function showStory() {
                         "button",
                         {
                             type: "button",
-                            onclick: () => decide("exclude"),
+                            onclick: () => clicked("exclude"),
                             title: "E: stop capturing every mode of this story",
                         },
                         "Exclude",
@@ -1080,37 +1137,35 @@ function showStory() {
     remember();
 }
 
+const reasonHint = () => `Reason (needed to reject or exclude); Enter ${state.pending}s`;
+
 // The changed pixels of an item, padded top-left to the larger size, grown by GROW pixels, and the
-// boxes around each separate grown region. Computed once per item.
+// boxes around each separate grown region. Computed once per item and pair of images.
 async function diffOf(item) {
-    if (!diffs.has(item.file)) {
-        diffs.set(
-            item.file,
-            (async () => {
-                const [a, b] = await Promise.all([
-                    loaded(await image("baseline", item.file)),
-                    loaded(await image("capture", item.file)),
-                ]);
-                const w = Math.max(a.naturalWidth, b.naturalWidth);
-                const h = Math.max(a.naturalHeight, b.naturalHeight);
-                const pixels = (img) => {
-                    const ctx = new OffscreenCanvas(w, h).getContext("2d");
-                    ctx.drawImage(img, 0, 0);
-                    return ctx.getImageData(0, 0, w, h).data;
-                };
-                const [pa, pb] = [pixels(a), pixels(b)];
-                const mask = new Uint8ClampedArray(w * h * 4);
-                pixelmatch(pa, pb, mask, w, h, {
-                    threshold: item.threshold,
-                    includeAA: item.includeAA,
-                    diffMask: true,
-                });
-                const grown = grow(mask, w, h);
-                return { w, h, a: pa, b: pb, mask, grown, boxes: regions(grown, w, h) };
-            })(),
-        );
-    }
-    return diffs.get(item.file);
+    const { file, baseline, capture, threshold, includeAA } = item;
+    const key = `${state.target.id}/${state.project}/${file}/${baseline}/${capture}/${threshold}/${includeAA}`;
+    return cached(diffs, key, DIFFS_KEPT, async () => {
+        const [a, b] = await Promise.all([
+            loaded(await image("baseline", item.file, item.baseline), `baseline of ${item.file}`),
+            loaded(await image("capture", item.file, item.capture), `capture of ${item.file}`),
+        ]);
+        const w = Math.max(a.naturalWidth, b.naturalWidth);
+        const h = Math.max(a.naturalHeight, b.naturalHeight);
+        const pixels = (img) => {
+            const ctx = new OffscreenCanvas(w, h).getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            return ctx.getImageData(0, 0, w, h).data;
+        };
+        const [pa, pb] = [pixels(a), pixels(b)];
+        const mask = new Uint8ClampedArray(w * h * 4);
+        pixelmatch(pa, pb, mask, w, h, {
+            threshold: item.threshold,
+            includeAA: item.includeAA,
+            diffMask: true,
+        });
+        const grown = grow(mask, w, h);
+        return { w, h, a: pa, b: pb, mask, grown, boxes: regions(grown, w, h) };
+    });
 }
 
 // A square dilation by GROW pixels, as two passes (rows, then columns) of a sliding window.
@@ -1212,6 +1267,7 @@ function fit(stage) {
 // Two panes, always: the baseline on the left and the new image (or the view's picture) on the
 // right. A missing image leaves its pane empty, the same size, so the other one never moves.
 async function renderStage(item, view, keep) {
+    const seq = ++stageRender;
     const stage = document.getElementById("stage");
     const pane = (text, ...pics) =>
         el(
@@ -1225,7 +1281,7 @@ async function renderStage(item, view, keep) {
             ),
         );
     const imgOf = async (kind) => {
-        const img = await loaded(await image(kind, item.file));
+        const img = await loaded(await image(kind, item.file, item[kind]), `${kind} of ${item.file}`);
         img.alt = `${kind} of ${itemName(item)}`;
         return img;
     };
@@ -1248,6 +1304,9 @@ async function renderStage(item, view, keep) {
         } else if (view === "flash") {
             // The two images themselves, one after the other in the same place: no overlay.
             const [base, next] = [await imgOf("baseline"), await imgOf("capture")];
+            if (seq !== stageRender) {
+                return;
+            }
             next.style.visibility = "hidden";
             right = pane("Flash: baseline", base, next);
             right.classList.add("flashing");
@@ -1264,7 +1323,16 @@ async function renderStage(item, view, keep) {
         } else {
             right = pane("Spotlight: the new image, dimmed except around each change", spotlight(diff));
         }
+        if (seq !== stageRender) {
+            // Another item (or view) was shown while this one loaded.
+            return;
+        }
         stage.replaceChildren(left, right);
+        stageShown = item.file;
+        const accept = document.querySelector(".actions button.accept");
+        if (accept) {
+            accept.disabled = false;
+        }
         if (marked && state.blink) {
             // Both panes' overlays on and off together, at Flash's pace.
             const marks = [...stage.querySelectorAll(".diffmark")];
@@ -1307,7 +1375,9 @@ async function renderStage(item, view, keep) {
             }
         }
     } catch (err) {
-        stage.replaceChildren(el("p", { class: "error" }, err.message));
+        if (seq === stageRender) {
+            stage.replaceChildren(el("p", { class: "error" }, err.message || "the images could not be loaded"));
+        }
     }
 }
 
@@ -1451,6 +1521,10 @@ async function decide(decision) {
         say("A local preview is only looked at: nothing is decided on it.", true);
         return;
     }
+    if (deciding) {
+        // A second click or key while the first decision is on its way.
+        return;
+    }
     const items = passItems();
     const item = items[state.index];
     const before = decisionOf(item);
@@ -1463,11 +1537,18 @@ async function decide(decision) {
         say(`${itemName(item)} is already ${done}. Press U (Undo) first to change it.`, true);
         return;
     }
+    if (decision === "accept" && stageShown !== item.file) {
+        say(`${itemName(item)}: wait for both images before accepting.`, true);
+        return;
+    }
     const reasonBox = document.getElementById("reason");
     const reason = reasonBox?.value.trim() ?? "";
     if ((decision === "reject" || decision === "exclude") && reason === "") {
         state.pending = decision;
-        reasonBox?.focus();
+        if (reasonBox) {
+            reasonBox.placeholder = reasonHint();
+            reasonBox.focus();
+        }
         say(`A ${decision} needs a reason: type it, then press Enter.`);
         return;
     }
@@ -1480,6 +1561,7 @@ async function decide(decision) {
     ) {
         return;
     }
+    deciding = true;
     try {
         await api("/api/decide", {
             id: state.target.id,
@@ -1491,6 +1573,8 @@ async function decide(decision) {
     } catch (err) {
         say(err.message, true);
         return;
+    } finally {
+        deciding = false;
     }
     if (decision === null) {
         delete state.data.decisions[item.file];
@@ -1506,6 +1590,15 @@ async function decide(decision) {
     }
     state.box = 0;
     showStory();
+}
+
+// A decision button's click; a double click's second one is not a decision on the next item.
+function clicked(decision) {
+    const now = performance.now();
+    if (now - clickedAt >= DOUBLE_CLICK_MS) {
+        clickedAt = now;
+        decide(decision);
+    }
 }
 
 // ---------------------------------------------------------------- Finish
@@ -1677,7 +1770,7 @@ function remember() {
         screen !== state.screen ||
         (screen !== "targets" &&
             (was.get("target") !== String(state.target.id) || was.get("project") !== state.project));
-    const push = !routing && moved;
+    const push = routes === 0 && moved;
     history[push ? "pushState" : "replaceState"](null, "", hash);
 }
 
@@ -1685,14 +1778,15 @@ function remember() {
 // from a new CI run) lands on the nearest screen that does, with a line saying so.
 async function route() {
     const p = new URLSearchParams(location.hash.slice(1));
-    routing = true;
+    const seq = ++nav;
+    routes++;
     try {
         const id = p.get("target");
         if (!id) {
             await showTargets();
             return;
         }
-        if (!(await loadTargets())) {
+        if (!(await loadTargets()) || seq !== nav) {
             return;
         }
         const target = state.targets.find((t) => String(t.id) === id);
@@ -1704,12 +1798,18 @@ async function route() {
         }
         if (state.data === null || state.target?.id !== target.id || state.project !== project) {
             state.sequence = [];
+            state.data = null;
             state.target = target;
             state.project = project;
             try {
                 await reload();
             } catch (err) {
-                say(err.message, true);
+                // A project whose download (or target) failed: its problem is on the targets screen.
+                const problem = target.projects.find((x) => x.project === project).problem;
+                await showTargets(`${project} of ${id} could not be opened: ${problem ?? err.message}`);
+                return;
+            }
+            if (seq !== nav) {
                 return;
             }
         }
@@ -1747,7 +1847,7 @@ async function route() {
         say("");
         showStory();
     } finally {
-        routing = false;
+        routes--;
     }
 }
 
@@ -1835,6 +1935,11 @@ document.addEventListener("keydown", (e) => {
         },
     };
     const action = keys[key];
+    if (e.repeat && ["a", "r", "e", "u"].includes(key)) {
+        // A held decision key decides once, never the items after it unseen.
+        e.preventDefault();
+        return;
+    }
     if (action) {
         e.preventDefault();
         action();

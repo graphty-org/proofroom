@@ -711,7 +711,10 @@ describe("review page: links and the frozen pass", () => {
     });
 
     it("keeps decided items in the pass: Previous goes back to one, and U undoes it", async () => {
+        // A accepts only an item whose two images are shown.
+        const shown = (name) => page.locator(`#stage img[alt="capture of ${name}"]`).waitFor();
         await openStory(2);
+        await shown("button--primary (dark)");
         await page.keyboard.press("a");
         await expect.poll(position).toBe("3 of 6");
         await page.getByRole("button", { name: "Accept", exact: true }).click();
@@ -724,6 +727,7 @@ describe("review page: links and the frozen pass", () => {
         expect(await position()).toBe("3 of 6");
         await page.keyboard.press("k");
         await expect.poll(position).toBe("2 of 6");
+        await shown("button--primary (dark)");
         await page.getByRole("button", { name: "Undo" }).click();
         await expect.poll(status).toContain("undone");
         await page.keyboard.press("a");
