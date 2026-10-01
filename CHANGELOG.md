@@ -1,3 +1,21 @@
+## 0.2.0 (2026-10-01)
+
+### 🩹 Fixes
+
+- **visual-review:** an unseeded reference item counts as captured, so status stops alternating ([#632](https://github.com/graphty-org/graphty-monorepo/issues/632))
+- ⚠️  **visual-review:** every story needs an approved baseline before a merge ([a7f350b1](https://github.com/graphty-org/graphty-monorepo/commit/a7f350b1))
+- **visual-review:** fail closed on projects with no baselines ([6e413454](https://github.com/graphty-org/graphty-monorepo/commit/6e413454))
+
+### ⚠️  Breaking Changes
+
+- **visual-review:** every story needs an approved baseline before a merge  ([a7f350b1](https://github.com/graphty-org/graphty-monorepo/commit/a7f350b1))
+  the gate fails every story without an approved baseline,
+  and visual-review.config.json refuses the removed "gate" project setting.
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.1.3 (2026-10-01)
 
 ### 🩹 Fixes
