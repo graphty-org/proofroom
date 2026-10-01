@@ -252,8 +252,10 @@ starts the same server from your own shell.
 Every screen has the same frame. The header holds **Visual review** (the targets list), the
 **Target** and **Project** menus (on the grid and story screens: jump to any pull request or
 project, each with its count of undecided items), **Finish** with the number of decisions it
-would publish ("Finish #201 (12)"; at 0 it is unavailable and says "Nothing new to finish"),
-**Keys** and **Copy link**. Under the header is the screen's own bar, then the status row: the one
+would publish ("Finish #201 (12)"; at 0 it is unavailable and says "Nothing new to finish",
+shortened to "Nothing new" on an iPad; with a passkey required and none registered it says
+"Passkey needed first"), **Keys** and **Copy link**. Finish never shrinks: on a narrow window the
+menus give up their width first. Under the header is the screen's own bar, then the status row: the one
 place the page writes messages, one line tall on a wide screen and two on an iPad, so a message
 never moves anything; a longer one shows **More**, which opens the row to its full length.
 Errors are shown there in red. **Keys** (or `?`) lists every key, the last
@@ -268,10 +270,14 @@ for, with a count or the time spent, and a failed one offers Retry.
    **Refresh**; it is checked again with GitHub when you press Refresh or when it is over a minute
    old, and the line above the cards shows the check's step ("Checking pull requests: Finding CI
    runs: 3 of 5, 12 s"). The first load after the server starts shows its step under a placeholder
-   card. Above the cards, one line says whether Finish is approved with your passkey, with
-   **Register passkey** ([the passkey](#the-passkey-owner-only-approval)). Each card says which
-   commit and CI run it captured, any warning the server has (with Retry), how many decisions
-   are not yet finished, and a table per project: **Project**,
+   card. Above the cards, one line says whether Finish is approved with your passkey ("Finish is
+   approved with your passkey (iPad passkey, 2026-10-01)."), with **Register passkey**, or
+   **Register another device** once one is registered
+   ([the passkey](#the-passkey-owner-only-approval)); a problem in `visual-review.passkeys.json`
+   is named there too. Each card says which commit and CI run it captured, any warning the server
+   has (with Retry), how many decisions are not yet finished, how many an earlier Finish already
+   put on the branch ("Finished: 266 decisions already on the branch, waiting for the next CI
+   run, which no longer shows them."), and a table per project: **Project**,
    **Results** (count per status), **Decided** ("12 of 40") and **Review**. Projects with nothing
    to review are one line ("3 projects unchanged: ..."). Badges:
     - **merge master first**: the default branch has newer baselines for this project than the
@@ -307,14 +313,16 @@ for, with a count or the time spent, and a failed one offers Retry.
    naming the count. Under every decided tile its decision is spelled out: "Accepted",
    "Accepted (not opened)" for one Accept all took, or "Rejected" or "Excluded" with the reason,
    with an **Undo** that clears it without opening the story. A reject an earlier Finish already
-   posted says "Posted by an earlier Finish: it stays." and has no Undo. Many Undos at once show
+   posted says "Posted by an earlier Finish: it stays.", and an accept or exclusion it pushed says
+   "Finished: it is on the branch, and the next CI run no longer shows it."; neither has an Undo. Many Undos at once show
    their progress, with Stop. **Find story** narrows the grid as you type; Enter opens the first
    match, or the item with that number. Coming back from a story, its tile is outlined and
    scrolled into view.
 3. **Story.** One item, on one screen that never scrolls (only the panes do). From the top:
-    - **The decision bar**: **Grid** (Escape), **Prev** (K), "12 of 230 -- 18 left in this
-      pass", **Next** (J), **Accept** (A), **Reject** (R), **Exclude** (E), **Undo** (U) and the
-      **Note** box. On an iPad held upright it is two rows: the decisions, then the movement and
+    - **The decision bar**: **Grid** (Escape), **Prev** (K), "12 of 230 -- 18 left" (in this
+      pass), **Next** (J), **Accept** (A), **Reject** (R), **Exclude** (E), **Undo** (U) and the
+      **Note** box ("Optional for Accept; required to Reject or Exclude": a note typed before Accept
+      is published with it). On an iPad held upright it is two rows: the decisions, then the movement and
       the note. Every button is always there, in the same place on every item, at every zoom; one
       that does not apply is shown unavailable, the line under it says why, and pressing it says
       why in the status row. Each button shows its key.
@@ -328,8 +336,9 @@ for, with a count or the time spent, and a failed one offers Retry.
       **Blink** (L) while Highlight is on and **Spotlight flash** (F) while Spotlight is on;
       **Outline** (B); **Next change** (N) with "1 of 3"; the zoom, **Fit**, **1x**, **2x**,
       **4x**, **8x** (Z cycles it); and **Details** (the threshold, the anti-aliasing setting, the
-      capture's scale, and any console output). Below 1050 pixels wide (an iPad held upright) it
-      wraps to a second row, so the zoom is always on screen.
+      capture's scale, and any console output). Below 1280 pixels wide (an iPad either way up) it
+      is always two rows, the views on the first, so the zoom is always on screen and the panes
+      start at the same height on every item and in every view.
     - **The two panes**, the baseline on the left and the new capture on the right, filling the
       rest of the window. Both are drawn at once with "Loading baseline..." and "Loading new
       image..." in them, so nothing moves when the images arrive; Accept shows a spinner until
@@ -360,19 +369,19 @@ for, with a count or the time spent, and a failed one offers Retry.
     (remembered in this browser). Flash, Highlight and Spotlight need two images; on a new or
     removed story pressing them says so.
 
-    **Next** and **Previous** (J and K) walk one pass: the items the grid showed when you opened
+    **Next** and **Prev** (J and K) walk one pass: the items the grid showed when you opened
     the story (or every undecided item, from **Review N undecided**), in the grid's order, frozen
     until you go back to the grid. Deciding an item never drops it from the pass: the decision
-    moves on to the next item, and **Previous** comes back to the one just decided, showing its
+    moves on to the next item, and **Prev** comes back to the one just decided, showing its
     decision pressed and its **Undo**. Going back to the grid shows what its filter now selects.
 
     **The end of a pass.** Next on the last item, or deciding it, does not wrap to the first: it
     shows what is next in place of the panes. "End of graphty-element: 164 of 170 decided, 6
-    undecided." **Review the 6 undecided** walks the ones left here; it comes first (focused, so
-    Enter takes it) whenever this project still has undecided items, so an Enter after skimming
-    with J never leaves them behind. **Next project: layout (42 undecided)** opens that project's
-    first undecided item, and comes first when nothing is left here; then **Back to the grid** and
-    **Finish #201 (12)**. A project still downloading is listed under them ("layout: downloading
+    undecided." **Next project: layout (42 undecided)** comes first (focused, so Enter takes it)
+    and opens that project's first undecided item, with no wait for GitHub. **Review the 6
+    undecided** walks the ones left here, and comes first when no other project has any; when
+    every one left can only be excluded (unstable or failed) it says so: "Review the 6 undecided
+    (Exclude only)". Then **Back to the grid** and **Finish #201 (12)**. A project still downloading is listed under them ("layout: downloading
     (2 of 5 projects done)"). When every project of the target is decided it says so, offers
     **Finish** first, and **Next: #202 (340 undecided)**, the next pull request with something to
     review. K comes back to the last item.
@@ -415,13 +424,13 @@ single-letter keys off.
 | Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                |
 | Shift+A          | Grid: accept every undecided item of this project without opening it (asks first)             |
 | /                | Grid: Find story                                                                              |
-| Enter (end card) | Take the first offer: the undecided items left here, or the next project                      |
+| Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish              |
 | ?                | Show or hide the key list                                                                     |
 | Escape           | Story: back to the grid; in the note box, first leaves the box (its text stays with the item) |
 
 No key reverses a decision. A, R and E on an item that is already decided say "Already accepted.
-Undo it to change it."; press U (or Undo) first. A held A, R, E or U decides once, and a press
-that comes within a quarter second of an item's images appearing is ignored and says so, so the
+Undo it to change it."; press U (or Undo) first. A held A, R, E or U decides once, and an A, R or
+E that comes within a quarter second of an item's images appearing is ignored and says so, so the
 second tap of a double tap never decides the next item unseen. While a decision is being saved
 the page says "Saving the last decision..." and waits for it before moving on; a save that fails
 leaves the item undecided, with its note.
@@ -451,9 +460,10 @@ leaves the note box, so the next A accepts instead of typing an "a".
   applies only to the image it was taken on: when a new run or a re-run attempt captures that
   item differently, it is undecided again (the old decision stays saved, and comes back if the
   image does).
-- After Finish, accepts and exclusions are cleared; rejects stay, marked as already posted, and
-  still show as rejected on the next CI run while the capture is unchanged. Finish does not post
-  them twice. They live in the work directory's `state/` (the config's `workDir`), not in the
+- After Finish, what it published stays shown, marked as published, and Finish does not publish
+  it twice. Accepts and exclusions read "Finished" and count as decided until a new CI run
+  replaces the capture (the accepted items are then `unchanged`, the excluded ones not captured);
+  rejects still show as rejected on the next CI run while the capture is unchanged. They live in the work directory's `state/` (the config's `workDir`), not in the
   repository.
 
 ## Finish
@@ -485,8 +495,8 @@ publish, and the key that will sign. If any decision changes after the sheet ope
 tab, say), Finish refuses, and the sheet comes back with the new summary. Once a passkey is
 registered, a Finish that commits anything reads **Sign and finish #201**, and pressing it asks
 for your passkey (Face ID, Touch ID or a security key) before anything runs; cancelling it says
-"Passkey cancelled: nothing was changed." and the sheet comes back. A Finish with only rejects
-commits nothing and needs no passkey.
+"Passkey cancelled: nothing was changed." and the sheet comes back with its final button
+focused, so Enter tries again. A Finish with only rejects commits nothing and needs no passkey.
 
 Finish runs on the server, not in the page. A seed of several hundred images takes minutes,
 most of it uploading the images to Git LFS, which is longer than a browser (Safari on an iPad in
@@ -513,8 +523,10 @@ message:
 - **failed to write commit object** or a signing error: unlock or plug in the signing key, then
   Finish again.
 - **the accepts were pushed ..., but the comment with the rejects failed**: the accepts are done
-  and cleared; press Finish again to post the rejects. Accept notes that were in that comment are
-  not posted again: the message names each one, so you can post them by hand.
+  and finished; press Finish again to post the rejects. Accept notes that were in that comment are
+  not posted again: the message names each one, so you can post them by hand. On a seed it reads
+  "the accepts were pushed as ... and opened <the seed pull request>, but the issue with the
+  rejects failed"; the accept notes are already in that pull request's description.
 - **The comment with the accept notes was not posted**: the accepts are done; the message names
   the notes, which are not kept.
 
@@ -529,7 +541,8 @@ record's accepts only when that signature verifies against a passkey listed in
 
 - **Register it once.** On the targets screen, press **Register passkey**. Your device makes a
   passkey for the review page's host (in iCloud Keychain it is then on your iPhone, iPad and Mac),
-  and the page shows its entry. **Open the pull request** pushes a branch adding the entry to
+  and the page shows its entry, named by the kind of device that made it and the day ("iPad
+  passkey, 2026-10-01", or "security key, 2026-10-01"), so every device shows which key is which. **Open the pull request** pushes a branch adding the entry to
   `visual-review.passkeys.json` and opens a pull request; merge it. (Or **Copy** the entry and add
   it yourself: the file is a JSON array of entries.) Until it merges, the line reads "Passkey
   waiting for #650 to merge."
@@ -545,10 +558,12 @@ record's accepts only when that signature verifies against a passkey listed in
 - **A pull request accepted before the passkey was merged** holds a record without an approval,
   which no longer counts. Revert its accept commit on the branch (records the pull request itself
   added may go) and Finish again with the passkey.
-- **To add a device or replace a lost key**, register again from that device and merge the new
-  pull request. Removing an entry is a pull request too.
+- **To add a device or replace a lost key**, press **Register another device** from that device
+  and merge the new pull request. Removing an entry is a pull request too.
 - The review page must be served over https from a host name, not an IP address (WebAuthn's
-  rule), and from the same host every time: a passkey belongs to the host it was made on.
+  rule), and from the same host every time: a passkey belongs to the host it was made on. Opened
+  from another host, Finish says "Your passkey belongs to <host>, and this page is open at
+  <other host>: open it from https://<host> instead."
 
 ## Seeding: one story at a time
 

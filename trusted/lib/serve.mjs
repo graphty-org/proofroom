@@ -317,6 +317,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     let passkeys = null;
     /** An open pull request that registers a passkey, waiting for the owner to merge it. */
     let passkeyPr = null;
+    /** The passkey pull request this server opened: listed until GitHub's list or the file has it. */
+    let passkeyOpened = null;
     const readPasskeys = () => {
         passkeys = results ? null : passkeysAt(`refs/remotes/origin/${defaultBranch}`, repo);
     };
@@ -648,7 +650,14 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             step("fetching branches");
             await fetched;
             readPasskeys();
-            passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? null;
+            // GitHub's list can lag a pull request just opened: keep it a while, until its key is merged.
+            const opened =
+                passkeyOpened &&
+                Date.now() - passkeyOpened.at < 5 * 60000 &&
+                !(passkeys?.keys ?? []).some((k) => k.id === passkeyOpened.id)
+                    ? passkeyOpened.number
+                    : null;
+            passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? opened;
             for (const t of built) next.set(t.id, t);
             if (masterRun) {
                 step(`reading ${defaultBranch}'s CI run`);
@@ -772,6 +781,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     reviewable,
                     decided: mine.length,
                     undecided: reviewable - mine.length,
+                    // Accepts and exclusions an earlier Finish pushed, waiting for a new CI run.
+                    finished: mine.filter(([, d]) => d.posted && d.decision !== "reject").length,
                     notOpened: mine.filter(([, d]) => d.bulk).length,
                     acceptable: acceptable(t, p.project),
                     local: p.results?.local ?? null,
@@ -1209,6 +1220,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             try {
                 const pullRequest = await registerPasskey({ repo, gh, config, entry: body.entry ?? {} });
                 passkeyPr = Number(pullRequest.split("/").pop()) || passkeyPr;
+                passkeyOpened = { number: passkeyPr, id: body.entry?.id, at: Date.now() };
                 return [200, { pullRequest }];
             } catch (err) {
                 if (err instanceof AcceptError) {
@@ -1229,15 +1241,15 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
      * @param {object} input finish's input
      */
     async function runFinish(j, t, sent, input) {
-        // Drops the accepts and exclusions Finish pushed; rejects stay, keyed by image hash, so an
-        // unchanged rejected capture on the next CI run still reads as rejected, not undecided.
+        // Marks what Finish published, so no later Finish publishes it again. The accepts and
+        // exclusions it pushed stay shown as finished until a new CI run replaces this capture (their
+        // hash then no longer matches, or the item is unchanged); rejects stay keyed by image hash,
+        // so an unchanged rejected capture on the next CI run still reads as rejected.
         const clear = (posted) =>
             update(t, (saved) => {
                 for (const { project, file, decision } of sent) {
                     const k = `${project}/${file}`;
-                    if (decision !== "reject") {
-                        delete saved[k];
-                    } else if (posted && saved[k]) {
+                    if (saved[k] && (decision !== "reject" || posted)) {
                         saved[k].posted = true;
                     }
                 }

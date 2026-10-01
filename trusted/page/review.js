@@ -223,7 +223,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // page from creating additional dialogs"), confirm() returns false without showing anything, and
 // the button pressed seems to do nothing. Resolves true for `yes`, false for Cancel or Escape.
 // `onYes` runs inside the click on `yes` itself, for what a browser allows only there.
-function ask(message, yes, { onYes = () => {}, label = null, unavailable = null } = {}) {
+// `unavailable` makes `yes` say why instead (inside the dialog, which a screen reader hears), and
+// `why` names the element of `message` explaining it; `focusYes` focuses `yes` (a retry).
+function ask(message, yes, { onYes = () => {}, label = null, unavailable = null, why = null, focusYes = false } = {}) {
     // Focus on the box, not a button: the Enter that asked (in the note box) must not answer it.
     const text = el("div", { class: "ask-text", id: "ask-text" }, message);
     const dialog = el("dialog", {
@@ -232,9 +234,10 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null 
         "aria-labelledby": label ?? "ask-text",
         "aria-describedby": "ask-text",
     });
+    const alert = el("p", { class: "error", role: "alert", id: "ask-alert" });
     const answer = (value) => () => {
         if (value === "yes" && unavailable) {
-            say(unavailable);
+            alert.textContent = unavailable;
             return;
         }
         if (value === "yes") {
@@ -244,6 +247,7 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null 
     };
     dialog.append(
         text,
+        alert,
         el(
             "p",
             { class: "actions" },
@@ -255,6 +259,7 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null 
                     class: "primary",
                     id: "ask-yes",
                     "aria-disabled": unavailable ? "true" : null,
+                    "aria-describedby": unavailable && why ? why : null,
                     onclick: answer("yes"),
                 },
                 yes,
@@ -263,7 +268,7 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null 
     );
     document.body.append(dialog);
     dialog.showModal();
-    dialog.focus();
+    (focusYes ? dialog.querySelector("#ask-yes") : dialog).focus();
     return new Promise((resolve) =>
         dialog.addEventListener("close", () => {
             dialog.remove();
@@ -357,6 +362,7 @@ const scale = () => state.data?.results.scale ?? 1;
 const branchName = (t = state.target) => t?.defaultBranch ?? state.list?.defaultBranch ?? "master";
 const labelOf = (t) => (t.local ? "Local preview" : t.pr === null ? `${branchName(t)} seed` : `#${t.pr}`);
 const undecidedOf = (t) => t.projects.reduce((n, p) => n + p.undecided, 0);
+const finishedOf = (t) => t.projects.reduce((n, p) => n + (p.finished ?? 0), 0);
 const draftKey = (item) => `${state.target.id}/${state.project}/${item.file}`;
 
 // Errors first, then components by their most urgent item, stories the same way within one, and
@@ -549,10 +555,13 @@ function drawHeader() {
 }
 
 // Finish names its target and how many decisions it would publish. At 0 it is unavailable, and
-// says why beside it.
+// says why beside it; with a passkey required and none registered, it says that beside it too. The
+// reason's tail is only for wide windows and screen readers, so a narrow header keeps Finish whole.
 function finishControl(t) {
     const count = t.unpublished ?? 0;
     const can = count > 0 && !running();
+    const needsKey = count > 0 && t.passkey?.required && !hasKeys(t.passkey);
+    const why = count === 0 ? ["Nothing new", " to finish"] : needsKey ? ["Passkey", " needed first"] : null;
     return [
         el(
             "button",
@@ -560,7 +569,7 @@ function finishControl(t) {
                 type: "button",
                 class: "primary finish",
                 "aria-disabled": String(!can),
-                "aria-describedby": count === 0 ? `finish-why-${t.id}` : null,
+                "aria-describedby": why ? `finish-why-${t.id}` : null,
                 onclick: (e) => {
                     if (can) {
                         finishTarget(t.id, e.currentTarget);
@@ -571,8 +580,13 @@ function finishControl(t) {
             },
             `Finish ${labelOf(t)} (${count})`,
         ),
-        count === 0
-            ? el("span", { class: "meta finish-why", id: `finish-why-${t.id}` }, "Nothing new to finish")
+        why
+            ? el(
+                  "span",
+                  { class: "meta finish-why", id: `finish-why-${t.id}` },
+                  why[0],
+                  el("span", { class: "wide-only" }, why[1]),
+              )
             : null,
     ].filter(Boolean);
 }
@@ -719,32 +733,69 @@ function passkeyLine(pk) {
     if (!pk) {
         return null;
     }
-    const register = el(
-        "button",
-        { type: "button", id: "register-passkey", onclick: registerPasskey },
-        "Register passkey",
-    );
+    const register = (name) => el("button", { type: "button", id: "register-passkey", onclick: registerPasskey }, name);
+    const problem = pk.problem ? el("span", { class: "error" }, ` visual-review.passkeys.json: ${pk.problem}.`) : null;
     if (pk.waiting !== null && !hasKeys(pk)) {
-        return el("p", { class: "meta passkey-line" }, `Passkey waiting for #${pk.waiting} to merge.`);
+        return el("p", { class: "meta passkey-line" }, `Passkey waiting for #${pk.waiting} to merge.`, problem);
     }
     if (hasKeys(pk)) {
-        const names = pk.keys.map((k) => k.label).join(", ");
+        const names = pk.keys.map((k) => k.label).join("; ");
         return el(
             "p",
             { class: "meta passkey-line" },
             `Finish is approved with your passkey (${names}).`,
             pk.waiting !== null ? ` Another is waiting for #${pk.waiting} to merge.` : " ",
-            pk.waiting !== null ? null : register,
+            pk.waiting !== null ? null : register("Register another device"),
+            problem,
         );
     }
     return el(
         "p",
         { class: "warning passkey-line" },
         pk.required
-            ? "No passkey registered: accepts cannot be finished. "
+            ? "No passkey registered: accepts and exclusions cannot be finished. "
             : "No passkey registered: Finish's accepts are not approved by you, and CI does not check who accepted them. ",
-        register,
+        register("Register passkey"),
+        problem,
     );
+}
+
+// What a passkey is called in visual-review.passkeys.json and on every device: the kind of device
+// that made it and the day, never "this device" (the file is read on every device).
+function passkeyName(platform) {
+    const day = new Date().toISOString().slice(0, 10);
+    if (!platform) {
+        return `security key, ${day}`;
+    }
+    const ua = navigator.userAgent;
+    const device =
+        /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+            ? "iPad"
+            : /iPhone/.test(ua)
+              ? "iPhone"
+              : /Android/.test(ua)
+                ? "Android"
+                : /Mac OS X|Macintosh/.test(ua)
+                  ? "Mac"
+                  : /Windows/.test(ua)
+                    ? "Windows"
+                    : /Linux|CrOS/.test(ua)
+                      ? "Linux"
+                      : "device";
+    return `${device} passkey, ${day}`;
+}
+
+// The browser's refusal of a passkey, said with its likely cause: a page opened from another
+// address than the one the passkey was made on.
+function passkeyFailure(err, pk) {
+    const hosts = [...new Set((pk?.keys ?? []).map((k) => k.rpId))];
+    if (hosts.length > 0 && !hosts.includes(location.hostname)) {
+        return (
+            `Your passkey belongs to ${hosts.join(" or ")}, and this page is open at ${location.hostname}: ` +
+            `open it from https://${hosts[0]} instead. Nothing was changed.`
+        );
+    }
+    return `Passkey failed (${err?.message ?? err}): nothing was changed.`;
 }
 
 // Register passkey: Face ID (or a security key) makes a passkey for this site, straight from the
@@ -773,7 +824,7 @@ async function registerPasskey(e) {
             say("This browser made a passkey this page cannot use (it needs an ES256 key): nothing was changed.", true);
             return;
         }
-        const label = cred.authenticatorAttachment === "platform" ? "this device's passkey" : "security key";
+        const label = passkeyName(cred.authenticatorAttachment === "platform");
         entry = {
             id: cred.id,
             publicKey: toB64url(spki),
@@ -785,7 +836,10 @@ async function registerPasskey(e) {
         say(
             err?.name === "NotAllowedError"
                 ? "Passkey not created: nothing was changed."
-                : `Passkey not created: ${err.message}`,
+                : err?.name === "SecurityError"
+                  ? `Passkey not created (${err.message}): a passkey needs this page opened by its host name ` +
+                    "over https, not by an IP address."
+                  : `Passkey not created: ${err.message}`,
             true,
         );
         button.focus();
@@ -842,12 +896,16 @@ function approveFinish(f, t) {
     if (!f.signing?.hash) {
         return null;
     }
+    // The keys made for this page's address; when none were, the first key's, which the browser
+    // refuses with an error the page then explains.
+    const here = t.passkey.keys.filter((k) => k.rpId === location.hostname);
+    const keys = here.length > 0 ? here : t.passkey.keys.filter((k) => k.rpId === t.passkey.keys[0]?.rpId);
     return navigator.credentials
         .get({
             publicKey: {
                 challenge: fromB64url(f.signing.hash),
-                rpId: t.passkey.keys[0]?.rpId ?? location.hostname,
-                allowCredentials: t.passkey.keys.map((k) => ({ type: "public-key", id: fromB64url(k.id) })),
+                rpId: keys[0]?.rpId ?? location.hostname,
+                allowCredentials: keys.map((k) => ({ type: "public-key", id: fromB64url(k.id) })),
                 userVerification: "required",
                 timeout: 120000,
             },
@@ -931,6 +989,14 @@ function targetCard(t) {
         t.downloading ? el("p", { class: "meta" }, spinner(), downloadText(t)) : null,
         !t.local && t.unpublished > 0
             ? el("p", { class: "meta" }, `${plural(t.unpublished, "decision")} not yet finished`)
+            : null,
+        finishedOf(t) > 0
+            ? el(
+                  "p",
+                  { class: "meta" },
+                  `Finished: ${plural(finishedOf(t), "decision")} already on the branch, waiting for the next CI ` +
+                      "run, which no longer shows them.",
+              )
             : null,
         el(
             "p",
@@ -1225,6 +1291,13 @@ function tile(item) {
     return el("div", { class: "tile-box", "data-file": item.file }, button, decisionLine(item));
 }
 
+// A decision an earlier Finish published: a reject stays; an accept or exclusion is on the branch
+// until the next CI run, which no longer shows it.
+const postedText = (d) =>
+    d.decision === "reject"
+        ? "Posted by an earlier Finish: it stays."
+        : "Finished: it is on the branch, and the next CI run no longer shows it.";
+
 // An item's decision, with its reason, and an Undo that clears it without opening the story. A
 // reject an earlier Finish already posted stays: it is shown, never undone from the grid.
 function decisionLine(item) {
@@ -1238,7 +1311,7 @@ function decisionLine(item) {
         { class: `decision ${d.decision}`, "data-file": item.file },
         el("span", { class: "what" }, text),
         d.posted
-            ? el("span", { class: "meta" }, "Posted by an earlier Finish: it stays.")
+            ? el("span", { class: "meta" }, postedText(d))
             : el(
                   "button",
                   {
@@ -1626,7 +1699,7 @@ function explanation(item, d) {
         return "Exclude stops capturing every mode of this story.";
     }
     if (d?.posted) {
-        return "Posted by an earlier Finish: it stays.";
+        return postedText(d);
     }
     if (item.status === "unstable") {
         return UNSTABLE;
@@ -1784,9 +1857,7 @@ function decisionBar(item, items, d) {
         el(
             "span",
             { id: "position" },
-            state.ended
-                ? `End of this pass -- ${left} left`
-                : `${state.index + 1} of ${items.length} -- ${left} left in this pass`,
+            state.ended ? `End of this pass -- ${left} left` : `${state.index + 1} of ${items.length} -- ${left} left`,
         ),
         el(
             "button",
@@ -1831,7 +1902,7 @@ function decisionBar(item, items, d) {
                     ? ""
                     : state.pending
                       ? `Reason for the ${state.pending}, then Enter`
-                      : "Needed to reject",
+                      : "Optional for Accept; required to Reject or Exclude",
                 value: d ? (d.reason ?? "") : draft,
                 oninput: (e) => drafts.set(draftKey(item), e.target.value),
                 onkeydown: (e) => {
@@ -1957,8 +2028,14 @@ function viewBar(item, view, note) {
             viewButton("highlight", "Highlight", "H"),
             viewButton("spotlight", "Spotlight", "S"),
         ),
-        view === "highlight" ? option("blink", "Blink", "L") : null,
-        view === "spotlight" ? option("spotFlash", "Spotlight flash", "F") : null,
+        // One slot of fixed width for the view's own option, so no view moves or wraps the bar.
+        el(
+            "span",
+            { class: "view-option" },
+            view === "highlight" ? option("blink", "Blink", "L") : null,
+            view === "spotlight" ? option("spotFlash", "Spotlight flash", "F") : null,
+        ),
+        el("span", { class: "row-break", "aria-hidden": "true" }),
         option("showBox", "Outline", "B"),
         el(
             "button",
@@ -2386,16 +2463,25 @@ async function fillEnd(card, seq) {
               },
               `Finish ${labelOf(t)} (${t.unpublished})`,
           );
-    // Items of this project left undecided (a skim with J) come first, so Enter never leaves them behind.
-    if (here.undecided > 0) {
-        offers.push(offer(`Review the ${here.undecided} undecided`, () => startPass("undecided"), "primary"));
-    }
+    // The next project comes first (focused, so Enter takes it): moving on is the usual step. The
+    // items of this project left undecided (a skim with J) come next, or first when no project is.
     if (next) {
         offers.push(
             offer(
                 `Next project: ${next.project} (${next.undecided} undecided)`,
                 () => openProject(t.id, next.project, true),
-                here.undecided > 0 ? null : "primary",
+                "primary",
+            ),
+        );
+    }
+    if (here.undecided > 0) {
+        const left = reviewable().filter((i) => !decisionOf(i));
+        const excludeOnly = left.length > 0 && left.every(onlyExclude);
+        offers.push(
+            offer(
+                `Review the ${here.undecided} undecided${excludeOnly ? " (Exclude only)" : ""}`,
+                () => startPass("undecided"),
+                next ? null : "primary",
             ),
         );
     }
@@ -2613,13 +2699,14 @@ function move(step) {
         say("This is the first item of the pass.");
         return;
     }
-    say("");
     state.index = at;
     state.box = 0;
     if (reduceMotion()) {
         state.motion = false;
     }
     showStory();
+    const item = current();
+    say(`Now #${numberOf(item)}, ${at + 1} of ${count}: ${itemName(item)}, ${statusLabel(item.status)}.`);
 }
 
 // Accept, Reject, Exclude and (with null) Undo of the item on screen. Every press either decides
@@ -2651,13 +2738,13 @@ async function decide(decision) {
             return;
         }
         if (before.posted) {
-            say("Posted by an earlier Finish: it stays.");
+            say(postedText(before));
             return;
         }
     } else {
         // No press reverses a decision: changing one is an explicit Undo first.
         if (before?.posted) {
-            say("Posted by an earlier Finish: it stays.");
+            say(postedText(before));
             return;
         }
         if (before) {
@@ -2973,9 +3060,9 @@ function passkeySentence(t, f) {
     if (t.passkey?.required) {
         return el(
             "p",
-            { class: "error" },
-            "Accepts need your passkey, and the CI gate refuses them without it. Register a passkey on the " +
-                "targets screen and merge its pull request first.",
+            { class: "error", id: "sheet-passkey" },
+            "Accepts and exclusions need your passkey, and the CI gate refuses them without it. Register a " +
+                "passkey on the targets screen and merge its pull request first.",
         );
     }
     return el(
@@ -3031,6 +3118,8 @@ async function finishTarget(id, button) {
             {
                 label: "sheet-title",
                 unavailable: blocked ? "Finish needs your passkey first: see the sheet." : null,
+                why: "sheet-passkey",
+                focusYes: notice !== "",
                 onYes: () => (approval = approveFinish(f, t)),
             },
         );
@@ -3047,7 +3136,7 @@ async function finishTarget(id, button) {
                 notice =
                     err?.name === "NotAllowedError" || err?.name === "AbortError"
                         ? "Passkey cancelled: nothing was changed."
-                        : `Passkey failed (${err?.message ?? err}): nothing was changed.`;
+                        : passkeyFailure(err, t.passkey);
                 say(notice);
                 continue;
             }
@@ -3055,17 +3144,21 @@ async function finishTarget(id, button) {
         // Finish runs on the server and can take minutes; the page only starts it and then asks how
         // it is going, so a dropped connection or a reload loses nothing.
         sayBusy("Starting Finish...");
-        state.plan = { seed: t.pr === null, commits, posts: f.rejects + f.acceptNotes > 0, signed: Boolean(approval) };
+        // A seed's accept notes go into its pull request's description: only rejects post anything.
+        const posts = t.pr === null ? f.rejects > 0 : f.rejects + f.acceptNotes > 0;
+        state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) };
         try {
             state.job = (await api("/api/finish", { id, digest: f.digest, ...(approval ? { approval } : {}) })).job;
             break;
         } catch (err) {
             if (err.status === 409 && /Decisions changed/.test(err.message)) {
                 notice = err.message;
+                say(notice);
                 continue;
             }
             if (err.status === 400 && /passkey/.test(err.message)) {
                 notice = `${err.message}. Nothing was changed.`;
+                say(notice);
                 continue;
             }
             // The request may have been lost after the server started it: ask before calling it failed.
@@ -3095,8 +3188,14 @@ async function watchFinish() {
     watching = true;
     state.finishSeen ??= performance.now();
     try {
+        let spoken = "";
         while (running()) {
-            say(finishing());
+            // Each step is read out once, when it starts: its count ("37 of 214 done") is only shown.
+            const step = finishing().replace(/ \(\d+ of \d+ done\)/, "");
+            if (step !== spoken) {
+                say(step);
+                spoken = step;
+            }
             drawFinishPanel();
             await sleep(1000);
             try {
@@ -3173,11 +3272,11 @@ function drawFinishPanel() {
         el(
             "ol",
             {},
-            steps.map(([, name], i) =>
+            steps.map(([key, name], i) =>
                 el(
                     "li",
                     { class: i < now ? "done" : i === now ? "now" : "waiting" },
-                    `${name}: ${i < now ? "done" : i === now ? "in progress" : "waiting"}`,
+                    `${key === "comment" && plan?.seed ? "Opening the issue" : name}: ${i < now ? "done" : i === now ? "in progress" : "waiting"}`,
                     i === now && count
                         ? [
                               ` (${count[1]} of ${count[2]})`,
@@ -3258,6 +3357,7 @@ function finishOutcome() {
     const out = job.result;
     const repo = repoUrl(t?.url ?? out.pullRequest);
     const parts = [];
+    const notes = out.acceptNotes ?? 0;
     parts.push(
         out.commit
             ? el(
@@ -3271,10 +3371,15 @@ function finishOutcome() {
     );
     if (out.pullRequest) {
         parts.push(
-            el("p", {}, "Opened pull request ", link(out.pullRequest, `#${out.pullRequest.split("/").pop()}`), "."),
+            el(
+                "p",
+                {},
+                "Opened pull request ",
+                link(out.pullRequest, `#${out.pullRequest.split("/").pop()}`),
+                job.pr === null && notes > 0 ? `, with ${plural(notes, "accept note")} in its description.` : ".",
+            ),
         );
     }
-    const notes = out.acceptNotes ?? 0;
     if (out.issue) {
         parts.push(
             el(
@@ -3534,7 +3639,7 @@ const KEYS = [
     ["/", "Grid: Find story"],
     ["?", "Show or hide this list"],
     ["Esc", "Story: back to the grid; in the note box, first leaves the box (its text stays)"],
-    ["Enter (end card)", "Take the first offer: the undecided items left, or the next project"],
+    ["Enter (end card)", "Take the first offer: the next project, the undecided items left here, or Finish"],
 ];
 
 // The key overlay: every key, the last messages in full, and the single-key shortcuts switch.

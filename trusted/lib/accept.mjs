@@ -407,16 +407,24 @@ export async function finish({
                 throw err;
             }
             // The accepts are pushed and cleared, so their notes are never posted again: name them.
+            // On master the notes are already in the seed pull request's description.
             const lost =
-                notes.length === 0 ? "" : ` These accept notes were not posted and are not kept: ${noteList(notes)}.`;
+                isMaster || notes.length === 0
+                    ? ""
+                    : ` These accept notes were not posted and are not kept: ${noteList(notes)}.`;
             if (rejects.length === 0) {
                 // Only accept notes: the accepts stand, and the page says the notes were not posted.
                 commentError = `${err.message}.${lost}`;
             } else {
+                const withNotes =
+                    isMaster || notes.length === 0
+                        ? ""
+                        : ` and ${notes.length === 1 ? "1 accept note" : `${notes.length} accept notes`}`;
+                const opened = isMaster && pullRequest ? ` and opened ${pullRequest}` : "";
                 const e = new AcceptError(
-                    `the accepts were pushed as ${commit.slice(0, 10)}, but the comment with the rejects` +
-                        `${notes.length > 0 ? ` and ${notes.length === 1 ? "1 accept note" : `${notes.length} accept notes`}` : ""} ` +
-                        `failed: ${err.message}. Press Finish again to post the rejects.${lost}`,
+                    `the accepts were pushed as ${commit.slice(0, 10)}${opened}, but the ` +
+                        `${isMaster ? "issue" : "comment"} with the rejects${withNotes} failed: ${err.message}. ` +
+                        `Press Finish again to post the rejects.${lost}`,
                 );
                 e.committed = commit;
                 throw e;

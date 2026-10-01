@@ -1061,10 +1061,10 @@ describe("review page: moving on", () => {
             .poll(() => page.locator("#end-heading").textContent())
             .toBe("End of compact-mantine: 0 of 6 decided, 6 undecided.");
         const offers = await page.locator("#endcard .offers button").allTextContents();
-        // Items left undecided here come first, so an Enter after a skim never leaves them behind.
+        // The next project comes first, so Enter moves on; the items left here come next.
         expect(offers).toEqual([
-            "Review the 6 undecided",
             "Next project: graphty-element (1 undecided)",
+            "Review the 6 undecided",
             "Back to the grid",
         ]);
         expect(await page.evaluate(() => globalThis.document.activeElement.textContent)).toBe(offers[0]);
@@ -1092,7 +1092,19 @@ describe("review page: moving on", () => {
         await page.locator(".component").first().waitFor();
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
-        // Only the failed and unstable items are left: exclude them.
+        // Only the failed and unstable items are left. At the end of a pass over them the next
+        // project still comes first, and the card says these can only be excluded.
+        await page.locator("#review-undecided").click();
+        await page.keyboard.press("j");
+        await page.keyboard.press("j");
+        await page.locator("#endcard .offers button").first().waitFor();
+        expect((await page.locator("#endcard .offers button").allTextContents()).slice(0, 2)).toEqual([
+            "Next project: graphty-element (1 undecided)",
+            "Review the 2 undecided (Exclude only)",
+        ]);
+        await page.keyboard.press("Escape");
+        await page.locator(".component").first().waitFor();
+        // Exclude them.
         for (const n of [1, 5]) {
             await openStory(n);
             await ready();
@@ -1203,7 +1215,7 @@ describe("review page: links and the frozen pass", () => {
         await page.keyboard.press("a");
         await expect.poll(position).toMatch(/^3 of 6 /);
         await page.reload();
-        await expect.poll(position).toBe("3 of 6 -- 5 left in this pass");
+        await expect.poll(position).toBe("3 of 6 -- 5 left");
         // The decided item is still in the pass.
         await page.keyboard.press("k");
         await expect.poll(position).toMatch(/^2 of 6 /);
@@ -1414,6 +1426,10 @@ describe("review page: Finish", () => {
             "Back to #123",
             "Dismiss",
         ]);
+        // What it pushed stays decided, said to be waiting for the next CI run, not undecided again.
+        await expect
+            .poll(() => page.locator('.card[data-target="123"]').textContent())
+            .toContain("Finished: 4 decisions already on the branch, waiting for the next CI run");
         expect(
             await page
                 .locator('.card[data-target="123"]')
@@ -1447,9 +1463,12 @@ describe("review page: the passkey", () => {
             );
         await page.getByRole("button", { name: "Register passkey" }).click();
         await expect.poll(() => dialogs.length).toBe(1);
-        expect(dialogs[0]).toMatch(/^Passkey created \(this device's passkey\)\./);
+        expect(dialogs[0]).toMatch(/^Passkey created \((Linux|Mac|Windows) passkey, \d{4}-\d\d-\d\d\)\./);
         const entry = JSON.parse(dialogs[0].slice(dialogs[0].indexOf("{"), dialogs[0].lastIndexOf("}") + 1));
-        expect(entry).toMatchObject({ rpId: "localhost", label: "this device's passkey" });
+        expect(entry).toMatchObject({
+            rpId: "localhost",
+            label: expect.stringMatching(/^(Linux|Mac|Windows) passkey, /),
+        });
         await expect.poll(status).toMatch(/^Opened https:\/\/gh\/pull\/650: merge it/);
 
         // The owner merges it; the next refresh reads it from the default branch.
@@ -1488,10 +1507,12 @@ describe("review page: the passkey", () => {
         await page.getByRole("button", { name: /^Finish/ }).click();
         await expect.poll(() => dialogs.length).toBe(2);
         expect(dialogs[1]).toContain(
-            "Accepts need your passkey, and the CI gate refuses them without it. Register a passkey on the targets screen and merge its pull request first.",
+            "Accepts and exclusions need your passkey, and the CI gate refuses them without it. Register a passkey on the targets screen and merge its pull request first.",
         );
         // The final button is unavailable, says why, and the sheet stays.
-        await expect.poll(status).toBe("Finish needs your passkey first: see the sheet.");
+        await expect
+            .poll(() => page.locator("#ask-alert").textContent())
+            .toBe("Finish needs your passkey first: see the sheet.");
         expect(await page.locator("#ask-yes").getAttribute("aria-disabled")).toBe("true");
     });
 });

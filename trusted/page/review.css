@@ -117,13 +117,13 @@ header h1 {
     display: none;
 }
 
+/* Finish never shrinks: the pickers give up their width first, so its count is always whole. */
 #finish-slot {
     display: flex;
     gap: 8px;
     align-items: center;
     margin-left: auto;
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: none;
     white-space: nowrap;
 }
 
@@ -131,11 +131,11 @@ header h1 {
     flex: none;
 }
 
-/* Narrow: the pickers and an unavailable Finish's reason keep their text for screen readers (a
-   press on Finish says the reason too), and give the width to the menus. */
+/* Narrow: the pickers' labels and the tail of Finish's reason keep their text for screen readers
+   (a press on Finish says the reason too), and give the width to the menus. */
 @media (max-width: 1049.98px) {
     .picker > span,
-    #finish-slot .finish-why {
+    #finish-slot .wide-only {
         position: absolute;
         width: 1px;
         height: 1px;
@@ -796,7 +796,7 @@ details.menu > div {
  */
 .decisionbar {
     display: grid;
-    grid-template-columns: 6.2em 4.5em 17em 4.5em 7em 7em 7.5em 6.5em minmax(8em, 1fr);
+    grid-template-columns: 6.2em 6em 12em 6em 7em 7em 7.5em 6.5em minmax(8em, 1fr);
     grid-template-areas: "grid prev pos next accept reject exclude undo note";
     gap: 6px;
     align-items: center;
@@ -913,8 +913,8 @@ details.menu > div {
     white-space: normal;
 }
 
-/* The view bar: one row; below 1050 px (an iPad held upright) it wraps to a second, so the zoom
-   buttons are always on screen. */
+/* The view bar: one row from 1280 px; below (an iPad either way up) always two, the views on the
+   first, so the panes start at the same height whichever view and options an item shows. */
 .viewbar {
     flex: none;
     display: flex;
@@ -954,6 +954,31 @@ details.menu > div {
 
 .viewbar > * {
     flex: none;
+}
+
+.viewbar > .row-break {
+    display: none;
+}
+
+/* Fixed widths for what changes between items and views: the bar wraps the same way on all. */
+.viewbar > .view-option {
+    width: 10.5em;
+}
+
+.viewbar > #box-count {
+    width: 5.5em;
+}
+
+#ask-alert:empty {
+    display: none;
+}
+
+@media (max-width: 1279.98px) {
+    .viewbar > .row-break {
+        display: block;
+        flex-basis: 100%;
+        height: 0;
+    }
 }
 
 .details-pop {

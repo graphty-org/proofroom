@@ -243,13 +243,7 @@ async function journey(seed, faults = {}, length = 9) {
             problem !== null,
             quiet,
         );
-        if (git(r.remote, "rev-parse", "feature") !== r.head) {
-            for (const [k, d] of mine) {
-                if (d.decision !== "reject") {
-                    model.delete(k);
-                }
-            }
-        }
+        // What Finish pushed stays shown, marked finished, until a new CI run replaces the capture.
         return { status: res.status, error: j.error };
     }
 

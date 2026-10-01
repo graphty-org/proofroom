@@ -280,6 +280,34 @@ describe("finish: rejects on master", () => {
     });
 });
 
+describe("finish: a seed whose rejects issue fails", () => {
+    it("names the issue and the seed pull request, and does not call the accept notes lost", async () => {
+        const s = setup();
+        const master = { commit: s.master, headSha: null, pr: null };
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master);
+        const err = await finish({
+            repo: s.repo,
+            gh: async (args) => {
+                if (args[1].includes("/issues")) {
+                    throw new Error("HTTP 502");
+                }
+                return JSON.stringify({ html_url: "https://github.com/o/r/pull/9", number: 9 });
+            },
+            target: { pr: null, branch: null },
+            projects: s.projects,
+            decisions: [
+                accept("badge--default.light.png", "compact-mantine", "first look"),
+                { project: "compact-mantine", file: "button--primary.dark.png", decision: "reject", reason: "red" },
+            ],
+            now: NOW,
+            config: CONFIG,
+        }).catch((e) => e);
+        expect(err.message).toMatch(
+            /^the accepts were pushed as \w{10} and opened https:\/\/github\.com\/o\/r\/pull\/9, but the issue with the rejects failed: HTTP 502\. Press Finish again to post the rejects\.$/,
+        );
+    });
+});
+
 describe("finish: Git LFS", () => {
     it("refuses to accept when git-lfs's filter is not configured, so no raw PNG is committed", async () => {
         const s = setup();

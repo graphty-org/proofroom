@@ -354,7 +354,7 @@ describe("serve: decisions and Finish", () => {
         ]);
     });
 
-    it("finishes across every project in one commit, clears the accepts and keeps the rejects", async () => {
+    it("finishes across every project in one commit, and marks what it published", async () => {
         // Finish says in the server's log when it starts, ends and fails.
         const out = vi.spyOn(console, "log").mockImplementation(() => {});
         const err = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -390,14 +390,18 @@ describe("serve: decisions and Finish", () => {
         expect(body.rejects).toBe(1);
         expect(git(s.remote, "rev-parse", "feature")).toBe(body.commit);
         expect(git(s.remote, "rev-parse", "feature~1")).toBe(s.head);
-        const rejected = { "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true } };
-        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual(rejected);
+        // What Finish published stays shown, marked posted: the accept until a new CI run replaces
+        // this capture, the reject for good.
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
+            "badge--default.light.png": { decision: "accept", reason: null, posted: true },
+            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true },
+        });
         // A second Finish has nothing new to post.
         expect((await finishJob(s, "123")).job.error).toBe("nothing decided");
         expect(out.mock.calls.map(([line]) => line)).toEqual([
             "visual-review: Finish of #123 started: 3 decisions, 4 undecided",
             `visual-review: Finish of #123 done: commit ${body.commit}, 1 rejects`,
-            "visual-review: Finish of #123 started: 0 decisions, 6 undecided",
+            "visual-review: Finish of #123 started: 0 decisions, 4 undecided",
         ]);
         expect(err.mock.calls.map(([line]) => line)).toEqual(["visual-review: Finish of #123 failed: nothing decided"]);
     });
