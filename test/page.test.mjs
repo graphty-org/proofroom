@@ -283,6 +283,119 @@ describe("review page: a pull request", () => {
         expect(await stageClass()).toContain("spotlight");
     });
 
+    it("lays the changed pixels over both images in red with H, and blinks them with L", async () => {
+        await openStory(2);
+        await page.keyboard.press("h");
+        await expect.poll(stageClass).toContain("highlight");
+        const marks = page.locator("#stage .diffmark");
+        await expect.poll(() => marks.count()).toBe(2);
+        // Each pane still shows its real image, with the overlay exactly on top of it.
+        expect(await page.locator("#stage img").count()).toBe(2);
+        for (const i of [0, 1]) {
+            const [img, mark] = await page
+                .locator("#stage figure")
+                .nth(i)
+                .evaluate((f) =>
+                    [f.querySelector("img"), f.querySelector(".diffmark")].map((e) =>
+                        e.getBoundingClientRect().toJSON(),
+                    ),
+                );
+            expect([mark.left, mark.top, mark.width, mark.height]).toEqual([img.left, img.top, img.width, img.height]);
+        }
+        // Solid red on the changed pixels, which all lie in the changed box; clear everywhere else.
+        const red = await marks.nth(1).evaluate((c) => {
+            const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+            let [count, other, x0, y0, x1, y1] = [0, 0, Infinity, Infinity, -1, -1];
+            for (let i = 0; i < c.width * c.height; i++) {
+                const [r, g, b, a] = data.slice(i * 4, i * 4 + 4);
+                if (a === 0) {
+                    continue;
+                }
+                if (r !== 255 || g !== 0 || b !== 0 || a !== 255) {
+                    other++;
+                    continue;
+                }
+                const [x, y] = [i % c.width, Math.floor(i / c.width)];
+                count++;
+                [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
+            }
+            return { count, other, box: [x0, y0, x1, y1] };
+        });
+        expect(red.count).toBeGreaterThan(0);
+        expect(red.other).toBe(0);
+        expect(red.box[0]).toBeGreaterThanOrEqual(160);
+        expect(red.box[1]).toBeGreaterThanOrEqual(80);
+        expect(red.box[2]).toBeLessThan(200);
+        expect(red.box[3]).toBeLessThan(120);
+        // L blinks both overlays together; L again holds them on.
+        const blink = page.getByRole("button", { name: "Blink", exact: true });
+        expect(await blink.isDisabled()).toBe(false);
+        await page.keyboard.press("l");
+        await expect.poll(() => blink.getAttribute("aria-pressed")).toBe("true");
+        const seen = new Set();
+        await expect
+            .poll(async () => {
+                const shown = await page
+                    .locator("#stage .diffmark")
+                    .evaluateAll((ms) => ms.map((m) => m.style.visibility || "visible"));
+                // L re-renders the stage, which holds no overlay for a moment: count only the
+                // samples taken with both overlays drawn.
+                if (shown.length === 2) {
+                    seen.add(shown.join());
+                }
+                return [...seen].sort().join("|");
+            })
+            .toBe("hidden,hidden|visible,visible");
+        await page.keyboard.press("l");
+        await expect.poll(() => blink.getAttribute("aria-pressed")).toBe("false");
+        // Blink only means something in Highlight.
+        await page.keyboard.press("h");
+        await expect.poll(stageClass).toContain("side");
+        expect(await page.locator("#stage .diffmark").count()).toBe(0);
+        expect(await blink.isDisabled()).toBe(true);
+    });
+
+    it("hides the changed box with B, and remembers it in this browser", async () => {
+        await openStory(2);
+        await expect.poll(() => page.locator("#box-count").textContent()).toBe("box 1 of 1");
+        await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
+        const box = page.getByRole("button", { name: "Box", exact: true });
+        expect(await box.getAttribute("aria-pressed")).toBe("true");
+        await page.keyboard.press("b");
+        // B re-renders the story; the count is written once the diff is ready, so wait for it
+        // before judging the outline, which an unfinished render would also lack.
+        await expect.poll(() => box.getAttribute("aria-pressed")).toBe("false");
+        await expect.poll(() => page.locator("#box-count").textContent()).toBe("box 1 of 1");
+        expect(await page.locator("#stage .boxmark").count()).toBe(0);
+        // A fresh page on a link that does not say (an older one): this browser's choice holds.
+        const link = new URL(page.url());
+        const p = new URLSearchParams(link.hash.slice(1));
+        expect(p.get("box")).toBe("off");
+        p.delete("box");
+        p.delete("blink");
+        link.hash = String(p);
+        await page.goto("about:blank");
+        await page.goto(link.href);
+        await expect.poll(() => page.locator("#position").textContent()).toMatch(/^2 of /);
+        await expect.poll(() => page.locator("#box-count").textContent()).toBe("box 1 of 1");
+        expect(await page.locator("#stage .boxmark").count()).toBe(0);
+        await page.keyboard.press("b");
+        await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
+    });
+
+    it("keeps focus on the page, so an iPad's keyboard reaches the shortcuts", async () => {
+        // Safari on an iPad delivers keys only to a focused element; tapping an image focuses none.
+        const focused = async () => ((await page.locator("#app:focus").count()) === 1 ? "app" : "");
+        await openStory(2);
+        await expect.poll(focused).toBe("app");
+        await page.locator("#stage").click();
+        await expect.poll(focused).toBe("app");
+        // Leaving a text box hands focus back to the page.
+        await page.locator("#reason").focus();
+        await page.keyboard.press("Escape");
+        await expect.poll(focused).toBe("app");
+    });
+
     it("says why Flash and Highlight are off when there is one image", async () => {
         await openStory(4);
         await expect
@@ -542,6 +655,20 @@ describe("review page: links and the frozen pass", () => {
         await expect.poll(position).toBe("2 of 6");
         expect(await page.locator("h2").textContent()).toContain("button--primary (dark)");
         await expect.poll(stageClass).toBe("stage spotlight zoom-2");
+        // The box and blink choices ride along, and a link's choice wins over this browser's.
+        expect(Object.fromEntries(hash())).toMatchObject({ box: "on", blink: "off" });
+        const boxed = new URL(page.url());
+        const p = new URLSearchParams(boxed.hash.slice(1));
+        p.set("box", "off");
+        p.set("blink", "on");
+        boxed.hash = String(p);
+        await visit(boxed.href);
+        await expect.poll(position).toBe("2 of 6");
+        const box = page.getByRole("button", { name: "Box", exact: true });
+        await expect.poll(() => box.getAttribute("aria-pressed")).toBe("false");
+        expect(await page.getByRole("button", { name: "Blink", exact: true }).getAttribute("aria-pressed")).toBe(
+            "true",
+        );
         // The targets screen.
         await page.locator("#home").click();
         await expect.poll(() => [...hash().keys()]).toEqual(["token"]);

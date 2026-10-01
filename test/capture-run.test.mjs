@@ -9,7 +9,9 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { capture, hasEmojiFont } from "../capture/capture.mjs";
+import { chromium } from "playwright";
+
+import { capture, CHROMIUM_ARGS, hasEmojiFont } from "../capture/capture.mjs";
 
 const PARAMS = {
     "demo--plain": {},
@@ -253,6 +255,29 @@ describe("capture", () => {
         const at = (405 * 2 + 305 * 2 * png.width) * 4;
         expect([...png.data.subarray(at, at + 3)]).toEqual([255, 0, 0]);
     }, 120_000);
+
+    it("launches every browser with GPU rasterization off, so text renders the same each time", async () => {
+        expect(CHROMIUM_ARGS).toContain("--disable-gpu-rasterization");
+        const launch = vi.spyOn(chromium, "launch");
+        try {
+            await capture({
+                project: "demo",
+                storybook: storybook(),
+                baselines: mkdtempSync(join(tmpdir(), "vr-bl-")),
+                out: mkdtempSync(join(tmpdir(), "vr-out-")),
+                workers: 2,
+                waitFor: null,
+                stories: ["demo--plain"],
+                log: () => {},
+            });
+            expect(launch).toHaveBeenCalledTimes(2);
+            for (const [options] of launch.mock.calls) {
+                expect(options.args).toContain("--disable-gpu-rasterization");
+            }
+        } finally {
+            launch.mockRestore();
+        }
+    }, 60_000);
 
     it("fails with a clear message when a baseline is a Git LFS pointer", async () => {
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));

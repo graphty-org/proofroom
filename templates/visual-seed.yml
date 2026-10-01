@@ -5,9 +5,11 @@
 # baselines can be seeded from it: `visual-review serve --master-run <this run's id>` lists the run
 # as the default branch, and Finish opens the seed pull request. Dispatch it from __BRANCH__:
 #   gh workflow run visual-seed.yml --ref __BRANCH__ -f ref=<sha>
-# Only the projects whose "seedFromDefaultBranch" is not false are captured. The capture job
-# repeats the "visual" job of the review workflow, except that it has no reference (every story
-# without a baseline is "new") and results.json names the captured commit.
+# Only the projects whose "seedFromDefaultBranch" is not false are captured, or, with
+# `-f projects="a b"`, only those of them named there. Each project is built and captured on its
+# own: one whose Storybook fails to build at that commit fails its own jobs and no other project's.
+# The capture job repeats the "visual" job of the review workflow, except that it has no reference
+# (every story without a baseline is "new") and results.json names the captured commit.
 
 name: Visual seed capture
 
@@ -18,6 +20,11 @@ on:
                 description: "The commit (or branch or tag) whose Storybooks are captured"
                 required: true
                 type: string
+            projects:
+                description: "The projects to capture, separated by spaces or commas (default: every one seeded from the default branch)"
+                required: false
+                type: string
+                default: ""
 
 permissions:
     contents: read
@@ -34,13 +41,23 @@ jobs:
                   sparse-checkout: visual-review.config.json
                   sparse-checkout-cone-mode: false
 
+            # A name that is not a project seeded from the default branch stops the run here, rather
+            # than seeding fewer projects than were asked for.
             - name: List the projects
               id: plan
+              env:
+                  WANT: ${{ inputs.projects }}
               run: |
-                  echo "projects=$(jq -c '(.baselines // "visual-baselines") as $b
+                  projects=$(jq -c --arg want "$WANT" '(.baselines // "visual-baselines") as $b
+                      | [$want | splits("[ ,]+") | select(. != "")] as $w
                       | [.projects | to_entries[] | select(.value.seedFromDefaultBranch != false)
-                         | {project: .key, storybook: .value.storybook, build: .value.build, baselines: $b}]' \
-                      visual-review.config.json)" >> "$GITHUB_OUTPUT"
+                         | {project: .key, storybook: .value.storybook, build: .value.build, baselines: $b}] as $all
+                      | ($w - [$all[].project]) as $unknown
+                      | if ($unknown | length) > 0
+                        then error("not a project seeded from the default branch: \($unknown | join(", "))")
+                        else [$all[] | select(($w | length) == 0 or (.project | IN($w[])))] end' \
+                      visual-review.config.json)
+                  echo "projects=$projects" >> "$GITHUB_OUTPUT"
 
     storybook:
         name: Build ${{ matrix.project }} at ${{ inputs.ref }}
@@ -71,9 +88,12 @@ jobs:
                   name: storybook-${{ matrix.project }}
                   path: ${{ matrix.storybook }}/
 
+    # Runs even when another project's build failed. A project whose own build failed has no
+    # Storybook artifact, so its job stops at the download, before installing anything.
     visual:
         name: visual (${{ matrix.project }})
         needs: [plan, storybook]
+        if: ${{ !cancelled() && needs.plan.result == 'success' }}
         runs-on: ubuntu-24.04
         timeout-minutes: 45
         strategy:
@@ -83,6 +103,12 @@ jobs:
         steps:
             # The default branch's checkout: the capture tool, the config and the baselines come from here.
             - uses: actions/checkout@v4
+
+            - name: Download Storybook build
+              uses: actions/download-artifact@v4
+              with:
+                  name: storybook-${{ matrix.project }}
+                  path: ${{ matrix.storybook }}/
 
             - name: Restore this project's baseline images
               uses: actions/cache@v4
@@ -98,12 +124,6 @@ jobs:
 
             - name: Install Chromium
               run: __CLI__ install-browser
-
-            - name: Download Storybook build
-              uses: actions/download-artifact@v4
-              with:
-                  name: storybook-${{ matrix.project }}
-                  path: ${{ matrix.storybook }}/
 
             - name: Capture
               run: __CLI__ capture --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual"

@@ -173,8 +173,10 @@ copy the `visual` job and the gate's steps into it, keep those names, and set `w
 file.
 
 **`visual-seed.yml`** is started by hand to capture an older commit with the default branch's
-tool: `gh workflow run visual-seed.yml --ref main -f ref=<sha>`. See
-[Seeding](#seeding-one-story-at-a-time).
+tool: `gh workflow run visual-seed.yml --ref main -f ref=<sha>`. It captures every project seeded
+from the default branch; add `-f projects="web charts"` to capture only those. Each project is
+built and captured on its own, so one whose Storybook does not build at that commit fails alone.
+See [Seeding](#seeding-one-story-at-a-time).
 
 Both need nothing but the default `GITHUB_TOKEN`: the capture job reads Actions artifacts
 (`actions: read`); nothing in CI writes to the repository.
@@ -219,9 +221,11 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 ### Links to a screen
 
 The address always names the screen you are on, after the token: the targets list; a pull
-request (or master) and project with the grid's filter and text; or one story with its view and
-zoom, for example
-`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2`.
+request (or master) and project with the grid's filter and text; or one story with its view,
+zoom, changed box and blink, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2&box=on&blink=off`.
+A link's `box` and `blink` apply to the page it opens; the choice this browser remembers for B
+and L is left as it was.
 Opening that address, in another tab or on another device, opens the same screen. **Copy link**
 at the top right copies it. The link carries your session token, so it works on your iPad the way
 the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
@@ -284,11 +288,13 @@ starts the same server from your own shell.
    other to the same place, and **Fit to screen** returns to the whole image. (On an iPad,
    pinching zooms the whole page; use the zoom buttons to zoom the images.) **Next changed box**
    (N) scrolls both panes until the next region of changed pixels is in view and outlines it;
-   "box i of k" counts them. The views, each shown in the right pane at the same scale and place:
+   "box i of k" counts them. **Box** (B) turns that outline on and off; the page remembers the
+   choice in this browser. The views, each shown in the right pane at the same scale and place:
    **Side by side**; **Flash**, which shows baseline and new one after the other in the same
    place, about 1.5 times a second (the images themselves, not an overlay), keeping the zoom and
-   scroll it was opened at; **Highlight**, pixelmatch's changed pixels in red over the dimmed
-   baseline; and **Spotlight**, the new image dimmed everywhere except around the changed pixels
+   scroll it was opened at; **Highlight**, the changed pixels in solid red laid over both images
+   themselves, in both panes, where **Blink** (L) flashes the red pixels on and off at Flash's
+   pace (remembered in this browser); and **Spotlight**, the new image dimmed everywhere except around the changed pixels
    (each grown by 10 image pixels), which finds a one-pixel change. Flash, Highlight and
    Spotlight need two images; on a new or removed story they are off and the page says why
    ("New story, no baseline", "Only one image: this story was removed"). Badges here:
@@ -329,6 +335,8 @@ Seed them from the default branch (below), or accept them on the pull request.
 | S            | Spotlight the changes; S again returns to side by side                         |
 | Z            | Next zoom: fit to screen, real size, 2x, 4x, 8x, then fit again                |
 | N            | Next changed box                                                               |
+| B            | Outline the changed box, or stop outlining it                                  |
+| L            | In Highlight: blink the red changed pixels, or hold them on                    |
 | Space (hold) | Flash while held                                                               |
 | Shift+A      | Accept every undecided item of this project without opening it (asks first)    |
 | Escape       | Back to the grid from a story, wherever the focus is (the reason box included) |
@@ -470,6 +478,14 @@ the pull request.
   wider. It is never cropped to the content, so a small component sits in the full canvas and
   every capture of a project has the same size unless its story overflows. results.json records the scale as `scale`, and each review record
   copies it into its `subject`.
+- **Why captures rasterize on the CPU.** Chromium runs with `--disable-gpu-rasterization`, so the
+  page's text and shapes are drawn by the CPU; WebGL still runs on SwiftShader. Drawn through
+  SwiftShader, a glyph that sat on a sub-pixel boundary landed on either side of it from one
+  render to the next (a quarter-pixel shift of one letter, in 1 to 7 of 48 renders of the same
+  story), so stories with nothing moving read `unstable`, a different few on each run. With the
+  switch, 48 of 48 renders matched. The repository owner chose this on 2026-09-30, knowing it
+  changes how text is drawn in every story of every project: a baseline captured before it can
+  read `changed` once, and is accepted again.
 - **From GitHub Actions to the page.** Each `visual` job uploads `results.json` and the PNGs to
   review as an artifact `visual-<project>-<attempt>`, kept 30 days. The server lists open pull
   requests with `gh`, finds each one's newest run of the capturing workflow, and downloads those
