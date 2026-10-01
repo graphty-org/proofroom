@@ -301,6 +301,58 @@ describe("review page: a pull request", () => {
         expect(await stageClass()).toContain("spotlight");
     });
 
+    it("flashes the spotlighted baseline and new with F in Spotlight, and keeps it for the next item", async () => {
+        await openStory(2);
+        await page.keyboard.press("s");
+        await page.locator("#stage canvas").first().waitFor();
+        const toggle = page.getByRole("button", { name: "Spotlight flash", exact: true });
+        expect(await toggle.getAttribute("aria-pressed")).toBe("false");
+        await page.keyboard.press("f");
+        // Still Spotlight, now two dimmed canvases in the same place, one shown at a time.
+        await expect.poll(() => toggle.getAttribute("aria-pressed")).toBe("true");
+        expect(await stageClass()).toContain("spotlight");
+        const canvases = page.locator("#stage .flashing canvas");
+        const shown = async () => {
+            await expect.poll(() => canvases.count()).toBe(2);
+            const label = await page.locator("#stage .flashing .label").textContent();
+            const [index, far] = await canvases.evaluateAll((cs) => {
+                const i = cs.findIndex((c) => c.style.visibility !== "hidden");
+                return [i, [...cs[i].getContext("2d").getImageData(5, 5, 1, 1).data]];
+            });
+            // Both images are dimmed outside the changed pixels.
+            expect(far[0]).toBeLessThanOrEqual(Math.ceil(255 * (1 - 190 / 255)));
+            return `${index} ${label}`;
+        };
+        const seen = new Set();
+        await expect
+            .poll(async () => {
+                seen.add(await shown());
+                return [...seen].sort();
+            })
+            .toEqual(["0 Spotlight: baseline", "1 Spotlight: new"]);
+        // The two are the spotlighted baseline and the spotlighted new image: they differ at the change.
+        const near = await canvases.evaluateAll((cs) =>
+            cs.map((c) => [...c.getContext("2d").getImageData(180, 100, 1, 1).data].join()),
+        );
+        expect(near[0]).not.toBe(near[1]);
+        const hash = () => new URLSearchParams(new URL(page.url()).hash.slice(1));
+        expect(hash().get("flash")).toBe("on");
+        // The next item opens in Spotlight, still flashing.
+        await page.keyboard.press("j");
+        await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
+        await expect.poll(() => canvases.count()).toBe(2);
+        expect(await page.locator("#stage .flashing .label").textContent()).toMatch(/^Spotlight: (baseline|new)$/);
+        expect(hash().get("flash")).toBe("on");
+        // F again stops flashing and stays in Spotlight; elsewhere F still switches to Flash.
+        await page.keyboard.press("f");
+        await expect.poll(() => toggle.getAttribute("aria-pressed")).toBe("false");
+        await expect.poll(() => page.locator("#stage canvas").count()).toBe(1);
+        expect(await stageClass()).toContain("spotlight");
+        await page.keyboard.press("s");
+        await page.keyboard.press("f");
+        await expect.poll(stageClass).toContain("flash");
+    });
+
     it("lays the changed pixels over both images in red with H, and blinks them with L", async () => {
         await openStory(2);
         await page.keyboard.press("h");
@@ -419,7 +471,7 @@ describe("review page: a pull request", () => {
         await expect
             .poll(() => page.locator("#single-note").textContent())
             .toBe("New story, no baseline: there is only the new image.");
-        expect(await page.getByRole("button", { name: "Flash" }).isDisabled()).toBe(true);
+        expect(await page.getByRole("button", { name: "Flash", exact: true }).isDisabled()).toBe(true);
         expect(await page.getByRole("button", { name: "Highlight" }).getAttribute("title")).toBe(
             "New story, no baseline: there is only the new image.",
         );

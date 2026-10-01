@@ -50,6 +50,7 @@ const state = {
     box: 0, // which changed box "next changed box" is on
     showBox: saved.showBox ?? true, // outline the changed box (B)
     blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
+    spotFlash: saved.spotFlash ?? false, // Spotlight flashes baseline and new (F in Spotlight)
     held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
     screen: "targets",
@@ -258,7 +259,10 @@ function loadOptions() {
 
 function saveOptions() {
     try {
-        localStorage.setItem(OPTIONS_KEY, JSON.stringify({ showBox: state.showBox, blink: state.blink }));
+        localStorage.setItem(
+            OPTIONS_KEY,
+            JSON.stringify({ showBox: state.showBox, blink: state.blink, spotFlash: state.spotFlash }),
+        );
     } catch {
         // Not remembered; the choice still holds for this page.
     }
@@ -1051,6 +1055,20 @@ function showStory() {
                     },
                     "Blink",
                 ),
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        "aria-pressed": String(state.spotFlash),
+                        disabled: view !== "spotlight",
+                        title:
+                            view === "spotlight"
+                                ? "F: flash the spotlighted baseline and new"
+                                : "Spotlight flash shows the spotlighted baseline and new one after the other",
+                        onclick: () => toggleOption("spotFlash"),
+                    },
+                    "Spotlight flash",
+                ),
                 note ? el("span", { id: "single-note", class: "meta" }, note) : null,
                 el("span", { class: "spacer" }),
                 ZOOMS.map(zoomButton),
@@ -1271,11 +1289,15 @@ async function renderStage(item, view, keep) {
             right = pane(item.status === "failed" ? "No capture: it failed" : "No capture");
         } else if (view === "side") {
             right = pane(item.baseline ? "New" : "New (no baseline)", await imgOf("capture"));
-        } else if (view === "flash") {
-            // The two images themselves, one after the other in the same place: no overlay.
-            const [base, next] = [await imgOf("baseline"), await imgOf("capture")];
+        } else if (view === "flash" || (view === "spotlight" && state.spotFlash)) {
+            // The two images one after the other in the same place: themselves, or both spotlighted.
+            const flash = view === "flash";
+            const name = flash ? "Flash" : "Spotlight";
+            const [base, next] = flash
+                ? [await imgOf("baseline"), await imgOf("capture")]
+                : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
             next.style.visibility = "hidden";
-            right = pane("Flash: baseline", base, next);
+            right = pane(`${name}: baseline`, base, next);
             right.classList.add("flashing");
             const tag = right.querySelector(".label");
             let showingNew = false;
@@ -1283,7 +1305,7 @@ async function renderStage(item, view, keep) {
                 showingNew = !showingNew;
                 base.style.visibility = showingNew ? "hidden" : "visible";
                 next.style.visibility = showingNew ? "visible" : "hidden";
-                tag.textContent = showingNew ? "Flash: new" : "Flash: baseline";
+                tag.textContent = showingNew ? `${name}: new` : `${name}: baseline`;
             }, FLASH_MS);
         } else if (view === "highlight") {
             right = pane("New, changed pixels in red", await imgOf("capture"), overlay(diff));
@@ -1418,8 +1440,8 @@ function overlay(diff) {
     return canvas;
 }
 
-// The new image with everything dimmed except the changed pixels grown by GROW pixels.
-function spotlight(diff) {
+// An image (the new one unless given) with everything dimmed except the changed pixels grown by GROW pixels.
+function spotlight(diff, px = diff.b) {
     const canvas = el("canvas", { width: String(diff.w), height: String(diff.h) });
     const ctx = canvas.getContext("2d");
     const out = ctx.createImageData(diff.w, diff.h);
@@ -1427,9 +1449,9 @@ function spotlight(diff) {
     for (let i = 0; i < diff.w * diff.h; i++) {
         const lit = diff.grown[i] === 1;
         for (let c = 0; c < 3; c++) {
-            out.data[i * 4 + c] = lit ? diff.b[i * 4 + c] : diff.b[i * 4 + c] * keep;
+            out.data[i * 4 + c] = lit ? px[i * 4 + c] : px[i * 4 + c] * keep;
         }
-        out.data[i * 4 + 3] = lit ? diff.b[i * 4 + 3] : Math.max(diff.b[i * 4 + 3], SPOT_ALPHA);
+        out.data[i * 4 + 3] = lit ? px[i * 4 + 3] : Math.max(px[i * 4 + 3], SPOT_ALPHA);
     }
     ctx.putImageData(out, 0, 0);
     return canvas;
@@ -1683,7 +1705,7 @@ function finishOutcome() {
 // ---------------------------------------------------------------- the address
 
 // Every screen is in the address, after the session token, so a copied link opens it again:
-// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit&box=on&blink=off
+// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit&box=on&blink=off&flash=off
 // Only the fragment holds it: a browser never sends a fragment to a server or in a Referer.
 function hashFor() {
     const p = new URLSearchParams({ token });
@@ -1701,6 +1723,7 @@ function hashFor() {
         p.set("zoom", String(state.zoom));
         p.set("box", state.showBox ? "on" : "off");
         p.set("blink", state.blink ? "on" : "off");
+        p.set("flash", state.spotFlash ? "on" : "off");
     }
     return `#${p}`;
 }
@@ -1777,12 +1800,15 @@ async function route() {
         state.view = VIEWS.includes(p.get("view")) ? p.get("view") : "side";
         const zoom = p.get("zoom") === "fit" ? "fit" : Number(p.get("zoom"));
         state.zoom = ZOOMS.includes(zoom) ? zoom : "fit";
-        // A link's box and blink apply to this page; the browser's remembered choice is unchanged.
+        // A link's box, blink and flash apply to this page; the browser's remembered choice is unchanged.
         if (["on", "off"].includes(p.get("box"))) {
             state.showBox = p.get("box") === "on";
         }
         if (["on", "off"].includes(p.get("blink"))) {
             state.blink = p.get("blink") === "on";
+        }
+        if (["on", "off"].includes(p.get("flash"))) {
+            state.spotFlash = p.get("flash") === "on";
         }
         state.box = 0;
         say("");
@@ -1862,7 +1888,8 @@ document.addEventListener("keydown", (e) => {
         r: () => decide("reject"),
         e: () => decide("exclude"),
         u: () => decide(null),
-        f: () => toggleView("flash"),
+        // In Spotlight, F flashes the spotlighted baseline and new instead of leaving it.
+        f: () => (state.view === "spotlight" ? toggleOption("spotFlash") : toggleView("flash")),
         h: () => toggleView("highlight"),
         s: () => toggleView("spotlight"),
         b: () => toggleOption("showBox"),
