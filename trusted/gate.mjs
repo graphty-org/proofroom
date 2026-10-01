@@ -14,22 +14,31 @@
  * leaves the visual jobs' old attempt as the newest) can neither hide nor resurrect a capture.
  * Which projects exist and are seeded is read from <ref> (the base branch tip, fetched by the
  * caller), and so is visual-review.config.json (the projects and where the baselines live), so
- * neither deleting a project's baselines, nor removing it from the config, nor moving the baselines
- * directory in the pull request turns the gate off. The pull request's config can only add projects. A gated project with no results.json, or an incomplete one, fails: a capture that
- * crashed has shown the owner nothing. An invalid results.json counts as missing.
+ * neither deleting a project's baselines nor removing it from the config turns the gate off, and a
+ * pull request that moves the baselines directory fails. The pull request's config can only add
+ * projects. A gated project with no results.json, or an incomplete one, fails: a capture that
+ * crashed has shown the owner nothing. An invalid results.json counts as missing. So does a story
+ * compared at a diffThreshold above MAX_THRESHOLD, which would hide real changes.
  *
- * It also fails when a baseline PNG, or a settings file that excludes a story, differs from the
- * base without a review record added in the pull request (<baselines>/reviews/*.json) naming
- * that path and its new hash. Without that, committing the captured PNGs straight into
- * the baselines directory would turn the capture check green with no review at all.
+ * It also fails when a baseline PNG or a story's settings file differs from the base without the
+ * review records added in the pull request (<baselines>/reviews/*.json) taking that path from its
+ * contents on the base branch to its new ones: each record item moves a path `from` one hash `to`
+ * another, replayed in `reviewedAt` order, so a record approved for other contents (an old seed,
+ * a decision a later one replaced) moves nothing. Without that, committing the captured PNGs
+ * straight into the baselines directory would turn the capture check green with no review at all.
  *
  * Once visual-review/passkeys.json on the base branch holds a key, every record the pull request
- * adds must also be version 2, for this pull request (`--pr`), with a passkey approval by one of
- * the base branch's keys over exactly that record (approval.mjs); a record that fails is reported
- * and names nothing. Keys are never read from the pull request, and a pull request that would
- * leave no key fails. Records already on the base branch are never checked again. Before that,
- * only a record's items[].path and items[].to are read, so the gate proves a record names the
- * change, not that the owner approved it (the README, "What the gate does and does not guarantee").
+ * adds must also be version 2, for this pull request (`--pr`) or for none (a seed), with a passkey
+ * approval by one of the base branch's keys over exactly that record (approval.mjs), and not a
+ * copy of a record already on the base branch; a record that fails is reported and moves nothing.
+ * Keys are never read from the pull request, a pull request that would leave no key fails, and a
+ * change to passkeys.json itself needs an approved record like a baseline. Records already on the
+ * base branch are never checked again. Before that, records are read but not verified, so the gate
+ * proves a record names the change, not that the owner approved it (the README, "What the gate
+ * does and does not guarantee").
+ *
+ * CI runs this file as the base branch has it, never the pull request's copy, so a pull request
+ * cannot loosen the gate that judges it.
  *
  * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number>], or node
  * gate.mjs with the same options. Standard library only (results.mjs, config.mjs and approval.mjs
@@ -43,11 +52,17 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { PASSKEYS_FILE, parsePasskeys, verifyRecord } from "./lib/approval.mjs";
+import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyRecord } from "./lib/approval.mjs";
 import { loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { validateResults } from "./lib/results.mjs";
 
 const PASSING = new Set(["unchanged", "excluded"]);
+
+/**
+ * The loosest diffThreshold the gate trusts, the highest a story here uses. At 1 pixelmatch counts
+ * no pixel as changed, so a settings file or a story's parameters could switch comparison off.
+ */
+export const MAX_THRESHOLD = 0.8;
 
 /**
  * The newest attempt's results.json of every project in a directory of downloaded artifacts.
@@ -94,8 +109,9 @@ export function gatedProjects(config, seeded, headConfig) {
 
 /**
  * What blocks the pull request.
- * @param {{ config: { defaultBranch: string, projects: Record<string, { seedFromDefaultBranch: boolean }> },
- *     headConfig: { projects: Record<string, object> } | undefined, seeded: Set<string>,
+ * @param {{ config: { defaultBranch: string, baselines: string,
+ *     projects: Record<string, { seedFromDefaultBranch: boolean }> },
+ *     headConfig: { baselines: string, projects: Record<string, object> } | undefined, seeded: Set<string>,
  *     captures: Record<string, { attempt: number, results: object | null }> }} input the base
  *     branch's config, the pull request's config (if any), the projects with baselines on the base
  *     branch, and the newest capture of each project
@@ -103,6 +119,13 @@ export function gatedProjects(config, seeded, headConfig) {
  */
 export function gateProblems({ config, headConfig, seeded, captures }) {
     const problems = [];
+    if (headConfig && headConfig.baselines !== config.baselines) {
+        // Capture reads the pull request's config, so its baselines would be compared, not the base's.
+        problems.push(
+            `this pull request moves the baselines directory from ${config.baselines} to ${headConfig.baselines}; ` +
+                "move it in a pull request of its own that changes nothing else, merged with an administrator's review",
+        );
+    }
     for (const p of gatedProjects(config, seeded, headConfig)) {
         const r = captures[p]?.results;
         if (!r) {
@@ -117,6 +140,13 @@ export function gateProblems({ config, headConfig, seeded, captures }) {
         if (!r.complete) {
             problems.push(`${p}: the capture did not finish (${r.items.length} of ${r.expected} items); re-run it`);
             continue;
+        }
+        const loose = r.items.filter((i) => i.threshold > MAX_THRESHOLD).length;
+        if (loose > 0) {
+            problems.push(
+                `${p}: ${loose} ${loose === 1 ? "item is" : "items are"} compared at a diffThreshold above ${MAX_THRESHOLD}, ` +
+                    "which hides real changes; lower it in the story's parameters or its settings file",
+            );
         }
         const open = r.items.map((i) => i.status).filter((s) => !PASSING.has(s));
         if (open.length > 0) {
@@ -158,21 +188,37 @@ function notSeeded(config, p) {
 const gitOut = (cwd, args) => execFileSync("git", args, { cwd, maxBuffer: 1 << 28 });
 
 /**
- * Baseline changes between two refs that no review record added between them accounts for.
+ * Baseline changes between two refs that the review records added between them do not account
+ * for. A changed PNG, story settings file (and, once approvals are enforced, passkeys.json) counts
+ * as reviewed only when the added records' items, replayed oldest `reviewedAt` first, take it from
+ * its hash on the base branch (null when absent) to its hash at the head (null when deleted); an
+ * item whose `from` is not the path's current hash moves nothing. A deleted settings file and
+ * renames.json need no record: the captures they cause are reviewed.
  * @param {string} base the base branch tip
  * @param {string} head the pull request's checkout
  * @param {string} [cwd] the repository
  * @param {string} [baselines] the baselines directory
  * @param {{ keys?: object[] | null, pr?: number }} [approvals] with `keys`, every added record must
- *     carry a passkey approval by one of them for pull request `pr` (verifyRecord), or it counts for
- *     nothing
+ *     carry a passkey approval by one of them for pull request `pr` (verifyRecord) and not copy a
+ *     record already on the base branch, or it counts for nothing
  * @returns {string[]} one line per unaccounted change; empty when every change has a record
  */
 export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "visual-baselines", approvals = {}) {
-    const fields = gitOut(cwd, ["diff", "-z", "--no-renames", "--name-status", base, head, "--", `${baselines}/`])
+    const enforced = Boolean(approvals.keys);
+    const fields = gitOut(cwd, [
+        "diff",
+        "-z",
+        "--no-renames",
+        "--name-status",
+        base,
+        head,
+        "--",
+        `${baselines}/`,
+        ...(enforced ? [PASSKEYS_FILE] : []),
+    ])
         .toString("utf8")
         .split("\0");
-    const show = (path) => gitOut(cwd, ["show", `${head}:${path}`]);
+    const show = (ref, path) => gitOut(cwd, ["show", `${ref}:${path}`]);
     const problems = [];
     const records = [];
     const changed = [];
@@ -184,40 +230,88 @@ export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "
             } else {
                 problems.push(`${path}: review records are append-only, but this one was changed or deleted`);
             }
-        } else if (path.endsWith(".png")) {
-            changed.push({ path, hash: status === "D" ? null : contentHash(show(path)) });
-        } else if (path.endsWith(".json") && status !== "D") {
-            // ponytail: only settings that exclude a story need a record. Any other settings edit,
-            // and deleting a settings file, passes: the capture it causes is itself reviewed.
-            const bytes = show(path);
-            if (parseOr(bytes)?.disableSnapshot === true) {
-                changed.push({ path, hash: sha256(bytes) });
-            }
+        } else if (
+            path.endsWith(".png") ||
+            path === PASSKEYS_FILE ||
+            (path.endsWith(".json") && status !== "D" && !path.endsWith("/renames.json"))
+        ) {
+            const hash = path.endsWith(".png") ? contentHash : sha256;
+            changed.push({
+                path,
+                from: status === "A" ? null : hash(show(base, path)),
+                to: status === "D" ? null : hash(show(head, path)),
+            });
         }
     }
-    const reviewed = new Set();
+    let onBase = null;
+    const entries = [];
     for (const path of records) {
-        const record = parseOr(show(path));
-        if (approvals.keys) {
-            const why = record === null ? "not valid JSON" : verifyRecord(record, approvals.keys, { pr: approvals.pr });
+        const record = parseOr(show(head, path));
+        if (enforced) {
+            let why = record === null ? "not valid JSON" : verifyRecord(record, approvals.keys, { pr: approvals.pr });
+            if (!why) {
+                onBase ??= baseRecordHashes(base, cwd, baselines);
+                if (onBase.has(recordHash(record).toString("hex"))) {
+                    why = "a copy of a record already on the base branch: an approval counts once";
+                }
+            }
             if (why) {
                 problems.push(`${path}: ${why}`);
                 continue;
             }
         }
         const items = record?.items;
-        for (const item of Array.isArray(items) ? items : []) {
-            reviewed.add(`${item?.path}\0${item?.to ?? null}`);
-        }
+        entries.push({ at: String(record?.reviewedAt ?? ""), items: Array.isArray(items) ? items : [] });
     }
-    const missing = changed.filter((c) => !reviewed.has(`${c.path}\0${c.hash}`)).map((c) => c.path);
-    for (const path of missing.slice(0, 20)) {
-        problems.push(`${path}: changed with no review record naming its new contents`);
+    entries.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    const missing = changed.filter((c) => {
+        let now = c.from;
+        for (const { items } of entries) {
+            for (const item of items) {
+                if (item?.path === c.path && (item.from ?? null) === now) {
+                    now = item.to ?? null;
+                }
+            }
+        }
+        return now !== c.to;
+    });
+    for (const { path } of missing.slice(0, 20)) {
+        problems.push(
+            path === PASSKEYS_FILE
+                ? `${path}: changed with no record approved by a key on the base branch; once a key is registered, adding or replacing one is merged by an administrator (the README, "Replacing the passkey")`
+                : `${path}: changed with no review record taking it from its base branch contents to these`,
+        );
     }
     if (missing.length > 20) {
         problems.push(`... and ${missing.length - 20} more baseline files with no review record`);
     }
     return problems;
+}
+
+/**
+ * The record hashes of the version 2 records on the base branch.
+ * @param {string} base the base branch tip
+ * @param {string} cwd the repository
+ * @param {string} baselines the baselines directory
+ * @returns {Set<string>} hex hashes
+ */
+function baseRecordHashes(base, cwd, baselines) {
+    const out = new Set();
+    const files = gitOut(cwd, ["ls-tree", "-r", "--name-only", base, "--", `${baselines}/reviews/`])
+        .toString("utf8")
+        .split("\n")
+        .filter(Boolean);
+    for (const path of files) {
+        const r = parseOr(gitOut(cwd, ["show", `${base}:${path}`]));
+        if (r?.version === 2) {
+            try {
+                out.add(recordHash(r).toString("hex"));
+            } catch {
+                // A number canonical() refuses: no approval can cover it, so nothing can copy it.
+            }
+        }
+    }
+    return out;
 }
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -322,9 +416,10 @@ export function approvalKeys(base, head, pr, cwd = process.cwd()) {
 }
 
 /**
- * The files a pull request could loosen the gate with: passkeys.json, the gate and its verifier,
- * and the workflow that runs it. A change to one is a warning, never a failure (registering a
- * passkey changes passkeys.json), so code review looks at it.
+ * The files a pull request could loosen the gate with: passkeys.json, the tool's trusted code and
+ * its capture, and the workflow that runs them. A change to one is a warning, never a failure (CI
+ * runs the base branch's copy of the code, and work on the tool changes it), so code review looks
+ * at it.
  * @param {string} base the base branch tip
  * @param {string} head the pull request's checkout
  * @param {string} workflow the workflow file that runs the gate
@@ -332,12 +427,7 @@ export function approvalKeys(base, head, pr, cwd = process.cwd()) {
  * @returns {string[]} the changed ones
  */
 export function trustFilesChanged(base, head, workflow, cwd = process.cwd()) {
-    const files = [
-        PASSKEYS_FILE,
-        "visual-review/trusted/gate.mjs",
-        "visual-review/trusted/lib/approval.mjs",
-        `.github/workflows/${workflow}`,
-    ];
+    const files = [PASSKEYS_FILE, "visual-review/trusted/", "visual-review/capture/", `.github/workflows/${workflow}`];
     return gitOut(cwd, ["diff", "--name-only", base, head, "--", ...files])
         .toString("utf8")
         .split("\n")
