@@ -466,6 +466,17 @@ td {
     align-items: center;
     padding: 6px 16px;
     min-height: calc(2.15em + 14px);
+    white-space: nowrap;
+}
+
+.gridbar > .row > *,
+.gridbar [role="group"] > * {
+    flex: none;
+}
+
+#more-filters {
+    flex: 0 1 auto;
+    min-width: 7em;
 }
 
 .gridbar .row {
@@ -489,7 +500,8 @@ td {
     width: 14em;
 }
 
-@media (max-width: 1049.98px) {
+/* Two rows below 1300 px (an iPad either way up): what to look at, then what to do. */
+@media (max-width: 1299.98px) {
     .gridbar {
         flex-direction: column;
         align-items: stretch;
@@ -506,8 +518,9 @@ td {
         min-width: 8em;
     }
 
-    .gridbar label {
-        flex: 1;
+    .gridbar > .row > label {
+        flex: 1 1 auto;
+        min-width: 0;
     }
 }
 
