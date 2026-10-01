@@ -842,6 +842,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 warnings: [],
             };
             persist(job);
+            console.log(
+                `visual-review: Finish of ${finishLabel(t)} started: ${list.length} decisions, ${undecided} undecided`,
+            );
             runFinish(job, t, list, {
                 repo,
                 gh,
@@ -866,7 +869,6 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
      * @param {object} input finish's input
      */
     async function runFinish(j, t, sent, input) {
-        const label = t.pr === null ? "the master seed" : `#${t.pr}`;
         // Drops the accepts and exclusions Finish pushed; rejects stay, keyed by image hash, so an
         // unchanged rejected capture on the next CI run still reads as rejected, not undecided.
         const clear = (posted) =>
@@ -893,13 +895,13 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             } catch (err) {
                 // What was pushed and posted stands; the decisions it applied are still saved.
                 j.warnings.push(`pushed and posted, but the decisions could not be cleared: ${err.message}`);
-                console.error(`visual-review: Finish of ${label}: ${j.warnings.at(-1)}`);
+                console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
             }
             const r = j.result;
-            console.error(`visual-review: Finish of ${label} done: ${r.commit ? `pushed ${r.commit}` : "no commit"}`);
-            if (r.statusError) {
-                console.error(`visual-review: Finish of ${label}: the commit status was not posted: ${r.statusError}`);
-            }
+            const status = r.statusError ? `; status not posted: ${r.statusError}` : "";
+            console.log(
+                `visual-review: Finish of ${finishLabel(t)} done: commit ${r.commit ?? "none"}, ${r.rejects} rejects${status}`,
+            );
         } catch (err) {
             if (err instanceof AcceptError && err.committed && !err.pullRequestMissing) {
                 // The accepts are on the branch; keep only the rejects, so Finish again only comments.
@@ -907,12 +909,12 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     clear(false);
                 } catch (e) {
                     j.warnings.push(`the accepts pushed could not be cleared from the decisions: ${e.message}`);
-                    console.error(`visual-review: Finish of ${label}: ${j.warnings.at(-1)}`);
+                    console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
                 }
             }
             // Refused before anything ran, the message says it all; later, it names the step.
             j.error = ["starting", "checking"].includes(j.step) ? err.message : `${j.step}: ${err.message}`;
-            console.error(`visual-review: Finish of ${label} failed: ${j.error}`);
+            console.error(`visual-review: Finish of ${finishLabel(t)} failed: ${j.error}`);
         } finally {
             j.running = false;
             j.step = null;
@@ -920,6 +922,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             persist(j);
         }
     }
+
+    const finishLabel = (t) => (t.pr === null ? "the master seed" : `#${t.pr}`);
 
     const tokenOk = (given) => {
         const a = Buffer.from(String(given ?? ""));

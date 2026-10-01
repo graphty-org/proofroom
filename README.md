@@ -218,10 +218,10 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 
 The address always names the screen you are on, after the token: the targets list; a pull
 request (or master) and project with the grid's filter and text; or one story with its view,
-zoom, changed box and blink, for example
-`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2&box=on&blink=off`.
-A link's `box` and `blink` apply to the page it opens; the choice this browser remembers for B
-and L is left as it was.
+zoom, changed box, blink and Spotlight flash, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2&box=on&blink=off&flash=off`.
+A link's `box`, `blink` and `flash` apply to the page it opens; the choice this browser remembers
+for B, L and F in Spotlight is left as it was.
 Opening that address, in another tab or on another device, opens the same screen. **Copy link**
 at the top right copies it. The link carries your session token, so it works on your iPad the way
 the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
@@ -295,7 +295,9 @@ starts the same server from your own shell.
    scroll it was opened at; **Highlight**, the changed pixels in solid red laid over both images
    themselves, in both panes, where **Blink** (L) flashes the red pixels on and off at Flash's
    pace (remembered in this browser); and **Spotlight**, the new image dimmed everywhere except around the changed pixels
-   (each grown by 10 image pixels), which finds a one-pixel change. Flash, Highlight and
+   (each grown by 10 image pixels), which finds a one-pixel change, where **Spotlight flash** (F
+   in Spotlight) shows the spotlighted baseline and the spotlighted new image one after the other
+   at Flash's pace, the pane's label saying which (remembered in this browser). Flash, Highlight and
    Spotlight need two images; on a new or removed story they are off and the page says why
    ("New story, no baseline", "Only one image: this story was removed"). Badges here:
    **size changed** (in image pixels), **flaky** (the two captures differed, then matched), and
@@ -330,6 +332,7 @@ for them. Seed them from the default branch (below), or accept them on the pull 
 | E            | Exclude an undecided item (asks for a reason, then Enter, then a confirmation) |
 | U            | Undo the item's decision (on the grid: each tile's Undo button)                |
 | F            | Flash between baseline and new; F again returns to side by side                |
+| F            | In Spotlight: flash the spotlighted baseline and new, or stop flashing         |
 | H            | Highlight changed pixels; H again returns to side by side                      |
 | S            | Spotlight the changes; S again returns to side by side                         |
 | Z            | Next zoom: fit to screen, real size, 2x, 4x, 8x, then fit again                |

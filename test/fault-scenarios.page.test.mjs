@@ -42,16 +42,34 @@ afterEach(async () => {
 });
 
 /**
- * A new tab on the page, with every dialog recorded and accepted except Finish's.
+ * A new tab on the page, with every question the page asks (ask in review.js) recorded and
+ * confirmed except Finish's. A browser dialog is recorded and never answered: one a browser
+ * blocks returns at once as if refused.
  * @param {string} [hash] more of the address after the token
  * @returns {Promise<import("playwright").Page>} the tab
  */
 async function tab(hash = "") {
     const p = await browser.newPage({ viewport: { width: 1000, height: 800 } });
     pages.push(p);
+    await p.exposeFunction("asked", (message) => {
+        dialogs.push(message);
+        return !message.startsWith("Finish");
+    });
+    await p.addInitScript(() => {
+        // In the browser: its globals, not Node's.
+        const { document, MutationObserver } = globalThis;
+        new MutationObserver(() => {
+            for (const d of document.querySelectorAll("dialog.ask[open]:not([data-seen])")) {
+                d.dataset.seen = "";
+                globalThis
+                    .asked(d.firstChild.textContent)
+                    .then((yes) => d.querySelectorAll("button")[yes ? 1 : 0].click());
+            }
+        }).observe(document, { childList: true, subtree: true, attributes: true });
+    });
     p.on("dialog", (d) => {
-        dialogs.push(d.message());
-        return d.message().startsWith("Finish") ? d.dismiss() : d.accept();
+        dialogs.push(`browser dialog: ${d.message()}`);
+        return d.dismiss();
     });
     await p.goto(`${s.origin}/#token=${TOKEN}${hash}`);
     return p;

@@ -50,6 +50,7 @@ const state = {
     box: 0, // which changed box "next changed box" is on
     showBox: saved.showBox ?? true, // outline the changed box (B)
     blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
+    spotFlash: saved.spotFlash ?? false, // Spotlight flashes baseline and new (F in Spotlight)
     held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
     screen: "targets",
@@ -112,6 +113,32 @@ function render(...children) {
 function say(text, isError = false) {
     statusLine.textContent = text === "" && running() ? finishing() : text;
     statusLine.className = isError ? "error" : "";
+}
+
+// Asks in the page, never with confirm(): once a browser stops a page's dialogs ("prevent this
+// page from creating additional dialogs"), confirm() returns false without showing anything, and
+// the button pressed seems to do nothing. Resolves true for `yes`, false for Cancel or Escape.
+function ask(message, yes) {
+    // Focus on the box, not a button: the Enter that asked (in the reason box) must not answer it.
+    const dialog = el("dialog", { class: "ask", tabindex: "-1" }, el("p", {}, message));
+    const answer = (value) => () => dialog.close(value);
+    dialog.append(
+        el(
+            "p",
+            { class: "actions" },
+            el("button", { type: "button", onclick: answer("no") }, "Cancel"),
+            el("button", { type: "button", class: "primary", onclick: answer("yes") }, yes),
+        ),
+    );
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.focus();
+    return new Promise((resolve) =>
+        dialog.addEventListener("close", () => {
+            dialog.remove();
+            resolve(dialog.returnValue === "yes");
+        }),
+    );
 }
 
 async function api(path, body) {
@@ -273,7 +300,10 @@ function loadOptions() {
 
 function saveOptions() {
     try {
-        localStorage.setItem(OPTIONS_KEY, JSON.stringify({ showBox: state.showBox, blink: state.blink }));
+        localStorage.setItem(
+            OPTIONS_KEY,
+            JSON.stringify({ showBox: state.showBox, blink: state.blink, spotFlash: state.spotFlash }),
+        );
     } catch {
         // Not remembered; the choice still holds for this page.
     }
@@ -446,7 +476,7 @@ function targetCard(t) {
                             type: "button",
                             class: "primary",
                             disabled: decided === 0 || running(),
-                            onclick: () => finishTarget(t),
+                            onclick: (e) => finishTarget(t, e.currentTarget),
                         },
                         `Finish ${t.pr === null ? "seed" : `#${t.pr}`} (${decided} decisions)`,
                     ),
@@ -1095,6 +1125,20 @@ function showStory() {
                     },
                     "Blink",
                 ),
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        "aria-pressed": String(state.spotFlash),
+                        disabled: view !== "spotlight",
+                        title:
+                            view === "spotlight"
+                                ? "F: flash the spotlighted baseline and new"
+                                : "Spotlight flash shows the spotlighted baseline and new one after the other",
+                        onclick: () => toggleOption("spotFlash"),
+                    },
+                    "Spotlight flash",
+                ),
                 note ? el("span", { id: "single-note", class: "meta" }, note) : null,
                 el("span", { class: "spacer" }),
                 ZOOMS.map(zoomButton),
@@ -1314,14 +1358,18 @@ async function renderStage(item, view, keep) {
             right = pane(item.status === "failed" ? "No capture: it failed" : "No capture");
         } else if (view === "side") {
             right = pane(item.baseline ? "New" : "New (no baseline)", await imgOf("capture"));
-        } else if (view === "flash") {
-            // The two images themselves, one after the other in the same place: no overlay.
-            const [base, next] = [await imgOf("baseline"), await imgOf("capture")];
+        } else if (view === "flash" || (view === "spotlight" && state.spotFlash)) {
+            // The two images one after the other in the same place: themselves, or both spotlighted.
+            const flash = view === "flash";
+            const name = flash ? "Flash" : "Spotlight";
+            const [base, next] = flash
+                ? [await imgOf("baseline"), await imgOf("capture")]
+                : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
             if (seq !== stageRender) {
                 return;
             }
             next.style.visibility = "hidden";
-            right = pane("Flash: baseline", base, next);
+            right = pane(`${name}: baseline`, base, next);
             right.classList.add("flashing");
             const tag = right.querySelector(".label");
             let showingNew = false;
@@ -1329,7 +1377,7 @@ async function renderStage(item, view, keep) {
                 showingNew = !showingNew;
                 base.style.visibility = showingNew ? "hidden" : "visible";
                 next.style.visibility = showingNew ? "visible" : "hidden";
-                tag.textContent = showingNew ? "Flash: new" : "Flash: baseline";
+                tag.textContent = showingNew ? `${name}: new` : `${name}: baseline`;
             }, FLASH_MS);
         } else if (view === "highlight") {
             right = pane("New, changed pixels in red", await imgOf("capture"), overlay(diff));
@@ -1475,8 +1523,8 @@ function overlay(diff) {
     return canvas;
 }
 
-// The new image with everything dimmed except the changed pixels grown by GROW pixels.
-function spotlight(diff) {
+// An image (the new one unless given) with everything dimmed except the changed pixels grown by GROW pixels.
+function spotlight(diff, px = diff.b) {
     const canvas = el("canvas", { width: String(diff.w), height: String(diff.h) });
     const ctx = canvas.getContext("2d");
     const out = ctx.createImageData(diff.w, diff.h);
@@ -1484,9 +1532,9 @@ function spotlight(diff) {
     for (let i = 0; i < diff.w * diff.h; i++) {
         const lit = diff.grown[i] === 1;
         for (let c = 0; c < 3; c++) {
-            out.data[i * 4 + c] = lit ? diff.b[i * 4 + c] : diff.b[i * 4 + c] * keep;
+            out.data[i * 4 + c] = lit ? px[i * 4 + c] : px[i * 4 + c] * keep;
         }
-        out.data[i * 4 + 3] = lit ? diff.b[i * 4 + 3] : Math.max(diff.b[i * 4 + 3], SPOT_ALPHA);
+        out.data[i * 4 + 3] = lit ? px[i * 4 + 3] : Math.max(px[i * 4 + 3], SPOT_ALPHA);
     }
     ctx.putImageData(out, 0, 0);
     return canvas;
@@ -1510,7 +1558,7 @@ async function acceptAll(component) {
         removals === 0
             ? ""
             : ` This includes ${removals} ${removals === 1 ? "removal" : "removals"}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
-    if (!confirm(`Accept ${n} undecided items of ${where} without opening them?${deletes}`)) {
+    if (!(await ask(`Accept ${n} undecided items of ${where} without opening them?${deletes}`, "Accept"))) {
         return;
     }
     try {
@@ -1576,10 +1624,11 @@ async function decide(decision) {
     }
     if (
         decision === "exclude" &&
-        !confirm(
+        !(await ask(
             `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
                 "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
-        )
+            "Exclude",
+        ))
     ) {
         return;
     }
@@ -1632,24 +1681,36 @@ function finishButton() {
     }
     return el(
         "button",
-        { type: "button", class: "primary", disabled: running(), onclick: () => finishTarget(state.target) },
+        {
+            type: "button",
+            class: "primary",
+            disabled: running(),
+            onclick: (e) => finishTarget(state.target, e.currentTarget),
+        },
         `Finish ${targetLabel()}`,
     );
 }
 
-async function finishTarget(target) {
+// `button` is the Finish button pressed: off from the press until Finish is started or given up,
+// so the press shows at once, even while the server is slow to answer.
+async function finishTarget(target, button) {
+    const label = target.pr === null ? "the master seed" : `#${target.pr}`;
     const what =
         target.pr === null ? "push a seed branch and open its pull request" : `commit and push to ${target.branch}`;
+    const giveUp = (text, isError) => {
+        button.disabled = running();
+        say(text, isError);
+    };
+    button.disabled = true;
+    say(`Checking ${label} before Finish...`);
     let fresh;
     try {
         fresh = await api(`/api/target/${encodeURIComponent(target.id)}`);
     } catch (err) {
-        say(err.message, true);
+        giveUp(`Finish not started: ${err.message}`, true);
         return;
     }
-    const lines = [
-        `Finish ${target.pr === null ? "the master seed" : `#${target.pr}`}: ${what}, across every project?`,
-    ];
+    const lines = [`Finish ${label}: ${what}, across every project?`];
     const notOpened = fresh.projects.reduce((n, p) => n + p.notOpened, 0);
     if (notOpened > 0) {
         lines.push(`${notOpened} accepted without being opened.`);
@@ -1667,7 +1728,9 @@ async function finishTarget(target) {
         );
     }
     lines.push("One commit status is posted when Finish completes.");
-    if (!confirm(lines.join("\n\n"))) {
+    say(`Finish ${label}? Answer in the box.`);
+    if (!(await ask(lines.join("\n\n"), `Finish ${label}`))) {
+        giveUp("Finish cancelled: nothing was changed.");
         return;
     }
     // Finish runs on the server and can take minutes; the page only starts it and then asks how it
@@ -1681,7 +1744,7 @@ async function finishTarget(target) {
             .then((s) => s.job)
             .catch(() => null);
         if (!running() || state.job.target !== target.id) {
-            say("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
+            giveUp("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
             app.prepend(el("pre", { class: "error" }, err.message));
             return;
         }
@@ -1789,7 +1852,7 @@ function finishOutcome() {
 // ---------------------------------------------------------------- the address
 
 // Every screen is in the address, after the session token, so a copied link opens it again:
-// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit&box=on&blink=off
+// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit&box=on&blink=off&flash=off
 // Only the fragment holds it: a browser never sends a fragment to a server or in a Referer.
 function hashFor() {
     const p = new URLSearchParams({ token });
@@ -1807,6 +1870,7 @@ function hashFor() {
         p.set("zoom", String(state.zoom));
         p.set("box", state.showBox ? "on" : "off");
         p.set("blink", state.blink ? "on" : "off");
+        p.set("flash", state.spotFlash ? "on" : "off");
     }
     return `#${p}`;
 }
@@ -1890,12 +1954,15 @@ async function route() {
         state.view = VIEWS.includes(p.get("view")) ? p.get("view") : "side";
         const zoom = p.get("zoom") === "fit" ? "fit" : Number(p.get("zoom"));
         state.zoom = ZOOMS.includes(zoom) ? zoom : "fit";
-        // A link's box and blink apply to this page; the browser's remembered choice is unchanged.
+        // A link's box, blink and flash apply to this page; the browser's remembered choice is unchanged.
         if (["on", "off"].includes(p.get("box"))) {
             state.showBox = p.get("box") === "on";
         }
         if (["on", "off"].includes(p.get("blink"))) {
             state.blink = p.get("blink") === "on";
+        }
+        if (["on", "off"].includes(p.get("flash"))) {
+            state.spotFlash = p.get("flash") === "on";
         }
         state.box = 0;
         say("");
@@ -1926,7 +1993,9 @@ document.addEventListener("focusout", () => setTimeout(keepKeys));
 keepKeys();
 
 document.addEventListener("keydown", (e) => {
-    if (!["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
+    // An open question (ask) takes the keys: Escape cancels it.
+    const asking = document.querySelector("dialog[open]") !== null;
+    if (asking || !["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
         return;
     }
     const inInput = e.target instanceof HTMLInputElement;
@@ -1973,7 +2042,8 @@ document.addEventListener("keydown", (e) => {
         r: () => decide("reject"),
         e: () => decide("exclude"),
         u: () => decide(null),
-        f: () => toggleView("flash"),
+        // In Spotlight, F flashes the spotlighted baseline and new instead of leaving it.
+        f: () => (state.view === "spotlight" ? toggleOption("spotFlash") : toggleView("flash")),
         h: () => toggleView("highlight"),
         s: () => toggleView("spotlight"),
         b: () => toggleOption("showBox"),
