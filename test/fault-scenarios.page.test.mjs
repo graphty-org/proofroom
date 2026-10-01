@@ -108,76 +108,71 @@ function runWithoutButtonChange(w, head) {
 }
 
 describe("review page: stale caches", () => {
-    // Fails today: images are cached by target, project, kind and file, never by run or hash.
-    it.fails(
-        "The page shows an earlier run's cached images while decisions are recorded against the server's current run",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            await open(r, w);
-            await review();
-            await openStory(2);
-            await page.locator('#stage img[alt^="capture of"]').waitFor();
-            const fetched = [];
-            page.on("request", (req) => req.url().includes(`/capture/${BUTTON}`) && fetched.push(req.url()));
-            // Another tab (or the iPad) loads the list: the server moves to run 1001.
-            runWithoutButtonChange(w, r.head);
-            await page.locator("#home").click();
-            await page.locator(".card").first().waitFor();
-            await review();
-            await openStory(2);
-            await page.locator('#stage img[alt^="capture of"]').waitFor();
-            expect(fetched.length).toBeGreaterThan(0);
-        },
-    );
+    // Images are cached by their hash too, so the newer run's image is fetched.
+    it("The page shows an earlier run's cached images while decisions are recorded against the server's current run", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        await open(r, w);
+        await review();
+        await openStory(2);
+        await page.locator('#stage img[alt^="capture of"]').waitFor();
+        const fetched = [];
+        page.on("request", (req) => req.url().includes(`/capture/${BUTTON}`) && fetched.push(req.url()));
+        // Another tab (or the iPad) loads the list: the server moves to run 1001.
+        runWithoutButtonChange(w, r.head);
+        await page.locator("#home").click();
+        await page.locator(".card").first().waitFor();
+        await review();
+        await openStory(2);
+        await page.locator('#stage img[alt^="capture of"]').waitFor();
+        expect(fetched.length).toBeGreaterThan(0);
+    });
 
-    // Fails today: the diff cache is keyed by file name alone.
-    it.fails(
-        "The diff cache is keyed by file name only, so Highlight, Spotlight and the box count show another pull request's or another run's diff",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            w.data.prs.push({ number: 124, head: OTHER, branch: "other" });
-            runWithoutButtonChange(w, OTHER);
-            await open(r, w);
-            await review(0);
-            await openStory(2);
-            await page.keyboard.press("s");
-            await expect.poll(boxCount).toMatch(/^box 1 of/);
-            await page.locator("#home").click();
-            await page.locator(".card").first().waitFor();
-            // #124's first Review: its compact-mantine.
-            await review(2);
-            await openStory(2);
-            await expect.poll(boxCount).not.toBe("");
-            expect(await boxCount()).toBe("no changed box at this threshold");
-        },
-    );
+    // Diffs are cached by target, project and both images' hashes.
+    it("The diff cache is keyed by file name only, so Highlight, Spotlight and the box count show another pull request's or another run's diff", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        w.data.prs.push({ number: 124, head: OTHER, branch: "other" });
+        runWithoutButtonChange(w, OTHER);
+        await open(r, w);
+        await review(0);
+        await openStory(2);
+        await page.keyboard.press("s");
+        await expect.poll(boxCount).toMatch(/^box 1 of/);
+        await page.locator("#home").click();
+        await page.locator(".card").first().waitFor();
+        // #124's first Review: its compact-mantine.
+        await review(2);
+        await openStory(2);
+        await expect.poll(boxCount).not.toBe("");
+        expect(await boxCount()).toBe("no changed box at this threshold");
+    });
 
-    // Fails today: a rejected image load stays in the cache for the whole session.
-    it.fails(
-        "One failed image load is cached for the whole session, an undecodable image shows an empty error, and Accept stays enabled",
-        async () => {
-            const r = makeRepo();
-            await open(r, world(r));
-            let aborted = false;
-            await page.route(`**/capture/${BUTTON}`, (route) => {
-                if (aborted) {
-                    return route.continue();
-                }
-                aborted = true;
-                return route.abort();
-            });
-            await review();
-            await openStory(2);
-            await page.keyboard.press("j");
-            await page.keyboard.press("k");
-            await expect.poll(() => page.locator('#stage img[alt^="capture of"]').count(), { timeout: 3000 }).toBe(1);
-        },
-    );
+    // A failed image load is dropped from the cache, so the next visit retries it.
+    it("One failed image load is cached for the whole session, an undecodable image shows an empty error, and Accept stays enabled", async () => {
+        const r = makeRepo();
+        await open(r, world(r));
+        let aborted = false;
+        // The baseline: only the story loads it (the grid's tile shows the capture).
+        await page.route(`**/baseline/${BUTTON}`, (route) => {
+            if (aborted) {
+                return route.continue();
+            }
+            aborted = true;
+            return route.abort();
+        });
+        await review();
+        await openStory(2);
+        // The failure reads as text, and Accept waits for both images.
+        await expect.poll(() => page.locator("#stage p.error").textContent()).toMatch(/\S/);
+        expect(await page.locator("button.accept").isDisabled()).toBe(true);
+        await page.keyboard.press("j");
+        await page.keyboard.press("k");
+        await expect.poll(() => page.locator('#stage img[alt^="capture of"]').count(), { timeout: 3000 }).toBe(1);
+    });
 
-    // Fails today: every diff and every object URL is kept for the whole page session.
-    it.fails("Page memory grows without bound over a review session until the tab is killed", async () => {
+    // Only the most recently used images and diffs are kept; older object URLs are revoked.
+    it("Page memory grows without bound over a review session until the tab is killed", async () => {
         const r = makeRepo();
         const w = world(r);
         const button = CM_ITEMS.find((i) => i.file === BUTTON);
@@ -227,12 +222,14 @@ describe("review page: stale caches", () => {
 });
 
 describe("review page: decisions", () => {
-    // Fails today: decide() has no in-flight guard, so the second click lands on the next item.
-    it.fails("A double click on Accept, or a held A key, accepts the next items without showing them", async () => {
+    // A double click's second click, landing on the next item's Accept, is ignored.
+    it("A double click on Accept, or a held A key, accepts the next items without showing them", async () => {
         const r = makeRepo();
         await open(r, world(r));
         await review();
         await openStory(2);
+        // Accept waits for both images.
+        await page.locator('#stage img[alt^="capture of"]').waitFor();
         const box = await page.locator("button.accept").boundingBox();
         const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
         await page.mouse.click(x, y);
@@ -242,23 +239,21 @@ describe("review page: decisions", () => {
         expect(await decisions()).not.toHaveProperty("slider--sizes.png");
     });
 
-    // Fails today: the a key ignores e.repeat.
-    it.fails(
-        "A double click on Accept, or a held A key, accepts the next items without showing them (a held A key)",
-        async () => {
-            const r = makeRepo();
-            await open(r, world(r));
-            await review();
-            await openStory(2);
-            await page.keyboard.down("a");
-            await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
-            // The key is still held: the browser repeats it.
-            await page.keyboard.down("a");
-            await sleep(500);
-            await page.keyboard.up("a");
-            expect(Object.keys(await decisions())).toEqual([BUTTON]);
-        },
-    );
+    // A held decision key decides once.
+    it("A double click on Accept, or a held A key, accepts the next items without showing them (a held A key)", async () => {
+        const r = makeRepo();
+        await open(r, world(r));
+        await review();
+        await openStory(2);
+        await page.locator('#stage img[alt^="capture of"]').waitFor();
+        await page.keyboard.down("a");
+        await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
+        // The key is still held: the browser repeats it.
+        await page.keyboard.down("a");
+        await sleep(500);
+        await page.keyboard.up("a");
+        expect(Object.keys(await decisions())).toEqual([BUTTON]);
+    });
 
     // Fails today: opening a stale "not opened" tile re-sends the bulk accept, which the server
     // records afresh.
@@ -285,8 +280,8 @@ describe("review page: decisions", () => {
         },
     );
 
-    // Fails today: `pending` survives the move, and Enter runs the abandoned Exclude.
-    it.fails("Enter in the reason box can run an earlier, abandoned Exclude", async () => {
+    // Moving to another item forgets an abandoned Exclude: Enter rejects.
+    it("Enter in the reason box can run an earlier, abandoned Exclude", async () => {
         const r = makeRepo();
         await open(r, world(r));
         await review();
@@ -314,8 +309,8 @@ describe("review page: decisions", () => {
 });
 
 describe("review page: rendering and routing", () => {
-    // Fails today: the stale render of item 3 writes its box count onto item 2.
-    it.fails("A slow earlier render writes its box count and boxes onto the item now shown", async () => {
+    // A render finishing after another item is shown writes nothing.
+    it("A slow earlier render writes its box count and boxes onto the item now shown", async () => {
         const r = makeRepo();
         const w = world(r);
         // Item 2 at the highest threshold has no changed box; item 3 has one.
@@ -338,60 +333,54 @@ describe("review page: rendering and routing", () => {
         expect(await boxCount()).toBe("no changed box at this threshold");
     });
 
-    // Fails today: the routes share one `routing` flag, so the later one pushes a new entry.
-    it.fails(
-        "Fast Back/Forward presses race on the shared `routing` flag and can leave the address and the screen out of step",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            let slow = false;
-            const gh = async (args, input) => {
-                if (slow && args[1]?.includes("/pulls?")) {
-                    await sleep(700);
+    // A superseded route stops after its wait, and no route pushes a history entry.
+    it("Fast Back/Forward presses race on the shared `routing` flag and can leave the address and the screen out of step", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        let slow = false;
+        const gh = async (args, input) => {
+            if (slow && args[1]?.includes("/pulls?")) {
+                await sleep(700);
+            }
+            return w.gh(args, input);
+        };
+        await open(r, w, { gh });
+        await review();
+        await openStory(2);
+        const before = await page.evaluate(() => globalThis.history.length);
+        slow = true;
+        // Back twice, without waiting for the first to land: story -> grid -> targets.
+        await page.evaluate(() => {
+            globalThis.history.back();
+            setTimeout(() => globalThis.history.back(), 50);
+        });
+        await sleep(3500);
+        const after = await page.evaluate(() => ({
+            length: globalThis.history.length,
+            hash: globalThis.location.hash,
+        }));
+        expect(after.length).toBe(before);
+        expect(new URLSearchParams(after.hash.slice(1)).has("target")).toBe(false);
+        expect(await page.locator(".component").count()).toBe(0);
+    });
+
+    // The targets screen, with the project's problem, instead of an empty page.
+    it("A deep link or reload into a project that failed to load shows an empty page with 'no such capture'", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        const gh = withRetries(
+            async (args, input) => {
+                if (args[0] === "run" && args[4] === "visual-compact-mantine-1") {
+                    throw new Error("error connecting to productionresultssa0.blob.core.windows.net");
                 }
                 return w.gh(args, input);
-            };
-            await open(r, w, { gh });
-            await review();
-            await openStory(2);
-            const before = await page.evaluate(() => globalThis.history.length);
-            slow = true;
-            // Back twice, without waiting for the first to land: story -> grid -> targets.
-            await page.evaluate(() => {
-                globalThis.history.back();
-                setTimeout(() => globalThis.history.back(), 50);
-            });
-            await sleep(3500);
-            const after = await page.evaluate(() => ({
-                length: globalThis.history.length,
-                hash: globalThis.location.hash,
-            }));
-            expect(after.length).toBe(before);
-            expect(new URLSearchParams(after.hash.slice(1)).has("target")).toBe(false);
-            expect(await page.locator(".component").count()).toBe(0);
-        },
-    );
-
-    // Fails today: the page says "no such capture" and renders nothing.
-    it.fails(
-        "A deep link or reload into a project that failed to load shows an empty page with 'no such capture'",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            const gh = withRetries(
-                async (args, input) => {
-                    if (args[0] === "run" && args[4] === "visual-compact-mantine-1") {
-                        throw new Error("error connecting to productionresultssa0.blob.core.windows.net");
-                    }
-                    return w.gh(args, input);
-                },
-                [0, 0, 0],
-            );
-            await open(r, w, { gh, hash: "&target=123&project=compact-mantine" });
-            await expect.poll(() => page.locator("body").textContent()).toContain("download failed");
-            expect(await page.locator(".card").count()).toBeGreaterThan(0);
-        },
-    );
+            },
+            [0, 0, 0],
+        );
+        await open(r, w, { gh, hash: "&target=123&project=compact-mantine" });
+        await expect.poll(() => page.locator("body").textContent()).toContain("download failed");
+        expect(await page.locator(".card").count()).toBeGreaterThan(0);
+    });
 
     // Fails today: a job that vanishes reads as no Finish at all.
     it.fails(

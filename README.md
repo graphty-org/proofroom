@@ -320,7 +320,7 @@ for them. Seed them from the default branch (below), or accept them on the pull 
 | Key          | Action                                                                         |
 | ------------ | ------------------------------------------------------------------------------ |
 | J / K        | Next / previous item of this pass (decided items stay in it)                   |
-| A            | Accept an undecided item                                                       |
+| A            | Accept an undecided item, once both its images are shown                       |
 | R            | Reject an undecided item (asks for a reason, then Enter)                       |
 | E            | Exclude an undecided item (asks for a reason, then Enter, then a confirmation) |
 | U            | Undo the item's decision (on the grid: each tile's Undo button)                |
@@ -338,6 +338,8 @@ for them. Seed them from the default branch (below), or accept them on the pull 
 
 No key reverses a decision. A, R and E do nothing on an item that is already decided, and say
 so; to change a decision, press U (or the Undo button) first. The same key twice never undoes.
+A held A, R, E or U decides once, and a double click on a decision button decides only the item
+it was clicked on, never the next one.
 
 ## What each decision does
 
