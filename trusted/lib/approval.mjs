@@ -25,11 +25,16 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest();
 const b64u = (s) => Buffer.from(s, "base64url");
 
 /**
- * JSON with object keys sorted and no whitespace, so one record has exactly one byte form.
+ * JSON with object keys sorted and no whitespace, so one record has exactly one byte form. A
+ * number JSON cannot write back as it was read (1e999 is Infinity, -0 is 0) throws, so two
+ * different records never hash the same.
  * @param {unknown} value a JSON value
  * @returns {string} its canonical text
  */
 export function canonical(value) {
+    if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0))) {
+        throw new Error(`${value} has no canonical JSON form`);
+    }
     if (Array.isArray(value)) {
         return `[${value.map((v) => canonical(v ?? null)).join(",")}]`;
     }
@@ -157,7 +162,8 @@ const jsonOf = (s) => {
  * @param {object} record the review record, with `approval`
  * @param {{ id: string, publicKey: string, rpId: string }[]} keys the keys to accept
  * @param {{ origin?: string }} [options] the exact origin required (the server's); without it any
- *     https origin on the key's rpId or a subdomain of it
+ *     https origin whose host is exactly the key's rpId, on any port (servherd assigns the review
+ *     server's), never a subdomain
  * @returns {string | null} why it fails, or null when it verifies
  */
 export function verifyApproval(record, keys, { origin } = {}) {
@@ -180,19 +186,26 @@ export function verifyApproval(record, keys, { origin } = {}) {
         return "approval.clientDataJSON is not JSON";
     }
     const authData = b64u(a.authenticatorData);
+    let challenge;
+    try {
+        challenge = recordHash(record).toString("base64url");
+    } catch (err) {
+        return `the record cannot be hashed: ${err.message}`;
+    }
     const why = checkCeremony({
         clientData,
         authData,
         type: "webauthn.get",
-        challenge: recordHash(record).toString("base64url"),
+        challenge,
         rpId: key.rpId,
         originOk: (o) => {
             if (origin !== undefined) {
                 return o === origin;
             }
             try {
+                // u.origin === o refuses anything a browser never writes as an origin (a user, a path).
                 const u = new URL(String(o));
-                return u.protocol === "https:" && (u.hostname === key.rpId || u.hostname.endsWith(`.${key.rpId}`));
+                return u.origin === o && u.protocol === "https:" && u.hostname === key.rpId;
             } catch {
                 return false;
             }

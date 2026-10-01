@@ -54,8 +54,19 @@ describe("verifyApproval", () => {
         },
     );
 
-    it("accepts a subdomain of the rpId, and with an exact origin only that origin", () => {
-        expect(verifyApproval(approved(record(), KEY, { origin: "https://a.dev.ato.ms" }), KEYS)).toBeNull();
+    // Every server on the rpId's host can ask for the passkey; a subdomain is never the review page.
+    it.each(["https://a.dev.ato.ms", "https://x@dev.ato.ms", "https://dev.ato.ms/", "https://DEV.ato.ms"])(
+        "fails the origin %s, which is not exactly the rpId's host",
+        (origin) => {
+            expect(verifyApproval(approved(record(), KEY, { origin }), KEYS)).toMatch(
+                /not on the review page's origin/,
+            );
+        },
+    );
+
+    it("accepts the rpId's host on any port, and with an exact origin only that origin", () => {
+        expect(verifyApproval(approved(record(), KEY, { origin: "https://dev.ato.ms" }), KEYS)).toBeNull();
+        expect(verifyApproval(approved(record(), KEY, { origin: "https://dev.ato.ms:9999" }), KEYS)).toBeNull();
         const r = approved(record(), KEY, { origin: "https://dev.ato.ms:9443" });
         expect(verifyApproval(r, KEYS, { origin: "https://dev.ato.ms:9443" })).toBeNull();
         expect(verifyApproval(r, KEYS, { origin: "https://dev.ato.ms:9444" })).toMatch(/origin/);
@@ -116,6 +127,15 @@ describe("verifyRecord", () => {
 });
 
 describe("canonical and recordHash", () => {
+    it("refuses numbers JSON cannot write back as read, so no edit keeps a signature", () => {
+        expect(() => canonical({ runId: Infinity })).toThrow(/no canonical JSON form/);
+        expect(() => canonical([-0])).toThrow(/no canonical JSON form/);
+        expect(canonical({ a: 0, b: null })).toBe('{"a":0,"b":null}');
+        const r = approved(record());
+        const edited = JSON.parse(JSON.stringify(r).replace('"runId":9', '"runId":1e999'));
+        expect(verifyApproval(edited, KEYS)).toMatch(/^the record cannot be hashed/);
+    });
+
     it("ignores key order, whitespace and the approval, and changes with any nested value", () => {
         expect(canonical({ b: [1, { d: null, c: "x" }], a: true, u: undefined })).toBe(
             '{"a":true,"b":[1,{"c":"x","d":null}]}',
