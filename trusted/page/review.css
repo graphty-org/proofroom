@@ -507,3 +507,7 @@ td {
     word-break: break-all;
     color: var(--accent);
 }
+
+#app:focus {
+    outline: none;
+}

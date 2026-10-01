@@ -1759,6 +1759,18 @@ function toggleView(view) {
     showStory();
 }
 
+// Safari on an iPad sends a hardware keyboard's keys only to a focused element, and tapping an
+// image or a button focuses nothing, so the shortcuts never arrived. The page itself holds focus
+// whenever nothing else does.
+function keepKeys() {
+    if (document.activeElement === null || document.activeElement === document.body) {
+        app.focus({ preventScroll: true });
+    }
+}
+document.addEventListener("pointerup", () => setTimeout(keepKeys));
+document.addEventListener("focusout", () => setTimeout(keepKeys));
+keepKeys();
+
 document.addEventListener("keydown", (e) => {
     if (!["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
         return;
