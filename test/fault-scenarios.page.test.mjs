@@ -345,7 +345,8 @@ describe("review page: rendering and routing", () => {
         // Item 3's two images arrive one after the other, a second each.
         await sleep(3500);
         expect(await boxCount()).toBe("no changed box at this threshold");
-    });
+        // The 3.5 s wait is most of the default 5 s, which opening a story on a loaded runner overruns.
+    }, 15000);
 
     // A superseded route stops after its wait, and no route pushes a history entry.
     it("Fast Back/Forward presses race on the shared `routing` flag and can leave the address and the screen out of step", async () => {
@@ -362,13 +363,29 @@ describe("review page: rendering and routing", () => {
         await review();
         await openStory(2);
         const before = await page.evaluate(() => globalThis.history.length);
+        // The pull request lists the two routes wait on, asked and answered.
+        let asked = 0;
+        let answered = 0;
+        page.on("request", (req) => req.url().includes("/api/prs") && asked++);
+        const done = (req) => req.url().includes("/api/prs") && answered++;
+        page.on("requestfinished", done);
+        page.on("requestfailed", done);
         slow = true;
         // Back twice, without waiting for the first to land: story -> grid -> targets.
         await page.evaluate(() => {
             globalThis.history.back();
             setTimeout(() => globalThis.history.back(), 50);
         });
-        await sleep(3500);
+        // Both routes have their answer and the targets screen is shown; a superseded route that
+        // went on would now show the grid and push an entry, within a moment of its answer. The
+        // wait is counted from the answers, not from the presses, so a slow machine waits longer
+        // instead of running out of the test's time.
+        await expect
+            .poll(async () => asked >= 2 && answered === asked && (await page.locator(".card").count()) > 0, {
+                timeout: 8000,
+            })
+            .toBe(true);
+        await sleep(500);
         const after = await page.evaluate(() => ({
             length: globalThis.history.length,
             hash: globalThis.location.hash,
@@ -376,7 +393,8 @@ describe("review page: rendering and routing", () => {
         expect(after.length).toBe(before);
         expect(new URLSearchParams(after.hash.slice(1)).has("target")).toBe(false);
         expect(await page.locator(".component").count()).toBe(0);
-    });
+        // Opening a story and 1.4 s of slow answers on a loaded runner can take most of 5 s.
+    }, 15000);
 
     // The targets screen, with the project's problem, instead of an empty page.
     it("A deep link or reload into a project that failed to load shows an empty page with 'no such capture'", async () => {
