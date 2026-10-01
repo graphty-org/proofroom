@@ -275,22 +275,34 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
      * @type {Map<string, { challenge: string, record: object, work: object, expires: number }>}
      */
     const approvals = new Map();
+    // Fails closed: only a missing file means no pending key; any other failure throws.
     const readPending = () => {
+        let text;
         try {
-            return parsePasskeys(readFileSync(pendingFile, "utf8"));
-        } catch {
-            return [];
+            text = readFileSync(pendingFile, "utf8");
+        } catch (err) {
+            if (err.code === "ENOENT") {
+                return [];
+            }
+            throw err;
+        }
+        try {
+            return parsePasskeys(text);
+        } catch (err) {
+            throw new Error(`${pendingFile} is invalid: ${err.message}`);
         }
     };
     /**
      * The keys an approval may come from: the fetched default branch's passkeys.json, and the
-     * keys this server registered that it does not hold yet. An invalid file throws: fail closed.
+     * keys this server registered that it does not hold yet. A git failure or an invalid file
+     * throws: approval is never skipped because a key could not be read.
      * @returns {Promise<{ main: object[], pending: object[] }>} the keys
      */
     async function knownKeys() {
-        const text = await exec("git", ["show", `refs/remotes/origin/${defaultBranch}:${PASSKEYS_FILE}`], {
-            cwd: repo,
-        }).catch(() => null);
+        const ref = `refs/remotes/origin/${defaultBranch}`;
+        const git = (args) => exec("git", args, { cwd: repo });
+        const listed = await git(["ls-tree", "--name-only", ref, "--", PASSKEYS_FILE]);
+        const text = listed === "" ? null : await git(["show", `${ref}:${PASSKEYS_FILE}`]);
         let main = [];
         try {
             main = text === null ? [] : parsePasskeys(text);
