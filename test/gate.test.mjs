@@ -15,7 +15,7 @@ import {
     unrecordedChanges,
 } from "../trusted/gate.mjs";
 import { normalizeConfig } from "../trusted/lib/config.mjs";
-import { FIXTURE, git, isolateGit, makeRepo } from "./helpers.mjs";
+import { CONFIG, FIXTURE, git, isolateGit, makeRepo } from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
@@ -209,10 +209,13 @@ describe("gate command", () => {
         });
 
     // The fixture repository's config is the monorepo's: graphty-element and layout have no baselines.
-    const unseededCaptures = {
-        "visual-graphty-element-1": results(["unchanged"]),
-        "visual-layout-1": results(["unchanged"]),
-    };
+    // Every other project in the monorepo's config, read from the config so a project added there
+    // does not break these tests.
+    const unseededCaptures = Object.fromEntries(
+        Object.keys(CONFIG.projects)
+            .filter((p) => p !== "compact-mantine")
+            .map((p) => [`visual-${p}-1`, results(["unchanged"])]),
+    );
 
     it("passes a pull request whose seeded capture is unchanged", () => {
         const r = makeRepo();
