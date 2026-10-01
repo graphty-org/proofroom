@@ -10,8 +10,9 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { CONFIG, FIXTURE, isolateGit, makeRepo, onePr, withMoved } from "./helpers.mjs";
+import { CONFIG, FIXTURE, git, isolateGit, makeRepo, onePr, withMoved } from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
@@ -31,11 +32,12 @@ beforeAll(async () => {
 });
 afterAll(() => browser?.close());
 
-async function open(options) {
+// `host` is what the page's address names; WebAuthn needs a host name (localhost), not an address.
+async function open(options, host = "127.0.0.1") {
     const r = makeRepo();
     server = createServer();
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    origin = `http://127.0.0.1:${server.address().port}`;
+    origin = `http://${host}:${server.address().port}`;
     const app = createApp({
         repo: r.repo,
         tmp: join(r.repo, "tmp/visual-review"),
@@ -73,6 +75,7 @@ async function open(options) {
     });
     await page.goto(`${origin}/#token=${TOKEN}`);
     await page.getByRole("button", { name: "Review", exact: true }).first().click();
+    return r;
 }
 
 afterEach(async () => {
@@ -873,6 +876,75 @@ describe("review page: a running Finish", () => {
             .toMatch(/^Finish of #123 done\. Committed \w{10} to feature\. Status: Reviewed: 4 accepted/);
         expect(await page.locator(".finish-running").count()).toBe(0);
         expect(await page.getByRole("button", { name: /^Finish #123/ }).isDisabled()).toBe(true);
+    });
+});
+
+describe("review page: passkeys", () => {
+    // Chromium's virtual authenticator (CDP) stands in for Face ID: a real browser makes the
+    // registration and the approval, and the server's own checks verify them.
+    it("registers a passkey, then Finish asks for it; a refused approval changes nothing", async () => {
+        const opened = [];
+        const r = await open((repo) => {
+            const gh = onePr()(repo);
+            return {
+                gh: async (args, input) => {
+                    if (args[1] === "repos/{owner}/{repo}/pulls") {
+                        opened.push(JSON.parse(input));
+                        return JSON.stringify({ html_url: "https://gh/pull/500" });
+                    }
+                    return gh(args, input);
+                },
+            };
+        }, "localhost");
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("WebAuthn.enable");
+        const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
+            options: {
+                protocol: "ctap2",
+                transport: "internal",
+                hasResidentKey: true,
+                hasUserVerification: true,
+                isUserVerified: true,
+                automaticPresenceSimulation: true,
+            },
+        });
+
+        await page.locator("#home").click();
+        await page.getByRole("button", { name: "Register passkey" }).click();
+        await page.getByRole("button", { name: "Create the passkey with Face ID" }).click();
+        await expect
+            .poll(() => page.locator(".passkey-result").textContent())
+            .toMatch(/^Registered .* Merge https:\/\/gh\/pull\/500 to make/);
+        const { credentials } = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
+        expect(credentials).toHaveLength(1);
+        const id = Buffer.from(credentials[0].credentialId, "base64").toString("base64url");
+        const [entry] = parsePasskeys(git(r.remote, "show", `${opened[0].head}:visual-review/passkeys.json`));
+        expect(entry).toMatchObject({ id, rpId: "localhost" });
+
+        await page.getByRole("button", { name: "Review", exact: true }).first().click();
+        await page.locator(".component").first().waitFor();
+        await page.keyboard.press("Shift+A");
+        await expect.poll(() => page.locator("#progress").textContent()).toBe("4 / 6 reviewed");
+        confirmFinish = true;
+        const finish = page.getByRole("button", { name: /^Finish/ });
+
+        // Face ID refused: nothing is pushed and Finish can be pressed again.
+        await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: false });
+        await finish.click();
+        await expect.poll(status, { timeout: 30000 }).toBe("Not approved: nothing was changed.");
+        expect(dialogs.at(-1)).toContain("Face ID approves this record: 4 accepts, 0 rejects.");
+        expect(await finish.isDisabled()).toBe(false);
+        expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
+
+        await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: true });
+        await finish.click();
+        await expect
+            .poll(() => page.locator(".finish-outcome").textContent(), { timeout: 30000 })
+            .toMatch(/^Finish of #123 done\. Committed \w{10} to feature/);
+        const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
+        expect(record).toMatchObject({ version: 2, pr: 123 });
+        expect(verifyApproval(record, [entry], { origin })).toBeNull();
     });
 });
 

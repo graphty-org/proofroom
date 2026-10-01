@@ -4,6 +4,7 @@
  * console lines) is set with textContent, never parsed as HTML.
  */
 
+import { approve, registerBlock } from "/passkey.js";
 import pixelmatch from "/pixelmatch.mjs";
 
 const token = new URLSearchParams(location.hash.slice(1)).get("token") ?? "";
@@ -346,7 +347,12 @@ async function showTargets(notice = "") {
         return;
     }
     const finishable = state.targets.find((t) => !t.local);
-    render(finishOutcome(), finishable ? signerBlock(finishable) : null, ...state.targets.map(targetCard));
+    render(
+        finishOutcome(),
+        finishable ? signerBlock(finishable) : null,
+        finishable ? registerBlock(api, el) : null,
+        ...state.targets.map(targetCard),
+    );
 }
 
 // The key Finish signs with comes from the server's environment, which is an agent's when an
@@ -1700,8 +1706,12 @@ async function finishTarget(target, button) {
     button.disabled = true;
     say(`Checking ${label} before Finish...`);
     let fresh;
+    let prepared;
     try {
-        fresh = await api(`/api/target/${encodeURIComponent(target.id)}`);
+        [fresh, prepared] = await Promise.all([
+            api(`/api/target/${encodeURIComponent(target.id)}`),
+            api("/api/finish-prepare", { id: target.id }),
+        ]);
     } catch (err) {
         giveUp(`Finish not started: ${err.message}`, true);
         return;
@@ -1724,16 +1734,34 @@ async function finishTarget(target, button) {
         );
     }
     lines.push("One commit status is posted when Finish completes.");
+    if (prepared.required) {
+        lines.push(`Face ID approves this record: ${prepared.accepts} accepts, ${prepared.rejects} rejects.`);
+    }
     say(`Finish ${label}? Answer in the box.`);
-    if (!(await ask(lines.join("\n\n"), `Finish ${label}`))) {
+    if (!(await ask(lines.join("\n\n"), prepared.required ? "Approve with Face ID and finish" : `Finish ${label}`))) {
         giveUp("Finish cancelled: nothing was changed.");
         return;
+    }
+    let approval = null;
+    if (prepared.required) {
+        // First, before any other await: Safari counts only the press itself as the gesture.
+        try {
+            approval = await approve(prepared);
+        } catch (err) {
+            giveUp(
+                err.name === "NotAllowedError" ? "Not approved: nothing was changed." : `Not approved: ${err.message}`,
+                true,
+            );
+            return;
+        }
     }
     // Finish runs on the server and can take minutes; the page only starts it and then asks how it
     // is going, so a dropped connection or a reload loses nothing.
     say("Starting Finish...");
     try {
-        state.job = (await api("/api/finish", { id: target.id })).job;
+        state.job = (
+            await api("/api/finish", { id: target.id, ...(approval && { challenge: prepared.challenge, approval }) })
+        ).job;
     } catch (err) {
         // The request may have been lost after the server started it: ask before calling it failed.
         state.job = await api("/api/finish-status")
