@@ -15,6 +15,13 @@
  * iPad) keeps one request open. POST /api/finish starts it and GET /api/finish-status reports its
  * step, then its result or error, so a reload finds the running Finish. The job is also written
  * to `<tmp>/state/finish.json`, so a server restarted during a Finish says it was interrupted.
+ *
+ * Passkeys: once any key is known (passkeys.json on the fetched default branch, or one this server
+ * registered whose pull request is not merged yet, `<tmp>/state/passkeys-pending.json`), Finish
+ * needs the owner's approval. POST /api/finish-prepare builds the record and returns its hash as
+ * the WebAuthn challenge; POST /api/finish takes the approval, checks it, and commits exactly that
+ * record. The server decides whether approval is required, so leaving it out never skips it. The
+ * rpId is the host name of the page's own origin.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -23,7 +30,16 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AcceptError, behindMaster, cleanReason, decisionProblem, finish } from "./accept.mjs";
+import {
+    AcceptError,
+    behindMaster,
+    cleanReason,
+    decisionProblem,
+    finish,
+    prepareRecord,
+    proposeKey,
+} from "./accept.mjs";
+import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import { downloadCaptures, exec, getRun, newestCiRun, openPullRequests, visualJobs } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
 import { validateResults } from "./results.mjs";
@@ -34,6 +50,7 @@ const STATIC = {
     "/review.js": ["../page/review.js", "text/javascript; charset=utf-8"],
     "/review.css": ["../page/review.css", "text/css; charset=utf-8"],
     "/pixelmatch.mjs": ["../vendor/pixelmatch.mjs", "text/javascript; charset=utf-8"],
+    "/passkey.js": ["../page/passkey.js", "text/javascript; charset=utf-8"],
 };
 const HEADERS = {
     "content-security-policy":
@@ -50,7 +67,10 @@ const HEADERS = {
 const componentOf = (id) => id.split("--")[0];
 
 const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"]);
-const WRITES = new Set(["decide", "accept-all", "finish"]);
+const WRITES = new Set(["decide", "accept-all", "finish", "finish-prepare", "passkey-challenge", "register"]);
+// A registration challenge is good for one use within this long; a prepared approval for this long.
+const CHALLENGE_MS = 5 * 60000;
+const APPROVAL_MS = 10 * 60000;
 // How long a page load waits for a run's captures to download before it lists the target as
 // downloading; the download goes on, and a reload picks it up.
 const PATIENCE = 1000;
@@ -246,6 +266,40 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         }
     };
     let signer = null;
+    const rpId = new URL(origin).hostname;
+    const pendingFile = join(stateDir, "passkeys-pending.json");
+    /** Registration challenges (base64url) and when each expires. */
+    const challenges = new Map();
+    /**
+     * The record each target's Finish was prepared with, waiting for its approval.
+     * @type {Map<string, { challenge: string, record: object, work: object, expires: number }>}
+     */
+    const approvals = new Map();
+    const readPending = () => {
+        try {
+            return parsePasskeys(readFileSync(pendingFile, "utf8"));
+        } catch {
+            return [];
+        }
+    };
+    /**
+     * The keys an approval may come from: the fetched default branch's passkeys.json, and the
+     * keys this server registered that it does not hold yet. An invalid file throws: fail closed.
+     * @returns {Promise<{ main: object[], pending: object[] }>} the keys
+     */
+    async function knownKeys() {
+        const text = await exec("git", ["show", `refs/remotes/origin/${defaultBranch}:${PASSKEYS_FILE}`], {
+            cwd: repo,
+        }).catch(() => null);
+        let main = [];
+        try {
+            main = text === null ? [] : parsePasskeys(text);
+        } catch (err) {
+            throw new Error(`${PASSKEYS_FILE} on ${defaultBranch} is invalid: ${err.message}`);
+        }
+        const ids = new Set(main.map((k) => k.id));
+        return { main, pending: readPending().filter((k) => !ids.has(k.id)) };
+    }
     const busy = (t) => finishing && job?.target === t.id;
     const BUSY = "a Finish is running on this target: wait for it to end";
 
@@ -645,6 +699,26 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             : body.runId === undefined || (body.runId === t.runId && body.runAttempt === t.runAttempt);
     const CHANGED = "the capture changed since the page loaded it (a new CI run or attempt): reload the page";
 
+    /**
+     * What a Finish of this target applies: its decisions (a reject an earlier Finish posted stays
+     * shown as rejected, never posted again), the captures, and what is left undecided or unloaded.
+     * @param {object} t the target
+     * @returns {{ list: object[], captures: object, undecided: number, unloaded: string[] }} the work
+     */
+    const finishWork = (t) => ({
+        list: [...decisionsOf(t)]
+            .filter(([, v]) => !v.posted)
+            .map(([k, v]) => {
+                const at = k.indexOf("/");
+                return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
+            }),
+        captures: Object.fromEntries(
+            t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
+        ),
+        undecided: summary(t).projects.reduce((n, p) => n + p.undecided, 0),
+        unloaded: t.projects.filter((p) => !p.results).map((p) => p.project),
+    });
+
     const routes = {
         "GET /api/prs": async () => {
             await refresh();
@@ -729,6 +803,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 update(t, (saved) => {
                     delete saved[key];
                 });
+                approvals.delete(t.id);
                 return [200, { ok: true }];
             }
             if (!sameCapture(t, body, item)) {
@@ -767,6 +842,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             update(t, (saved) => {
                 saved[key] = { decision: body.decision, reason, hash: imageHash(item) };
             });
+            approvals.delete(t.id);
             return [200, { ok: true }];
         },
         "POST /api/accept-all": async (_, body) => {
@@ -804,7 +880,139 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     }
                 }
             });
+            approvals.delete(t.id);
             return [200, { accepted }];
+        },
+        "GET /api/passkeys": async () => {
+            const { main, pending } = await knownKeys();
+            const show = (k, isPending) => ({ id: k.id, rpId: k.rpId, label: k.label ?? null, pending: isPending });
+            return [
+                200,
+                {
+                    rpId,
+                    keys: [...main.map((k) => show(k, false)), ...pending.map((k) => show(k, true))],
+                    required: main.length + pending.length > 0,
+                },
+            ];
+        },
+        "POST /api/passkey-challenge": async () => {
+            const now = Date.now();
+            for (const [c, expires] of challenges) {
+                if (expires < now) {
+                    challenges.delete(c);
+                }
+            }
+            const challenge = randomBytes(32).toString("base64url");
+            challenges.set(challenge, now + CHALLENGE_MS);
+            const { main, pending } = await knownKeys();
+            return [
+                200,
+                {
+                    challenge,
+                    userId: randomBytes(16).toString("base64url"),
+                    rpId,
+                    known: [...main, ...pending].map((k) => k.id),
+                },
+            ];
+        },
+        "POST /api/register": async (_, body) => {
+            const expires = challenges.get(body.challenge);
+            challenges.delete(body.challenge);
+            if (!expires || expires < Date.now()) {
+                return [409, { error: "the registration expired or was already used: press Register passkey again" }];
+            }
+            const why = verifyRegistration(body, { challenge: body.challenge, origin, rpId });
+            if (why) {
+                return [400, { error: `the passkey was not accepted: ${why}` }];
+            }
+            const { main, pending } = await knownKeys();
+            if ([...main, ...pending].some((k) => k.id === body.credentialId)) {
+                return [409, { error: "this passkey is already registered" }];
+            }
+            if (finishing) {
+                return [409, { error: "a Finish is running: register when it ends" }];
+            }
+            const label = typeof body.label === "string" ? body.label.replace(/\s+/g, " ").trim().slice(0, 60) : "";
+            const entry = {
+                id: body.credentialId,
+                publicKey: body.publicKey,
+                rpId,
+                label: label || "passkey",
+                registeredAt: new Date().toISOString(),
+            };
+            let proposed;
+            try {
+                proposed = await proposeKey({ repo, gh, entry, config });
+            } catch (err) {
+                if (err instanceof AcceptError) {
+                    return [409, { error: err.message }];
+                }
+                throw err;
+            }
+            writeJson(pendingFile, { version: 1, keys: [...readPending(), entry] });
+            console.log(
+                `visual-review: registered passkey ${entry.id}; merge ${proposed.pullRequest} to enforce approvals`,
+            );
+            return [200, { entry, ...proposed }];
+        },
+        "POST /api/finish-prepare": async (_, body) => {
+            const t = await targetOf(String(body.id));
+            if (!t) {
+                return gone(String(body.id));
+            }
+            if (t.local) {
+                return [403, { error: "a local preview has no Finish" }];
+            }
+            if (finishing) {
+                return [409, { error: "a Finish is already running" }];
+            }
+            const { main, pending } = await knownKeys();
+            const keys = [...main, ...pending];
+            if (keys.length === 0) {
+                approvals.delete(t.id);
+                return [200, { required: false }];
+            }
+            const here = keys.filter((k) => k.rpId === rpId);
+            if (here.length === 0) {
+                const hosts = [...new Set(keys.map((k) => k.rpId))].join(", ");
+                return [
+                    409,
+                    {
+                        error: `no passkey is registered for ${rpId}: serve this page from the host your passkey is for (${hosts}), or register one here`,
+                    },
+                ];
+            }
+            const work = finishWork(t);
+            let prepared;
+            try {
+                prepared = await prepareRecord({
+                    repo,
+                    target: { pr: t.pr, branch: t.branch },
+                    projects: work.captures,
+                    decisions: work.list,
+                    now: new Date(),
+                    config,
+                });
+            } catch (err) {
+                if (err instanceof AcceptError) {
+                    return [409, { error: err.message }];
+                }
+                throw err;
+            }
+            const challenge = recordHash(prepared.record).toString("base64url");
+            approvals.set(t.id, { challenge, record: prepared.record, work, expires: Date.now() + APPROVAL_MS });
+            return [
+                200,
+                {
+                    required: true,
+                    challenge,
+                    rpId,
+                    allowCredentials: here.map((k) => k.id),
+                    record: prepared.record,
+                    accepts: prepared.accepts,
+                    rejects: prepared.rejects,
+                },
+            ];
         },
         "POST /api/finish": async (_, body) => {
             const t = await targetOf(String(body.id));
@@ -817,18 +1025,33 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];
             }
-            const mine = decisionsOf(t);
-            // A reject already posted by an earlier Finish stays shown as rejected, not posted again.
-            const list = [...mine]
-                .filter(([, v]) => !v.posted)
-                .map(([k, v]) => {
-                    const at = k.indexOf("/");
-                    return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
-                });
-            const captures = Object.fromEntries(
-                t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
-            );
-            const undecided = summary(t).projects.reduce((n, p) => n + p.undecided, 0);
+            let work = finishWork(t);
+            let approval = null;
+            const { main, pending } = await knownKeys();
+            if (main.length + pending.length > 0) {
+                if (!body.approval) {
+                    return [400, { error: "this Finish needs your passkey approval (Face ID): press Finish again" }];
+                }
+                const p = approvals.get(t.id);
+                if (!p || p.challenge !== body.challenge || p.expires < Date.now()) {
+                    return [
+                        409,
+                        {
+                            error: "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again",
+                        },
+                    ];
+                }
+                const record = { ...p.record, approval: body.approval };
+                const why = verifyApproval(record, [...main, ...pending], { origin });
+                if (why) {
+                    return [403, { error: `the approval was refused: ${why}` }];
+                }
+                approvals.delete(t.id);
+                // The decisions the approved record was built from, not a fresh read of the state.
+                work = p.work;
+                approval = { record, pendingKeys: pending, origin };
+            }
+            const { list, captures, undecided } = work;
             finishing = true;
             job = {
                 id: (job?.id ?? 0) + 1,
@@ -852,8 +1075,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 projects: captures,
                 decisions: list,
                 undecided,
-                unloaded: t.projects.filter((p) => !p.results).map((p) => p.project),
+                unloaded: work.unloaded,
                 config,
+                ...(approval && { approval, now: new Date(approval.record.reviewedAt) }),
             });
             return [202, { job }];
         },
