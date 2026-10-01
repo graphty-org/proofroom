@@ -8,6 +8,7 @@
     --ok: #1d7a3a;
     --bad: #b3261e;
     --warn: #8a5a00;
+    --wait: #f0f3f7;
     color-scheme: light dark;
 }
 
@@ -22,6 +23,7 @@
         --ok: #5cc27d;
         --bad: #ff7a70;
         --warn: #e0b04c;
+        --wait: #262a30;
     }
 }
 
@@ -29,13 +31,24 @@
     box-sizing: border-box;
 }
 
-/* The page is one screen: the header on top, and main scrolling under it. */
+/*
+ * The page is one screen that never scrolls: the sticky stack (header, the screen's own bar, the
+ * status row) on top, and main under it. On the story screen only the panes scroll, so nothing
+ * (iPad Safari's on-screen keyboard included) can push the decision buttons off the screen.
+ */
+html,
+body {
+    height: 100%;
+    overflow: hidden;
+}
+
 body {
     display: flex;
     flex-direction: column;
     height: 100vh;
     height: 100dvh;
     margin: 0;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     font:
         14px/1.4 system-ui,
         sans-serif;
@@ -45,9 +58,10 @@ body {
 
 header {
     display: flex;
-    gap: 16px;
+    gap: 10px;
     align-items: center;
-    padding: 8px 16px;
+    min-height: 3.15em;
+    padding: max(4px, env(safe-area-inset-top)) 16px 4px;
     border-bottom: 1px solid var(--line);
     background: var(--card);
     flex: none;
@@ -55,20 +69,101 @@ header {
 
 #home {
     font-weight: 700;
+    flex: none;
+    white-space: nowrap;
 }
 
-#home,
+#keys-button,
 #copy-link {
     flex: none;
     white-space: nowrap;
 }
 
-#status {
-    margin-left: auto;
+/* The pickers shrink first when the window is narrow; a native menu truncates its own label. */
+.picker {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex: 0 1 16em;
+    min-width: 5em;
     color: var(--muted);
 }
 
-#status.error,
+.picker select {
+    min-width: 0;
+    width: 100%;
+    flex: 1 1 auto;
+}
+
+.picker[hidden] {
+    display: none;
+}
+
+#finish-slot {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-left: auto;
+    flex: none;
+    white-space: nowrap;
+}
+
+/* Narrow: the pickers keep their labels for screen readers, and give the width to the menus. */
+@media (max-width: 1049.98px) {
+    .picker > span,
+    #finish-slot .finish-why {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+}
+
+#bar {
+    flex: none;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+}
+
+#bar:empty {
+    display: none;
+}
+
+/* One line tall from 1050 px, two below, whatever it says: a message never moves anything. */
+#status-row {
+    flex: none;
+    height: calc(1.4em + 10px);
+    padding: 5px 16px;
+    overflow: hidden;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+}
+
+#status-row > span {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+    overflow: hidden;
+}
+
+#status-row > span:empty {
+    display: none;
+}
+
+@media (max-width: 1049.98px) {
+    #status-row {
+        height: calc(2.8em + 10px);
+    }
+
+    #status-row > span {
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+    }
+}
+
+#alert,
 .error {
     color: var(--bad);
 }
@@ -80,18 +175,56 @@ main {
     padding: 16px;
 }
 
+main.story-screen {
+    overflow: hidden;
+    padding: 0 16px 8px;
+}
+
 a {
     color: var(--accent);
 }
 
-button {
+button,
+select,
+input {
     font: inherit;
+}
+
+button,
+select {
+    min-height: 2.15em;
     padding: 4px 10px;
     border: 1px solid var(--line);
     border-radius: 4px;
     background: var(--card);
     color: var(--fg);
     cursor: pointer;
+    touch-action: manipulation;
+}
+
+input[type="text"],
+input[type="search"] {
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--card);
+    color: var(--fg);
+    min-height: 2.15em;
+}
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
+kbd {
+    font: inherit;
+    font-size: 0.85em;
+    padding: 0 4px;
+    margin-left: 4px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--muted);
 }
 
 button[aria-pressed="true"] {
@@ -99,15 +232,11 @@ button[aria-pressed="true"] {
     box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-button:disabled {
-    opacity: 0.5;
-    cursor: default;
-}
-
 button.link {
     border: none;
     background: none;
     padding: 0;
+    min-height: 0;
     color: var(--accent);
 }
 
@@ -117,23 +246,11 @@ button.primary {
     color: #fff;
 }
 
-/* The page's own confirmation (ask in review.js), in place of the browser's confirm(). */
-dialog.ask {
-    max-width: min(640px, calc(100vw - 32px));
-    border: 1px solid var(--line);
-    border-radius: 6px;
+button.primary[aria-disabled="true"],
+button.primary:disabled {
     background: var(--card);
-    color: var(--fg);
-}
-
-dialog.ask p:first-child {
-    white-space: pre-wrap;
-}
-
-dialog.ask .actions {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
+    color: var(--muted);
+    border-color: var(--line);
 }
 
 button.accept {
@@ -144,6 +261,112 @@ button.accept {
 button.reject {
     border-color: var(--bad);
     color: var(--bad);
+}
+
+/* Unavailable: muted text at full opacity (4.5:1), never removed, so nothing beside it moves. */
+button:disabled,
+button[aria-disabled="true"],
+button.accept[aria-disabled="true"],
+button.reject[aria-disabled="true"] {
+    color: var(--muted);
+    border-color: var(--line);
+    cursor: default;
+}
+
+button[aria-disabled="true"][aria-pressed="true"] {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+
+/* A Reject or Exclude waiting for its reason. */
+button.waiting {
+    outline: 2px dashed currentColor;
+    outline-offset: -5px;
+}
+
+.spinner {
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-right: 6px;
+    vertical-align: -0.1em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .spinner,
+    .placeholder {
+        animation: none;
+    }
+}
+
+/* The page's own dialogs: questions (ask in review.js), Finish's sheet and the key overlay. */
+dialog.ask,
+dialog.keys {
+    max-width: min(680px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+    padding: 16px;
+}
+
+dialog[open].ask,
+dialog[open].keys {
+    display: flex;
+    flex-direction: column;
+}
+
+.ask-text {
+    white-space: pre-wrap;
+    overflow: auto;
+    min-height: 0;
+}
+
+.ask-text p {
+    margin: 0 0 8px;
+}
+
+.ask-text h2 {
+    font-size: 16px;
+    margin: 0 0 8px;
+}
+
+.ask .actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    flex: none;
+    margin: 8px 0 0;
+}
+
+/* Finish's notes scroll inside the sheet; the summary above and the buttons below stay put. */
+.notes {
+    max-height: 30vh;
+    overflow: auto;
+    margin: 0 0 8px;
+    padding-left: 20px;
+}
+
+.keys table td:first-child {
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+.keys .recent {
+    max-height: 30vh;
+    overflow: auto;
+    color: var(--muted);
 }
 
 .card {
@@ -159,9 +382,22 @@ button.reject {
     font-size: 16px;
 }
 
+.card.placeholder {
+    min-height: 140px;
+    background: var(--wait);
+}
+
 .meta {
     color: var(--muted);
     margin: 4px 0;
+}
+
+.listline {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin: 0 0 12px;
+    color: var(--muted);
 }
 
 table {
@@ -184,6 +420,7 @@ td {
     border-radius: 10px;
     font-size: 12px;
     font-weight: 400;
+    white-space: nowrap;
 }
 
 .badge.warn,
@@ -212,16 +449,102 @@ td {
     color: var(--accent);
 }
 
-.toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    margin-bottom: 12px;
+.warning {
+    color: var(--warn);
+    margin: 4px 0;
 }
 
 .spacer {
     flex: 1;
+}
+
+/* ---------------------------------------------------------------- the grid */
+
+.gridbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 16px;
+    min-height: calc(2.15em + 14px);
+}
+
+.gridbar .row {
+    display: contents;
+}
+
+.gridbar [role="group"] {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.gridbar label {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    color: var(--muted);
+}
+
+#find {
+    width: 14em;
+}
+
+@media (max-width: 1049.98px) {
+    .gridbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .gridbar .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+
+    #find {
+        width: 100%;
+        min-width: 8em;
+    }
+
+    .gridbar label {
+        flex: 1;
+    }
+}
+
+/* A small menu: a native details element, opened by its summary. */
+details.menu {
+    position: relative;
+}
+
+details.menu > summary {
+    list-style: none;
+    padding: 4px 10px;
+    min-height: 2.15em;
+    display: flex;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+details.menu > summary::-webkit-details-marker {
+    display: none;
+}
+
+details.menu > div {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 14em;
+    padding: 8px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px #0003;
 }
 
 .component {
@@ -234,6 +557,10 @@ td {
     align-items: center;
     margin: 0 0 8px;
     font-size: 15px;
+}
+
+.component h3 button {
+    font-weight: 400;
 }
 
 .stories {
@@ -273,16 +600,26 @@ td {
 }
 
 .tile img,
-.tile .noimage {
+.tile .noimage,
+.tile .thumb-wait {
     width: 100%;
     aspect-ratio: 4 / 3;
     object-fit: contain;
     background: repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0 / 16px 16px;
 }
 
-.tile .noimage {
+.tile .noimage,
+.tile .thumb-wait {
     display: grid;
     place-items: center;
+    color: var(--muted);
+}
+
+.tile .thumb-wait {
+    background: var(--wait);
+}
+
+.tile .noimage {
     color: var(--warn);
 }
 
@@ -328,6 +665,7 @@ td {
 
 .decision button {
     padding: 0 8px;
+    min-height: 0;
     font-size: 12px;
     font-weight: 400;
 }
@@ -335,7 +673,6 @@ td {
 .decision .meta {
     margin: 0;
     font-weight: 400;
-    white-space: nowrap;
 }
 
 .error-list .decision .what {
@@ -353,11 +690,11 @@ td {
     font-variant-numeric: tabular-nums;
 }
 
-/* The story last opened, when the grid comes back. */
+/* The story last opened, when the grid comes back: flush, unlike the focus ring. */
 .tile.current,
 .error-list li.current {
     outline: 3px solid var(--accent);
-    outline-offset: 2px;
+    outline-offset: 0;
     opacity: 1;
 }
 
@@ -368,9 +705,10 @@ td {
     margin-bottom: 20px;
 }
 
-.errors h3 {
+.errors > summary {
     color: var(--bad);
-    margin: 0 0 4px;
+    font-weight: 600;
+    cursor: pointer;
 }
 
 .error-list li {
@@ -381,38 +719,208 @@ td {
     color: var(--bad);
 }
 
-#filter,
-#goto {
-    min-width: 220px;
-    font: inherit;
-    padding: 4px 8px;
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    background: var(--card);
-    color: var(--fg);
+.tile .moved-from {
+    font-size: 12px;
+    word-break: break-all;
+    color: var(--accent);
 }
 
-/* The story screen fills main: its controls, then the two panes taking all the height left. */
+/* ---------------------------------------------------------------- the story */
+
+/*
+ * The decision bar: every button always present, each in a cell of fixed width, so a button's
+ * box is the same on every item. One row from 1050 px; two below (decisions, then movement and
+ * the note).
+ */
+.decisionbar {
+    display: grid;
+    grid-template-columns: 6.2em 4.5em 17em 4.5em 7em 7em 7.5em 6.5em minmax(8em, 1fr);
+    grid-template-areas: "grid prev pos next accept reject exclude undo note";
+    gap: 6px;
+    align-items: center;
+    padding: 4px 16px;
+}
+
+.decisionbar > button {
+    width: 100%;
+    min-height: 44px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#to-grid {
+    grid-area: grid;
+}
+
+#prev {
+    grid-area: prev;
+}
+
+#position {
+    grid-area: pos;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+#next {
+    grid-area: next;
+}
+
+#accept {
+    grid-area: accept;
+}
+
+#reject {
+    grid-area: reject;
+}
+
+#exclude {
+    grid-area: exclude;
+}
+
+#undo {
+    grid-area: undo;
+}
+
+.notebox {
+    grid-area: note;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+}
+
+.notebox label {
+    color: var(--muted);
+}
+
+#note {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+}
+
+@media (max-width: 1049.98px) {
+    .decisionbar {
+        grid-template-columns: 6.2em 7em 7em 7.5em 6.5em minmax(8em, 1fr);
+        grid-template-areas:
+            "grid accept reject exclude undo ."
+            "prev pos pos pos next note";
+    }
+}
+
+/* The item line: two lines, clamped; tapping it shows it all (the reader's choice to move the panes). */
+.itemline {
+    flex: none;
+    height: calc(2 * 1.5em + 8px);
+    padding: 4px 0;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.itemline.open {
+    height: auto;
+    max-height: 40vh;
+    overflow: auto;
+}
+
+.itemline h2 {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.5em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.itemline p {
+    margin: 0;
+    line-height: 1.5em;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.itemline.open h2,
+.itemline.open p {
+    white-space: normal;
+}
+
+/* The view bar: one row; on a narrow screen it scrolls sideways instead of wrapping. */
+.viewbar {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 2px 0 8px;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.viewbar [role="group"] {
+    display: flex;
+    flex: none;
+}
+
+.viewbar [role="group"] > button {
+    border-radius: 0;
+    margin-left: -1px;
+}
+
+.viewbar [role="group"] > button:first-child {
+    border-radius: 4px 0 0 4px;
+    margin-left: 0;
+}
+
+.viewbar [role="group"] > button:last-child {
+    border-radius: 0 4px 4px 0;
+}
+
+.viewbar > * {
+    flex: none;
+}
+
+.details-pop {
+    position: relative;
+}
+
+.details-pop > div {
+    position: fixed;
+    right: 16px;
+    z-index: 10;
+    max-width: min(640px, calc(100vw - 32px));
+    max-height: 50vh;
+    overflow: auto;
+    padding: 8px 12px;
+    white-space: normal;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px #0003;
+}
+
+.details-pop > summary {
+    cursor: pointer;
+    padding: 4px 6px;
+}
+
+/* The story screen fills main: item line, view bar, then the panes taking all the height left. */
 .story-view {
     display: flex;
     flex-direction: column;
     height: 100%;
 }
 
-.story-view > * {
-    flex: none;
-}
-
-.story-view h2 {
-    margin: 0 0 4px;
-    font-size: 18px;
-}
-
 .stage {
     display: flex;
     gap: 16px;
     flex: 1 1 0;
-    min-height: 200px;
+    min-height: 120px;
 }
 
 /* Two panes of the same size, whatever each holds. */
@@ -441,6 +949,25 @@ td {
 /* No image on this side: a quiet empty frame, its label says why. */
 .frame.empty {
     border-style: dashed;
+}
+
+.frame .wait,
+.frame .failed {
+    margin: auto;
+    padding: 16px;
+    text-align: center;
+    color: var(--muted);
+}
+
+.frame .failed {
+    color: var(--bad);
+}
+
+.frame pre.console {
+    margin: 0;
+    flex: 1;
+    overflow: auto;
+    border: none;
 }
 
 /* Centred while it fits; auto margins drop to 0 when it overflows, so every part scrolls in. */
@@ -485,16 +1012,6 @@ td {
     text-overflow: ellipsis;
 }
 
-.console-block {
-    margin-top: 8px;
-}
-
-.console-block .console {
-    max-height: 30vh;
-    overflow: auto;
-    margin: 4px 0 0;
-}
-
 .console {
     background: var(--card);
     border: 1px solid var(--line);
@@ -502,31 +1019,56 @@ td {
     white-space: pre-wrap;
 }
 
-.actions {
+/* The end of a pass, in place of the panes. */
+.endcard {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 16px;
+    background: var(--card);
+}
+
+.endcard h2 {
+    margin: 0 0 12px;
+    font-size: 16px;
+}
+
+.offers {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    align-items: center;
-    padding-top: 8px;
+    margin: 0 0 12px;
 }
 
-#reason {
-    flex: 1;
-    min-width: 240px;
-    font: inherit;
-    padding: 4px 8px;
-    border: 1px solid var(--line);
-    border-radius: 4px;
-    background: var(--card);
-    color: var(--fg);
+.offers button {
+    min-height: 44px;
 }
 
-.tile .moved-from {
-    font-size: 12px;
-    word-break: break-all;
-    color: var(--accent);
+/* Finish: its steps while it runs, and its result. */
+.finish-panel ol {
+    padding-left: 20px;
 }
 
-#app:focus {
+.finish-panel li {
+    margin: 4px 0;
+}
+
+.finish-panel li.done {
+    color: var(--muted);
+}
+
+.finish-panel li.now {
+    font-weight: 600;
+}
+
+.finish-panel progress {
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+#app:focus,
+#app:focus-visible {
     outline: none;
 }

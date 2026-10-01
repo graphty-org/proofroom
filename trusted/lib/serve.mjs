@@ -803,10 +803,21 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         };
     };
 
+    /** Thumbnails being made, by the file they are kept in. */
+    const making = new Map();
+
     // The unpublished count after a write, so the page's Finish button stays current.
     const unpublishedOf = (t) => finishList(t).list.length;
 
-    // Where a target's image is on this disk, by results.json: [200, where] or [status, error].
+    /**
+     * Where a target's image is on this disk, by results.json.
+     * @param {string} id the target
+     * @param {string} name the project
+     * @param {string} kind "capture" or "baseline"
+     * @param {string} file the image's file name
+     * @returns {Promise<Array<unknown> | { path: string, hash: string, file: string, dir: string }>}
+     *     where the image is, or the answer to send instead
+     */
     async function imageOf(id, name, kind, file) {
         const { t, p } = await projectOf(id, name);
         if (!t) {
@@ -820,7 +831,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         // A moved item's baseline is its capture's bytes, so the artifact holds only the capture.
         const own = kind === "capture" || item.baseline === item.capture;
         const path = own ? join(p.dir, file) : join(p.dir, "baselines", file);
-        return [200, { path, hash, file, dir: p.dir }];
+        return { path, hash, file, dir: p.dir };
     }
 
     async function readImage({ path, hash, file, dir }) {
@@ -896,33 +907,42 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             ];
         },
         "GET /api/img": async ([id, name, kind, file]) => {
-            const [status, where] = await imageOf(id, name, kind, file);
-            return status === 200 ? readImage(where) : [status, where];
+            const where = await imageOf(id, name, kind, file);
+            return Array.isArray(where) ? where : readImage(where);
         },
         // The same image scaled down for a grid tile, made once and kept by the image's hash.
         "GET /api/thumb": async ([id, name, kind, file]) => {
-            const [status, where] = await imageOf(id, name, kind, file);
-            if (status !== 200) {
-                return [status, where];
+            const where = await imageOf(id, name, kind, file);
+            if (Array.isArray(where)) {
+                return where;
             }
             const kept = join(tmp, "thumbs", `${where.hash}.png`);
             const cached = await readFile(kept).catch(() => null);
             if (cached) {
                 return [200, cached, "image/png"];
             }
-            const full = await readImage(where);
-            if (full[0] !== 200) {
-                return full;
+            // Tiles showing the same image at once share one scaling.
+            if (!making.has(kept)) {
+                making.set(
+                    kept,
+                    (async () => {
+                        const full = await readImage(where);
+                        if (full[0] !== 200) {
+                            return full;
+                        }
+                        const small = thumbnail(full[1]);
+                        try {
+                            mkdirSync(dirname(kept), { recursive: true });
+                            writeFileSync(`${kept}.tmp`, small);
+                            renameSync(`${kept}.tmp`, kept);
+                        } catch (err) {
+                            warnOnce(`could not keep thumbnails in ${dirname(kept)}: ${err.message}`);
+                        }
+                        return [200, small, "image/png"];
+                    })().finally(() => making.delete(kept)),
+                );
             }
-            const small = thumbnail(full[1]);
-            try {
-                mkdirSync(dirname(kept), { recursive: true });
-                writeFileSync(`${kept}.tmp`, small);
-                renameSync(`${kept}.tmp`, kept);
-            } catch (err) {
-                warnOnce(`could not keep thumbnails in ${dirname(kept)}: ${err.message}`);
-            }
-            return [200, small, "image/png"];
+            return making.get(kept);
         },
         "POST /api/decide": async (_, body) => {
             const { p, t } = await projectOf(String(body.id), body.project);

@@ -2,18 +2,28 @@
 <html lang="en">
     <head>
         <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <title>Visual review</title>
         <link rel="stylesheet" href="review.css" />
         <script type="module" src="review.js"></script>
     </head>
     <body>
-        <header>
+        <header id="top">
             <button type="button" id="home" class="link">Visual review</button>
-            <nav id="crumbs"></nav>
-            <span id="status" role="status"></span>
-            <button type="button" id="copy-link" title="Copy a link to this screen">Copy link</button>
+            <label class="picker"
+                ><span>Target</span
+                ><select id="pick-target"></select
+            ></label>
+            <label class="picker"
+                ><span>Project</span
+                ><select id="pick-project"></select
+            ></label>
+            <span id="finish-slot"></span>
+            <button type="button" id="keys-button" aria-keyshortcuts="?">Keys <kbd aria-hidden="true">?</kbd></button>
+            <button type="button" id="copy-link">Copy link</button>
         </header>
+        <div id="bar"></div>
+        <div id="status-row"><span id="status" role="status"></span><span id="alert" role="alert"></span></div>
         <main id="app" tabindex="-1"><p>Loading...</p></main>
     </body>
 </html>
