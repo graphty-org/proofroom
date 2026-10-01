@@ -137,9 +137,17 @@ describe("capture", () => {
         const masterResults = await run(master, { stories: ["demo--plain"] });
         writeFileSync(join(master, "results.json"), JSON.stringify({ ...masterResults, runId: 77 }));
 
-        const pr = await run(mkdtempSync(join(tmpdir(), "vr-out-")), { reference: master, stories: ["demo--plain"] });
+        const prOut = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const pr = await run(prOut, { reference: master, stories: ["demo--plain"] });
         expect(pr.reference).toBe(77);
         expect(pr.items.map((i) => [i.file, i.status])).toEqual([["demo--plain.png", "unseeded"]]);
+
+        // A reference whose item is already unseeded serves as well as a new one, so the status
+        // does not alternate between master runs.
+        writeFileSync(join(prOut, "results.json"), JSON.stringify({ ...pr, runId: 78 }));
+        const next = await run(mkdtempSync(join(tmpdir(), "vr-out-")), { reference: prOut, stories: ["demo--plain"] });
+        expect(next.reference).toBe(78);
+        expect(next.items.map((i) => [i.file, i.status])).toEqual([["demo--plain.png", "unseeded"]]);
 
         // A reference image that is not what master's results.json names is ignored: new.
         writeFileSync(join(master, "demo--plain.png"), "tampered");
