@@ -383,6 +383,19 @@ describe("review page: a pull request", () => {
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
     });
 
+    it("keeps focus on the page, so an iPad's keyboard reaches the shortcuts", async () => {
+        // Safari on an iPad delivers keys only to a focused element; tapping an image focuses none.
+        const focused = async () => ((await page.locator("#app:focus").count()) === 1 ? "app" : "");
+        await openStory(2);
+        await expect.poll(focused).toBe("app");
+        await page.locator("#stage").click();
+        await expect.poll(focused).toBe("app");
+        // Leaving a text box hands focus back to the page.
+        await page.locator("#reason").focus();
+        await page.keyboard.press("Escape");
+        await expect.poll(focused).toBe("app");
+    });
+
     it("says why Flash and Highlight are off when there is one image", async () => {
         await openStory(4);
         await expect
