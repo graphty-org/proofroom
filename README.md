@@ -194,7 +194,7 @@ the capture:
 
 1. Find that run's id: `gh run list --workflow visual-review.yml --branch main --limit 1`.
 2. Start the page with `--master-run <run id>` ([Opening the review page](#opening-the-review-page))
-   and open "<branch> seed" (for example "main seed"). Every story is `new` there.
+   and open `<branch> seed` (for example "main seed"). Every story is `new` there.
 3. Accept what looks right, reject what does not (with a reason), leave the rest, and press
    Finish. You get a pull request `visual/seed-<date>` holding the accepted baselines, and one
    issue listing the rejects.
@@ -267,7 +267,7 @@ No wait is silent: anything that takes longer than a third of a second says what
 for, with a count or the time spent, and a failed one offers Retry.
 
 1. **Targets.** Each open pull request with a run of the capturing workflow, and the default
-   branch (shown as "<branch> seed", for example "master seed") when started with
+   branch (shown as `<branch> seed`, for example "master seed") when started with
    `--master-run`. The list is the server's, shown at once with "Updated 40 s ago" and
    **Refresh**; it is checked again with GitHub when you press Refresh or when it is over a minute
    old, and the line above the cards shows the check's step ("Checking pull requests: Finding CI
@@ -547,7 +547,7 @@ message:
 - **the accepts were pushed ..., but the comment with the rejects failed**: the accepts are done
   and finished; press Finish again to post the rejects. Accept notes that were in that comment are
   not posted again: the message names each one, so you can post them by hand. On a seed it reads
-  "the accepts were pushed as ... and opened <the seed pull request>, but the issue with the
+  "the accepts were pushed as ... and opened the seed pull request, but the issue with the
   rejects failed"; the accept notes are already in that pull request's description.
 - **The comment with the accept notes was not posted**: the accepts are done; the message names
   the notes, which are not kept.
@@ -582,7 +582,7 @@ trusts only the default branch's keys, never one registered since.
 
 Until it merges, the targets screen reads "Passkey waiting for #650 to merge: Finish asks for it
 already, but the CI gate checks approvals only once it is merged." Afterwards it reads "Finish is
-approved with your passkey (<name>), and the CI gate refuses accepts without it." and offers
+approved with your passkey (`<name>`), and the CI gate refuses accepts without it." and offers
 **Register another device**. Before any passkey is registered it reads "No passkey registered:
 accepts are not yet protected.", and Finish commits accepts unapproved, as before passkeys.
 
@@ -631,7 +631,7 @@ Seeding is per story:
 
 1. The review workflow captures every story on every push to the default branch. Start the
    server with `--master-run <run id>` (that workflow's newest run on the default branch) and open
-   "<branch> seed" (for example "main seed"). Every story without a baseline is `new` there.
+   `<branch> seed` (for example "main seed"). Every story without a baseline is `new` there.
 2. **Accept** the stories that look right. **Reject** the ones that do not, with a reason saying
    what is wrong. **Leave the rest** undecided; they simply stay without a baseline. Exclude only
    stories that are unstable. Press Finish: the accepts become the seed pull request, and the
@@ -640,7 +640,7 @@ Seeding is per story:
 
 To seed from an older, known-good commit instead of the newest, capture it with the default
 branch's tool: `gh workflow run visual-seed.yml --ref <default branch> -f ref=<sha>`, then start
-the server with `--master-run <that run's id>`. It is listed as "<branch> seed" (for example "main seed"); its results.json
+the server with `--master-run <that run's id>`. It is listed as `<branch> seed` (for example "main seed"); its results.json
 names the captured commit, so Finish's seed branch starts from that commit.
 
 A story with no baseline on the default branch is in the "no baseline yet" state. On every pull
@@ -884,7 +884,7 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   or the default branch changed between your Face ID and the commit. Press Finish again and
   approve the new record. **"the approval is stale"** means the same, from another tab or after
   ten minutes.
-- **"no passkey is registered for <host>".** Passkeys belong to the host name the page is served
+- **"no passkey is registered for `<host>`".** Passkeys belong to the host name the page is served
   from. Serve the page from the host your passkey is for, or register one for this host.
 - **"Not approved (the passkey prompt was cancelled or refused): nothing was changed".** Press
   Finish again.
