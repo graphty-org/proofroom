@@ -120,7 +120,9 @@ function say(text, isError = false) {
 // Asks in the page, never with confirm(): once a browser stops a page's dialogs ("prevent this
 // page from creating additional dialogs"), confirm() returns false without showing anything, and
 // the button pressed seems to do nothing. Resolves true for `yes`, false for Cancel or Escape.
-function ask(message, yes) {
+// `onYes` runs inside the press of the yes button, before the dialog closes: Safari lets WebAuthn
+// start only from the press itself, and the close event comes a task later.
+function ask(message, yes, onYes) {
     // Focus on the box, not a button: the Enter that asked (in the reason box) must not answer it.
     const dialog = el("dialog", { class: "ask", tabindex: "-1" }, el("p", {}, message));
     const answer = (value) => () => dialog.close(value);
@@ -129,7 +131,18 @@ function ask(message, yes) {
             "p",
             { class: "actions" },
             el("button", { type: "button", onclick: answer("no") }, "Cancel"),
-            el("button", { type: "button", class: "primary", onclick: answer("yes") }, yes),
+            el(
+                "button",
+                {
+                    type: "button",
+                    class: "primary",
+                    onclick: () => {
+                        onYes?.();
+                        dialog.close("yes");
+                    },
+                },
+                yes,
+            ),
         ),
     );
     document.body.append(dialog);
@@ -1716,7 +1729,10 @@ async function finishTarget(target, button) {
         giveUp(`Finish not started: ${err.message}`, true);
         return;
     }
-    const lines = [`Finish ${label}: ${what}, across every project?`];
+    const nothingCommitted = prepared.required && prepared.accepts + prepared.excludes === 0;
+    const lines = [
+        `Finish ${label}: ${nothingCommitted ? "post the rejects (nothing is committed)" : what}, across every project?`,
+    ];
     const notOpened = fresh.projects.reduce((n, p) => n + p.notOpened, 0);
     if (notOpened > 0) {
         lines.push(`${notOpened} accepted without being opened.`);
@@ -1735,22 +1751,32 @@ async function finishTarget(target, button) {
     }
     lines.push("One commit status is posted when Finish completes.");
     if (prepared.required) {
-        lines.push(`Face ID approves this record: ${prepared.accepts} accepts, ${prepared.rejects} rejects.`);
+        lines.push(
+            `Your passkey (Face ID or Touch ID) approves this record: ${prepared.accepts} accepted, ` +
+                `${prepared.excludes} excluded, ${prepared.rejects} rejected.`,
+        );
     }
     say(`Finish ${label}? Answer in the box.`);
-    if (!(await ask(lines.join("\n\n"), prepared.required ? "Approve with Face ID and finish" : `Finish ${label}`))) {
+    let approving = null;
+    const yes = prepared.required ? "Approve with your passkey and finish" : `Finish ${label}`;
+    // The passkey prompt starts inside the press of yes, not after the dialog closes.
+    const onYes = prepared.required ? () => (approving = approve(prepared)) : undefined;
+    if (!(await ask(lines.join("\n\n"), yes, onYes))) {
         giveUp("Finish cancelled: nothing was changed.");
         return;
     }
     let approval = null;
-    if (prepared.required) {
-        // First, before any other await: Safari counts only the press itself as the gesture.
+    if (approving) {
         try {
-            approval = await approve(prepared);
+            approval = await approving;
         } catch (err) {
+            // A cancelled prompt is not an error; anything else is.
+            const cancelled = err.name === "NotAllowedError";
             giveUp(
-                err.name === "NotAllowedError" ? "Not approved: nothing was changed." : `Not approved: ${err.message}`,
-                true,
+                cancelled
+                    ? "Not approved (the passkey prompt was cancelled or refused): nothing was changed."
+                    : `Not approved: ${err.message}`,
+                !cancelled,
             );
             return;
         }

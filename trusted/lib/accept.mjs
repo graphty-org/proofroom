@@ -230,11 +230,12 @@ export async function finish({
     const isMaster = target.pr === null;
 
     let commit = null;
+    let record = null;
     let branch = target.branch;
     let pullRequest = null;
     let issue = null;
     if (accepts.length > 0) {
-        ({ commit, branch } = await commitAccepts({
+        ({ commit, branch, record } = await commitAccepts({
             repo,
             target,
             accepts,
@@ -270,7 +271,15 @@ export async function finish({
             // Master has no pull request to comment on: its rejects are stories that do not look
             // right yet, so they become one issue an agent can pick up.
             progress(isMaster ? "opening the issue for the rejects" : "posting the rejects");
-            const body = rejectComment(target.pr, first, rejects, config.defaultBranch, approval?.record);
+            // A committed record is named, not copied: a large one would pass GitHub's 65,536
+            // character limit. A session of rejects alone commits nothing, so its record goes here.
+            const body = rejectComment(
+                target.pr,
+                first,
+                rejects,
+                config.defaultBranch,
+                commit === null ? { record: approval?.record } : { recordFile: record, commit },
+            );
             if (isMaster) {
                 issue = await createIssue(gh, {
                     title: `Visual review: ${rejects.length} ${rejects.length === 1 ? "story" : "stories"} rejected on ${config.defaultBranch}`,
@@ -320,7 +329,8 @@ export async function finish({
  * @param {object[]} input.decisions as in finish
  * @param {Date} input.now the review time, which becomes the record's `reviewedAt`
  * @param {{ baselines: string }} input.config the settings
- * @returns {Promise<{ record: object, accepts: number, rejects: number }>} the record and what it holds
+ * @returns {Promise<{ record: object, accepts: number, excludes: number, rejects: number }>} the
+ *     record and what it holds, counted as Finish's commit status counts them
  */
 export async function prepareRecord({ repo, target, projects, decisions, now, config }) {
     const { accepts, rejects } = check(projects, decisions);
@@ -335,7 +345,8 @@ export async function prepareRecord({ repo, target, projects, decisions, now, co
     const { items } = await planWrites(repo, base, accepts, config.baselines);
     return {
         record: buildRecord({ version: 2, target, first, items, rejects, now, baselines: config.baselines }),
-        accepts: accepts.length,
+        accepts: accepts.filter((a) => a.decision === "accept").length,
+        excludes: accepts.filter((a) => a.decision !== "accept").length,
         rejects: rejects.length,
     };
 }
@@ -407,7 +418,8 @@ async function keysAt(repo, ref) {
  * @param {(step: string) => void} input.progress as in finish
  * @param {object} input.config as in finish
  * @param {{ record: object, pendingKeys?: object[], origin: string } | null} input.approval as in finish
- * @returns {Promise<{ commit: string, branch: string }>} the pushed commit and branch
+ * @returns {Promise<{ commit: string, branch: string, record: string | null }>} the pushed commit
+ *     and branch, and the record's path (null for a seed pushed earlier and reused)
  */
 async function commitAccepts({ repo, target, accepts, rejects, first, now, progress, config, approval }) {
     const { baselines, defaultBranch } = config;
@@ -456,7 +468,7 @@ async function commitAccepts({ repo, target, accepts, rejects, first, now, progr
             await fetch(branch);
             const [subject, parent] = (await git(repo, ["log", "-1", "--format=%s%n%P", own(branch)])).split("\n");
             if (subject === `${config.commitPrefix}: seed visual baselines` && parent === base) {
-                return { commit: await git(repo, ["rev-parse", own(branch)]), branch };
+                return { commit: await git(repo, ["rev-parse", own(branch)]), branch, record: null };
             }
             throw new AcceptError(`${branch} already exists on origin: merge or delete it first`);
         }
@@ -562,7 +574,7 @@ async function commitAccepts({ repo, target, accepts, rejects, first, now, progr
                   )
                 : err;
         });
-        return { commit: await git(tree, ["rev-parse", "HEAD"]), branch };
+        return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, record };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
@@ -584,16 +596,18 @@ async function commitAccepts({ repo, target, accepts, rejects, first, now, progr
  *     the key, as verifyRegistration accepted it
  * @param {Date} [input.now] when
  * @param {{ defaultBranch: string, workDir: string, commitPrefix: string }} input.config the settings
- * @returns {Promise<{ branch: string, pullRequest: string }>} the pushed branch and its pull request
+ * @returns {Promise<{ branch: string, pullRequest: string, gated: boolean }>} the pushed branch, its
+ *     pull request, and whether the visual gate fails it (the default branch already holds a key)
  */
 export async function proposeKey({ repo, gh, entry, now = new Date(), config }) {
     const { defaultBranch } = config;
     const tracking = `refs/visual-review/origin/${defaultBranch}`;
     const branch = `visual/passkey-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "")}`;
     const tree = join(repo, config.workDir, "worktrees", "passkey");
+    let keys;
     try {
         await git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${defaultBranch}:${tracking}`]);
-        const keys = await keysAt(repo, tracking);
+        keys = await keysAt(repo, tracking);
         if (keys.some((k) => k.id === entry.id)) {
             throw new AcceptError("this passkey is already registered");
         }
@@ -618,6 +632,7 @@ export async function proposeKey({ repo, gh, entry, now = new Date(), config }) 
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     }
+    const gated = keys.length > 0;
     const pullRequest = await createPullRequest(gh, {
         title: `${config.commitPrefix}: register a visual review passkey`,
         head: branch,
@@ -625,11 +640,13 @@ export async function proposeKey({ repo, gh, entry, now = new Date(), config }) 
         body: [
             `Registers the passkey "${entry.label}" for the review page on \`${entry.rpId}\`, credential id \`${entry.id}\`.`,
             "",
-            `Merging this turns approval enforcement on: from then on the visual gate accepts a review record a pull request adds only when this passkey (or another key in \`${PASSKEYS_FILE}\` on ${defaultBranch}) approved it with Face ID or Touch ID.`,
-            "Merge it only if you pressed Register passkey yourself just now.",
+            gated
+                ? `${PASSKEYS_FILE} on ${defaultBranch} already holds a key, so the visual gate fails this pull request: a new key is trusted only when an administrator merges it past the gate.`
+                : `Merging this turns approval enforcement on: from then on the visual gate accepts a review record a pull request adds only when this passkey (or another key in \`${PASSKEYS_FILE}\` on ${defaultBranch}) approved it with Face ID or Touch ID.`,
+            "Merge it only if you pressed Register passkey yourself just now and the review page showed this credential id.",
         ].join("\n"),
     });
-    return { branch, pullRequest };
+    return { branch, pullRequest, gated };
 }
 
 /**
@@ -752,10 +769,12 @@ const oneLine = (s) => s.replace(/\s+/g, " ").slice(0, 2000);
  * @param {object} results the capture's results.json
  * @param {object[]} rejects the rejects with their items
  * @param {string} branch the default branch
- * @param {object} [record] the approved record, once a passkey is known
- * @returns {string} Markdown with a machine-readable block at the end
+ * @param {{ record?: object, recordFile?: string | null, commit?: string }} [about] the approved
+ *     record of a session that committed nothing, or the committed record's path and commit
+ * @returns {string} Markdown with a machine-readable block at the end, the record left out when
+ *     it would pass GitHub's limit
  */
-function rejectComment(pr, results, rejects, branch, record) {
+export function rejectComment(pr, results, rejects, branch, about = {}) {
     const items = rejects.map((r) => ({
         project: r.project,
         file: r.item.file,
@@ -770,9 +789,10 @@ function rejectComment(pr, results, rejects, branch, record) {
         runAttempt: results.runAttempt,
         head,
         items,
-        ...(record && { record }),
+        ...(about.record && { record: about.record }),
+        ...(about.recordFile && { recordFile: about.recordFile, commit: about.commit }),
     };
-    return [
+    const body = [
         `**Visual review: ${rejects.length} rejected** (CI run ${results.runId}, ${pr === null ? `${branch} at` : "head"} ${head.slice(0, 10)}).`,
         "The reasons below are the reviewer's notes, quoted as data.",
         "",
@@ -781,7 +801,11 @@ function rejectComment(pr, results, rejects, branch, record) {
         // JSON never contains "-->" unescaped after this replacement, so the block cannot end early.
         `<!-- visual-review-rejects\n${JSON.stringify(block).replaceAll("--", "-\\u002d")}\n-->`,
     ].join("\n");
+    return body.length > COMMENT_LIMIT && about.record ? rejectComment(pr, results, rejects, branch, {}) : body;
 }
+
+/** GitHub refuses a comment or issue body over 65,536 characters; this leaves room to spare. */
+const COMMENT_LIMIT = 65000;
 
 function seedBody(results, accepts, rejects, branch) {
     const lines = [

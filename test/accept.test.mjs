@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { contentHash, unrecordedChanges } from "../trusted/gate.mjs";
-import { commitMessage, finish, lfsProblem, prepareRecord, proposeKey } from "../trusted/lib/accept.mjs";
+import { commitMessage, finish, lfsProblem, prepareRecord, proposeKey, rejectComment } from "../trusted/lib/accept.mjs";
 import { parsePasskeys, recordHash, verifyRecord } from "../trusted/lib/approval.mjs";
 import { isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
 import { CONFIG, copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
@@ -515,7 +515,7 @@ describe("finish and the gate's record check", () => {
         git(s.repo, "fetch", "-q", "origin");
         expect(unrecordedChanges(s.master, "origin/feature", s.repo)).toEqual([]);
 
-        // A PNG and an excluding settings file without Finish; a delay-only settings file needs none.
+        // A PNG and two settings files without Finish: any settings file can loosen the comparison.
         const clone = mkdtempSync(join(tmpdir(), "vr-forge-"));
         git(clone, "clone", "-q", "-b", "feature", s.remote, ".");
         const dir = join(clone, "visual-baselines/compact-mantine");
@@ -524,9 +524,11 @@ describe("finish and the gate's record check", () => {
         writeFileSync(join(dir, "button--primary.json"), JSON.stringify({ delay: 100 }));
         git(clone, "add", "-A");
         git(clone, "-c", "user.name=A", "-c", "user.email=a@example.com", "commit", "-q", "-m", "forge");
+        const why = "changed with no review record taking it from its base branch contents to these";
         expect(unrecordedChanges(s.master, "HEAD", clone)).toEqual([
-            "visual-baselines/compact-mantine/badge--default.light.png: changed with no review record naming its new contents",
-            "visual-baselines/compact-mantine/slider--sizes.json: changed with no review record naming its new contents",
+            `visual-baselines/compact-mantine/badge--default.light.png: ${why}`,
+            `visual-baselines/compact-mantine/button--primary.json: ${why}`,
+            `visual-baselines/compact-mantine/slider--sizes.json: ${why}`,
         ]);
     });
 });
@@ -680,6 +682,58 @@ describe("finish with a passkey approval", () => {
         expect(remoteLog(s, "feature")[0]).toBe(s.head);
     });
 
+    it("names the committed record and its commit in the reject comment, rather than copying it", async () => {
+        const s = setup();
+        const approval = await approved(s, DECISIONS);
+        await finish({
+            repo: s.repo,
+            gh: s.gh,
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions: DECISIONS,
+            now: NOW,
+            config: CONFIG,
+            approval,
+        });
+        const comment = s.calls.find((c) => c.args[1].includes("/comments"));
+        const block = JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(JSON.parse(comment.input).body)[1]);
+        expect(block.record).toBeUndefined();
+        expect(block.recordFile).toBe(RECORD);
+        expect(block.commit).toBe(remoteLog(s, "feature")[0]);
+    });
+
+    it("leaves out a record that would pass GitHub's comment limit", () => {
+        const results = { runId: 1, runAttempt: 1, headSha: "a".repeat(40) };
+        const rejects = [{ project: "p", item: { file: "s.png", capture: "c".repeat(64) }, reason: "tall" }];
+        const items = Array.from({ length: 900 }, (_, i) => ({
+            path: `visual-baselines/p/s${i}.png`,
+            from: null,
+            to: "f".repeat(64),
+            reason: null,
+        }));
+        const body = rejectComment(5, results, rejects, "master", { record: { version: 2, items } });
+        expect(body.length).toBeLessThan(65536);
+        expect(JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(body)[1]).record).toBeUndefined();
+        const small = rejectComment(5, results, rejects, "master", { record: { version: 2, items: [] } });
+        expect(JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(small)[1]).record).toEqual({
+            version: 2,
+            items: [],
+        });
+    });
+
+    it("counts accepts, exclusions and rejects as Finish's status does", async () => {
+        const s = setup();
+        const out = await prepareRecord({
+            repo: s.repo,
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions: DECISIONS,
+            now: NOW,
+            config: CONFIG,
+        });
+        expect([out.accepts, out.excludes, out.rejects]).toEqual([3, 1, 1]);
+    });
+
     it("refuses to prepare nothing", async () => {
         const s = setup();
         await expect(
@@ -710,6 +764,7 @@ describe("proposeKey", () => {
         expect(out).toEqual({
             branch: "visual/passkey-20260927T150405Z",
             pullRequest: "https://github.com/o/r/pull/9",
+            gated: false,
         });
         expect(parsePasskeys(show(s, out.branch, "visual-review/passkeys.json").toString())).toEqual([first.entry]);
         expect(git(s.remote, "log", "-1", "--format=%s", out.branch)).toBe(
@@ -730,13 +785,17 @@ describe("proposeKey", () => {
         git(clone, "-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-q", "-m", "keys");
         git(clone, "push", "-q", "origin", "master");
         const later = new Date(NOW.getTime() + 1000);
+        const asked = [];
         const two = await proposeKey({
             repo: s.repo,
-            gh: async () => JSON.stringify({ html_url: "x" }),
+            gh: async (args, input) => (asked.push(input), JSON.stringify({ html_url: "x" })),
             entry: second.entry,
             now: later,
             config: CONFIG,
         });
+        // master already holds a key, so the gate fails this pull request, and it says so.
+        expect(two.gated).toBe(true);
+        expect(JSON.parse(asked[0]).body).toContain("the visual gate fails this pull request");
         expect(parsePasskeys(show(s, two.branch, "visual-review/passkeys.json").toString())).toEqual([
             first.entry,
             second.entry,

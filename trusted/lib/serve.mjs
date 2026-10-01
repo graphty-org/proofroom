@@ -18,7 +18,9 @@
  *
  * Passkeys: once any key is known (passkeys.json on the fetched default branch, or one this server
  * registered whose pull request is not merged yet, `<tmp>/state/passkeys-pending.json`), Finish
- * needs the owner's approval. POST /api/finish-prepare builds the record and returns its hash as
+ * needs the owner's approval. A pending key approves only while the default branch holds none: once
+ * it does, only its keys count, as in the gate, so a key registered later (by anyone who can reach
+ * this page) approves nothing until its pull request merges. POST /api/finish-prepare builds the record and returns its hash as
  * the WebAuthn challenge; POST /api/finish takes the approval, checks it, and commits exactly that
  * record. The server decides whether approval is required, so leaving it out never skips it. The
  * rpId is the host name of the page's own origin.
@@ -295,8 +297,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     /**
      * The keys an approval may come from: the fetched default branch's passkeys.json, and the
      * keys this server registered that it does not hold yet. A git failure or an invalid file
-     * throws: approval is never skipped because a key could not be read.
-     * @returns {Promise<{ main: object[], pending: object[] }>} the keys
+     * throws: approval is never skipped because a key could not be read. `trusted` is what may
+     * approve: the default branch's keys, or the pending ones while it has none.
+     * @returns {Promise<{ main: object[], pending: object[], trusted: object[] }>} the keys
      */
     async function knownKeys() {
         const ref = `refs/remotes/origin/${defaultBranch}`;
@@ -310,7 +313,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             throw new Error(`${PASSKEYS_FILE} on ${defaultBranch} is invalid: ${err.message}`);
         }
         const ids = new Set(main.map((k) => k.id));
-        return { main, pending: readPending().filter((k) => !ids.has(k.id)) };
+        const pending = readPending().filter((k) => !ids.has(k.id));
+        return { main, pending, trusted: main.length > 0 ? main : pending };
     }
     const busy = (t) => finishing && job?.target === t.id;
     const BUSY = "a Finish is running on this target: wait for it to end";
@@ -978,8 +982,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];
             }
-            const { main, pending } = await knownKeys();
-            const keys = [...main, ...pending];
+            const { trusted: keys } = await knownKeys();
             if (keys.length === 0) {
                 approvals.delete(t.id);
                 return [200, { required: false }];
@@ -1022,6 +1025,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     allowCredentials: here.map((k) => k.id),
                     record: prepared.record,
                     accepts: prepared.accepts,
+                    excludes: prepared.excludes,
                     rejects: prepared.rejects,
                 },
             ];
@@ -1039,8 +1043,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             }
             let work = finishWork(t);
             let approval = null;
-            const { main, pending } = await knownKeys();
-            if (main.length + pending.length > 0) {
+            const { main, trusted } = await knownKeys();
+            if (trusted.length > 0) {
                 if (!body.approval) {
                     return [400, { error: "this Finish needs your passkey approval (Face ID): press Finish again" }];
                 }
@@ -1054,14 +1058,14 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     ];
                 }
                 const record = { ...p.record, approval: body.approval };
-                const why = verifyApproval(record, [...main, ...pending], { origin });
+                const why = verifyApproval(record, trusted, { origin });
                 if (why) {
                     return [403, { error: `the approval was refused: ${why}` }];
                 }
                 approvals.delete(t.id);
                 // The decisions the approved record was built from, not a fresh read of the state.
                 work = p.work;
-                approval = { record, pendingKeys: pending, origin };
+                approval = { record, pendingKeys: main.length > 0 ? [] : trusted, origin };
             }
             const { list, captures, undecided } = work;
             finishing = true;

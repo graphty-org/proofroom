@@ -92,15 +92,21 @@ export async function approve(prepared) {
 }
 
 /**
- * The "Register passkey" card of the targets screen. The first press fetches the challenge, the
- * second creates the passkey (no request between a press and Face ID), and the server opens a
- * pull request adding it; merging that pull request makes the gate require approvals.
+ * The "Register passkey" card of the targets screen. It says which keys are registered; the first
+ * press fetches the challenge, the second creates the passkey (no request between a press and Face
+ * ID), and the server opens a pull request adding it; merging that pull request makes the gate
+ * require approvals.
  * @param {(path: string, body?: object) => Promise<any>} api the page's API call
  * @param {Function} el the page's element builder
  * @returns {HTMLElement} the card
  */
 export function registerBlock(api, el) {
     const out = el("p", { class: "passkey-result" });
+    const status = el(
+        "p",
+        {},
+        "Finish asks for your passkey (Face ID or Touch ID) once one is registered for this host.",
+    );
     const create = (prepared) =>
         el(
             "button",
@@ -110,12 +116,15 @@ export function registerBlock(api, el) {
                 onclick: (e) => {
                     const button = e.currentTarget;
                     button.disabled = true;
-                    registerPasskey(api, prepared, `${navigator.platform || "browser"} passkey`).then(
+                    // iPadOS and Apple Silicon Safari both report "MacIntel"; the passkey is in iCloud Keychain.
+                    registerPasskey(api, prepared, "iCloud Keychain").then(
                         (r) =>
                             out.replaceChildren(
-                                `Registered ${r.entry.label} (${r.entry.id}). Merge `,
+                                `Registered ${r.entry.label}, credential id ${r.entry.id}. Check that `,
                                 el("a", { href: r.pullRequest, target: "_blank", rel: "noreferrer" }, r.pullRequest),
-                                " to make the gate require your approval.",
+                                r.gated
+                                    ? " names this id. A key is already registered, so the gate fails that pull request: it takes an administrator's merge."
+                                    : " names this id, then merge it to make the gate require your approval.",
                             ),
                         (err) => {
                             out.replaceChildren(`Not registered: ${err.message}`);
@@ -124,7 +133,7 @@ export function registerBlock(api, el) {
                     );
                 },
             },
-            "Create the passkey with Face ID",
+            "Create the passkey (Face ID or Touch ID)",
         );
     const start = el(
         "button",
@@ -143,11 +152,18 @@ export function registerBlock(api, el) {
         },
         "Register passkey",
     );
-    return el(
-        "section",
-        { class: "card passkey" },
-        el("p", {}, "Finish asks for your passkey (Face ID) once one is registered for this host."),
-        el("p", {}, start),
-        out,
+    api("/api/passkeys").then(
+        ({ keys }) => {
+            if (keys.length === 0) {
+                return;
+            }
+            const names = keys.map(
+                (k) => `${k.label ?? "passkey"} (${k.id}${k.pending ? ", its pull request not merged yet" : ""})`,
+            );
+            status.textContent = `Finish asks for your passkey (Face ID or Touch ID). Registered: ${names.join("; ")}.`;
+            start.textContent = "Register another passkey";
+        },
+        () => {},
     );
+    return el("section", { class: "card passkey" }, status, el("p", {}, start), out);
 }

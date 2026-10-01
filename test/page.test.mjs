@@ -911,10 +911,10 @@ describe("review page: passkeys", () => {
 
         await page.locator("#home").click();
         await page.getByRole("button", { name: "Register passkey" }).click();
-        await page.getByRole("button", { name: "Create the passkey with Face ID" }).click();
+        await page.getByRole("button", { name: "Create the passkey (Face ID or Touch ID)" }).click();
         await expect
             .poll(() => page.locator(".passkey-result").textContent())
-            .toMatch(/^Registered .* Merge https:\/\/gh\/pull\/500 to make/);
+            .toMatch(/^Registered iCloud Keychain, credential id .*https:\/\/gh\/pull\/500 names this id, then merge/);
         const { credentials } = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
         expect(credentials).toHaveLength(1);
         const id = Buffer.from(credentials[0].credentialId, "base64").toString("base64url");
@@ -928,11 +928,28 @@ describe("review page: passkeys", () => {
         confirmFinish = true;
         const finish = page.getByRole("button", { name: /^Finish/ });
 
+        // Safari starts WebAuthn only from the press itself: the prompt must begin while the
+        // dialog is still open, inside the yes button's click, not after its close event.
+        await page.evaluate(() => {
+            const { document, navigator } = globalThis;
+            const get = navigator.credentials.get.bind(navigator.credentials);
+            globalThis.whileAsking = [];
+            navigator.credentials.get = (o) => {
+                globalThis.whileAsking.push(document.querySelector("dialog.ask[open]") !== null);
+                return get(o);
+            };
+        });
+
         // Face ID refused: nothing is pushed and Finish can be pressed again.
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: false });
         await finish.click();
-        await expect.poll(status, { timeout: 30000 }).toBe("Not approved: nothing was changed.");
-        expect(dialogs.at(-1)).toContain("Face ID approves this record: 4 accepts, 0 rejects.");
+        await expect
+            .poll(status, { timeout: 30000 })
+            .toBe("Not approved (the passkey prompt was cancelled or refused): nothing was changed.");
+        expect(await page.locator("#status").getAttribute("class")).not.toContain("error");
+        expect(dialogs.at(-1)).toContain(
+            "Your passkey (Face ID or Touch ID) approves this record: 4 accepted, 0 excluded, 0 rejected.",
+        );
         expect(await finish.isDisabled()).toBe(false);
         expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
 
@@ -945,6 +962,13 @@ describe("review page: passkeys", () => {
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
         expect(record).toMatchObject({ version: 2, pr: 123 });
         expect(verifyApproval(record, [entry], { origin })).toBeNull();
+        expect(await page.evaluate(() => globalThis.whileAsking)).toEqual([true, true]);
+        // The card now names the registered key.
+        await page.locator("#home").click();
+        await expect
+            .poll(() => page.locator(".card.passkey").textContent())
+            .toContain(`Registered: iCloud Keychain (${id}, its pull request not merged yet).`);
+        expect(await page.getByRole("button", { name: "Register another passkey" }).count()).toBe(1);
     });
 });
 

@@ -1024,6 +1024,34 @@ describe("serve: passkeys", () => {
         ]);
     });
 
+    it("trusts only the default branch's keys once it holds one, never a key registered since", async () => {
+        quiet();
+        const s = await startWithPulls();
+        const clone = join(s.dir, "merge");
+        git(s.dir, "clone", "-q", "-b", "master", s.remote, clone);
+        mkdirSync(join(clone, "visual-review"));
+        writeFileSync(join(clone, "visual-review/passkeys.json"), passkeysJson(KEY));
+        git(clone, "add", "-A");
+        git(clone, "-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-q", "-m", "keys");
+        git(clone, "push", "-q", "origin", "master");
+        await s.api("GET", "/api/prs");
+        // Anyone who can reach the page could register a key; it is pending, and approves nothing.
+        const later = makeKey("127.0.0.1");
+        const added = await registerKey(s, later);
+        expect(added.status).toBe(200);
+        expect(added.body.gated).toBe(true);
+        await decide(s, "badge--default.light.png");
+        const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        expect(prepared.allowCredentials).toEqual([KEY.entry.id]);
+        const refused = await s.api("POST", "/api/finish", {
+            id: "123",
+            challenge: prepared.challenge,
+            approval: approve(prepared.record, later, { origin: s.origin }),
+        });
+        expect(refused.status).toBe(403);
+        expect(refused.body.error).toMatch(/key not in passkeys.json/);
+    });
+
     it("uses a registration challenge once and only for five minutes, and refuses a bad registration", async () => {
         const s = await startWithPulls();
         const { challenge } = (await s.api("POST", "/api/passkey-challenge", {})).body;
@@ -1066,6 +1094,7 @@ describe("serve: passkeys", () => {
             rpId: "127.0.0.1",
             allowCredentials: [KEY.entry.id],
             accepts: 1,
+            excludes: 0,
             rejects: 1,
         });
         const approval = approve(prepared.record, KEY, { origin: s.origin });
