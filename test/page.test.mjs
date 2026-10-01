@@ -48,10 +48,28 @@ async function open(options) {
     server.on("request", app);
     page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
     dialogs = [];
-    // Accept all is confirmed; Finish is refused unless a test sets confirmFinish.
+    // The page asks in its own dialog (ask in review.js). Accept all and Exclude are confirmed;
+    // Finish is refused unless a test sets confirmFinish.
+    await page.exposeFunction("asked", (message) => {
+        dialogs.push(message);
+        return !message.startsWith("Finish") || confirmFinish;
+    });
+    await page.addInitScript(() => {
+        // In the browser: its globals, not Node's.
+        const { document, MutationObserver } = globalThis;
+        new MutationObserver(() => {
+            for (const d of document.querySelectorAll("dialog.ask[open]:not([data-seen])")) {
+                d.dataset.seen = "";
+                globalThis
+                    .asked(d.firstChild.textContent)
+                    .then((yes) => d.querySelectorAll("button")[yes ? 1 : 0].click());
+            }
+        }).observe(document, { childList: true, subtree: true, attributes: true });
+    });
+    // A browser dialog is never answered: one a browser blocks returns at once as if refused.
     page.on("dialog", (d) => {
-        dialogs.push(d.message());
-        return d.message().startsWith("Finish") && !confirmFinish ? d.dismiss() : d.accept();
+        dialogs.push(`browser dialog: ${d.message()}`);
+        return d.dismiss();
     });
     await page.goto(`${origin}/#token=${TOKEN}`);
     await page.getByRole("button", { name: "Review", exact: true }).first().click();
@@ -505,6 +523,25 @@ describe("review page: a pull request", () => {
         expect(dialogs[1]).toContain(`start the server from your own shell:\n${START}`);
         await page.locator("#home").click();
         await expect.poll(() => page.locator(".signer pre").textContent()).toBe(START);
+    });
+
+    it("shows at once that Finish is checking, asks in the page, and says when it is cancelled", async () => {
+        // The server is slow to answer the check (a refresh from GitHub on a slow network).
+        let answer;
+        const answered = new Promise((resolve) => (answer = resolve));
+        await page.route("**/api/target/**", async (route) => {
+            await answered;
+            await route.continue();
+        });
+        const finish = page.getByRole("button", { name: /^Finish/ });
+        await finish.click();
+        expect(await status()).toBe("Checking #123 before Finish...");
+        expect(await finish.isDisabled()).toBe(true);
+        answer();
+        await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
+        expect(dialogs).toHaveLength(1);
+        expect(dialogs[0]).toMatch(/^Finish #123: commit and push to feature/);
+        expect(await finish.isDisabled()).toBe(false);
     });
 
     const filter = (name) => page.getByRole("button", { name: new RegExp(`^${name} \\(`) });

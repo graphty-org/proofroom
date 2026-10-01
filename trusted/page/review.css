@@ -117,6 +117,25 @@ button.primary {
     color: #fff;
 }
 
+/* The page's own confirmation (ask in review.js), in place of the browser's confirm(). */
+dialog.ask {
+    max-width: min(640px, calc(100vw - 32px));
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--fg);
+}
+
+dialog.ask p:first-child {
+    white-space: pre-wrap;
+}
+
+dialog.ask .actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
 button.accept {
     border-color: var(--ok);
     color: var(--ok);

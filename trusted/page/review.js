@@ -102,6 +102,32 @@ function say(text, isError = false) {
     statusLine.className = isError ? "error" : "";
 }
 
+// Asks in the page, never with confirm(): once a browser stops a page's dialogs ("prevent this
+// page from creating additional dialogs"), confirm() returns false without showing anything, and
+// the button pressed seems to do nothing. Resolves true for `yes`, false for Cancel or Escape.
+function ask(message, yes) {
+    // Focus on the box, not a button: the Enter that asked (in the reason box) must not answer it.
+    const dialog = el("dialog", { class: "ask", tabindex: "-1" }, el("p", {}, message));
+    const answer = (value) => () => dialog.close(value);
+    dialog.append(
+        el(
+            "p",
+            { class: "actions" },
+            el("button", { type: "button", onclick: answer("no") }, "Cancel"),
+            el("button", { type: "button", class: "primary", onclick: answer("yes") }, yes),
+        ),
+    );
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.focus();
+    return new Promise((resolve) =>
+        dialog.addEventListener("close", () => {
+            dialog.remove();
+            resolve(dialog.returnValue === "yes");
+        }),
+    );
+}
+
 async function api(path, body) {
     const res = await fetch(path, {
         method: body ? "POST" : "GET",
@@ -404,7 +430,7 @@ function targetCard(t) {
                             type: "button",
                             class: "primary",
                             disabled: decided === 0 || running(),
-                            onclick: () => finishTarget(t),
+                            onclick: (e) => finishTarget(t, e.currentTarget),
                         },
                         `Finish ${t.pr === null ? "seed" : `#${t.pr}`} (${decided} decisions)`,
                     ),
@@ -1420,7 +1446,7 @@ async function acceptAll(component) {
         say(`Nothing undecided to accept in ${where}.`);
         return;
     }
-    if (!confirm(`Accept ${n} undecided items of ${where} without opening them?`)) {
+    if (!(await ask(`Accept ${n} undecided items of ${where} without opening them?`, "Accept"))) {
         return;
     }
     try {
@@ -1473,10 +1499,11 @@ async function decide(decision) {
     }
     if (
         decision === "exclude" &&
-        !confirm(
+        !(await ask(
             `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
                 "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
-        )
+            "Exclude",
+        ))
     ) {
         return;
     }
@@ -1516,24 +1543,36 @@ function finishButton() {
     }
     return el(
         "button",
-        { type: "button", class: "primary", disabled: running(), onclick: () => finishTarget(state.target) },
+        {
+            type: "button",
+            class: "primary",
+            disabled: running(),
+            onclick: (e) => finishTarget(state.target, e.currentTarget),
+        },
         `Finish ${targetLabel()}`,
     );
 }
 
-async function finishTarget(target) {
+// `button` is the Finish button pressed: off from the press until Finish is started or given up,
+// so the press shows at once, even while the server is slow to answer.
+async function finishTarget(target, button) {
+    const label = target.pr === null ? "the master seed" : `#${target.pr}`;
     const what =
         target.pr === null ? "push a seed branch and open its pull request" : `commit and push to ${target.branch}`;
+    const giveUp = (text, isError) => {
+        button.disabled = running();
+        say(text, isError);
+    };
+    button.disabled = true;
+    say(`Checking ${label} before Finish...`);
     let fresh;
     try {
         fresh = await api(`/api/target/${encodeURIComponent(target.id)}`);
     } catch (err) {
-        say(err.message, true);
+        giveUp(`Finish not started: ${err.message}`, true);
         return;
     }
-    const lines = [
-        `Finish ${target.pr === null ? "the master seed" : `#${target.pr}`}: ${what}, across every project?`,
-    ];
+    const lines = [`Finish ${label}: ${what}, across every project?`];
     const notOpened = fresh.projects.reduce((n, p) => n + p.notOpened, 0);
     if (notOpened > 0) {
         lines.push(`${notOpened} accepted without being opened.`);
@@ -1551,7 +1590,9 @@ async function finishTarget(target) {
         );
     }
     lines.push("One commit status is posted when Finish completes.");
-    if (!confirm(lines.join("\n\n"))) {
+    say(`Finish ${label}? Answer in the box.`);
+    if (!(await ask(lines.join("\n\n"), `Finish ${label}`))) {
+        giveUp("Finish cancelled: nothing was changed.");
         return;
     }
     // Finish runs on the server and can take minutes; the page only starts it and then asks how it
@@ -1565,7 +1606,7 @@ async function finishTarget(target) {
             .then((s) => s.job)
             .catch(() => null);
         if (!running() || state.job.target !== target.id) {
-            say("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
+            giveUp("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
             app.prepend(el("pre", { class: "error" }, err.message));
             return;
         }
@@ -1772,7 +1813,9 @@ document.addEventListener("focusout", () => setTimeout(keepKeys));
 keepKeys();
 
 document.addEventListener("keydown", (e) => {
-    if (!["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
+    // An open question (ask) takes the keys: Escape cancels it.
+    const asking = document.querySelector("dialog[open]") !== null;
+    if (asking || !["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
         return;
     }
     const inInput = e.target instanceof HTMLInputElement;

@@ -584,6 +584,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 result: null,
                 error: null,
             };
+            console.log(
+                `visual-review: Finish of ${finishLabel(t)} started: ${list.length} decisions, ${undecided} undecided`,
+            );
             runFinish(job, t, mine, {
                 repo,
                 gh,
@@ -608,6 +611,11 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     async function runFinish(j, t, mine, input) {
         try {
             j.result = await finish({ ...input, progress: (step) => (j.step = step) });
+            const r = j.result;
+            const status = r.statusError ? `; status not posted: ${r.statusError}` : "";
+            console.log(
+                `visual-review: Finish of ${finishLabel(t)} done: commit ${r.commit ?? "none"}, ${r.rejects} rejects${status}`,
+            );
             // Rejects stay, keyed by image hash, so an unchanged rejected capture on the next
             // CI run still reads as rejected rather than undecided.
             for (const [k, v] of mine) {
@@ -629,12 +637,15 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 save(t);
             }
             j.error = err.message;
+            console.error(`visual-review: Finish of ${finishLabel(t)} failed: ${err.message}`);
         } finally {
             j.running = false;
             j.step = null;
             finishing = false;
         }
     }
+
+    const finishLabel = (t) => (t.pr === null ? "the master seed" : `#${t.pr}`);
 
     const tokenOk = (given) => {
         const a = Buffer.from(String(given ?? ""));

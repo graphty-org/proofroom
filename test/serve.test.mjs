@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { join } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { downloadCaptures, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
@@ -351,6 +351,13 @@ describe("serve: decisions and Finish", () => {
     });
 
     it("finishes across every project in one commit, clears the accepts and keeps the rejects", async () => {
+        // Finish says in the server's log when it starts, ends and fails.
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => {
+            out.mockRestore();
+            err.mockRestore();
+        });
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
         await s.api("POST", "/api/decide", {
@@ -383,6 +390,12 @@ describe("serve: decisions and Finish", () => {
         expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual(rejected);
         // A second Finish has nothing new to post.
         expect((await finishJob(s, "123")).job.error).toBe("nothing decided");
+        expect(out.mock.calls.map(([line]) => line)).toEqual([
+            "visual-review: Finish of #123 started: 3 decisions, 4 undecided",
+            `visual-review: Finish of #123 done: commit ${body.commit}, 1 rejects`,
+            "visual-review: Finish of #123 started: 0 decisions, 6 undecided",
+        ]);
+        expect(err.mock.calls.map(([line]) => line)).toEqual(["visual-review: Finish of #123 failed: nothing decided"]);
     });
 
     it("runs Finish in the background, reports its step, and refuses a second one and new decisions", async () => {
