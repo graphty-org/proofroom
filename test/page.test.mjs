@@ -62,7 +62,11 @@ const twoPrs = (r) =>
     });
 
 // `host` localhost: WebAuthn needs a host name (an IP address is never a passkey's site).
-async function open(options, { viewport = { width: 1000, height: 800 }, review = true, host = "127.0.0.1" } = {}) {
+// `touch`: a touch screen (an iPad), where `pointer: coarse` matches.
+async function open(
+    options,
+    { viewport = { width: 1000, height: 800 }, review = true, host = "127.0.0.1", touch = false } = {},
+) {
     const r = makeRepo();
     server = createServer();
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -77,7 +81,7 @@ async function open(options, { viewport = { width: 1000, height: 800 }, review =
         ...options(r),
     });
     server.on("request", app);
-    page = await browser.newPage({ viewport });
+    page = await browser.newPage({ viewport, hasTouch: touch, isMobile: touch });
     dialogs = [];
     // The page asks in its own dialog (ask in review.js). Accept all, Undo and Exclude are
     // confirmed; Finish is refused unless a test sets confirmFinish.
@@ -580,7 +584,7 @@ describe("review page: a pull request", () => {
         await ready();
         await page.keyboard.press("r");
         await expect.poll(status).toBe("Type the reason, then press Enter to reject.");
-        expect(await page.locator("#note").getAttribute("placeholder")).toBe("Reason for the reject, then Enter");
+        expect(await page.locator("#note").getAttribute("placeholder")).toBe("Reason to reject, then Enter");
         expect(await page.locator("#reject").getAttribute("class")).toContain("waiting");
         await page.locator("#note").press("Enter");
         await expect.poll(status).toBe("Type the reason, then press Enter to reject.");
@@ -1588,6 +1592,159 @@ describe("review page: the passkey", () => {
             .toBe("Finished #123.");
         expect(dialogs.at(-1)).not.toContain("passkey");
     }, 60000);
+});
+
+describe("review page: narrow windows, touch and wording", () => {
+    // Every control a box of, for checking nothing runs past the window's edge.
+    const outside = () =>
+        page.evaluate(() => {
+            const { document, innerWidth } = globalThis;
+            return [...document.querySelectorAll("header > *, .decisionbar > *, .decisionbar input")]
+                .filter((e) => e.getClientRects().length > 0)
+                .map((e) => [e.id || e.className || e.tagName, e.getBoundingClientRect()])
+                .filter(([, r]) => r.left < 0 || r.right > innerWidth + 0.5)
+                .map(([name]) => name);
+        });
+    // Whether a text, set in an element's font, fits inside its content box.
+    const fits = (selector, text) =>
+        page.evaluate(
+            ([sel, t]) => {
+                const e = globalThis.document.querySelector(sel);
+                const css = globalThis.getComputedStyle(e);
+                const ctx = globalThis.document.createElement("canvas").getContext("2d");
+                ctx.font = css.font;
+                const room = e.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+                return { need: Math.ceil(ctx.measureText(t ?? e.placeholder).width), room };
+            },
+            [selector, text],
+        );
+
+    it("keeps the decision bar and the header on screen at every width, the note's hint whole", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await ready();
+        // A wide desktop, an iPad on its side and upright, a zoomed page and iPad Split View.
+        for (const width of [1280, 1180, 1024, 820, 600, 375, 320]) {
+            await page.setViewportSize({ width, height: 900 });
+            expect({ width, outside: await outside() }).toEqual({ width, outside: [] });
+            const hint = await fits("#note");
+            expect(hint.need, `the note's hint at ${width} px`).toBeLessThanOrEqual(hint.room);
+        }
+    });
+
+    it("gives the project menu room on an iPad held upright", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 } });
+        await page.locator(".component").first().waitFor();
+        const name = await page.locator("#pick-project option:checked").textContent();
+        expect(name).toBe("compact-mantine (6)");
+        // The menu's arrow takes about 24 px of its content box.
+        const shown = await fits("#pick-project", name);
+        expect(shown.need + 24).toBeLessThanOrEqual(shown.room);
+    });
+
+    it("makes every control at least 44 px tall on a touch screen", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        const short = () =>
+            page.evaluate(() =>
+                [...globalThis.document.querySelectorAll("button, select, input, summary")]
+                    .filter((e) => e.getClientRects().length > 0 && e.getBoundingClientRect().height < 44)
+                    .map((e) => e.id || e.textContent.trim()),
+            );
+        expect(await short()).toEqual([]);
+        await openStory(2);
+        await ready();
+        expect(await short()).toEqual([]);
+    });
+
+    it("keeps Accept's label and key whole while the images load", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1280, height: 800 } });
+        await page.locator(".component").first().waitFor();
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await page.route("**/api/img/123/compact-mantine/capture/button--primary.dark.png", async (route) => {
+            await held;
+            await route.continue();
+        });
+        await openStory(2);
+        await page.locator("#accept .spinner").waitFor();
+        const parts = await page.evaluate(() => {
+            const accept = globalThis.document.getElementById("accept");
+            const text = [...accept.childNodes].find((n) => n.nodeType === 3 && n.textContent === "Accept");
+            const range = globalThis.document.createRange();
+            range.selectNodeContents(text);
+            const box = (r) => ({ left: r.left, right: r.right });
+            return {
+                button: box(accept.getBoundingClientRect()),
+                spinner: box(accept.querySelector(".spinner").getBoundingClientRect()),
+                label: box(range.getBoundingClientRect()),
+                kbd: box(accept.querySelector("kbd").getBoundingClientRect()),
+                clipped: accept.scrollWidth > accept.clientWidth,
+            };
+        });
+        expect(parts.clipped).toBe(false);
+        expect(parts.spinner.right).toBeLessThanOrEqual(parts.label.left);
+        expect(parts.label.left).toBeGreaterThanOrEqual(parts.button.left);
+        expect(parts.kbd.right).toBeLessThanOrEqual(parts.button.right);
+        release();
+    });
+
+    it("never takes a stray key in the Keys overlay, says when shortcuts are off, and counts Z presses right", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator(".component").first().waitFor();
+        await page.keyboard.press("?");
+        const keys = page.locator("dialog.keys");
+        await keys.waitFor();
+        // Focus is on the dialog box, so a Space typed as it opens switches nothing.
+        expect(await page.evaluate(() => globalThis.document.activeElement.tagName)).toBe("DIALOG");
+        await page.keyboard.press(" ");
+        const toggle = keys.getByRole("button", { name: /^Single-key shortcuts/ });
+        expect(await toggle.getAttribute("aria-pressed")).toBe("true");
+        expect(await keys.textContent()).toContain("from Fit, 2x is two presses");
+        await page.keyboard.press("?");
+
+        // Two Z presses from Fit reach 2x, as the overlay says.
+        await openStory(2);
+        await page.keyboard.press("z");
+        await page.keyboard.press("z");
+        expect(await page.getByRole("button", { name: "2x", exact: true }).getAttribute("aria-pressed")).toBe("true");
+
+        // Turning them off says so, and so does every letter typed while they are off, after a reload too.
+        const off =
+            "Single-key shortcuts are off: letters do nothing until you turn them on again in Keys (?).";
+        await page.locator("#keys-button").click();
+        await toggle.click();
+        await expect.poll(status).toBe(off);
+        await keys.getByRole("button", { name: "Close" }).click();
+        await page.reload();
+        await page.locator("#stage").waitFor();
+        await page.locator("#app").focus();
+        await page.keyboard.press("j");
+        await expect.poll(status).toBe(off);
+    });
+
+    it("says 1 pixel and 1 line, not 1 pixels and 1 lines", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { review: false });
+        await page.route("**/api/pr/123/compact-mantine", async (route) => {
+            const res = await route.fetch();
+            const body = await res.json();
+            for (const item of body.results?.items ?? body.items ?? []) {
+                if (item.file === "button--primary.dark.png") {
+                    item.changedPixels = 1;
+                }
+                if (item.file === "menu--open.png") {
+                    item.console = ["Error: render timed out"];
+                }
+            }
+            await route.fulfill({ response: res, json: body });
+        });
+        await page.getByRole("button", { name: "Review", exact: true }).first().click();
+        await page.locator(".component").first().waitFor();
+        expect(await page.locator(".errors li").first().textContent()).toContain("console and stack (1 line)");
+        await openStory(2);
+        await expect.poll(() => page.locator(".itemline").textContent()).toContain("1 pixel changed");
+    });
 });
 
 describe("review page: renamed stories", () => {

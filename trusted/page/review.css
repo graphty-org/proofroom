@@ -142,6 +142,18 @@ header h1 {
         overflow: hidden;
         clip-path: inset(50%);
     }
+
+    /* An iPad held upright, Split View or a zoomed page: the menus take a row of their own, half
+       each, so a project's name is readable; nothing in the header runs past the screen's edge. */
+    header {
+        flex-wrap: wrap;
+        row-gap: 6px;
+    }
+
+    .picker {
+        order: 1;
+        flex: 1 1 calc(50% - 5px);
+    }
 }
 
 #bar {
@@ -791,8 +803,10 @@ details.menu > div {
 
 /*
  * The decision bar: every button always present, each in a cell of fixed width, so a button's
- * box is the same on every item. One row from 1050 px; two below (decisions, then movement and
- * the note).
+ * box is the same on every item. One row from 1280 px; below, the cells share the window's width
+ * (never more), in two rows, or three (decisions, movement, the note) on an iPad held upright and
+ * below 900 px, and four columns below 600 px (Split View, a zoomed page), so Undo and the note
+ * box are always on screen.
  */
 .decisionbar {
     display: grid;
@@ -866,13 +880,60 @@ details.menu > div {
     min-height: 44px;
 }
 
-@media (max-width: 1049.98px) {
+@media (max-width: 1279.98px) {
     .decisionbar {
-        grid-template-columns: 6.2em 7em 7em 7.5em 6.5em minmax(8em, 1fr);
+        grid-template-columns: repeat(6, minmax(0, 1fr));
         grid-template-areas:
             "grid accept reject exclude undo ."
-            "prev pos pos pos next note";
+            "prev pos pos next note note";
     }
+}
+
+/* Three rows on an iPad held upright, or any window under 900 px: a short landscape window keeps
+   two, so its panes keep their height. */
+@media (max-width: 899.98px), (max-width: 1049.98px) and (orientation: portrait) {
+    .decisionbar {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-areas:
+            "grid accept reject exclude undo"
+            "prev pos pos pos next"
+            "note note note note note";
+    }
+}
+
+@media (max-width: 599.98px) {
+    .decisionbar {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-areas:
+            "accept reject exclude undo"
+            "grid prev pos next"
+            "note note note note";
+    }
+
+    /* The keys are in the Keys list; here the words need the width. */
+    .decisionbar > button {
+        padding: 4px;
+    }
+
+    .decisionbar > button kbd {
+        display: none;
+    }
+}
+
+/* Images loading: the spinner sits in Accept's left padding, so its label and key chip keep
+   their place and are never cut. */
+.decisionbar > button {
+    position: relative;
+}
+
+.decisionbar > button > .spinner {
+    position: absolute;
+    left: 3px;
+    top: calc(50% - 0.35em);
+    width: 0.7em;
+    height: 0.7em;
+    margin: 0;
+    border-width: 1.5px;
 }
 
 /* The item line: two lines, clamped; tapping it shows it all (the reader's choice to move the panes). */
@@ -925,10 +986,15 @@ details.menu > div {
     white-space: nowrap;
 }
 
-/* A finger needs 44 px. */
+/* A finger needs 44 px: every control, in every bar and dialog. */
 @media (pointer: coarse) {
-    .viewbar button,
-    .viewbar summary {
+    button,
+    button.link,
+    select,
+    input[type="text"],
+    input[type="search"],
+    summary,
+    details.menu > summary {
         min-height: 44px;
     }
 }

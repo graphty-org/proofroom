@@ -987,7 +987,7 @@ function downloadText(t) {
         return "Downloading the captures...";
     }
     const s = d.startedAt && state.list?.now ? `, ${secondsSince(d.startedAt, state.list.now)} s` : "";
-    return `Downloading (${d.done} of ${d.total} projects)${s}`;
+    return `Downloading (${d.done} of ${plural(d.total, "project")})${s}`;
 }
 
 function projectRow(t, p) {
@@ -1281,7 +1281,7 @@ function errorRow(item) {
             ? el(
                   "details",
                   {},
-                  el("summary", {}, `console and stack (${item.console.length} lines)`),
+                  el("summary", {}, `console and stack (${plural(item.console.length, "line")})`),
                   el("pre", { class: "console" }, item.console.join("\n")),
               )
             : null,
@@ -1667,7 +1667,7 @@ function explanation(item, d) {
         parts.push(`Moved from ${item.from}: Accept moves its baseline to this id. `);
     }
     if (item.changedPixels !== null && item.changedPixels !== undefined) {
-        parts.push(`${item.changedPixels} pixels changed`);
+        parts.push(`${plural(item.changedPixels, "pixel")} changed`);
         if (item.bbox) {
             const [x, y, w, h] = item.bbox;
             parts.push(`, in a ${w} x ${h} area at (${x}, ${y})`);
@@ -1841,8 +1841,8 @@ function decisionBar(item, items, d) {
                 placeholder: d
                     ? ""
                     : state.pending
-                      ? `Reason for the ${state.pending}, then Enter`
-                      : "Optional for Accept; required to Reject or Exclude",
+                      ? `Reason to ${state.pending}, then Enter`
+                      : "Needed to Reject or Exclude",
                 value: d ? (d.reason ?? "") : draft,
                 oninput: (e) => drafts.set(draftKey(item), e.target.value),
                 onkeydown: (e) => {
@@ -2458,7 +2458,7 @@ async function fillEnd(card, seq) {
                               "li",
                               {},
                               t.download
-                                  ? `${p.project}: downloading (${t.download.done} of ${t.download.total} projects done)`
+                                  ? `${p.project}: downloading (${t.download.done} of ${plural(t.download.total, "project")} done)`
                                   : `${p.project}: downloading`,
                           ),
                       ),
@@ -3571,6 +3571,9 @@ function toggleView(view) {
     showStory();
 }
 
+// Said when the switch turns them off, and again at each letter typed while they are off.
+const SHORTCUTS_OFF = "Single-key shortcuts are off: letters do nothing until you turn them on again in Keys (?).";
+
 const KEYS = [
     ["J / K", "Next / previous item of the pass; J on the last item shows what is next"],
     ["A", "Accept, once the images are shown"],
@@ -3586,7 +3589,7 @@ const KEYS = [
     ["S", "Spotlight, or back to side by side (on an iPad held upright, the way to see a change large)"],
     ["B", "Outline the changed area, or not"],
     ["N", "Next change"],
-    ["Z", "Next zoom: Fit, 1x, 2x, 4x, 8x (on an iPad held upright, 2x is one press)"],
+    ["Z", "Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again (from Fit, 2x is two presses, or one tap on 2x)"],
     ["Shift+A", "Grid: accept every undecided item (asks first)"],
     ["/", "Grid: Find story"],
     ["?", "Show or hide this list"],
@@ -3611,13 +3614,16 @@ function toggleKeys() {
                 saveOptions();
                 toggle.setAttribute("aria-pressed", String(state.shortcuts));
                 toggle.textContent = `Single-key shortcuts: ${state.shortcuts ? "on" : "off"}`;
+                say(state.shortcuts ? "Single-key shortcuts are on." : SHORTCUTS_OFF);
             },
         },
         `Single-key shortcuts: ${state.shortcuts ? "on" : "off"}`,
     );
+    // Focus goes to the dialog box, never the switch: a Space or Enter typed as the overlay opens
+    // must not turn every shortcut off unseen.
     const dialog = el(
         "dialog",
-        { class: "keys", "aria-labelledby": "keys-title" },
+        { class: "keys", "aria-labelledby": "keys-title", tabindex: "-1" },
         el("h2", { id: "keys-title" }, "Keys"),
         el("p", {}, toggle),
         el(
@@ -3636,7 +3642,9 @@ function toggleKeys() {
     dialog.addEventListener("close", () => dialog.remove());
     document.body.append(dialog);
     dialog.showModal();
+    dialog.focus();
 }
+
 
 // Safari on an iPad sends a hardware keyboard's keys only to a focused element, and tapping an
 // image or a button focuses nothing, so the shortcuts never arrived. The page itself holds focus
@@ -3688,6 +3696,7 @@ document.addEventListener("keydown", (e) => {
     }
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (!state.shortcuts && /^[a-z/]$/.test(key)) {
+        say(SHORTCUTS_OFF);
         return;
     }
     if (state.screen === "grid") {

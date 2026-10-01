@@ -324,9 +324,11 @@ for, with a count or the time spent, and a failed one offers Retry.
 3. **Story.** One item, on one screen that never scrolls (only the panes do). From the top:
     - **The decision bar**: **Grid** (Escape), **Prev** (K), "12 of 230 -- 18 left" (in this
       pass), **Next** (J), **Accept** (A), **Reject** (R), **Exclude** (E), **Undo** (U) and the
-      **Note** box ("Optional for Accept; required to Reject or Exclude": a note typed before Accept
-      is published with it). On an iPad held upright it is two rows: the decisions, then the movement and
-      the note. Every button is always there, in the same place on every item, at every zoom; one
+      **Note** box ("Needed to Reject or Exclude"; a note typed before Accept is published with
+      it). Below 1280 px it is two rows, the decisions, then the movement and the note; on an
+      iPad held upright and below 900 px (Split View, a zoomed page) three, the note on a row of
+      its own, and the bar never runs past the window's edge. While the images load, Accept shows a
+      small spinner at its left edge; its label and key stay whole. Every button is always there, in the same place on every item, at every zoom; one
       that does not apply is shown unavailable, the line under it says why, and pressing it says
       why in the status row. Each button shows its key.
     - **The item line**: the item's number, name, status and badges (**moved from ...**, its
@@ -405,7 +407,10 @@ Seed them from the default branch (below), or accept them on the pull request.
 
 Keys work on the screen named, never while a question, Finish's sheet or the key list is open,
 and never in a text box except where listed. **Keys** (or `?`) shows this list, and can turn the
-single-letter keys off.
+single-letter keys off. The list opens with focus on itself, so a key pressed as it opens changes
+nothing. Turning the letters off says so in the status row, and so does every letter typed while
+they are off (the switch is remembered in this browser). On a touch screen every control is at
+least 44 px tall.
 
 | Key              | Action                                                                                        |
 | ---------------- | --------------------------------------------------------------------------------------------- |
