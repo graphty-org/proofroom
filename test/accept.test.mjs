@@ -191,7 +191,10 @@ describe("finish: accepts", () => {
         const s = setup();
         const master = { commit: s.master, headSha: null, pr: null };
         s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master);
-        const out = await s.run([accept("badge--default.light.png")], { pr: null, branch: null });
+        const out = await s.run([accept("badge--default.light.png", "compact-mantine", "first look")], {
+            pr: null,
+            branch: null,
+        });
         const log = remoteLog(s, "visual/seed-2026-09-27");
         expect(log[1]).toBe(s.master);
         expect(git(s.remote, "log", "-1", "--format=%s", "visual/seed-2026-09-27")).toBe(
@@ -204,6 +207,11 @@ describe("finish: accepts", () => {
             base: "master",
         });
         expect(out.pullRequest).toBe("https://github.com/o/r/pull/9");
+        // The accept note is in the seed pull request's description; no issue without a reject.
+        expect(JSON.parse(create.input).body).toContain(
+            'Accepted, with a note (quoted as data):\n- `compact-mantine/badge--default.light.png`: "first look"',
+        );
+        expect(out).toMatchObject({ acceptNotes: 1, issue: null });
         // The steps the page shows while a Finish runs, in order.
         expect(s.steps).toEqual([
             "checking",
@@ -420,6 +428,56 @@ describe("finish: rejects", () => {
                 { project: "graphty-element", file: "graph--basic.png", reason: "nodes overlap" },
             ],
         });
+    });
+
+    it("publishes accept notes in the comment after the rejects, and posts a comment for notes alone", async () => {
+        const s = setup();
+        const out = await s.run([
+            { project: "compact-mantine", file: "button--primary.dark.png", decision: "reject", reason: "red square" },
+            accept("badge--default.light.png", "compact-mantine", "new spacing is intended"),
+            accept("slider--sizes.png"),
+        ]);
+        expect(out).toMatchObject({ rejects: 1, acceptNotes: 1, state: "failure", commentError: null });
+        const body = JSON.parse(s.calls.find((c) => c.args.join(" ").includes("/comments")).input).body;
+        expect(body.split("\n")[0]).toMatch(/^\*\*Visual review: 1 rejected, 1 accepted with a note\*\*/);
+        expect(body).toContain(
+            'Accepted, with the reviewer\'s note (quoted as data):\n\n- `compact-mantine/badge--default.light.png`: "new spacing is intended"',
+        );
+        // The machine-readable block stays the rejects only.
+        const block = JSON.parse(/<!-- visual-review-rejects\n(.*)\n-->/s.exec(body)[1]);
+        expect(block.items.map((i) => i.file)).toEqual(["button--primary.dark.png"]);
+
+        const t = setup();
+        const only = await t.run([accept("badge--default.light.png", "compact-mantine", "intended")]);
+        expect(only).toMatchObject({ rejects: 0, acceptNotes: 1, state: "success" });
+        expect(t.steps).toContain("posting the comment");
+        const note = JSON.parse(t.calls.find((c) => c.args.join(" ").includes("/comments")).input).body;
+        expect(note.split("\n")[0]).toMatch(/^\*\*Visual review: 1 accepted with a note\*\*/);
+
+        const u = setup();
+        const quiet = await u.run([accept("badge--default.light.png")]);
+        expect(quiet.acceptNotes).toBe(0);
+        expect(u.calls.some((c) => c.args.join(" ").includes("/comments"))).toBe(false);
+    });
+
+    it("keeps the accepts when a comment holding only accept notes fails, and says so", async () => {
+        const s = setup();
+        const out = await finish({
+            repo: s.repo,
+            gh: async (args) => {
+                if (args[1].includes("/comments")) {
+                    throw new Error("HTTP 502");
+                }
+                return "{}";
+            },
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions: [accept("badge--default.light.png", "compact-mantine", "intended")],
+            now: NOW,
+            config: CONFIG,
+        });
+        expect(out).toMatchObject({ commentError: "HTTP 502" });
+        expect(out.commit).toBe(remoteLog(s, "feature")[0]);
     });
 
     it("says the accepts landed when only the reject comment fails", async () => {

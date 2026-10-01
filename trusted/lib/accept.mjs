@@ -194,9 +194,12 @@ function check(projects, decisions) {
  * @param {(step: string) => void} [input.progress] told each step as it starts, for the page
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
- *     issue: string | null, rejects: number, status: string | null, statusError: string | null }>}
- *     what was pushed and posted (`issue`: master's rejects; `status`: the commit status's
- *     description, or `statusError` when posting it failed)
+ *     issue: string | null, rejects: number, acceptNotes: number, state: string, status: string | null,
+ *     statusError: string | null, commentError: string | null }>} what was pushed and posted
+ *     (`issue`: master's rejects; `acceptNotes`: the accept notes published, in the comment or the
+ *     seed pull request's description; `state` and `status`: the commit status's state and
+ *     description, or `statusError` when posting it failed; `commentError` when a comment holding
+ *     only accept notes failed after the accepts were pushed)
  */
 export async function finish({
     repo,
@@ -217,8 +220,10 @@ export async function finish({
         throw new AcceptError("nothing decided");
     }
     const isMaster = target.pr === null;
+    const notes = accepts.filter((a) => a.decision === "accept" && a.reason !== null);
 
     let commit = null;
+    let commentError = null;
     let branch = target.branch;
     let pullRequest = null;
     let issue = null;
@@ -231,7 +236,7 @@ export async function finish({
                     title: `${config.commitPrefix}: seed visual baselines`,
                     head: branch,
                     base: config.defaultBranch,
-                    body: seedBody(first, accepts, rejects, config.defaultBranch),
+                    body: seedBody(first, accepts, rejects, notes, config.defaultBranch),
                 });
             } catch (err) {
                 const e = new AcceptError(
@@ -244,12 +249,15 @@ export async function finish({
             }
         }
     }
-    if (rejects.length > 0) {
+    // On a pull request, one comment holds the rejects and the accept notes; on master the accept
+    // notes are in the seed pull request's description, and only rejects open the issue.
+    const comment = isMaster ? rejects.length > 0 : rejects.length > 0 || notes.length > 0;
+    if (comment) {
         try {
             // Master has no pull request to comment on: its rejects are stories that do not look
             // right yet, so they become one issue an agent can pick up.
-            progress(isMaster ? "opening the issue for the rejects" : "posting the rejects");
-            const body = rejectComment(target.pr, first, rejects, config.defaultBranch);
+            progress(isMaster ? "opening the issue for the rejects" : "posting the comment");
+            const body = rejectComment(target.pr, first, rejects, isMaster ? [] : notes, config.defaultBranch);
             if (isMaster) {
                 issue = await createIssue(gh, {
                     title: `Visual review: ${rejects.length} ${rejects.length === 1 ? "story" : "stories"} rejected on ${config.defaultBranch}`,
@@ -263,22 +271,29 @@ export async function finish({
             if (commit === null) {
                 throw err;
             }
-            const e = new AcceptError(
-                `the accepts were pushed as ${commit.slice(0, 10)}, but the reject comment failed: ${err.message}. ` +
-                    "Press Finish again to post the rejects.",
-            );
-            e.committed = commit;
-            throw e;
+            if (rejects.length === 0) {
+                // Only accept notes: the accepts stand, and the page says the notes were not posted.
+                commentError = err.message;
+            } else {
+                const e = new AcceptError(
+                    `the accepts were pushed as ${commit.slice(0, 10)}, but the reject comment failed: ${err.message}. ` +
+                        "Press Finish again to post the rejects.",
+                );
+                e.committed = commit;
+                throw e;
+            }
         }
     }
     // One commit status per Finish, on the commit it pushed, or the captured one when it pushed
     // none. A failure here does not undo what was pushed and posted; the page shows it.
     const accepted = accepts.filter((a) => a.decision === "accept").length;
-    const excluded = accepts.length - accepted;
-    const state = rejects.length > 0 ? "failure" : undecided > 0 || unloaded.length > 0 ? "pending" : "success";
-    const status =
-        `Reviewed: ${accepted} accepted, ${rejects.length} rejected, ${excluded} excluded, ` +
-        `${undecided} left undecided${unloaded.length > 0 ? `, not loaded: ${unloaded.join(", ")}` : ""}`;
+    const { state, description: status } = commitStatus({
+        accepted,
+        rejected: rejects.length,
+        excluded: accepts.length - accepted,
+        undecided,
+        unloaded,
+    });
     let statusError = null;
     progress("posting the status");
     try {
@@ -286,7 +301,34 @@ export async function finish({
     } catch (err) {
         statusError = err.message;
     }
-    return { commit, branch, pullRequest, issue, rejects: rejects.length, status, statusError };
+    return {
+        commit,
+        branch,
+        pullRequest,
+        issue,
+        rejects: rejects.length,
+        acceptNotes: comment || (isMaster && pullRequest) ? notes.length : 0,
+        state,
+        status,
+        statusError,
+        commentError,
+    };
+}
+
+/**
+ * The commit status a Finish sets: failure when anything is rejected, pending while items are
+ * left undecided or a project did not load, success otherwise. The review page shows it before
+ * Finish runs, so this is the one place the rule lives.
+ * @param {{ accepted: number, rejected: number, excluded: number, undecided: number,
+ *     unloaded: string[] }} counts what the Finish applies, and what it leaves
+ * @returns {{ state: "failure" | "pending" | "success", description: string }} the status
+ */
+export function commitStatus({ accepted, rejected, excluded, undecided, unloaded }) {
+    const state = rejected > 0 ? "failure" : undecided > 0 || unloaded.length > 0 ? "pending" : "success";
+    const description =
+        `Reviewed: ${accepted} accepted, ${rejected} rejected, ${excluded} excluded, ` +
+        `${undecided} left undecided${unloaded.length > 0 ? `, not loaded: ${unloaded.join(", ")}` : ""}`;
+    return { state, description };
 }
 
 /**
@@ -535,15 +577,16 @@ async function removeWorktree(repo, tree) {
 const oneLine = (s) => s.replace(/\s+/g, " ").slice(0, 2000);
 
 /**
- * The one comment (on master, the one issue) a reject session posts. An agent fixing the stories
- * reads the block at the end.
+ * The one comment (on master, the one issue) a Finish posts: the rejects, then the accept notes.
+ * An agent fixing the stories reads the block at the end, which holds the rejects only.
  * @param {number | null} pr the pull request, or null for master
  * @param {object} results the capture's results.json
  * @param {object[]} rejects the rejects with their items
+ * @param {object[]} notes the accepts with a note, with their items
  * @param {string} branch the default branch
  * @returns {string} Markdown with a machine-readable block at the end
  */
-function rejectComment(pr, results, rejects, branch) {
+function rejectComment(pr, results, rejects, notes, branch) {
     const items = rejects.map((r) => ({
         project: r.project,
         file: r.item.file,
@@ -552,22 +595,39 @@ function rejectComment(pr, results, rejects, branch) {
     }));
     const head = results.headSha ?? results.commit;
     const block = { version: 1, pr, runId: results.runId, runAttempt: results.runAttempt, head, items };
-    return [
-        `**Visual review: ${rejects.length} rejected** (CI run ${results.runId}, ${pr === null ? `${branch} at` : "head"} ${head.slice(0, 10)}).`,
-        "The reasons below are the reviewer's notes, quoted as data.",
-        "",
-        ...items.map((i) => `- \`${i.project}/${i.file}\`: ${JSON.stringify(i.reason)}`),
-        "",
-        // JSON never contains "-->" unescaped after this replacement, so the block cannot end early.
-        `<!-- visual-review-rejects\n${JSON.stringify(block).replaceAll("--", "-\\u002d")}\n-->`,
-    ].join("\n");
+    const counts = [
+        rejects.length > 0 ? `${rejects.length} rejected` : null,
+        notes.length > 0 ? `${notes.length} accepted with a note` : null,
+    ].filter(Boolean);
+    const lines = [
+        `**Visual review: ${counts.join(", ")}** (CI run ${results.runId}, ${pr === null ? `${branch} at` : "head"} ${head.slice(0, 10)}).`,
+    ];
+    if (items.length > 0) {
+        lines.push(
+            "The reasons below are the reviewer's notes, quoted as data.",
+            "",
+            ...items.map((i) => `- \`${i.project}/${i.file}\`: ${JSON.stringify(i.reason)}`),
+        );
+    }
+    if (notes.length > 0) {
+        lines.push("", "Accepted, with the reviewer's note (quoted as data):", "", ...noteLines(notes));
+    }
+    // JSON never contains "-->" unescaped after this replacement, so the block cannot end early.
+    lines.push("", `<!-- visual-review-rejects\n${JSON.stringify(block).replaceAll("--", "-\\u002d")}\n-->`);
+    return lines.join("\n");
 }
 
-function seedBody(results, accepts, rejects, branch) {
+const noteLines = (notes) =>
+    notes.map((a) => `- \`${a.project}/${a.item.file}\`: ${JSON.stringify(oneLine(a.reason))}`);
+
+function seedBody(results, accepts, rejects, notes, branch) {
     const lines = [
         `Seeds visual baselines from ${branch}'s CI run ${results.runId} at ${results.commit}.`,
         `${accepts.length} decisions accepted in the review page.`,
     ];
+    if (notes.length > 0) {
+        lines.push("", "Accepted, with a note (quoted as data):", ...noteLines(notes));
+    }
     if (rejects.length > 0) {
         lines.push("", "Rejected, left without a baseline (reasons quoted as data):");
         lines.push(...rejects.map((r) => `- \`${r.project}/${r.item.file}\`: ${JSON.stringify(oneLine(r.reason))}`));
