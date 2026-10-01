@@ -186,6 +186,9 @@ const itemName = (item) => (item.mode ? `${item.id} (${item.mode})` : item.id);
 const movedFrom = (item) => (item.from ? `moved from ${item.from}` : "");
 const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
+// The image a decision is about, as the server checks it: a decision on an image another run
+// replaced since this page loaded is refused.
+const imageHash = (item) => item.capture ?? item.baseline ?? null;
 const isLocal = () => state.target?.local === true;
 // Device pixels per CSS pixel of this capture: 2 today, 1 for captures made before it was recorded.
 const scale = () => state.data?.results.scale ?? 1;
@@ -289,7 +292,7 @@ async function loadTargets() {
     try {
         const [prs, status] = await Promise.all([api("/api/prs"), api("/api/finish-status")]);
         state.targets = prs.targets;
-        state.job = status.job;
+        track(status.job);
         say("");
         if (running()) {
             // A reload during a Finish, on any screen: follow the running one, never offer a second.
@@ -590,11 +593,12 @@ function errorRow(item, number) {
     );
 }
 
-// How many items of `component` Accept would take without opening them.
-const undecidedIn = (component) =>
+// The items of `component` Accept would take without opening them.
+const undecided = (component) =>
     state.data.items.filter(
         (i) => ACCEPTABLE.includes(i.status) && !decisionOf(i) && (!component || componentOf(i.id) === component),
-    ).length;
+    );
+const undecidedIn = (component) => undecided(component).length;
 
 // The files whose decisions a bulk Undo in `component` (or the whole project) clears: every
 // decision not yet posted by Finish.
@@ -904,11 +908,20 @@ function showStory() {
     state.lastFile = item.file;
     const d = decisionOf(item);
     if (d?.bulk && !isLocal()) {
-        // Opening an item Accept all decided counts it as opened.
+        // Opening an item Accept all decided counts it as opened. `opened` never decides, so a stale
+        // grid cannot bring back an accept another tab undid or a Finish committed; the decisions
+        // are then read again, so such an item shows as undecided.
         delete d.bulk;
-        api("/api/decide", { id: state.target.id, project: state.project, file: item.file, ...d }).catch((err) =>
-            say(err.message, true),
-        );
+        const { id } = state.target;
+        api("/api/decide", { id, project: state.project, file: item.file, opened: true, hash: imageHash(item) })
+            .then(reload)
+            .then(() => {
+                if (!decisionOf(item) && state.screen === "story" && state.lastFile === item.file) {
+                    showStory();
+                    say(`${itemName(item)}: its accept was undone or finished elsewhere; undecided now`);
+                }
+            })
+            .catch((err) => say(err.message, true));
     }
     const note = singleImageNote(item);
     const view = note ? "side" : state.view;
@@ -1484,19 +1497,28 @@ async function acceptAll(component) {
         say(`${state.project} cannot be accepted here`, true);
         return;
     }
-    const n = undecidedIn(component);
+    const items = undecided(component);
+    const n = items.length;
     const where = component ? `the component ${component}` : state.project;
     if (n === 0) {
         say(`Nothing undecided to accept in ${where}.`);
         return;
     }
-    if (!confirm(`Accept ${n} undecided items of ${where} without opening them?`)) {
+    // Accepting a removal deletes its baseline, so the question says how many it holds.
+    const removals = items.filter((i) => i.status === "removed").length;
+    const deletes =
+        removals === 0
+            ? ""
+            : ` This includes ${removals} ${removals === 1 ? "removal" : "removals"}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
+    if (!confirm(`Accept ${n} undecided items of ${where} without opening them?${deletes}`)) {
         return;
     }
     try {
         await api("/api/accept-all", {
             id: state.target.id,
             project: state.project,
+            runId: state.data.target.runId,
+            runAttempt: state.data.target.runAttempt,
             ...(component ? { component } : {}),
         });
         await reload();
@@ -1569,6 +1591,7 @@ async function decide(decision) {
             file: item.file,
             decision,
             reason: reason === "" ? null : reason,
+            hash: imageHash(item),
         });
     } catch (err) {
         say(err.message, true);
@@ -1682,7 +1705,7 @@ async function watchFinish() {
             say(finishing());
             await sleep(1000);
             try {
-                state.job = (await api("/api/finish-status")).job;
+                track((await api("/api/finish-status")).job);
             } catch (err) {
                 say(`Lost contact with the server (${err.message}); Finish goes on there. Retrying...`, true);
                 await sleep(2000);
@@ -1694,6 +1717,25 @@ async function watchFinish() {
     await showTargets();
 }
 
+// Takes the server's newest Finish. A server restarted during a Finish says it was interrupted;
+// one that could not save the Finish knows of none, so the page keeps the one it was following,
+// as interrupted, rather than showing the targets as if nothing had run.
+function track(job) {
+    const last = state.job;
+    if (!job && last?.running) {
+        job = {
+            ...last,
+            running: false,
+            step: null,
+            interrupted: true,
+            error:
+                `the server restarted while this Finish was at "${last.step}" and kept no record of it: check ` +
+                `whether ${last.branch ?? "the visual/seed-* branch"} on origin has its commit before pressing Finish again`,
+        };
+    }
+    state.job = !job && last?.interrupted ? last : job;
+}
+
 // What the newest Finish did, shown above the targets until the server restarts.
 function finishOutcome() {
     const job = state.job;
@@ -1701,6 +1743,18 @@ function finishOutcome() {
         return null;
     }
     const label = job.pr === null ? "the master seed" : `#${job.pr}`;
+    if (job.interrupted) {
+        return el(
+            "section",
+            { class: "card finish-outcome" },
+            el(
+                "p",
+                { class: "error" },
+                `Finish of ${label} was interrupted: the server restarted while it ran. Your decisions are kept.`,
+            ),
+            el("pre", { class: "error" }, job.error),
+        );
+    }
     if (job.error !== null) {
         return el(
             "section",

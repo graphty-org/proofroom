@@ -255,30 +255,26 @@ describe("review page: decisions", () => {
         expect(Object.keys(await decisions())).toEqual([BUTTON]);
     });
 
-    // Fails today: opening a stale "not opened" tile re-sends the bulk accept, which the server
-    // records afresh.
-    it.fails(
-        "A stale grid re-creates an accept that was undone in another tab or already committed by Finish",
-        async () => {
-            const r = makeRepo();
-            await open(r, world(r));
-            await review();
-            await page.keyboard.press("Shift+A");
-            await expect.poll(async () => Object.keys(await decisions()).length).toBe(4);
-            const other = await tab();
-            await review(0, other);
-            await other.getByRole("button", { name: /^All/ }).click();
-            await other.locator(`.decision[data-file="${BUTTON}"]`).waitFor();
-            const undoAll = page.locator(".toolbar .undo-all");
-            await undoAll.click();
-            await undoAll.click();
-            await expect.poll(async () => Object.keys(await decisions()).length).toBe(0);
-            await other.locator(`.tile[data-file="${BUTTON}"]`).click();
-            await other.locator("#position").waitFor();
-            await sleep(300);
-            expect(await decisions()).toEqual({});
-        },
-    );
+    // Opening a stale "not opened" tile only marks it opened; it never re-creates the accept.
+    it("A stale grid re-creates an accept that was undone in another tab or already committed by Finish", async () => {
+        const r = makeRepo();
+        await open(r, world(r));
+        await review();
+        await page.keyboard.press("Shift+A");
+        await expect.poll(async () => Object.keys(await decisions()).length).toBe(4);
+        const other = await tab();
+        await review(0, other);
+        await other.getByRole("button", { name: /^All/ }).click();
+        await other.locator(`.decision[data-file="${BUTTON}"]`).waitFor();
+        const undoAll = page.locator(".toolbar .undo-all");
+        await undoAll.click();
+        await undoAll.click();
+        await expect.poll(async () => Object.keys(await decisions()).length).toBe(0);
+        await other.locator(`.tile[data-file="${BUTTON}"]`).click();
+        await other.locator("#position").waitFor();
+        await sleep(300);
+        expect(await decisions()).toEqual({});
+    });
 
     // Moving to another item forgets an abandoned Exclude: Enter rejects.
     it("Enter in the reason box can run an earlier, abandoned Exclude", async () => {
@@ -297,8 +293,8 @@ describe("review page: decisions", () => {
         expect((await decisions())["slider--sizes.png"].decision).toBe("reject");
     });
 
-    // Fails today: the confirm counts the items, never the removals among them.
-    it.fails("Accept all accepts removals without saying so", async () => {
+    // The confirm says how many of the items are removals.
+    it("Accept all accepts removals without saying so", async () => {
         const r = makeRepo();
         await open(r, world(r));
         await review();
@@ -382,36 +378,33 @@ describe("review page: rendering and routing", () => {
         expect(await page.locator(".card").count()).toBeGreaterThan(0);
     });
 
-    // Fails today: a job that vanishes reads as no Finish at all.
-    it.fails(
-        "A restart during Finish loses the job: the page shows the plain target list and the server log says nothing",
-        async () => {
-            const r = makeRepo();
-            const w = world(r);
-            s = await startApp(r, { gh: w.gh, token: TOKEN });
-            dialogs = [];
-            page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
-            pages.push(page);
-            let calls = 0;
-            const running = {
-                id: 1,
-                target: "123",
-                pr: 123,
-                running: true,
-                step: "pushing",
-                result: null,
-                error: null,
-            };
-            // The server answers a running Finish, then restarts and knows of none.
-            await page.route("**/api/finish-status", (route) =>
-                route.fulfill({
-                    contentType: "application/json",
-                    body: JSON.stringify({ job: calls++ < 2 ? running : null }),
-                }),
-            );
-            await page.goto(`${s.origin}/#token=${TOKEN}`);
-            await expect.poll(() => calls, { timeout: 5000 }).toBeGreaterThan(2);
-            await expect.poll(() => page.locator("body").textContent()).toMatch(/interrupted|restarted/i);
-        },
-    );
+    // A job that vanishes is shown as interrupted, not as no Finish at all.
+    it("A restart during Finish loses the job: the page shows the plain target list and the server log says nothing", async () => {
+        const r = makeRepo();
+        const w = world(r);
+        s = await startApp(r, { gh: w.gh, token: TOKEN });
+        dialogs = [];
+        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+        pages.push(page);
+        let calls = 0;
+        const running = {
+            id: 1,
+            target: "123",
+            pr: 123,
+            running: true,
+            step: "pushing",
+            result: null,
+            error: null,
+        };
+        // The server answers a running Finish, then restarts and knows of none.
+        await page.route("**/api/finish-status", (route) =>
+            route.fulfill({
+                contentType: "application/json",
+                body: JSON.stringify({ job: calls++ < 2 ? running : null }),
+            }),
+        );
+        await page.goto(`${s.origin}/#token=${TOKEN}`);
+        await expect.poll(() => calls, { timeout: 5000 }).toBeGreaterThan(2);
+        await expect.poll(() => page.locator("body").textContent()).toMatch(/interrupted|restarted/i);
+    });
 });
