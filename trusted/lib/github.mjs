@@ -42,7 +42,34 @@ export function exec(cmd, args, { cwd, input, env } = {}) {
  * @param {string} cwd the repository
  * @returns {(args: string[], input?: string) => Promise<string>} runs gh and returns its stdout
  */
-export const ghRunner = (cwd) => (args, input) => exec("gh", args, { cwd, input });
+export const ghRunner = (cwd) => withRetries((args, input) => exec("gh", args, { cwd, input }));
+
+// How gh reports a network that failed (DNS, a dropped or refused connection) or a GitHub server
+// error. A 4xx, a missing artifact or any other gh error is real and is never retried.
+const TRANSIENT =
+    /could not resolve host|no such host|error connecting to|connection (reset|refused|timed out)|i\/o timeout|TLS handshake timeout|HTTP 5\d\d/i;
+
+/**
+ * Retries a gh runner's calls that failed on the network, after each delay in turn. A write
+ * (`--input`) is never retried: GitHub may have applied it before the connection dropped.
+ * @param {(args: string[], input?: string) => Promise<string>} gh the gh runner
+ * @param {number[]} [delays] milliseconds before each retry
+ * @returns {(args: string[], input?: string) => Promise<string>} the retrying runner
+ */
+export const withRetries =
+    (gh, delays = [2000, 5000, 15000]) =>
+    async (args, input) => {
+        for (let i = 0; ; i++) {
+            try {
+                return await gh(args, input);
+            } catch (err) {
+                if (i >= delays.length || args.includes("--input") || !TRANSIENT.test(err.message)) {
+                    throw err;
+                }
+                await new Promise((resolve) => setTimeout(resolve, delays[i]));
+            }
+        }
+    };
 
 const api = async (gh, path) => JSON.parse(await gh(["api", path]));
 
@@ -155,17 +182,18 @@ function download(gh, runId, name, dir) {
 /**
  * Downloads each project's capture artifact from the highest attempt that uploaded one, into
  * `<tmp>/<run>-<attempt>/<project>/`. An artifact already downloaded is not fetched again, and
- * concurrent calls for the same one share a single download.
+ * concurrent calls for the same one share a single download. A failed download fails only its
+ * project, which the next call tries again.
  * @param {Function} gh the gh runner
  * @param {{ id: number }} run the run
  * @param {string[]} projects project ids
  * @param {string} tmp the download root
- * @returns {Promise<Record<string, { dir: string, attempt: number } | null>>} null for a project
- *     with no unexpired artifact
+ * @returns {Promise<Record<string, { dir: string | null, attempt: number, error?: string } | null>>}
+ *     null for a project with no unexpired artifact; `error` (and no `dir`) when its download failed
  */
 export async function downloadCaptures(gh, run, projects, tmp) {
     const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
-    /** @type {Record<string, { dir: string, attempt: number } | null>} */
+    /** @type {Record<string, { dir: string | null, attempt: number, error?: string } | null>} */
     const out = {};
     for (const project of projects) {
         const pattern = new RegExp(`^visual-${project}-(\\d+)$`);
@@ -178,8 +206,12 @@ export async function downloadCaptures(gh, run, projects, tmp) {
             continue;
         }
         const dir = join(tmp, `${run.id}-${newest.attempt}`, project);
-        await download(gh, run.id, newest.name, dir);
-        out[project] = { dir, attempt: newest.attempt };
+        try {
+            await download(gh, run.id, newest.name, dir);
+            out[project] = { dir, attempt: newest.attempt };
+        } catch (err) {
+            out[project] = { dir: null, attempt: newest.attempt, error: err.message };
+        }
     }
     return out;
 }
@@ -205,7 +237,12 @@ export async function newestMasterCapture(gh, project, tmp, { workflow, defaultB
         if (!run) {
             continue;
         }
-        const dir = (await downloadCaptures(gh, run, [project], tmp))[project]?.dir;
+        const got = (await downloadCaptures(gh, run, [project], tmp))[project];
+        if (got?.error) {
+            // Not skipped: an older capture would be compared instead of this one.
+            throw new Error(got.error);
+        }
+        const dir = got?.dir;
         let results = null;
         try {
             results = dir ? JSON.parse(readFileSync(join(dir, "results.json"), "utf8")) : null;

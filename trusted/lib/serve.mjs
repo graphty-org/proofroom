@@ -167,10 +167,11 @@ async function loadResults(dir) {
  *     a preview to look at, with no decisions and no Finish
  * @param {string} [options.startCommand] the shell command that starts this server, shown so the
  *     owner can restart it from their own shell and sign Finish with their own key
+ * @param {boolean} [options.warm] start downloading every target's captures right away
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void}
  *     the handler, for node:https in the CLI and node:http in the tests
  */
-export function createApp({ repo, gh, config, tmp, token, origin, masterRun, results, startCommand = null }) {
+export function createApp({ repo, gh, config, tmp, token, origin, masterRun, results, startCommand = null, warm }) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
     const names = Object.keys(projects);
@@ -243,11 +244,13 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         const list = [];
         for (const name of names) {
             const job = jobs[name];
+            const error = downloaded[name]?.error;
             const failed = !downloaded[name] || job?.conclusion === "failure";
+            const reason = failed ? (job ? "capture failed" : "no capture") : null;
             const p = await project(
                 name,
                 downloaded[name]?.dir,
-                failed ? (job ? "capture failed" : "no capture") : null,
+                error ? `download failed: ${error.split("\n")[0]}; reload the page to retry` : reason,
             );
             p.logUrl = job?.url ?? run.url;
             list.push(p);
@@ -255,7 +258,11 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         return { ...info, runId: run.id, runAttempt: run.attempt, runUrl: run.url, projects: list };
     }
 
-    async function refresh() {
+    // Concurrent callers (the startup refresh, the page's first request) share one refresh.
+    let refreshing = null;
+    const refresh = () => (refreshing ??= load().finally(() => (refreshing = null)));
+
+    async function load() {
         const next = new Map();
         if (results) {
             const list = await Promise.all(
@@ -626,6 +633,11 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             throw new Error("body must be an object");
         }
         return body;
+    }
+
+    if (warm) {
+        // Download the captures now, so they are on disk before the page first asks.
+        refresh().catch((err) => console.error(`visual-review: startup refresh failed: ${err.message}`));
     }
 
     return async (req, res) => {

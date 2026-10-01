@@ -584,6 +584,11 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   other `core.hooksPath`), that hook is not installed: call `git lfs pre-push "$@"` from your own
   pre-push hook. `git push --no-verify` skips the upload too; after one that carried baselines,
   run `git lfs push origin <branch>`.
+- **download failed: ...; reload the page to retry** on a project. `serve` starts downloading
+  every capture as soon as it starts, and retries a gh call that fails on the network (DNS, a
+  dropped connection, a GitHub 5xx) three times over about 20 seconds. A project still failing
+  after that shows this, and the other projects load as usual. Reload the page to try it again;
+  the captures already downloaded are kept.
 - **capture failed / no capture** on a target. The `visual` job produced no results. Open its
   log from the page and re-run the job. **incomplete: N of M stories**: the job stopped part way
   (a timeout); re-run it.

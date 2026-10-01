@@ -3,7 +3,7 @@ import { createServer, request } from "node:http";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { downloadCaptures, newestMasterCapture } from "../trusted/lib/github.mjs";
+import { downloadCaptures, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import {
     copyFixture,
@@ -745,7 +745,8 @@ describe("downloadCaptures", () => {
             }
             return inner(args, input);
         };
-        await expect(downloadCaptures(failing, run, ["compact-mantine"], tmp)).rejects.toThrow("zip");
+        const failed = await downloadCaptures(failing, run, ["compact-mantine"], tmp);
+        expect(failed["compact-mantine"]).toEqual({ dir: null, attempt: 1, error: "error extracting zip archive" });
         expect(readdirSync(join(tmp, "1000-1"))).toEqual([]);
 
         const out = await downloadCaptures(inner, run, ["compact-mantine"], tmp);
@@ -759,5 +760,90 @@ describe("downloadCaptures", () => {
         writeFileSync(join(dir, "button--primary.png"), "partial");
         await downloadCaptures(inner, run, ["compact-mantine"], tmp);
         expect(existsSync(join(dir, "results.json"))).toBe(true);
+    });
+});
+
+describe("network failures", () => {
+    const NET = "error connecting to productionresultssa0.blob.core.windows.net\ncheck your internet connection";
+
+    it("retries a gh call that failed on the network, then returns its answer", async () => {
+        let calls = 0;
+        const gh = withRetries(async () => {
+            if (++calls <= 2) {
+                throw new Error(NET);
+            }
+            return "ok";
+        }, [0, 0, 0]);
+        expect(await gh(["run", "download", "1"])).toBe("ok");
+        expect(calls).toBe(3);
+    });
+
+    it("gives up after the last delay", async () => {
+        let calls = 0;
+        const gh = withRetries(async () => {
+            calls++;
+            throw new Error("HTTP 502: Bad Gateway (https://api.github.com/repos/o/r/pulls)");
+        }, [0, 0]);
+        await expect(gh(["api", "x"])).rejects.toThrow("HTTP 502");
+        expect(calls).toBe(3);
+    });
+
+    it.each([
+        ["a 4xx", ["api", "x"], "HTTP 404: Not Found (https://api.github.com/x)"],
+        ["a missing artifact", ["run", "download", "1"], "no artifact matches any of the names or patterns provided"],
+        ["a write", ["api", "x", "--input", "-"], NET],
+    ])("does not retry %s", async (_, args, message) => {
+        let calls = 0;
+        const gh = withRetries(async () => {
+            calls++;
+            throw new Error(message);
+        }, [0, 0, 0]);
+        await expect(gh(args)).rejects.toThrow(message.split("\n")[0]);
+        expect(calls).toBe(1);
+    });
+
+    it("shows a project whose download failed, loads the others, and retries it on the next request", async () => {
+        let down = true;
+        const s = await start({
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    if (down && args[0] === "run" && args[4] === "visual-compact-mantine-1") {
+                        throw new Error(NET);
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        const first = (await s.api("GET", "/api/prs")).body.targets[0].projects;
+        expect(first.find((p) => p.project === "compact-mantine").problem).toBe(
+            "download failed: error connecting to productionresultssa0.blob.core.windows.net; reload the page to retry",
+        );
+        expect(first.find((p) => p.project === "graphty-element")).toMatchObject({ problem: null, reviewable: 1 });
+
+        down = false;
+        const second = (await s.api("GET", "/api/prs")).body.targets[0].projects;
+        expect(second.find((p) => p.project === "compact-mantine")).toMatchObject({ problem: null, reviewable: 6 });
+    });
+
+    it("starts downloading at startup, and a request during it shares that refresh", async () => {
+        const calls = [];
+        const s = await start({
+            warm: true,
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    calls.push(args.slice(0, 2).join(" "));
+                    if (args[0] === "run") {
+                        await new Promise((resolve) => setTimeout(resolve, 50));
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets.map((t) => t.id)).toEqual(["123"]);
+        expect(calls.filter((c) => c === "run download")).toHaveLength(2);
+        expect(calls.filter((c) => c.startsWith("api repos/{owner}/{repo}/pulls"))).toHaveLength(1);
     });
 });
