@@ -15,17 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import {
-    CONFIG,
-    FIXTURE,
-    fakeGh,
-    git,
-    isolateGit,
-    job,
-    makeRepo,
-    onePr,
-    withMoved,
-} from "./helpers.mjs";
+import { CONFIG, FIXTURE, fakeGh, git, isolateGit, job, makeRepo, onePr, withMoved } from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
@@ -390,10 +380,12 @@ describe("review page: a pull request", () => {
         const canvases = page.locator("#stage .flashing canvas");
         const shown = async () => {
             await expect.poll(() => canvases.count()).toBe(2);
-            const label = await page.locator("#stage .flashing .label").textContent();
-            const [index, far] = await canvases.evaluateAll((cs) => {
+            // The label and the shown canvas are read in one task: read apart, a flip between the
+            // two reads paired one image's label with the other's canvas.
+            const [index, far, label] = await canvases.evaluateAll((cs) => {
                 const i = cs.findIndex((c) => c.style.visibility !== "hidden");
-                return [i, [...cs[i].getContext("2d").getImageData(5, 5, 1, 1).data]];
+                const text = globalThis.document.querySelector("#stage .flashing .label").textContent;
+                return [i, [...cs[i].getContext("2d").getImageData(5, 5, 1, 1).data], text];
             });
             // Both images are dimmed outside the changed pixels.
             expect(far[0]).toBeLessThanOrEqual(Math.ceil(255 * (1 - 190 / 255)));
@@ -1711,8 +1703,7 @@ describe("review page: narrow windows, touch and wording", () => {
         expect(await page.getByRole("button", { name: "2x", exact: true }).getAttribute("aria-pressed")).toBe("true");
 
         // Turning them off says so, and so does every letter typed while they are off, after a reload too.
-        const off =
-            "Single-key shortcuts are off: letters do nothing until you turn them on again in Keys (?).";
+        const off = "Single-key shortcuts are off: letters do nothing until you turn them on again in Keys (?).";
         await page.locator("#keys-button").click();
         await toggle.click();
         await expect.poll(status).toBe(off);

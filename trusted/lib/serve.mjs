@@ -825,8 +825,18 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 rpId,
                 required: passkeyState.problem !== null || passkeyState.main.length + passkeyState.pending.length > 0,
                 keys: [
-                    ...passkeyState.main.map(({ id, label, rpId: host }) => ({ id, label, rpId: host, pending: false })),
-                    ...passkeyState.pending.map(({ id, label, rpId: host }) => ({ id, label, rpId: host, pending: true })),
+                    ...passkeyState.main.map(({ id, label, rpId: host }) => ({
+                        id,
+                        label,
+                        rpId: host,
+                        pending: false,
+                    })),
+                    ...passkeyState.pending.map(({ id, label, rpId: host }) => ({
+                        id,
+                        label,
+                        rpId: host,
+                        pending: true,
+                    })),
                 ],
                 problem: passkeyState.problem,
                 waiting: passkeyPr,

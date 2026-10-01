@@ -729,7 +729,8 @@ function passkeyLine(pk) {
     if (!pk) {
         return null;
     }
-    const register = (name) => el("button", { type: "button", id: "register-passkey", onclick: registerOwnPasskey }, name);
+    const register = (name) =>
+        el("button", { type: "button", id: "register-passkey", onclick: registerOwnPasskey }, name);
     const problem = pk.problem ? el("span", { class: "error" }, ` ${pk.problem}.`) : null;
     const main = pk.keys.filter((k) => !k.pending);
     if (main.length > 0) {
@@ -826,7 +827,10 @@ async function registerOwnPasskey(e) {
         "Create the passkey",
         {
             label: "passkey-title",
-            onYes: () => (making = registerPasskey(api, prepared, (made) => passkeyName(made.authenticatorAttachment === "platform"))),
+            onYes: () =>
+                (making = registerPasskey(api, prepared, (made) =>
+                    passkeyName(made.authenticatorAttachment === "platform"),
+                )),
         },
     );
     if (!go) {
@@ -3108,7 +3112,10 @@ async function finishTarget(id, button) {
                 say(notice);
                 continue;
             }
-            if ((err.status === 400 || err.status === 403 || err.status === 409) && /passkey|approval/.test(err.message)) {
+            if (
+                (err.status === 400 || err.status === 403 || err.status === 409) &&
+                /passkey|approval/.test(err.message)
+            ) {
                 notice = `${err.message}. Nothing was changed.`;
                 say(notice);
                 continue;
@@ -3644,7 +3651,6 @@ function toggleKeys() {
     dialog.showModal();
     dialog.focus();
 }
-
 
 // Safari on an iPad sends a hardware keyboard's keys only to a focused element, and tapping an
 // image or a button focuses nothing, so the shortcuts never arrived. The page itself holds focus
