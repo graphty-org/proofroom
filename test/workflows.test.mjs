@@ -39,9 +39,24 @@ describe("the monorepo's workflows", () => {
         expect(ci).toContain("name: visual (${{ matrix.project }})");
     });
 
-    it("ci.yml's gate step runs the gate with the template's arguments", () => {
+    it("ci.yml's gate step runs the base branch's gate with the template's arguments", () => {
         const args = /gate (--captures .*)$/m.exec(renderTemplate("visual-review.yml", values))[1];
-        expect(workflow("ci.yml")).toContain(`node visual-review/trusted/cli.mjs gate ${args}`);
+        const ci = workflow("ci.yml");
+        expect(ci).toContain('git archive HEAD^1 visual-review/trusted | tar -x -C "$gate"');
+        const pr = '--pr "${{ github.event.pull_request.number }}"';
+        expect(args).toContain(pr);
+        expect(ci).toContain(`node "$gate/visual-review/trusted/cli.mjs" gate ${args.replace(pr, '"${pr[@]}"')}`);
+        // The step passes --pr when the base's gate says it takes it, which this one does.
+        const grep = /grep -q -- "(.+?)" "\$gate\/visual-review\/trusted\/gate.mjs"/.exec(ci)[1];
+        expect(readFileSync(new URL("../trusted/gate.mjs", import.meta.url), "utf8")).toContain(grep);
+    });
+
+    it("ci.yml's visual job runs the base branch's capture code before any of the tool's commands", () => {
+        const ci = job(workflow("ci.yml"), "visual", "all-checks");
+        const swap = ci.indexOf("git archive HEAD^1 visual-review/capture visual-review/trusted | tar -x");
+        expect(swap).toBeGreaterThan(0);
+        expect(ci.indexOf("visual-review install-browser")).toBeGreaterThan(swap);
+        expect(ci).toContain("fetch-depth: 2");
     });
 });
 
