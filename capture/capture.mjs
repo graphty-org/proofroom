@@ -54,10 +54,17 @@ const VIEWPORT = { width: 1200, height: 900 };
 /** Device pixels per CSS pixel, as Chromatic captures; recorded in results.json as `scale`. */
 const SCALE = 2;
 const RENDER_TIMEOUT = 30_000;
-const CHROMIUM_ARGS = [
+/**
+ * Chromium's switches for every capture. `--disable-gpu-rasterization` draws the page's text and
+ * shapes on the CPU: rasterized through SwiftShader, a glyph that sits on a sub-pixel boundary
+ * landed on either side of it from one render to the next, so a story with nothing moving read
+ * `unstable` (the README, "Why captures rasterize on the CPU"). WebGL still runs on SwiftShader.
+ */
+export const CHROMIUM_ARGS = [
     "--use-gl=angle",
     "--use-angle=swiftshader",
     "--enable-unsafe-swiftshader",
+    "--disable-gpu-rasterization",
     "--force-color-profile=srgb",
     "--disable-lcd-text",
     "--font-render-hinting=none",
