@@ -11,9 +11,10 @@ const app = document.getElementById("app");
 const crumbs = document.getElementById("crumbs");
 const statusLine = document.getElementById("status");
 
-const REVIEWABLE = ["changed", "moved", "new", "removed", "unstable", "failed"];
-const ACCEPTABLE = ["changed", "moved", "new", "removed"];
-// A story with no baseline that this pull request did not change: shown, never a decision here.
+const REVIEWABLE = ["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"];
+const ACCEPTABLE = ["changed", "moved", "new", "unseeded", "removed"];
+// A story with no baseline that this pull request did not change. It blocks like `new`: accepting it
+// creates its first baseline.
 const UNSEEDED = "unseeded";
 const NO_BASELINE = "no baseline yet";
 const statusLabel = (status) => (status === UNSEEDED ? NO_BASELINE : status);
@@ -59,7 +60,7 @@ const state = {
 };
 const running = () => state.job?.running === true;
 const VIEWS = ["side", "flash", "highlight", "spotlight"];
-const FILTERS = ["undecided", "all", ...REVIEWABLE, UNSEEDED, ...Object.keys(DECISIONS)];
+const FILTERS = ["undecided", "all", ...REVIEWABLE, ...Object.keys(DECISIONS)];
 let routes = 0; // how many routes are running: the page follows the address (a link, Back, Forward)
 let nav = 0; // bumped by each screen change that waits on the server: a superseded one stops there
 // The least recently used last-opened images and diffs are dropped past these, so a long session
@@ -250,18 +251,13 @@ function ordered(items) {
 
 function visibleItems() {
     const text = state.text.trim().toLowerCase();
-    let items;
-    if (state.filter === UNSEEDED) {
-        items = state.data.items.filter((i) => i.status === UNSEEDED);
-    } else {
-        items = state.data.items.filter((i) => REVIEWABLE.includes(i.status));
-        if (state.filter === "undecided") {
-            items = items.filter((i) => !decisionOf(i));
-        } else if (Object.hasOwn(DECISIONS, state.filter)) {
-            items = items.filter((i) => decisionOf(i)?.decision === state.filter);
-        } else if (state.filter !== "all") {
-            items = items.filter((i) => i.status === state.filter);
-        }
+    let items = state.data.items.filter((i) => REVIEWABLE.includes(i.status));
+    if (state.filter === "undecided") {
+        items = items.filter((i) => !decisionOf(i));
+    } else if (Object.hasOwn(DECISIONS, state.filter)) {
+        items = items.filter((i) => decisionOf(i)?.decision === state.filter);
+    } else if (state.filter !== "all") {
+        items = items.filter((i) => i.status === state.filter);
     }
     return ordered(text ? items.filter((i) => i.file.includes(text)) : items);
 }
@@ -456,7 +452,7 @@ function targetCard(t) {
                     el(
                         "td",
                         {},
-                        p.reviewable > 0 || p.counts[UNSEEDED]
+                        p.reviewable > 0
                             ? el("button", { type: "button", onclick: () => openProject(t, p.project) }, "Review")
                             : null,
                     ),
@@ -957,7 +953,7 @@ function showStory() {
     const view = note ? "side" : state.view;
     const onlyExclude = item.status === "unstable" || item.status === "failed";
     const unseeded = item.status === UNSEEDED;
-    const decidable = !isLocal() && !unseeded;
+    const decidable = !isLocal();
     setCrumbs(
         el("button", { type: "button", class: "link", onclick: showGrid }, `${targetLabel()} / ${state.project}`),
         el("span", {}, itemName(item)),
@@ -1183,7 +1179,7 @@ function showStory() {
                           "p",
                           {},
                           "No baseline yet, and this pull request does not change it: it looks as on master. " +
-                              "Seed it from master's capture, or accept it on the pull request that changes it.",
+                              "Accepting it makes this image its first baseline.",
                       )
                     : null,
                 decidable ? decisionButtons : null,

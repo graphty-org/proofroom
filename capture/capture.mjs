@@ -513,7 +513,10 @@ async function loadReference(dir) {
     if (!results || validateResults(results).length > 0 || !results.complete) {
         return { images, runId: null };
     }
-    for (const item of results.items.filter((i) => i.status === "new")) {
+    // Both statuses mean "captured with no baseline, hash recorded". Reading only `new` made a story
+    // alternate: a run that matched its reference says `unseeded`, so the next run found no image
+    // for it and said `new` again.
+    for (const item of results.items.filter((i) => i.status === "new" || i.status === "unseeded")) {
         const bytes = await readFile(join(dir, item.file)).catch(() => null);
         if (bytes && sha256(bytes) === item.capture) {
             images.set(item.file, bytes);

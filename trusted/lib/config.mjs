@@ -91,6 +91,9 @@ export function normalizeConfig(input) {
         if (p.seedFromDefaultBranch !== undefined && typeof p.seedFromDefaultBranch !== "boolean") {
             fail(`${where}.seedFromDefaultBranch must be true or false`);
         }
+        if (p.gate !== undefined) {
+            fail(`${where}.gate is not a setting: every project is gated, and every story needs an approved baseline`);
+        }
         let waitFor = null;
         if (p.waitFor !== undefined && p.waitFor !== null) {
             const w = p.waitFor;

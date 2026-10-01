@@ -26,7 +26,7 @@ import { isLfsPointer } from "./compare.mjs";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** The statuses an item can be accepted or rejected in; unstable and failed are only excluded. */
-const DECIDABLE = new Set(["changed", "moved", "new", "removed"]);
+const DECIDABLE = new Set(["changed", "moved", "new", "unseeded", "removed"]);
 const EXCLUDABLE = new Set([...DECIDABLE, "unstable", "failed"]);
 
 /**
