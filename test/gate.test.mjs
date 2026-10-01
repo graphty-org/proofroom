@@ -208,7 +208,7 @@ describe("gate command", () => {
             encoding: "utf8",
         });
 
-    // The fixture repository's config is the monorepo's: graphty-element and layout have no baselines.
+    // The fixture repository's config is the monorepo's: only compact-mantine has baselines.
     // Every other project in the monorepo's config, read from the config so a project added there
     // does not break these tests.
     const unseededCaptures = Object.fromEntries(

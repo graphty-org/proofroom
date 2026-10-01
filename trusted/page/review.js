@@ -51,6 +51,7 @@ const state = {
     box: 0, // which changed box "next changed box" is on
     showBox: saved.showBox ?? true, // outline the changed box (B)
     blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
+    spotFlash: saved.spotFlash ?? false, // Spotlight flashes baseline and new (F in Spotlight)
     held: null, // the view to return to when Space is released
     pending: "reject", // what Enter in the reason box does
     screen: "targets",
@@ -60,9 +61,21 @@ const state = {
 const running = () => state.job?.running === true;
 const VIEWS = ["side", "flash", "highlight", "spotlight"];
 const FILTERS = ["undecided", "all", ...REVIEWABLE, ...Object.keys(DECISIONS)];
-let routing = false; // true while the page follows the address (a link opened, Back, Forward)
+let routes = 0; // how many routes are running: the page follows the address (a link, Back, Forward)
+let nav = 0; // bumped by each screen change that waits on the server: a superseded one stops there
+// The least recently used last-opened images and diffs are dropped past these, so a long session
+// stays small: an object URL holds its image, and a diff about 13 bytes per image pixel.
 const images = new Map();
+const IMAGES_KEPT = 50;
 const diffs = new Map();
+const DIFFS_KEPT = 4;
+let stageRender = 0; // the newest renderStage: an older one finishing late writes nothing
+let stageShown = null; // the file whose two panes are on the stage: Accept waits for it
+let deciding = false; // a decision is on its way to the server
+// A decision moves on to the next item, whose buttons are in the same place: the second click of
+// a double click, this soon after the first, lands there and is ignored.
+const DOUBLE_CLICK_MS = 500;
+let clickedAt = -Infinity; // when a decision button was last clicked
 let flashTimer = null;
 let factor = 1; // CSS pixels per image pixel of the pictures on the stage
 let shownBoxes = []; // the changed boxes of the item on the stage
@@ -103,6 +116,32 @@ function say(text, isError = false) {
     statusLine.className = isError ? "error" : "";
 }
 
+// Asks in the page, never with confirm(): once a browser stops a page's dialogs ("prevent this
+// page from creating additional dialogs"), confirm() returns false without showing anything, and
+// the button pressed seems to do nothing. Resolves true for `yes`, false for Cancel or Escape.
+function ask(message, yes) {
+    // Focus on the box, not a button: the Enter that asked (in the reason box) must not answer it.
+    const dialog = el("dialog", { class: "ask", tabindex: "-1" }, el("p", {}, message));
+    const answer = (value) => () => dialog.close(value);
+    dialog.append(
+        el(
+            "p",
+            { class: "actions" },
+            el("button", { type: "button", onclick: answer("no") }, "Cancel"),
+            el("button", { type: "button", class: "primary", onclick: answer("yes") }, yes),
+        ),
+    );
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.focus();
+    return new Promise((resolve) =>
+        dialog.addEventListener("close", () => {
+            dialog.remove();
+            resolve(dialog.returnValue === "yes");
+        }),
+    );
+}
+
 async function api(path, body) {
     const res = await fetch(path, {
         method: body ? "POST" : "GET",
@@ -116,29 +155,55 @@ async function api(path, body) {
     return json;
 }
 
-// Loads an image through the API (it needs the token header) and returns an object URL.
-function image(kind, file) {
-    const key = `${state.target.id}/${state.project}/${kind}/${file}`;
-    if (!images.has(key)) {
-        const path = ["img", state.target.id, state.project, kind, file].map(encodeURIComponent).join("/");
-        images.set(
-            key,
-            fetch(`/api/${path}`, { headers: { "x-review-token": token } }).then(async (res) => {
+// The promise `make` returns for `key`, kept in `map` with the least recently used dropped past
+// `limit` (and handed to `drop`). A promise that fails is dropped at once, so the next use retries.
+function cached(map, key, limit, make, drop = () => {}) {
+    let value = map.get(key);
+    if (value === undefined) {
+        value = make();
+        value.catch(() => {
+            if (map.get(key) === value) {
+                map.delete(key);
+            }
+        });
+    }
+    map.delete(key);
+    map.set(key, value);
+    for (const [k, old] of map) {
+        if (map.size <= limit) {
+            break;
+        }
+        map.delete(k);
+        drop(old);
+    }
+    return value;
+}
+
+// Loads an image through the API (it needs the token header) and returns an object URL. Keyed by
+// the image's hash too, so a newer CI run's image is never answered with an older one.
+function image(kind, file, hash) {
+    return cached(
+        images,
+        `${state.target.id}/${state.project}/${kind}/${file}/${hash}`,
+        IMAGES_KEPT,
+        () => {
+            const path = ["img", state.target.id, state.project, kind, file].map(encodeURIComponent).join("/");
+            return fetch(`/api/${path}`, { headers: { "x-review-token": token } }).then(async (res) => {
                 if (!res.ok) {
                     throw new Error(`${file}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
                 }
                 return URL.createObjectURL(await res.blob());
-            }),
-        );
-    }
-    return images.get(key);
+            });
+        },
+        (url) => url.then(URL.revokeObjectURL, () => {}),
+    );
 }
 
-function loaded(url) {
+function loaded(url, what) {
     return new Promise((resolve, reject) => {
         const img = new Image();
         img.onload = () => resolve(img);
-        img.onerror = reject;
+        img.onerror = () => reject(new Error(`${what}: the image could not be shown`));
         img.src = url;
     });
 }
@@ -149,6 +214,9 @@ const itemName = (item) => (item.mode ? `${item.id} (${item.mode})` : item.id);
 const movedFrom = (item) => (item.from ? `moved from ${item.from}` : "");
 const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
+// The image a decision is about, as the server checks it: a decision on an image another run
+// replaced since this page loaded is refused.
+const imageHash = (item) => item.capture ?? item.baseline ?? null;
 const isLocal = () => state.target?.local === true;
 // Device pixels per CSS pixel of this capture: 2 today, 1 for captures made before it was recorded.
 const scale = () => state.data?.results.scale ?? 1;
@@ -228,7 +296,10 @@ function loadOptions() {
 
 function saveOptions() {
     try {
-        localStorage.setItem(OPTIONS_KEY, JSON.stringify({ showBox: state.showBox, blink: state.blink }));
+        localStorage.setItem(
+            OPTIONS_KEY,
+            JSON.stringify({ showBox: state.showBox, blink: state.blink, spotFlash: state.spotFlash }),
+        );
     } catch {
         // Not remembered; the choice still holds for this page.
     }
@@ -247,7 +318,7 @@ async function loadTargets() {
     try {
         const [prs, status] = await Promise.all([api("/api/prs"), api("/api/finish-status")]);
         state.targets = prs.targets;
-        state.job = status.job;
+        track(status.job);
         say("");
         if (running()) {
             // A reload during a Finish, on any screen: follow the running one, never offer a second.
@@ -261,10 +332,11 @@ async function loadTargets() {
 }
 
 async function showTargets(notice = "") {
+    const seq = ++nav;
     stopFlash();
     state.screen = "targets";
     setCrumbs();
-    if (!(await loadTargets())) {
+    if (!(await loadTargets()) || seq !== nav) {
         return;
     }
     remember();
@@ -400,7 +472,7 @@ function targetCard(t) {
                             type: "button",
                             class: "primary",
                             disabled: decided === 0 || running(),
-                            onclick: () => finishTarget(t),
+                            onclick: (e) => finishTarget(t, e.currentTarget),
                         },
                         `Finish ${t.pr === null ? "seed" : `#${t.pr}`} (${decided} decisions)`,
                     ),
@@ -411,6 +483,7 @@ function targetCard(t) {
 // ---------------------------------------------------------------- screen: project grid
 
 async function openProject(target, project) {
+    const seq = ++nav;
     state.target = target;
     state.project = project;
     state.filter = "undecided";
@@ -423,6 +496,9 @@ async function openProject(target, project) {
         say("");
     } catch (err) {
         say(err.message, true);
+        return;
+    }
+    if (seq !== nav) {
         return;
     }
     // Nothing left to decide (or a local preview): show everything instead of an empty grid.
@@ -444,8 +520,8 @@ const thumbs = new IntersectionObserver((entries) => {
     for (const e of entries) {
         if (e.isIntersecting) {
             thumbs.unobserve(e.target);
-            const { kind, file } = e.target.dataset;
-            image(kind, file).then(
+            const { kind, file, hash } = e.target.dataset;
+            image(kind, file, hash).then(
                 (url) => (e.target.src = url),
                 (err) => (e.target.alt = err.message),
             );
@@ -466,7 +542,7 @@ function openItem(index) {
 function tile(item, number) {
     const kind = item.capture ? "capture" : item.baseline ? "baseline" : null;
     const img = kind
-        ? el("img", { "data-kind": kind, "data-file": item.file, alt: itemName(item) })
+        ? el("img", { "data-kind": kind, "data-file": item.file, "data-hash": item[kind], alt: itemName(item) })
         : el("div", { class: "noimage" }, item.status);
     if (kind) {
         thumbs.observe(img);
@@ -543,11 +619,12 @@ function errorRow(item, number) {
     );
 }
 
-// How many items of `component` Accept would take without opening them.
-const undecidedIn = (component) =>
+// The items of `component` Accept would take without opening them.
+const undecided = (component) =>
     state.data.items.filter(
         (i) => ACCEPTABLE.includes(i.status) && !decisionOf(i) && (!component || componentOf(i.id) === component),
-    ).length;
+    );
+const undecidedIn = (component) => undecided(component).length;
 
 // The files whose decisions a bulk Undo in `component` (or the whole project) clears: every
 // decision not yet posted by Finish.
@@ -621,7 +698,9 @@ async function undo(files, where, one = false) {
 
 function showGrid() {
     stopFlash();
+    thumbs.disconnect();
     state.screen = "grid";
+    state.pending = "reject";
     setCrumbs(el("span", {}, targetLabel()), el("span", {}, state.project));
     const items = visibleItems();
     const counts = {};
@@ -847,14 +926,28 @@ function showStory() {
     }
     state.index = Math.max(0, Math.min(state.index, items.length - 1));
     const item = items[state.index];
+    if (item.file !== state.lastFile) {
+        // An Exclude (or reject) left waiting for a reason on another item is abandoned.
+        state.pending = "reject";
+        stageShown = null;
+    }
     state.lastFile = item.file;
     const d = decisionOf(item);
     if (d?.bulk && !isLocal()) {
-        // Opening an item Accept all decided counts it as opened.
+        // Opening an item Accept all decided counts it as opened. `opened` never decides, so a stale
+        // grid cannot bring back an accept another tab undid or a Finish committed; the decisions
+        // are then read again, so such an item shows as undecided.
         delete d.bulk;
-        api("/api/decide", { id: state.target.id, project: state.project, file: item.file, ...d }).catch((err) =>
-            say(err.message, true),
-        );
+        const { id } = state.target;
+        api("/api/decide", { id, project: state.project, file: item.file, opened: true, hash: imageHash(item) })
+            .then(reload)
+            .then(() => {
+                if (!decisionOf(item) && state.screen === "story" && state.lastFile === item.file) {
+                    showStory();
+                    say(`${itemName(item)}: its accept was undone or finished elsewhere; undecided now`);
+                }
+            })
+            .catch((err) => say(err.message, true));
     }
     const note = singleImageNote(item);
     const view = note ? "side" : state.view;
@@ -901,11 +994,11 @@ function showStory() {
     const reason = el("input", {
         id: "reason",
         type: "text",
-        placeholder: "Reason (needed to reject or exclude)",
+        placeholder: reasonHint(),
         value: d?.reason ?? "",
         maxlength: "2000",
         onkeydown: (e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !e.repeat) {
                 decide(state.pending);
             }
         },
@@ -919,14 +1012,21 @@ function showStory() {
               state.data.acceptable && !onlyExclude
                   ? el(
                         "button",
-                        { type: "button", class: "accept", onclick: () => decide("accept"), title: "A" },
+                        {
+                            type: "button",
+                            class: "accept",
+                            onclick: () => clicked("accept"),
+                            title: "A",
+                            // Until both images are shown: renderStage enables it.
+                            disabled: true,
+                        },
                         "Accept",
                     )
                   : null,
               !onlyExclude
                   ? el(
                         "button",
-                        { type: "button", class: "reject", onclick: () => decide("reject"), title: "R" },
+                        { type: "button", class: "reject", onclick: () => clicked("reject"), title: "R" },
                         "Reject",
                     )
                   : null,
@@ -935,7 +1035,7 @@ function showStory() {
                         "button",
                         {
                             type: "button",
-                            onclick: () => decide("exclude"),
+                            onclick: () => clicked("exclude"),
                             title: "E: stop capturing every mode of this story",
                         },
                         "Exclude",
@@ -1021,6 +1121,20 @@ function showStory() {
                     },
                     "Blink",
                 ),
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        "aria-pressed": String(state.spotFlash),
+                        disabled: view !== "spotlight",
+                        title:
+                            view === "spotlight"
+                                ? "F: flash the spotlighted baseline and new"
+                                : "Spotlight flash shows the spotlighted baseline and new one after the other",
+                        onclick: () => toggleOption("spotFlash"),
+                    },
+                    "Spotlight flash",
+                ),
                 note ? el("span", { id: "single-note", class: "meta" }, note) : null,
                 el("span", { class: "spacer" }),
                 ZOOMS.map(zoomButton),
@@ -1076,37 +1190,35 @@ function showStory() {
     remember();
 }
 
+const reasonHint = () => `Reason (needed to reject or exclude); Enter ${state.pending}s`;
+
 // The changed pixels of an item, padded top-left to the larger size, grown by GROW pixels, and the
-// boxes around each separate grown region. Computed once per item.
+// boxes around each separate grown region. Computed once per item and pair of images.
 async function diffOf(item) {
-    if (!diffs.has(item.file)) {
-        diffs.set(
-            item.file,
-            (async () => {
-                const [a, b] = await Promise.all([
-                    loaded(await image("baseline", item.file)),
-                    loaded(await image("capture", item.file)),
-                ]);
-                const w = Math.max(a.naturalWidth, b.naturalWidth);
-                const h = Math.max(a.naturalHeight, b.naturalHeight);
-                const pixels = (img) => {
-                    const ctx = new OffscreenCanvas(w, h).getContext("2d");
-                    ctx.drawImage(img, 0, 0);
-                    return ctx.getImageData(0, 0, w, h).data;
-                };
-                const [pa, pb] = [pixels(a), pixels(b)];
-                const mask = new Uint8ClampedArray(w * h * 4);
-                pixelmatch(pa, pb, mask, w, h, {
-                    threshold: item.threshold,
-                    includeAA: item.includeAA,
-                    diffMask: true,
-                });
-                const grown = grow(mask, w, h);
-                return { w, h, a: pa, b: pb, mask, grown, boxes: regions(grown, w, h) };
-            })(),
-        );
-    }
-    return diffs.get(item.file);
+    const { file, baseline, capture, threshold, includeAA } = item;
+    const key = `${state.target.id}/${state.project}/${file}/${baseline}/${capture}/${threshold}/${includeAA}`;
+    return cached(diffs, key, DIFFS_KEPT, async () => {
+        const [a, b] = await Promise.all([
+            loaded(await image("baseline", item.file, item.baseline), `baseline of ${item.file}`),
+            loaded(await image("capture", item.file, item.capture), `capture of ${item.file}`),
+        ]);
+        const w = Math.max(a.naturalWidth, b.naturalWidth);
+        const h = Math.max(a.naturalHeight, b.naturalHeight);
+        const pixels = (img) => {
+            const ctx = new OffscreenCanvas(w, h).getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            return ctx.getImageData(0, 0, w, h).data;
+        };
+        const [pa, pb] = [pixels(a), pixels(b)];
+        const mask = new Uint8ClampedArray(w * h * 4);
+        pixelmatch(pa, pb, mask, w, h, {
+            threshold: item.threshold,
+            includeAA: item.includeAA,
+            diffMask: true,
+        });
+        const grown = grow(mask, w, h);
+        return { w, h, a: pa, b: pb, mask, grown, boxes: regions(grown, w, h) };
+    });
 }
 
 // A square dilation by GROW pixels, as two passes (rows, then columns) of a sliding window.
@@ -1208,6 +1320,7 @@ function fit(stage) {
 // Two panes, always: the baseline on the left and the new image (or the view's picture) on the
 // right. A missing image leaves its pane empty, the same size, so the other one never moves.
 async function renderStage(item, view, keep) {
+    const seq = ++stageRender;
     const stage = document.getElementById("stage");
     const pane = (text, ...pics) =>
         el(
@@ -1221,7 +1334,7 @@ async function renderStage(item, view, keep) {
             ),
         );
     const imgOf = async (kind) => {
-        const img = await loaded(await image(kind, item.file));
+        const img = await loaded(await image(kind, item.file, item[kind]), `${kind} of ${item.file}`);
         img.alt = `${kind} of ${itemName(item)}`;
         return img;
     };
@@ -1241,11 +1354,18 @@ async function renderStage(item, view, keep) {
             right = pane(item.status === "failed" ? "No capture: it failed" : "No capture");
         } else if (view === "side") {
             right = pane(item.baseline ? "New" : "New (no baseline)", await imgOf("capture"));
-        } else if (view === "flash") {
-            // The two images themselves, one after the other in the same place: no overlay.
-            const [base, next] = [await imgOf("baseline"), await imgOf("capture")];
+        } else if (view === "flash" || (view === "spotlight" && state.spotFlash)) {
+            // The two images one after the other in the same place: themselves, or both spotlighted.
+            const flash = view === "flash";
+            const name = flash ? "Flash" : "Spotlight";
+            const [base, next] = flash
+                ? [await imgOf("baseline"), await imgOf("capture")]
+                : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
+            if (seq !== stageRender) {
+                return;
+            }
             next.style.visibility = "hidden";
-            right = pane("Flash: baseline", base, next);
+            right = pane(`${name}: baseline`, base, next);
             right.classList.add("flashing");
             const tag = right.querySelector(".label");
             let showingNew = false;
@@ -1253,14 +1373,23 @@ async function renderStage(item, view, keep) {
                 showingNew = !showingNew;
                 base.style.visibility = showingNew ? "hidden" : "visible";
                 next.style.visibility = showingNew ? "visible" : "hidden";
-                tag.textContent = showingNew ? "Flash: new" : "Flash: baseline";
+                tag.textContent = showingNew ? `${name}: new` : `${name}: baseline`;
             }, FLASH_MS);
         } else if (view === "highlight") {
             right = pane("New, changed pixels in red", await imgOf("capture"), overlay(diff));
         } else {
             right = pane("Spotlight: the new image, dimmed except around each change", spotlight(diff));
         }
+        if (seq !== stageRender) {
+            // Another item (or view) was shown while this one loaded.
+            return;
+        }
         stage.replaceChildren(left, right);
+        stageShown = item.file;
+        const accept = document.querySelector(".actions button.accept");
+        if (accept) {
+            accept.disabled = false;
+        }
         if (marked && state.blink) {
             // Both panes' overlays on and off together, at Flash's pace.
             const marks = [...stage.querySelectorAll(".diffmark")];
@@ -1303,7 +1432,9 @@ async function renderStage(item, view, keep) {
             }
         }
     } catch (err) {
-        stage.replaceChildren(el("p", { class: "error" }, err.message));
+        if (seq === stageRender) {
+            stage.replaceChildren(el("p", { class: "error" }, err.message || "the images could not be loaded"));
+        }
     }
 }
 
@@ -1388,8 +1519,8 @@ function overlay(diff) {
     return canvas;
 }
 
-// The new image with everything dimmed except the changed pixels grown by GROW pixels.
-function spotlight(diff) {
+// An image (the new one unless given) with everything dimmed except the changed pixels grown by GROW pixels.
+function spotlight(diff, px = diff.b) {
     const canvas = el("canvas", { width: String(diff.w), height: String(diff.h) });
     const ctx = canvas.getContext("2d");
     const out = ctx.createImageData(diff.w, diff.h);
@@ -1397,9 +1528,9 @@ function spotlight(diff) {
     for (let i = 0; i < diff.w * diff.h; i++) {
         const lit = diff.grown[i] === 1;
         for (let c = 0; c < 3; c++) {
-            out.data[i * 4 + c] = lit ? diff.b[i * 4 + c] : diff.b[i * 4 + c] * keep;
+            out.data[i * 4 + c] = lit ? px[i * 4 + c] : px[i * 4 + c] * keep;
         }
-        out.data[i * 4 + 3] = lit ? diff.b[i * 4 + 3] : Math.max(diff.b[i * 4 + 3], SPOT_ALPHA);
+        out.data[i * 4 + 3] = lit ? px[i * 4 + 3] : Math.max(px[i * 4 + 3], SPOT_ALPHA);
     }
     ctx.putImageData(out, 0, 0);
     return canvas;
@@ -1410,19 +1541,28 @@ async function acceptAll(component) {
         say(`${state.project} cannot be accepted here`, true);
         return;
     }
-    const n = undecidedIn(component);
+    const items = undecided(component);
+    const n = items.length;
     const where = component ? `the component ${component}` : state.project;
     if (n === 0) {
         say(`Nothing undecided to accept in ${where}.`);
         return;
     }
-    if (!confirm(`Accept ${n} undecided items of ${where} without opening them?`)) {
+    // Accepting a removal deletes its baseline, so the question says how many it holds.
+    const removals = items.filter((i) => i.status === "removed").length;
+    const deletes =
+        removals === 0
+            ? ""
+            : ` This includes ${removals} ${removals === 1 ? "removal" : "removals"}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
+    if (!(await ask(`Accept ${n} undecided items of ${where} without opening them?${deletes}`, "Accept"))) {
         return;
     }
     try {
         await api("/api/accept-all", {
             id: state.target.id,
             project: state.project,
+            runId: state.data.target.runId,
+            runAttempt: state.data.target.runAttempt,
             ...(component ? { component } : {}),
         });
         await reload();
@@ -1447,6 +1587,10 @@ async function decide(decision) {
         say("A local preview is only looked at: nothing is decided on it.", true);
         return;
     }
+    if (deciding) {
+        // A second click or key while the first decision is on its way.
+        return;
+    }
     const items = passItems();
     const item = items[state.index];
     const before = decisionOf(item);
@@ -1459,23 +1603,32 @@ async function decide(decision) {
         say(`${itemName(item)} is already ${done}. Press U (Undo) first to change it.`, true);
         return;
     }
+    if (decision === "accept" && stageShown !== item.file) {
+        say(`${itemName(item)}: wait for both images before accepting.`, true);
+        return;
+    }
     const reasonBox = document.getElementById("reason");
     const reason = reasonBox?.value.trim() ?? "";
     if ((decision === "reject" || decision === "exclude") && reason === "") {
         state.pending = decision;
-        reasonBox?.focus();
+        if (reasonBox) {
+            reasonBox.placeholder = reasonHint();
+            reasonBox.focus();
+        }
         say(`A ${decision} needs a reason: type it, then press Enter.`);
         return;
     }
     if (
         decision === "exclude" &&
-        !confirm(
+        !(await ask(
             `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
                 "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
-        )
+            "Exclude",
+        ))
     ) {
         return;
     }
+    deciding = true;
     try {
         await api("/api/decide", {
             id: state.target.id,
@@ -1483,10 +1636,13 @@ async function decide(decision) {
             file: item.file,
             decision,
             reason: reason === "" ? null : reason,
+            hash: imageHash(item),
         });
     } catch (err) {
         say(err.message, true);
         return;
+    } finally {
+        deciding = false;
     }
     if (decision === null) {
         delete state.data.decisions[item.file];
@@ -1504,6 +1660,15 @@ async function decide(decision) {
     showStory();
 }
 
+// A decision button's click; a double click's second one is not a decision on the next item.
+function clicked(decision) {
+    const now = performance.now();
+    if (now - clickedAt >= DOUBLE_CLICK_MS) {
+        clickedAt = now;
+        decide(decision);
+    }
+}
+
 // ---------------------------------------------------------------- Finish
 
 function finishButton() {
@@ -1512,24 +1677,36 @@ function finishButton() {
     }
     return el(
         "button",
-        { type: "button", class: "primary", disabled: running(), onclick: () => finishTarget(state.target) },
+        {
+            type: "button",
+            class: "primary",
+            disabled: running(),
+            onclick: (e) => finishTarget(state.target, e.currentTarget),
+        },
         `Finish ${targetLabel()}`,
     );
 }
 
-async function finishTarget(target) {
+// `button` is the Finish button pressed: off from the press until Finish is started or given up,
+// so the press shows at once, even while the server is slow to answer.
+async function finishTarget(target, button) {
+    const label = target.pr === null ? "the master seed" : `#${target.pr}`;
     const what =
         target.pr === null ? "push a seed branch and open its pull request" : `commit and push to ${target.branch}`;
+    const giveUp = (text, isError) => {
+        button.disabled = running();
+        say(text, isError);
+    };
+    button.disabled = true;
+    say(`Checking ${label} before Finish...`);
     let fresh;
     try {
         fresh = await api(`/api/target/${encodeURIComponent(target.id)}`);
     } catch (err) {
-        say(err.message, true);
+        giveUp(`Finish not started: ${err.message}`, true);
         return;
     }
-    const lines = [
-        `Finish ${target.pr === null ? "the master seed" : `#${target.pr}`}: ${what}, across every project?`,
-    ];
+    const lines = [`Finish ${label}: ${what}, across every project?`];
     const notOpened = fresh.projects.reduce((n, p) => n + p.notOpened, 0);
     if (notOpened > 0) {
         lines.push(`${notOpened} accepted without being opened.`);
@@ -1547,7 +1724,9 @@ async function finishTarget(target) {
         );
     }
     lines.push("One commit status is posted when Finish completes.");
-    if (!confirm(lines.join("\n\n"))) {
+    say(`Finish ${label}? Answer in the box.`);
+    if (!(await ask(lines.join("\n\n"), `Finish ${label}`))) {
+        giveUp("Finish cancelled: nothing was changed.");
         return;
     }
     // Finish runs on the server and can take minutes; the page only starts it and then asks how it
@@ -1561,7 +1740,7 @@ async function finishTarget(target) {
             .then((s) => s.job)
             .catch(() => null);
         if (!running() || state.job.target !== target.id) {
-            say("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
+            giveUp("Finish failed; your decisions are kept. Fix the cause and press Finish again.", true);
             app.prepend(el("pre", { class: "error" }, err.message));
             return;
         }
@@ -1585,7 +1764,7 @@ async function watchFinish() {
             say(finishing());
             await sleep(1000);
             try {
-                state.job = (await api("/api/finish-status")).job;
+                track((await api("/api/finish-status")).job);
             } catch (err) {
                 say(`Lost contact with the server (${err.message}); Finish goes on there. Retrying...`, true);
                 await sleep(2000);
@@ -1597,6 +1776,25 @@ async function watchFinish() {
     await showTargets();
 }
 
+// Takes the server's newest Finish. A server restarted during a Finish says it was interrupted;
+// one that could not save the Finish knows of none, so the page keeps the one it was following,
+// as interrupted, rather than showing the targets as if nothing had run.
+function track(job) {
+    const last = state.job;
+    if (!job && last?.running) {
+        job = {
+            ...last,
+            running: false,
+            step: null,
+            interrupted: true,
+            error:
+                `the server restarted while this Finish was at "${last.step}" and kept no record of it: check ` +
+                `whether ${last.branch ?? "the visual/seed-* branch"} on origin has its commit before pressing Finish again`,
+        };
+    }
+    state.job = !job && last?.interrupted ? last : job;
+}
+
 // What the newest Finish did, shown above the targets until the server restarts.
 function finishOutcome() {
     const job = state.job;
@@ -1604,6 +1802,18 @@ function finishOutcome() {
         return null;
     }
     const label = job.pr === null ? "the master seed" : `#${job.pr}`;
+    if (job.interrupted) {
+        return el(
+            "section",
+            { class: "card finish-outcome" },
+            el(
+                "p",
+                { class: "error" },
+                `Finish of ${label} was interrupted: the server restarted while it ran. Your decisions are kept.`,
+            ),
+            el("pre", { class: "error" }, job.error),
+        );
+    }
     if (job.error !== null) {
         return el(
             "section",
@@ -1638,7 +1848,7 @@ function finishOutcome() {
 // ---------------------------------------------------------------- the address
 
 // Every screen is in the address, after the session token, so a copied link opens it again:
-// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit&box=on&blink=off
+// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit&box=on&blink=off&flash=off
 // Only the fragment holds it: a browser never sends a fragment to a server or in a Referer.
 function hashFor() {
     const p = new URLSearchParams({ token });
@@ -1656,6 +1866,7 @@ function hashFor() {
         p.set("zoom", String(state.zoom));
         p.set("box", state.showBox ? "on" : "off");
         p.set("blink", state.blink ? "on" : "off");
+        p.set("flash", state.spotFlash ? "on" : "off");
     }
     return `#${p}`;
 }
@@ -1673,7 +1884,7 @@ function remember() {
         screen !== state.screen ||
         (screen !== "targets" &&
             (was.get("target") !== String(state.target.id) || was.get("project") !== state.project));
-    const push = !routing && moved;
+    const push = routes === 0 && moved;
     history[push ? "pushState" : "replaceState"](null, "", hash);
 }
 
@@ -1681,14 +1892,15 @@ function remember() {
 // from a new CI run) lands on the nearest screen that does, with a line saying so.
 async function route() {
     const p = new URLSearchParams(location.hash.slice(1));
-    routing = true;
+    const seq = ++nav;
+    routes++;
     try {
         const id = p.get("target");
         if (!id) {
             await showTargets();
             return;
         }
-        if (!(await loadTargets())) {
+        if (!(await loadTargets()) || seq !== nav) {
             return;
         }
         const target = state.targets.find((t) => String(t.id) === id);
@@ -1700,12 +1912,18 @@ async function route() {
         }
         if (state.data === null || state.target?.id !== target.id || state.project !== project) {
             state.sequence = [];
+            state.data = null;
             state.target = target;
             state.project = project;
             try {
                 await reload();
             } catch (err) {
-                say(err.message, true);
+                // A project whose download (or target) failed: its problem is on the targets screen.
+                const problem = target.projects.find((x) => x.project === project).problem;
+                await showTargets(`${project} of ${id} could not be opened: ${problem ?? err.message}`);
+                return;
+            }
+            if (seq !== nav) {
                 return;
             }
         }
@@ -1732,18 +1950,21 @@ async function route() {
         state.view = VIEWS.includes(p.get("view")) ? p.get("view") : "side";
         const zoom = p.get("zoom") === "fit" ? "fit" : Number(p.get("zoom"));
         state.zoom = ZOOMS.includes(zoom) ? zoom : "fit";
-        // A link's box and blink apply to this page; the browser's remembered choice is unchanged.
+        // A link's box, blink and flash apply to this page; the browser's remembered choice is unchanged.
         if (["on", "off"].includes(p.get("box"))) {
             state.showBox = p.get("box") === "on";
         }
         if (["on", "off"].includes(p.get("blink"))) {
             state.blink = p.get("blink") === "on";
         }
+        if (["on", "off"].includes(p.get("flash"))) {
+            state.spotFlash = p.get("flash") === "on";
+        }
         state.box = 0;
         say("");
         showStory();
     } finally {
-        routing = false;
+        routes--;
     }
 }
 
@@ -1768,7 +1989,9 @@ document.addEventListener("focusout", () => setTimeout(keepKeys));
 keepKeys();
 
 document.addEventListener("keydown", (e) => {
-    if (!["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
+    // An open question (ask) takes the keys: Escape cancels it.
+    const asking = document.querySelector("dialog[open]") !== null;
+    if (asking || !["story", "grid"].includes(state.screen) || e.ctrlKey || e.metaKey || e.altKey) {
         return;
     }
     const inInput = e.target instanceof HTMLInputElement;
@@ -1815,7 +2038,8 @@ document.addEventListener("keydown", (e) => {
         r: () => decide("reject"),
         e: () => decide("exclude"),
         u: () => decide(null),
-        f: () => toggleView("flash"),
+        // In Spotlight, F flashes the spotlighted baseline and new instead of leaving it.
+        f: () => (state.view === "spotlight" ? toggleOption("spotFlash") : toggleView("flash")),
         h: () => toggleView("highlight"),
         s: () => toggleView("spotlight"),
         b: () => toggleOption("showBox"),
@@ -1831,6 +2055,11 @@ document.addEventListener("keydown", (e) => {
         },
     };
     const action = keys[key];
+    if (e.repeat && ["a", "r", "e", "u"].includes(key)) {
+        // A held decision key decides once, never the items after it unseen.
+        e.preventDefault();
+        return;
+    }
     if (action) {
         e.preventDefault();
         action();

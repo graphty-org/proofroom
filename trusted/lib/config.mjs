@@ -21,8 +21,9 @@ const DEFAULTS = {
     issueLabels: ["bug"],
 };
 
-// Project ids name artifacts, jobs, directories and regular expressions, so they stay plain.
-const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Project ids name artifacts, jobs, directories and regular expressions, so they stay plain; and
+// results.json allows only these.
+const PROJECT_ID = /^[a-z0-9][a-z0-9-]*$/;
 // A path inside the repository: relative, no "..", no backslashes.
 const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
 
@@ -72,7 +73,7 @@ export function normalizeConfig(input) {
     for (const [id, p] of Object.entries(projects)) {
         const where = `projects.${id}`;
         if (!PROJECT_ID.test(id)) {
-            fail(`${where}: a project id is letters, digits, ".", "_" and "-"`);
+            fail(`${where}: a project id is lowercase letters, digits and "-"`);
         }
         if (typeof p !== "object" || p === null) {
             fail(`${where} must be an object`);

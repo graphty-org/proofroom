@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { join } from "node:path";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
-import { downloadCaptures, newestMasterCapture } from "../trusted/lib/github.mjs";
+import { downloadCaptures, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import {
     copyFixture,
@@ -83,7 +83,7 @@ async function finishJob(s, id) {
 }
 
 describe("serve: pull requests", () => {
-    it("lists every open pull request with a CI run, with counts per project", async () => {
+    it("lists every open pull request, with counts per project, and one without a CI run as waiting", async () => {
         const s = await start({
             gh: (r) =>
                 fakeGh({
@@ -102,7 +102,8 @@ describe("serve: pull requests", () => {
         });
         const { status, body } = await s.api("GET", "/api/prs");
         expect(status).toBe(200);
-        expect(body.targets.map((t) => t.id)).toEqual(["123"]);
+        expect(body.targets.map((t) => t.id)).toEqual(["123", "124"]);
+        expect(body.targets[1].projects[0].problem).toBe("waiting for CI on 4444444444");
         const [pr] = body.targets;
         expect(pr).toMatchObject({ pr: 123, runId: 1000, branch: "feature", mergeMasterFirst: false });
         const cm = pr.projects.find((p) => p.project === "compact-mantine");
@@ -351,6 +352,13 @@ describe("serve: decisions and Finish", () => {
     });
 
     it("finishes across every project in one commit, clears the accepts and keeps the rejects", async () => {
+        // Finish says in the server's log when it starts, ends and fails.
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => {
+            out.mockRestore();
+            err.mockRestore();
+        });
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
         await s.api("POST", "/api/decide", {
@@ -383,6 +391,12 @@ describe("serve: decisions and Finish", () => {
         expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual(rejected);
         // A second Finish has nothing new to post.
         expect((await finishJob(s, "123")).job.error).toBe("nothing decided");
+        expect(out.mock.calls.map(([line]) => line)).toEqual([
+            "visual-review: Finish of #123 started: 3 decisions, 4 undecided",
+            `visual-review: Finish of #123 done: commit ${body.commit}, 1 rejects`,
+            "visual-review: Finish of #123 started: 0 decisions, 6 undecided",
+        ]);
+        expect(err.mock.calls.map(([line]) => line)).toEqual(["visual-review: Finish of #123 failed: nothing decided"]);
     });
 
     it("runs Finish in the background, reports its step, and refuses a second one and new decisions", async () => {
@@ -744,7 +758,8 @@ describe("downloadCaptures", () => {
             }
             return inner(args, input);
         };
-        await expect(downloadCaptures(failing, run, ["compact-mantine"], tmp)).rejects.toThrow("zip");
+        const failed = await downloadCaptures(failing, run, ["compact-mantine"], tmp);
+        expect(failed["compact-mantine"]).toEqual({ dir: null, attempt: 1, error: "error extracting zip archive" });
         expect(readdirSync(join(tmp, "1000-1"))).toEqual([]);
 
         const out = await downloadCaptures(inner, run, ["compact-mantine"], tmp);
@@ -758,5 +773,144 @@ describe("downloadCaptures", () => {
         writeFileSync(join(dir, "button--primary.png"), "partial");
         await downloadCaptures(inner, run, ["compact-mantine"], tmp);
         expect(existsSync(join(dir, "results.json"))).toBe(true);
+    });
+});
+
+describe("network failures", () => {
+    const NET = "error connecting to productionresultssa0.blob.core.windows.net\ncheck your internet connection";
+    let logged;
+    beforeEach(() => {
+        logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+    afterEach(() => logged.mockRestore());
+    const lines = () => logged.mock.calls.map(([line]) => line.split("\n")[0]);
+
+    it("retries a gh call that failed on the network, then returns its answer", async () => {
+        let calls = 0;
+        const gh = withRetries(async () => {
+            if (++calls <= 2) {
+                throw new Error(NET);
+            }
+            return "ok";
+        }, [0, 0, 0]);
+        expect(await gh(["run", "download", "1"])).toBe("ok");
+        expect(calls).toBe(3);
+        expect(lines()).toEqual([
+            "visual-review: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
+            "visual-review: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
+        ]);
+    });
+
+    it("gives up after the last delay", async () => {
+        let calls = 0;
+        const gh = withRetries(async () => {
+            calls++;
+            throw new Error("HTTP 502: Bad Gateway (https://api.github.com/repos/o/r/pulls)");
+        }, [0, 0]);
+        await expect(gh(["api", "x"])).rejects.toThrow("HTTP 502");
+        expect(calls).toBe(3);
+    });
+
+    it.each([
+        ["a 4xx", ["api", "x"], "HTTP 404: Not Found (https://api.github.com/x)"],
+        ["a missing artifact", ["run", "download", "1"], "no artifact matches any of the names or patterns provided"],
+        ["a write", ["api", "x", "--input", "-"], NET],
+    ])("does not retry %s", async (_, args, message) => {
+        let calls = 0;
+        const gh = withRetries(async () => {
+            calls++;
+            throw new Error(message);
+        }, [0, 0, 0]);
+        await expect(gh(args)).rejects.toThrow(message.split("\n")[0]);
+        expect(calls).toBe(1);
+        expect(lines()).toEqual([`visual-review: gh ${args.join(" ")} failed: ${message.split("\n")[0]}`]);
+    });
+
+    it("shows a project whose download failed, loads the others, and retries it on the next request", async () => {
+        let down = true;
+        const s = await start({
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    if (down && args[0] === "run" && args[4] === "visual-compact-mantine-1") {
+                        throw new Error(NET);
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        const first = (await s.api("GET", "/api/prs")).body.targets[0].projects;
+        expect(first.find((p) => p.project === "compact-mantine").problem).toBe(
+            "download failed: error connecting to productionresultssa0.blob.core.windows.net; reload the page to retry",
+        );
+        expect(first.find((p) => p.project === "graphty-element")).toMatchObject({ problem: null, reviewable: 1 });
+
+        down = false;
+        const second = (await s.api("GET", "/api/prs")).body.targets[0].projects;
+        expect(second.find((p) => p.project === "compact-mantine")).toMatchObject({ problem: null, reviewable: 6 });
+    });
+
+    it("starts downloading at startup, and a request during it shares that refresh", async () => {
+        const calls = [];
+        const s = await start({
+            warm: true,
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    calls.push(args.slice(0, 2).join(" "));
+                    if (args[0] === "run") {
+                        await new Promise((resolve) => setTimeout(resolve, 50));
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets.map((t) => t.id)).toEqual(["123"]);
+        expect(calls.filter((c) => c === "run download")).toHaveLength(2);
+        expect(calls.filter((c) => c.startsWith("api repos/{owner}/{repo}/pulls"))).toHaveLength(1);
+    });
+
+    // Pull request #123 loads; #124's CI run cannot be read; master run 2000 loads.
+    const twoPrsAndMaster = (fail) => (r) => {
+        const inner = fakeGh({
+            prs: [
+                { number: 123, head: r.head, branch: "feature" },
+                { number: 124, head: "4".repeat(40), branch: "other" },
+            ],
+            runs: { [r.head]: { id: 1000, head: r.head } },
+            runsById: { 2000: { id: 2000, head: r.master } },
+            jobs: { 1000: [job("compact-mantine"), job("graphty-element")], 2000: [job("compact-mantine")] },
+            artifacts: { 1000: ["visual-compact-mantine-1"], 2000: ["visual-compact-mantine-1"] },
+        });
+        return async (args, input) => {
+            if (fail(args[1] ?? "")) {
+                throw new Error("error connecting to api.github.com");
+            }
+            return inner(args, input);
+        };
+    };
+
+    it("shows one pull request that cannot be loaded as failed, and loads the rest and master", async () => {
+        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path.includes("head_sha=4444")) });
+        const { status, body } = await s.api("GET", "/api/prs");
+        expect(status).toBe(200);
+        const byId = Object.fromEntries(body.targets.map((t) => [t.id, t]));
+        expect(Object.keys(byId).sort()).toEqual(["123", "124", "master"]);
+        expect(byId["124"]).toMatchObject({ pr: 124, runId: null, branch: "other" });
+        expect(byId["124"].projects.map((p) => p.problem)).toEqual([
+            "failed to load: error connecting to api.github.com; reload the page to retry",
+            "failed to load: error connecting to api.github.com; reload the page to retry",
+        ]);
+        expect(byId["123"].projects.find((p) => p.project === "compact-mantine").problem).toBeNull();
+        expect(byId.master.projects.find((p) => p.project === "compact-mantine").problem).toBeNull();
+    });
+
+    it("still loads master when the list of pull requests cannot be read", async () => {
+        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path.includes("/pulls?")) });
+        const { status, body } = await s.api("GET", "/api/prs");
+        expect(status).toBe(200);
+        expect(body.targets.map((t) => t.id)).toEqual(["master"]);
+        expect(lines()).toContain("visual-review: pull requests not listed: error connecting to api.github.com");
     });
 });

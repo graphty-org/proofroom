@@ -214,6 +214,7 @@ async function serve(args) {
         origin,
         masterRun,
         results: values.results && resolve(values.results),
+        warm: true,
         // What the owner types to run this server from their own shell, so Finish signs with
         // their key rather than the environment of whoever started it (an agent, say).
         startCommand:

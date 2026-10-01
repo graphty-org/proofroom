@@ -147,10 +147,12 @@ Per project:
 | `seedFromDefaultBranch` | `true`     | `false`: the project's first baselines are accepted on a pull request, not seeded from the default branch                                                                                                                                      |
 | `waitFor`               | none       | After a story renders, call `method()` on every element matching `selector` and wait for the promise it returns, for a component that keeps drawing after Storybook says it is done. A console line containing `failOnConsole` fails the story |
 
-Project ids are letters, digits, `.`, `_` and `-`. Every project is gated; there is no setting
-that turns the gate off, and a config that sets `gate` is refused. The pull request gate reads the
-config as it is on the base branch, so a pull request cannot move `baselines` out from under it or
-drop a project from the gate; a project that a pull request adds to its own config is gated too.
+Project ids are lowercase letters, digits and `-` (results.json allows no others), and so are
+the names of Chromatic modes, which a capture refuses before it starts. Every project is gated;
+there is no setting that turns the gate off, and a config that sets `gate` is refused. The pull
+request gate reads the config as it is on the base branch, so a pull request cannot move
+`baselines` out from under it or drop a project from the gate; a project that a pull request adds
+to its own config is gated too.
 
 ## The GitHub Actions workflows
 
@@ -222,10 +224,10 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 
 The address always names the screen you are on, after the token: the targets list; a pull
 request (or master) and project with the grid's filter and text; or one story with its view,
-zoom, changed box and blink, for example
-`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2&box=on&blink=off`.
-A link's `box` and `blink` apply to the page it opens; the choice this browser remembers for B
-and L is left as it was.
+zoom, changed box, blink and Spotlight flash, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&view=flash&zoom=2&box=on&blink=off&flash=off`.
+A link's `box`, `blink` and `flash` apply to the page it opens; the choice this browser remembers
+for B, L and F in Spotlight is left as it was.
 Opening that address, in another tab or on another device, opens the same screen. **Copy link**
 at the top right copies it. The link carries your session token, so it works on your iPad the way
 the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
@@ -250,6 +252,10 @@ starts the same server from your own shell.
       pull request. Merge the default branch into the pull request's branch (by merge, never
       rebase) and wait for CI.
     - **capture failed**: the `visual` job produced no results. Re-run that job in GitHub Actions.
+    - **CI still running**, **waiting for CI**, **downloading the captures**: there is nothing
+      to review yet; reload the page in a moment.
+    - **artifact expired**: GitHub deleted the capture after 30 days and it was never
+      downloaded here. Re-run the `visual` job.
     - **incomplete: N of M stories**: the capture stopped part way. Re-run the job.
     - **not seeded from master**: this project is not reviewed on the default branch
       (`"seedFromDefaultBranch": false` in the config); its first baselines are accepted on a pull
@@ -295,7 +301,9 @@ starts the same server from your own shell.
    scroll it was opened at; **Highlight**, the changed pixels in solid red laid over both images
    themselves, in both panes, where **Blink** (L) flashes the red pixels on and off at Flash's
    pace (remembered in this browser); and **Spotlight**, the new image dimmed everywhere except around the changed pixels
-   (each grown by 10 image pixels), which finds a one-pixel change. Flash, Highlight and
+   (each grown by 10 image pixels), which finds a one-pixel change, where **Spotlight flash** (F
+   in Spotlight) shows the spotlighted baseline and the spotlighted new image one after the other
+   at Flash's pace, the pane's label saying which (remembered in this browser). Flash, Highlight and
    Spotlight need two images; on a new or removed story they are off and the page says why
    ("New story, no baseline", "Only one image: this story was removed"). Badges here:
    **size changed** (in image pixels), **flaky** (the two captures differed, then matched), and
@@ -326,11 +334,12 @@ Seed them from the default branch (below), or accept them on the pull request.
 | Key          | Action                                                                         |
 | ------------ | ------------------------------------------------------------------------------ |
 | J / K        | Next / previous item of this pass (decided items stay in it)                   |
-| A            | Accept an undecided item                                                       |
+| A            | Accept an undecided item, once both its images are shown                       |
 | R            | Reject an undecided item (asks for a reason, then Enter)                       |
 | E            | Exclude an undecided item (asks for a reason, then Enter, then a confirmation) |
 | U            | Undo the item's decision (on the grid: each tile's Undo button)                |
 | F            | Flash between baseline and new; F again returns to side by side                |
+| F            | In Spotlight: flash the spotlighted baseline and new, or stop flashing         |
 | H            | Highlight changed pixels; H again returns to side by side                      |
 | S            | Spotlight the changes; S again returns to side by side                         |
 | Z            | Next zoom: fit to screen, real size, 2x, 4x, 8x, then fit again                |
@@ -344,6 +353,8 @@ Seed them from the default branch (below), or accept them on the pull request.
 
 No key reverses a decision. A, R and E do nothing on an item that is already decided, and say
 so; to change a decision, press U (or the Undo button) first. The same key twice never undoes.
+A held A, R, E or U decides once, and a double click on a decision button decides only the item
+it was clicked on, never the next one.
 
 ## What each decision does
 
@@ -360,7 +371,9 @@ so; to change a decision, press U (or the Undo button) first. The same key twice
   runner), re-run the `visual` job instead, since the newest attempt replaces the old results.
 - **Undo** (U, or a tile's Undo on the grid) clears a decision before Finish; it is the only way
   to change one. The grid also undoes a whole component or project, after a second press.
-  Decisions are kept across server restarts.
+  Decisions are kept across server restarts. A decision applies only to the image it was taken
+  on: when a new run or a re-run attempt captures that item differently, it is undecided again
+  (the old decision stays saved, and comes back if the image does).
 - After Finish, accepts and exclusions are cleared; rejects stay, marked as already posted, and
   still show as rejected on the next CI run while the capture is unchanged. Finish does not post
   them twice. They live in the work directory's `state/` (the config's `workDir`), not in the
@@ -598,6 +611,21 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   other `core.hooksPath`), that hook is not installed: call `git lfs pre-push "$@"` from your own
   pre-push hook. `git push --no-verify` skips the upload too; after one that carried baselines,
   run `git lfs push origin <branch>`.
+- **download failed / failed to load: ...; reload the page to retry.** `serve` starts
+  downloading every capture as soon as it starts, and retries a gh call that fails on the network
+  (DNS, a dropped connection, a GitHub 5xx) three times over about 20 seconds; it logs each failed
+  call and each retry to stderr. A project whose download still fails shows "download failed", a
+  pull request (or the default branch's run) GitHub would not answer for shows "failed to load",
+  or, when it loaded before, keeps what it showed with "could not refresh", and everything else
+  loads as usual. Reload the page to try again; captures already downloaded are kept, and a
+  damaged one is downloaded again.
+- **A gh or git call hangs.** Every gh and git call `serve` and Finish make is stopped after 10
+  minutes (`VISUAL_REVIEW_TIMEOUT_MS` sets another limit, in milliseconds), and git never waits
+  for a credential prompt. A stopped Finish names the step it was on and keeps your decisions.
+- **"the server stopped while this Finish was at ..."** The server restarted during a Finish.
+  Look at the branch on origin to see whether its commit was pushed before pressing Finish again.
+- **"... was pushed as ..., but opening its pull request failed"** (the seed). Press Finish
+  again: it opens the pull request for the branch already pushed.
 - **capture failed / no capture** on a target. The `visual` job produced no results. Open its
   log from the page and re-run the job. **incomplete: N of M stories**: the job stopped part way
   (a timeout); re-run it.

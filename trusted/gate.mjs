@@ -63,7 +63,13 @@ export function newestResults(dir) {
             continue;
         }
         const file = join(dir, name, "results.json");
-        out[project] = { attempt, results: existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null };
+        let results = null;
+        try {
+            results = JSON.parse(readFileSync(file, "utf8"));
+        } catch {
+            // Missing or not JSON: counted as missing, like any invalid results.json.
+        }
+        out[project] = { attempt, results };
     }
     return out;
 }

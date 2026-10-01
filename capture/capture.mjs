@@ -154,6 +154,13 @@ export function storySettings(parameters, file) {
             name,
             globals: Object.fromEntries(Object.entries(m).filter(([k]) => k !== "disable")),
         }));
+    // A mode names files and results.json items, which allow only these: refused before any story
+    // is captured, not when results.json is checked at the end.
+    for (const { name } of modes) {
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name.length > 50) {
+            throw new Error(`Chromatic mode "${name}": a mode name is lowercase letters, digits and "-", at most 50`);
+        }
+    }
     const where = byFile ? "settings file" : "story's parameters";
     return {
         disableSnapshot,
