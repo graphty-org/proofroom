@@ -1,3 +1,23 @@
+## 0.2.1 (2026-10-02)
+
+### 🚀 Features
+
+- **visual-review:** flash the spotlighted baseline and new image in Spotlight ([48526aa4](https://github.com/graphty-org/graphty-monorepo/commit/48526aa4))
+
+### 🩹 Fixes
+
+- **visual-review:** stale tiles never re-accept, Accept all counts removals, Finish shows restarts ([e283dc64](https://github.com/graphty-org/graphty-monorepo/commit/e283dc64))
+- **visual-review:** keep decisions, targets and Finish whole when GitHub, git or the disk fail ([7a61e563](https://github.com/graphty-org/graphty-monorepo/commit/7a61e563))
+- **visual-review:** check project ids and mode names before capturing; gate survives bad JSON ([126926a2](https://github.com/graphty-org/graphty-monorepo/commit/126926a2))
+- **visual-review:** make the review page's caches, decisions and routing robust ([7c64a548](https://github.com/graphty-org/graphty-monorepo/commit/7c64a548))
+- **visual-review:** make Finish show feedback at once and ask in the page ([cd50d329](https://github.com/graphty-org/graphty-monorepo/commit/cd50d329))
+- **visual-review:** log gh failures and load the other targets when one fails ([da6678ea](https://github.com/graphty-org/graphty-monorepo/commit/da6678ea))
+- **visual-review:** retry gh on network failures and load the other projects when one fails ([842011da](https://github.com/graphty-org/graphty-monorepo/commit/842011da))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.0 (2026-10-01)
 
 ### 🩹 Fixes
