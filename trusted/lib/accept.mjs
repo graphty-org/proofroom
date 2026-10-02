@@ -21,16 +21,13 @@
  */
 
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval } from "./approval.mjs";
 import { commentOnPullRequest, createIssue, createPullRequest, exec, postStatus } from "./github.mjs";
-import { isLfsPointer } from "./compare.mjs";
-
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+import { isLfsPointer, sha256 } from "./compare.mjs";
 
 /** The statuses an item can be accepted or rejected in; unstable and failed are only excluded. */
 const DECIDABLE = new Set(["changed", "moved", "new", "unseeded", "removed"]);
