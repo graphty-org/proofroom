@@ -16,7 +16,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
 import { withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { CONFIG, FIXTURE, fakeGh, git, isolateGit, job, makeRepo, onePr, withMoved } from "./helpers.mjs";
+import { CONFIG, FIXTURE, fakeGh, git, isolateGit, job, makeRepo, onePr, pushCommit, withMoved } from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
@@ -1615,6 +1615,36 @@ function passkeysOnMaster(r, keys) {
     git(r.repo, "commit", "-q", "-m", "register a passkey");
     git(r.repo, "push", "-q", "origin", "master");
 }
+
+describe("review page: update from master", () => {
+    it("warns on opening a project master has newer baselines for, and updates the branch from the warning", async () => {
+        const r = await open((repo) => {
+            pushCommit(repo.remote, "master", "visual-baselines/compact-mantine/other.png");
+            return { gh: onePr()(repo) };
+        });
+        const stale = page.locator("#stale");
+        await stale.waitFor();
+        expect(await stale.locator(".warning").textContent()).toBe(
+            "master has 1 newer compact-mantine baseline since this capture; this review is out of date. " +
+                "Finish refuses it until the branch has them.",
+        );
+        await stale.locator("summary").click();
+        expect(await stale.locator("li").allTextContents()).toEqual(["other.png"]);
+        await page.locator("#update-from-master").click();
+        await expect.poll(() => page.locator("#outcome-heading").textContent()).toBe("Updated #123 from master.");
+        expect(dialogs[0]).toMatch(/^Update #123 from master\? This merges master into feature/);
+        expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.head);
+        expect(await page.locator(".finish-outcome li").allTextContents()).toEqual([
+            "visual-baselines/compact-mantine/other.png",
+        ]);
+    });
+
+    it("shows no warning when the branch has master's baselines", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator(".component").first().waitFor();
+        expect(await page.locator("#stale").count()).toBe(0);
+    });
+});
 
 describe("review page: the passkey", () => {
     // Chromium's virtual authenticator (CDP) stands in for Face ID: a real browser makes the

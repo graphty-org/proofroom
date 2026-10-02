@@ -663,7 +663,8 @@ async function commitAccepts({
     for (const project of new Set(accepts.map((a) => a.project))) {
         if (await behindMaster(repo, base, project, config, tracking)) {
             throw new AcceptError(
-                `merge ${defaultBranch} into the branch first: ${defaultBranch} has newer ${project} baselines`,
+                `merge ${defaultBranch} into the branch first: ${defaultBranch} has newer ${project} baselines; ` +
+                    `press "Update from ${defaultBranch}" on the review page, or run \`visual-review update ${target.pr}\``,
             );
         }
     }
@@ -860,6 +861,133 @@ export async function behindMaster(
 ) {
     const newest = await git(repo, ["log", "-1", "--format=%H", tracking, "--", `${baselines}/${project}/`]);
     return newest !== "" && !(await gitOk(repo, ["merge-base", "--is-ancestor", newest, head]));
+}
+
+/**
+ * The files under a project's baselines that the default branch changed since `head` forked from
+ * it: what a capture of `head` was not compared with.
+ * @param {string} repo the repository, with the default branch fetched
+ * @param {string} head the captured head
+ * @param {string} project the project id
+ * @param {{ defaultBranch: string, baselines: string }} config the settings
+ * @param {string} [tracking] the fetched default branch
+ * @returns {Promise<string[]>} the files, relative to the project's baselines directory
+ */
+export async function newerOnMaster(
+    repo,
+    head,
+    project,
+    { defaultBranch, baselines },
+    tracking = `refs/remotes/origin/${defaultBranch}`,
+) {
+    const dir = `${baselines}/${project}/`;
+    const out = await git(repo, ["diff", "--name-only", "--no-renames", `${head}...${tracking}`, "--", dir]);
+    return out
+        .split("\n")
+        .filter(Boolean)
+        .map((p) => p.slice(dir.length));
+}
+
+/**
+ * Update from the default branch: merges it into a pull request's branch (a merge commit, never a
+ * rebase, so an accept commit stays as it was made) and pushes, so CI captures again against the
+ * default branch's baselines. A conflicting file under the baselines directory takes the default
+ * branch's side: its contents there are already approved, and whatever the pull request's capture
+ * still shows differently comes back to the review as changed. Any other conflict refuses, naming
+ * the files, and nothing is committed or pushed.
+ *
+ * It accepts nothing and writes no review record: a baseline that ends up as on the default
+ * branch is no change for the gate, which diffs the pull request against its base.
+ * @param {object} input the work
+ * @param {string} input.repo the repository
+ * @param {number} input.pr the pull request
+ * @param {string} input.branch its branch
+ * @param {{ defaultBranch: string, baselines: string, workDir: string, commitPrefix: string }} input.config
+ *     the settings
+ * @param {(step: string) => void} [input.progress] told each step as it starts
+ * @returns {Promise<{ commit: string, branch: string, taken: string[], recapture: string[] }>} the
+ *     pushed merge commit, the conflicting baseline files that took the default branch's side, and
+ *     the baseline files the branch now has different from before (paths under the baselines
+ *     directory), whose stories CI compares again
+ */
+export async function updateFromMaster({ repo, pr, branch, config, progress = () => {} }) {
+    const { baselines, defaultBranch } = config;
+    const own = (b) => `refs/visual-review/origin/${b}`;
+    const master = own(defaultBranch);
+    try {
+        if (!branch || !(await gitOk(repo, ["check-ref-format", `refs/heads/${branch}`]))) {
+            throw new AcceptError(`no usable branch for #${pr}: ${branch}`);
+        }
+        progress("fetching");
+        for (const b of [defaultBranch, branch]) {
+            await git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${own(b)}`]);
+        }
+        const head = await git(repo, ["rev-parse", own(branch)]);
+        if (await gitOk(repo, ["merge-base", "--is-ancestor", master, head])) {
+            throw new AcceptError(`${branch} already has everything on ${defaultBranch}: nothing to update`);
+        }
+        const tree = join(repo, config.workDir, "worktrees", `update-${pr}`);
+        await removeWorktree(repo, tree);
+        await git(repo, ["worktree", "add", "-q", "--detach", tree, head]);
+        try {
+            progress("merging");
+            let conflicts = [];
+            await git(tree, ["merge", "-q", "--no-ff", "--no-commit", master]).catch(async (err) => {
+                conflicts = (await git(tree, ["diff", "--name-only", "-z", "--diff-filter=U"]))
+                    .split("\0")
+                    .filter(Boolean);
+                if (conflicts.length === 0) {
+                    throw err;
+                }
+            });
+            const outside = conflicts.filter((p) => !p.startsWith(`${baselines}/`));
+            if (outside.length > 0) {
+                throw new AcceptError(
+                    `${branch} conflicts with ${defaultBranch} outside ${baselines}/, so nothing was changed; ` +
+                        `merge ${defaultBranch} into it by hand: ${outside.join(", ")}`,
+                );
+            }
+            for (const path of conflicts) {
+                await ((await gitOk(tree, ["cat-file", "-e", `${master}:${path}`]))
+                    ? git(tree, ["checkout", master, "--", path])
+                    : git(tree, ["rm", "-q", "--", path]));
+            }
+            const recapture = (await git(tree, ["diff", "--cached", "--name-only", "-z", head, "--", `${baselines}/`]))
+                .split("\0")
+                .filter((p) => p && !p.startsWith(`${baselines}/reviews/`));
+            progress("committing");
+            const taken =
+                conflicts.length === 0
+                    ? ["No conflicts."]
+                    : [
+                          `Takes ${defaultBranch}'s side for ${conflicts.length} conflicting baseline ${conflicts.length === 1 ? "file" : "files"}, ` +
+                              "already approved there; CI captures them again and the review shows what still differs:",
+                          "",
+                          ...conflicts.map((p) => `- ${p}`),
+                      ];
+            const message = [
+                `${config.commitPrefix}: merge ${defaultBranch} into ${branch} for visual review`,
+                "",
+                `Updates #${pr} from ${defaultBranch} (visual-review update). It accepts nothing.`,
+                ...taken,
+                "",
+            ].join("\n");
+            await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
+            progress("pushing");
+            await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]).catch((err) => {
+                throw /\[rejected\].*\((fetch first|non-fast-forward)\)/.test(err.message)
+                    ? new AcceptError(`${branch} moved while it was being updated; nothing was pushed: update again`)
+                    : err;
+            });
+            return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, taken: conflicts, recapture };
+        } finally {
+            await removeWorktree(repo, tree).catch((err) =>
+                console.error(`visual-review: could not remove the update worktree ${tree}: ${err.message}`),
+            );
+        }
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    }
 }
 
 /**
