@@ -1838,9 +1838,13 @@ describe("review page: narrow windows, touch and wording", () => {
             const range = globalThis.document.createRange();
             range.selectNodeContents(text);
             const box = (r) => ({ left: r.left, right: r.right });
+            // The spinner turns, and a turned square's bounding box is up to 1.41 times as wide as
+            // the round spinner drawn in it: measured unturned, its box is the circle's extent.
+            const spinner = accept.querySelector(".spinner");
+            spinner.style.animation = "none";
             return {
                 button: box(accept.getBoundingClientRect()),
-                spinner: box(accept.querySelector(".spinner").getBoundingClientRect()),
+                spinner: box(spinner.getBoundingClientRect()),
                 label: box(range.getBoundingClientRect()),
                 kbd: box(accept.querySelector("kbd").getBoundingClientRect()),
                 clipped: accept.scrollWidth > accept.clientWidth,
