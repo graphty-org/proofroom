@@ -39,6 +39,7 @@
  * kept on disk.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -52,6 +53,7 @@ import {
     commitStatus,
     decisionProblem,
     finish,
+    legacyApprovals,
     prepareRecord,
     proposeKey,
 } from "./accept.mjs";
@@ -308,7 +310,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     /**
      * The record each target's Finish was prepared with, waiting for its approval.
      * @type {Map<string, { challenge: string, record: object, work: object, digest: string,
-     *     expires: number }>}
+     *     expires: number, legacy?: { items: object[], drop: string[] } | null }>}
      */
     const approvals = new Map();
     // Fails closed: only a missing file means no pending key; any other failure throws.
@@ -923,7 +925,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 : null,
             defaultBranch,
             // Decisions the next Finish would publish (a reject an earlier Finish posted is not).
-            unpublished: [...decided.values()].filter((d) => !d.posted).length,
+            unpublished: [...decided.values()].filter((d) => !d.posted).length + legacyCount(t),
             warnings,
             signer,
             startCommand,
@@ -1055,6 +1057,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 .filter((p) => p.undecided > 0)
                 .map((p) => ({ project: p.project, undecided: p.undecided })),
             unloaded,
+            // Approvals from before passkeys a signed Finish signs again, and the unsigned records
+            // it removes.
+            legacy: legacyOf(t) && { files: legacyOf(t).items.length, records: legacyOf(t).drop },
             status: commitStatus({
                 accepted: count("accept"),
                 rejected: count("reject"),
@@ -1080,6 +1085,42 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         undecided: summary(t).projects.reduce((n, p) => n + p.undecided, 0),
         unloaded: t.projects.filter((p) => !p.results).map((p) => p.project),
     });
+
+    /**
+     * A pull request's approvals from before passkeys (legacyApprovals): what a signed Finish
+     * signs again and which unsigned records it removes. Cached per captured head and default
+     * branch tip; null when there are none or they cannot be read here.
+     */
+    const legacyCache = new Map();
+    const legacyOf = (t) => {
+        if (t.local || t.pr === null || !t.headSha) {
+            return null;
+        }
+        const base = `refs/remotes/origin/${defaultBranch}`;
+        let tip;
+        try {
+            tip = execFileSync("git", ["rev-parse", base], { cwd: repo }).toString("utf8").trim();
+        } catch {
+            return null;
+        }
+        const key = `${t.headSha}:${tip}`;
+        if (!legacyCache.has(t.id) || legacyCache.get(t.id).key !== key) {
+            let value = null;
+            try {
+                value = legacyApprovals({ repo, pr: t.pr, head: t.headSha, base: tip, config });
+            } catch (err) {
+                console.error(`visual-review: could not read the approvals of #${t.pr}: ${err.message}`);
+            }
+            legacyCache.set(t.id, { key, value });
+        }
+        return legacyCache.get(t.id).value;
+    };
+    // How many things a signed Finish of the old approvals publishes: the files it signs again,
+    // or, when none are left, the unsigned records it removes.
+    const legacyCount = (t) => {
+        const l = legacyOf(t);
+        return l === null ? 0 : l.items.length || l.drop.length;
+    };
 
     const capturesOf = (t) =>
         Object.fromEntries(
@@ -1163,8 +1204,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         }
     }
 
-    // The unpublished count after a write, so the page's Finish button stays current.
-    const unpublishedOf = (t) => finishList(t).list.length;
+    // The unpublished count after a write, so the page's Finish button stays current: the
+    // decisions, plus the files approved before passkeys that a signed Finish signs again.
+    const unpublishedOf = (t) => finishList(t).list.length + legacyCount(t);
 
     /**
      * Where a target's image is on this disk, by results.json.
@@ -1487,6 +1529,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 ];
             }
             const work = finishWork(t);
+            const legacy = legacyOf(t);
             let prepared;
             try {
                 prepared = await prepareRecord({
@@ -1496,6 +1539,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     decisions: work.list,
                     now: new Date(),
                     config,
+                    legacy,
                 });
             } catch (err) {
                 if (err instanceof AcceptError) {
@@ -1508,6 +1552,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 challenge,
                 record: prepared.record,
                 work,
+                legacy,
                 digest: work.digest,
                 expires: Date.now() + APPROVAL_MS,
             });
@@ -1543,6 +1588,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 return [409, { error: CHANGED_SINCE }];
             }
             let approval = null;
+            let legacy = null;
             const { main, trusted } = await knownKeys();
             if (trusted.length > 0) {
                 if (!body.approval) {
@@ -1565,6 +1611,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 approvals.delete(t.id);
                 // The decisions the approved record was built from, not a fresh read of the state.
                 work = p.work;
+                legacy = p.legacy;
                 approval = { record, pendingKeys: main.length > 0 ? [] : trusted, origin };
             }
             const { list, captures, undecided } = work;
@@ -1593,7 +1640,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 undecided,
                 unloaded: work.unloaded,
                 config,
-                ...(approval && { approval, now: new Date(approval.record.reviewedAt) }),
+                ...(approval && { approval, legacy, now: new Date(approval.record.reviewedAt) }),
             });
             return [202, { job }];
         },

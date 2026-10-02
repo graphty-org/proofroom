@@ -3202,8 +3202,20 @@ function sheet(t, f, prepared, notice) {
         f.accepts > 0 ? plural(f.accepts, "accept") : null,
         f.excludes > 0 ? plural(f.excludes, "exclusion") : null,
     ].filter(Boolean);
+    const legacy = f.legacy && f.legacy.files + f.legacy.records.length > 0 ? f.legacy : null;
+    if (legacy) {
+        // Approved in this pull request before passkeys existed: the gate counts those approvals
+        // for nothing until they are signed.
+        lines.push(
+            `Sign again ${plural(legacy.files, "file")} approved before passkeys, and remove ` +
+                `${plural(legacy.records.length, "unsigned review record")} from ${t.branch}: ` +
+                `${legacy.records.join(", ")}.`,
+        );
+    }
     if (kinds.length === 0) {
-        lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
+        if (!legacy) {
+            lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
+        }
     } else if (seed) {
         const day = new Date().toISOString().slice(0, 10);
         lines.push(
@@ -3335,7 +3347,7 @@ async function finishTarget(id, button) {
         }
         const f = t.finish;
         const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
-        const commits = f.accepts + f.excludes > 0;
+        const commits = f.accepts + f.excludes > 0 || (f.legacy !== null && f.legacy !== undefined);
         // When the server cannot prepare an approval the final button is unavailable, and the sheet
         // says why.
         let approval = null;

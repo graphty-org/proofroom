@@ -204,6 +204,33 @@ const gitOut = (cwd, args) => execFileSync("git", args, { cwd, maxBuffer: 1 << 2
  * @returns {string[]} one line per unaccounted change; empty when every change has a record
  */
 export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "visual-baselines", approvals = {}) {
+    const { problems, missing } = reviewGaps(base, head, cwd, baselines, approvals);
+    for (const { path } of missing.slice(0, 20)) {
+        problems.push(
+            path === PASSKEYS_FILE
+                ? `${path}: changed with no record approved by a key on the base branch; once a key is registered, adding or replacing one is merged by an administrator (the README, "Replacing the passkey")`
+                : `${path}: changed with no review record taking it from its base branch contents to these`,
+        );
+    }
+    if (missing.length > 20) {
+        problems.push(`... and ${missing.length - 20} more baseline files with no review record`);
+    }
+    return problems;
+}
+
+/**
+ * What unrecordedChanges reports, as data, so the review server offers exactly the files the gate
+ * would refuse and Finish drops exactly the records the gate refuses.
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @param {string} cwd the repository
+ * @param {string} baselines the baselines directory
+ * @param {{ keys?: object[] | null, pr?: number | null }} [approvals] as in unrecordedChanges
+ * @returns {{ problems: string[], refused: string[], missing: { path: string, from: string | null,
+ *     to: string | null }[] }} the problems with the added records, the added records that count
+ *     for nothing, and every change no counted record accounts for
+ */
+export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
     const enforced = Boolean(approvals.keys);
     const fields = gitOut(cwd, [
         "diff",
@@ -221,6 +248,7 @@ export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "
     const show = (ref, path) => gitOut(cwd, ["show", `${ref}:${path}`]);
     const problems = [];
     const records = [];
+    const refused = [];
     const changed = [];
     for (let i = 0; i + 1 < fields.length; i += 2) {
         const [status, path] = [fields[i], fields[i + 1]];
@@ -257,6 +285,7 @@ export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "
             }
             if (why) {
                 problems.push(`${path}: ${why}`);
+                refused.push(path);
                 continue;
             }
         }
@@ -275,17 +304,7 @@ export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "
         }
         return now !== c.to;
     });
-    for (const { path } of missing.slice(0, 20)) {
-        problems.push(
-            path === PASSKEYS_FILE
-                ? `${path}: changed with no record approved by a key on the base branch; once a key is registered, adding or replacing one is merged by an administrator (the README, "Replacing the passkey")`
-                : `${path}: changed with no review record taking it from its base branch contents to these`,
-        );
-    }
-    if (missing.length > 20) {
-        problems.push(`... and ${missing.length - 20} more baseline files with no review record`);
-    }
-    return problems;
+    return { problems, refused, missing };
 }
 
 /**
