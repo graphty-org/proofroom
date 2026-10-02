@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { parsePasskeys, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
-import { downloadCaptures, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
-import { createApp, thumbnail } from "../trusted/lib/serve.mjs";
+import { downloadCaptures, hurry, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
+import { createApp } from "../trusted/lib/serve.mjs";
+import { thumbnail } from "../trusted/lib/thumbs.mjs";
 import { PNG } from "pngjs";
 import {
     copyFixture,
@@ -760,7 +761,7 @@ describe("serve: what the page waits on", () => {
         });
     });
 
-    it("serves a grid thumbnail no wider than 400 pixels, made once", async () => {
+    it("serves a grid thumbnail no wider than 400 pixels, made in advance for every item to decide", async () => {
         const wide = new PNG({ width: 1000, height: 500 });
         for (let i = 0; i < 1000 * 500; i++) {
             wide.data.set(i % 1000 < 500 ? [255, 0, 0, 255] : [0, 0, 255, 255], i * 4);
@@ -772,10 +773,15 @@ describe("serve: what the page waits on", () => {
 
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
+        // Made as the captures land, before any tile asks: one per item to decide that has an image
+        // (five in compact-mantine, the removed one's from its baseline, and one in graphty-element).
+        const thumbs = () => (existsSync(join(s.tmp, "thumbs")) ? readdirSync(join(s.tmp, "thumbs")) : []);
+        await until(() => thumbs().filter((f) => f.endsWith(".png")).length === 6);
+        expect(thumbs().filter((f) => f.endsWith(".tmp"))).toEqual([]);
         const thumb = await s.api("GET", "/api/thumb/123/compact-mantine/capture/button--primary.dark.png");
         expect(thumb.type).toBe("image/png");
         expect(PNG.sync.read(thumb.body).width).toBeLessThanOrEqual(400);
-        expect(readdirSync(join(s.tmp, "thumbs"))).toHaveLength(1);
+        expect(thumbs()).toHaveLength(6);
         expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
     });
 
@@ -840,6 +846,188 @@ describe("serve: what the page waits on", () => {
         expect((await s.api("GET", "/api/pr/123/compact-mantine")).status).toBe(200);
         release();
         await until(async () => !(await s.api("GET", "/api/prs?cached=1")).body.targets[0].downloading);
+    });
+});
+
+describe("serve: loading without waiting", () => {
+    const until = async (check, ms = 6000) => {
+        for (const end = Date.now() + ms; Date.now() < end; ) {
+            const value = await check();
+            if (value) {
+                return value;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error("timed out");
+    };
+    // A slow GitHub: every call takes `ms`, and the calls are counted by kind.
+    const slow =
+        (inner, calls, ms = 30) =>
+        async (args, input) => {
+            const kind = args[0] === "run" ? "download" : (args[1] ?? "").replace(/\?.*/, "").replace(/\d+/g, "N");
+            calls.push(kind);
+            await new Promise((resolve) => setTimeout(resolve, ms));
+            return inner(args, input);
+        };
+
+    it("shows the list a restarted server kept at once, and refreshes it behind", async () => {
+        const first = await start({ warm: true, gh: onePr() });
+        await first.api("GET", "/api/prs");
+        server.close();
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        const s = await start({
+            repo: first.repo,
+            head: first.head,
+            master: first.master,
+            warm: true,
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    if ((args[1] ?? "").includes("/pulls?")) {
+                        await held;
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        const { body } = await s.api("GET", "/api/prs?cached=1");
+        expect(body.targets.map((t) => t.id)).toEqual(["123"]);
+        expect(body.targets[0].projects.find((p) => p.project === "compact-mantine")).toMatchObject({
+            reviewable: 6,
+            downloading: false,
+        });
+        expect(body.refreshing).toMatchObject({ step: "listing pull requests" });
+        expect(body.updatedAt).toBeLessThan(body.now);
+        // Its captures open while GitHub has not answered.
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).status).toBe(200);
+        release();
+        await until(async () => (await s.api("GET", "/api/prs?cached=1")).body.refreshing === null);
+    });
+
+    it("asks GitHub about a finished run's jobs and artifacts once, and keeps the answers with its downloads", async () => {
+        const calls = [];
+        const s = await start({ gh: (r) => slow(onePr()(r), calls, 0) });
+        await s.api("GET", "/api/prs");
+        await s.api("GET", "/api/prs");
+        const count = (kind) => calls.filter((c) => c === kind).length;
+        expect(count("repos/{owner}/{repo}/pulls")).toBe(2);
+        expect(count("repos/{owner}/{repo}/actions/workflows/ci.yml/runs")).toBe(2);
+        expect(count("repos/{owner}/{repo}/actions/runs/N/attempts/N/jobs")).toBe(1);
+        expect(count("repos/{owner}/{repo}/actions/runs/N/artifacts")).toBe(1);
+        expect(count("download")).toBe(2);
+        expect(readdirSync(join(s.tmp, "1000-1", "gh"))).toHaveLength(2);
+    });
+
+    it("downloads a run's projects at once, eight at most, and the one asked for next", async () => {
+        const r = makeRepo();
+        const tmp = join(r.dir, "downloads");
+        const names = ["compact-mantine", "graphty-element"];
+        const both = (n) => names.map((p) => `visual-${p}-${n}`);
+        const ids = [1000, 1001, 1002, 1003, 1004];
+        const inner = fakeGh({ artifacts: Object.fromEntries(ids.map((id) => [id, both(1)])) });
+        const started = [];
+        const releases = [];
+        const gh = async (args, input) => {
+            if (args[0] === "run") {
+                started.push(`${args[2]}/${/^visual-(.+)-\d+$/.exec(args[4])[1]}`);
+                await new Promise((resolve) => releases.push(resolve));
+            }
+            return inner(args, input);
+        };
+        const runs = [];
+        for (const id of ids) {
+            runs.push(downloadCaptures(gh, { id }, names, tmp));
+            await until(() => started.length === Math.min(8, 2 * runs.length));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        // Both projects of a run at once, and no more than eight transfers.
+        expect(started).toEqual(ids.slice(0, 4).flatMap((id) => names.map((p) => `${id}/${p}`)));
+        hurry((dir) => dir.endsWith(join("1004-1", "graphty-element")));
+        releases[0]();
+        await until(() => started.length === 9);
+        expect(started[8]).toBe("1004/graphty-element");
+        for (let i = 1; i < 10; i++) {
+            await until(() => releases.length > i);
+            releases[i]();
+        }
+        const done = await Promise.all(runs);
+        expect(done.every((d) => names.every((p) => d[p].dir))).toBe(true);
+    });
+
+    it("answers 202 for a project still downloading, with the bytes, until it lands", async () => {
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        const s = await start({
+            gh: (r) => {
+                const inner = onePr()(r);
+                return async (args, input) => {
+                    if (args[0] === "run" && args[4] === "visual-graphty-element-1") {
+                        await held;
+                    }
+                    return inner(args, input);
+                };
+            },
+        });
+        await s.api("GET", "/api/prs");
+        const waiting = await until(async () => {
+            const res = await s.api("GET", "/api/pr/123/graphty-element");
+            return res.status === 202 && res.body.target.download.done === 1 && res;
+        });
+        expect(waiting.body.downloading).toBe(true);
+        expect(waiting.body.target.download).toMatchObject({ done: 1, total: 2, bytesDone: 1000000, bytes: 2000000 });
+        expect(waiting.body.target.projects.find((p) => p.project === "graphty-element")).toMatchObject({
+            downloading: true,
+            bytes: 1000000,
+        });
+        release();
+        await until(async () => (await s.api("GET", "/api/pr/123/graphty-element")).status === 200);
+    });
+
+    it("says which gh call waits to retry, and why the list could not be read at all", async () => {
+        const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => logged.mockRestore());
+        let fails = 1;
+        const s = await start({
+            warm: true,
+            gh: (r) => {
+                const inner = onePr()(r);
+                return withRetries(
+                    async (args, input) => {
+                        if ((args[1] ?? "").includes("/pulls?") && fails-- > 0) {
+                            throw new Error("Could not resolve host: api.github.com");
+                        }
+                        return inner(args, input);
+                    },
+                    [300],
+                );
+            },
+        });
+        const retry = await until(async () => (await s.api("GET", "/api/prs?cached=1")).body.network);
+        expect(retry).toMatchObject({ error: "Could not resolve host: api.github.com", attempt: 2, of: 2 });
+        expect(retry.until).toBeGreaterThan(Date.now() - 1000);
+        const loaded = await until(async () => {
+            const b = (await s.api("GET", "/api/prs?cached=1")).body;
+            return b.targets && b;
+        });
+        expect(loaded).toMatchObject({ network: null, error: null });
+
+        server.close();
+        const down = await start({
+            warm: true,
+            gh: () => async () => {
+                throw new Error("HTTP 401: Bad credentials (https://api.github.com/repos/o/r/pulls)");
+            },
+        });
+        const failed = await until(async () => {
+            const b = (await down.api("GET", "/api/prs?cached=1")).body;
+            return b.error && b;
+        });
+        expect(failed).toMatchObject({
+            targets: null,
+            refreshing: null,
+            error: "HTTP 401: Bad credentials (https://api.github.com/repos/o/r/pulls)",
+        });
     });
 });
 
@@ -927,7 +1115,12 @@ describe("downloadCaptures", () => {
             return inner(args, input);
         };
         const failed = await downloadCaptures(failing, run, ["compact-mantine"], tmp);
-        expect(failed["compact-mantine"]).toEqual({ dir: null, attempt: 1, error: "error extracting zip archive" });
+        expect(failed["compact-mantine"]).toEqual({
+            dir: null,
+            attempt: 1,
+            bytes: 1000000,
+            error: "error extracting zip archive",
+        });
         expect(readdirSync(join(tmp, "1000-1"))).toEqual([]);
 
         const out = await downloadCaptures(inner, run, ["compact-mantine"], tmp);

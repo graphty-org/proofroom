@@ -410,6 +410,115 @@ dialog[open].keys {
     margin: 8px 0 0;
 }
 
+/*
+ * The wait box: a wait that blocks what the reader can do, in the middle of the screen over
+ * everything. One width, and every line keeps its height whether it says anything or not, so
+ * nothing in the box moves while its counts and its time change.
+ */
+dialog.wait {
+    width: min(480px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    margin: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--fg);
+    padding: 20px;
+    font-size: 1.05rem;
+    box-shadow: 0 8px 32px rgb(0 0 0 / 0.3);
+}
+
+dialog.wait::backdrop {
+    background: rgb(0 0 0 / 0.45);
+}
+
+dialog.wait[open] {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+dialog.wait h2 {
+    font-size: 1.2rem;
+    margin: 0;
+}
+
+dialog.wait p {
+    margin: 0;
+    min-height: 1.4em;
+    overflow-wrap: anywhere;
+}
+
+/* A retry under way and a failure never show together: they share one two-line place. */
+#wait-notes {
+    display: grid;
+    min-height: 2.8em;
+}
+
+#wait-notes > p {
+    grid-area: 1 / 1;
+}
+
+#wait-net {
+    color: var(--warn);
+}
+
+#wait-error {
+    color: var(--bad);
+}
+
+/* The box itself takes focus so that no key presses Cancel by accident; it needs no ring. */
+dialog.wait:focus {
+    outline: none;
+}
+
+#wait-body {
+    overflow: auto;
+    min-height: 0;
+}
+
+#wait-body ol {
+    margin: 0;
+    padding-left: 20px;
+}
+
+#wait-body li.done {
+    color: var(--muted);
+}
+
+#wait-body li.now {
+    font-weight: 600;
+}
+
+#wait-bar {
+    width: 100%;
+    height: 10px;
+}
+
+/* A box that failed keeps its bar's place, empty. */
+dialog.wait.failed #wait-bar {
+    visibility: hidden;
+}
+
+dialog.wait .actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+    margin-top: 4px;
+}
+
+/* An action that does not apply keeps its place, so the box never changes size. */
+dialog.wait .actions button.unused {
+    visibility: hidden;
+}
+
+#wait-elapsed {
+    margin-right: auto;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
 /* Finish's notes scroll inside the sheet; the summary above and the buttons below stay put. */
 .notes {
     max-height: 30vh;

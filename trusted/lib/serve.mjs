@@ -25,20 +25,25 @@
  * checks it, and commits exactly that record. The server decides whether approval is required, so
  * leaving it out never skips it. The rpId is the host name of the page's own origin.
  *
- * The list of targets is cached: `GET /api/prs?cached=1` answers at once with the cache, its age
- * and the progress of a refresh, and `?refresh=1` starts one in the background, so the page never
- * waits on GitHub to change screens. A target whose captures are still downloading is listed with
- * `downloading: true` and rebuilt in the cache when they land. Grid tiles load thumbnails
- * (`GET /api/thumb/...`) that the server scales down once and keeps on disk.
+ * The list of targets is cached: `GET /api/prs?cached=1` answers at once with the cache, its age,
+ * the progress of a refresh, why the last one failed and any network retry under way, and
+ * `?refresh=1` starts one in the background, so the page never waits on GitHub to change screens.
+ * The list is also kept in `<tmp>/state/list.json`, so a restarted server shows it at once and
+ * refreshes it behind. With `warm` the server refreshes at start and every two minutes, so the
+ * captures of a CI run that just finished are downloaded before the owner opens them. A target
+ * whose captures are still downloading is listed with `downloading: true` and its progress, and
+ * rebuilt in the cache when they land; `GET /api/pr/...` of a project still downloading answers
+ * 202 and moves its download to the front of the queue. What GitHub says about a finished run
+ * (its jobs and artifacts) is asked once and kept beside its downloads. Grid tiles load
+ * thumbnails (`GET /api/thumb/...`), scaled down in worker threads as soon as a capture lands and
+ * kept on disk.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { PNG } from "pngjs";
 
 import {
     AcceptError,
@@ -51,9 +56,19 @@ import {
     proposeKey,
 } from "./accept.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
-import { downloadCaptures, exec, getRun, newestCiRun, openPullRequests, visualJobs } from "./github.mjs";
+import {
+    downloadCaptures,
+    exec,
+    getRun,
+    hurry,
+    newestCiRun,
+    openPullRequests,
+    retrying,
+    visualJobs,
+} from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
 import { validateResults } from "./results.mjs";
+import { scaled } from "./thumbs.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC = {
@@ -88,50 +103,15 @@ const PATIENCE = 1000;
 // An unknown target id refreshes from GitHub at most this often: a closed pull request's open
 // grid asks for dozens of images at once.
 const UNKNOWN_REFRESH = 60000;
-// A grid tile is about 190 CSS pixels wide: 400 image pixels keep it sharp on a 2x screen, at
-// about a thirtieth of a 2400 x 1800 capture's memory once decoded.
-const THUMB_WIDTH = 400;
+// With `warm`, the list is refreshed this often, so a CI run that finished meanwhile is downloaded
+// before the owner opens it.
+const POLL = 2 * 60000;
 
 /**
- * A PNG scaled down to `width` pixels across (never up), each output pixel the average of the
- * source pixels under it. For display in the grid only: comparisons use the full images.
- * @param {Buffer} bytes the PNG
- * @param {number} width the widest the result may be
- * @returns {Buffer} the smaller PNG
+ * The newest gh call waiting to retry after a network failure, for the page.
+ * @returns {{ error: string, attempt: number, of: number, until: number } | null} it, or null
  */
-export function thumbnail(bytes, width = THUMB_WIDTH) {
-    const src = PNG.sync.read(bytes);
-    const w = Math.min(width, src.width);
-    const h = Math.max(1, Math.round((src.height * w) / src.width));
-    const out = new PNG({ width: w, height: h });
-    for (let y = 0; y < h; y++) {
-        const [y0, y1] = [
-            Math.floor((y * src.height) / h),
-            Math.max(Math.floor(((y + 1) * src.height) / h), 1 + Math.floor((y * src.height) / h)),
-        ];
-        for (let x = 0; x < w; x++) {
-            const [x0, x1] = [
-                Math.floor((x * src.width) / w),
-                Math.max(Math.floor(((x + 1) * src.width) / w), 1 + Math.floor((x * src.width) / w)),
-            ];
-            const sum = [0, 0, 0, 0];
-            for (let sy = y0; sy < y1; sy++) {
-                for (let sx = x0; sx < x1; sx++) {
-                    const i = (sy * src.width + sx) * 4;
-                    for (let c = 0; c < 4; c++) {
-                        sum[c] += src.data[i + c];
-                    }
-                }
-            }
-            const n = (y1 - y0) * (x1 - x0);
-            const o = (y * w + x) * 4;
-            for (let c = 0; c < 4; c++) {
-                out.data[o + c] = Math.round(sum[c] / n);
-            }
-        }
-    }
-    return PNG.sync.write(out);
-}
+const networkTrouble = () => [...retrying].at(-1) ?? null;
 
 /**
  * The image a decision was taken on: the capture, or for a removed item its baseline.
@@ -481,29 +461,82 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     // `problem` is what CI said (the job failed, or no artifact); results.json can add its own.
     async function project(name, dir, problem) {
         const loaded = dir ? await loadResults(dir) : { results: null, problem: null };
+        if (loaded.results) {
+            prewarm(dir, loaded.results);
+        }
         return { project: name, dir, results: loaded.results, problem: problem ?? loaded.problem, logUrl: null };
     }
 
+    /**
+     * The gh runner for one finished run: what GitHub says about it (its jobs, its artifacts) no
+     * longer changes, so each answer is asked once and kept on disk beside the run's downloads,
+     * and pruned with them. A refresh then asks GitHub only for the pull requests and their newest
+     * runs. ponytail: an artifact that expires later is still listed as there; its download fails
+     * and says so, which only matters for a capture never downloaded in its 90 days.
+     * @param {{ id: number, attempt: number }} run the finished run
+     * @returns {Function} the gh runner
+     */
+    const kept = (run) => async (args, input) => {
+        if (args[0] !== "api") {
+            return gh(args, input);
+        }
+        const name = createHash("sha256").update(args.join(" ")).digest("hex").slice(0, 16);
+        const file = join(tmp, `${run.id}-${run.attempt}`, "gh", `${name}.json`);
+        const saved = await readFile(file, "utf8").catch(() => null);
+        if (saved !== null) {
+            return saved;
+        }
+        const answer = await gh(args, input);
+        try {
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(`${file}.tmp`, answer);
+            renameSync(`${file}.tmp`, file);
+        } catch (err) {
+            warnOnce(`could not keep GitHub's answers in ${dirname(file)}: ${err.message}`);
+        }
+        return answer;
+    };
+
     async function build(info, run) {
-        const jobs = await visualJobs(gh, run, run.attempt, names);
+        const g = run.status === "completed" ? kept(run) : gh;
+        const jobs = await visualJobs(g, run, run.attempt, names);
         const others = [];
         // Each project's capture as its download lands; `partial` is the target listed while the
-        // rest are still downloading, whose rows fill in one by one.
+        // rest are still downloading, whose rows fill in one by one. `download` counts the
+        // artifacts and their bytes, for the page's progress.
         const landed = new Map();
+        const download = { done: 0, total: names.length, bytesDone: 0, bytes: null, startedAt: Date.now() };
+        let sizes = {};
         let partial = null;
         const fill = async (name) => {
             const p = await project(name, landed.get(name)?.dir, problemOf(name, landed.get(name), run, jobs));
             p.logUrl = jobs[name]?.url ?? run.url;
+            p.bytes = sizes[name] ?? null;
             partial.projects[names.indexOf(name)] = p;
-            partial.downloaded = landed.size;
             await decorate(partial);
         };
-        const downloads = downloadCaptures(gh, run, names, tmp, others, (name, got) => {
-            landed.set(name, got);
-            if (partial) {
-                fill(name).catch((err) => console.error(`visual-review: ${name} of ${info.id}: ${err.message}`));
-            }
-        });
+        const downloads = downloadCaptures(
+            g,
+            run,
+            names,
+            tmp,
+            others,
+            (name, got) => {
+                landed.set(name, got);
+                if (got) {
+                    download.done++;
+                    download.bytesDone += got.bytes;
+                }
+                if (partial) {
+                    fill(name).catch((err) => console.error(`visual-review: ${name} of ${info.id}: ${err.message}`));
+                }
+            },
+            (planned) => {
+                sizes = planned;
+                download.total = Object.keys(planned).length;
+                download.bytes = Object.values(planned).reduce((a, b) => a + b, 0);
+            },
+        );
         downloads.catch(() => {}); // A download still running after PATIENCE fails on a later refresh.
         const downloaded = await Promise.race([
             downloads,
@@ -521,16 +554,17 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                         await decorate(built);
                         if (targets.get(info.id) === shown) {
                             targets.set(info.id, built);
+                            save();
                         }
                     }
                 })
                 .catch((err) => console.error(`visual-review: rebuilding ${info.id} failed: ${err.message}`));
             partial = blank(info, null, run);
             partial.downloading = true;
-            partial.downloadStartedAt = Date.now() - PATIENCE;
-            partial.downloaded = 0;
+            partial.download = download;
             for (const p of partial.projects) {
                 p.downloading = true;
+                p.bytes = sizes[p.project] ?? null;
             }
             for (const name of landed.keys()) {
                 await fill(name);
@@ -593,6 +627,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     let refreshing = null;
     let refreshedAt = 0;
     let loadedOnce = false;
+    /** Why the last refresh failed as a whole (no list at all), for the page; null once one works. */
+    let failure = null;
     /** What the running refresh is doing, for the page: a step, a count, and when it began. */
     let progress = null;
     const step = (name, done = null, total = null) => {
@@ -606,6 +642,10 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             try {
                 await load();
                 loadedOnce = true;
+                failure = null;
+            } catch (err) {
+                failure = err.message.split("\n")[0];
+                throw err;
             } finally {
                 refreshing = null;
                 refreshedAt = Date.now();
@@ -739,7 +779,74 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         }
         signer = await signingIdentity(repo);
         targets = next;
+        save();
         prune();
+    }
+
+    const listFile = join(stateDir, "list.json");
+    /**
+     * Keeps the list of targets on disk, without the captures' results (results.json is read again
+     * from each capture's directory), so a restarted server shows it before GitHub answers.
+     */
+    function save() {
+        if (results) {
+            return;
+        }
+        try {
+            writeJson(listFile, {
+                at: Date.now(),
+                targets: [...targets.values()].map((t) => ({
+                    ...t,
+                    earlier: [...(t.earlier ?? [])],
+                    projects: t.projects.map((p) => ({ ...p, results: undefined })),
+                })),
+            });
+        } catch (err) {
+            const warning = `could not keep the list of targets (a restart would wait for GitHub): ${err.message}`;
+            console.error(`visual-review: ${warning}`);
+            if (!listWarnings.includes(warning)) {
+                listWarnings.push(warning);
+            }
+        }
+    }
+
+    /**
+     * The list a previous run of this server kept, shown until the first refresh replaces it. A
+     * capture whose directory is gone is listed as downloading: that refresh downloads it again.
+     */
+    async function restore() {
+        let saved;
+        try {
+            saved = JSON.parse(readFileSync(listFile, "utf8"));
+        } catch {
+            return; // Never saved, or unreadable: the first refresh builds the list.
+        }
+        try {
+            const next = new Map();
+            for (const t of saved.targets) {
+                const list = [];
+                for (const p of t.projects) {
+                    const there = p.dir && existsSync(join(p.dir, "results.json"));
+                    const loaded = there ? await project(p.project, p.dir, p.problem) : null;
+                    list.push(
+                        p.dir && !loaded?.results
+                            ? { ...p, dir: null, results: null, problem: null, downloading: true }
+                            : { ...p, results: loaded?.results ?? null },
+                    );
+                }
+                const downloading = t.downloading === true || list.some((p) => p.downloading);
+                next.set(t.id, { ...t, earlier: new Map(t.earlier), projects: list, downloading });
+            }
+            signer = await signingIdentity(repo);
+            await readPasskeys();
+            if (!loadedOnce) {
+                targets = next;
+                loadedOnce = true;
+                refreshedAt = saved.at;
+            }
+        } catch (err) {
+            console.error(`visual-review: ignoring the kept list in ${listFile}: ${err.message}`);
+        }
     }
 
     // A target's captured commits, its earlier accepts and whether it is behind the default branch.
@@ -809,9 +916,10 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             headSha: t.headSha,
             mergeMasterFirst: t.mergeMasterFirst,
             downloading: t.downloading === true,
-            // While downloading: how many projects have landed, and since when (server time).
+            // While downloading: how many artifacts and bytes have landed of how many, and since when
+            // (server time). `bytes` is null until GitHub has listed the artifacts.
             download: t.downloading
-                ? { done: t.downloaded ?? 0, total: names.length, startedAt: t.downloadStartedAt ?? null }
+                ? { done: 0, total: names.length, bytesDone: 0, bytes: null, startedAt: null, ...t.download }
                 : null,
             defaultBranch,
             // Decisions the next Finish would publish (a reject an earlier Finish posted is not).
@@ -853,6 +961,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     project: p.project,
                     problem: p.problem,
                     downloading: p.downloading === true,
+                    // The size of the project's artifact, while it downloads.
+                    bytes: p.downloading ? (p.bytes ?? null) : null,
                     logUrl: p.logUrl,
                     counts,
                     reviewable,
@@ -976,8 +1086,82 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             t.projects.filter((p) => p.results).map((p) => [p.project, { dir: p.dir, results: p.results }]),
         );
 
-    /** Thumbnails being made, by the file they are kept in. */
+    /** Thumbnails being made, by the file they are kept in, and whether a tile is waiting for one. */
     const making = new Map();
+
+    /**
+     * An image's thumbnail, made in a worker thread unless it is on disk already. A tile waiting
+     * for one (`urgent`) goes ahead of those made in advance, even of its own made in advance.
+     * @param {{ path: string, hash: string, file: string, dir: string }} where the image
+     * @param {boolean} urgent a tile is waiting for it
+     * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
+     */
+    function thumbOf(where, urgent) {
+        const kept = join(tmp, "thumbs", `${where.hash}.png`);
+        const was = making.get(kept);
+        if (was && (was.urgent || !urgent)) {
+            return was.done;
+        }
+        const done = (async () => {
+            // Made in advance, it was just found missing: reading here, for a thousand items at once,
+            // would fill Node's file thread pool and stall every other request's file reads.
+            const cached = urgent ? await readFile(kept).catch(() => null) : null;
+            if (cached) {
+                return [200, cached, "image/png"];
+            }
+            let small;
+            try {
+                small = await scaled(async () => {
+                    const full = await readImage(where);
+                    if (full[0] !== 200) {
+                        throw Object.assign(new Error(full[1].error), { answer: full });
+                    }
+                    return full[1];
+                }, urgent);
+            } catch (err) {
+                if (err.answer) {
+                    return err.answer;
+                }
+                throw err;
+            }
+            // Its own temporary name: the advance copy and a tile's may be written at once.
+            const part = `${kept}.${urgent ? "tile" : "ahead"}.tmp`;
+            try {
+                mkdirSync(dirname(kept), { recursive: true });
+                writeFileSync(part, small);
+                renameSync(part, kept);
+            } catch (err) {
+                warnOnce(`could not keep thumbnails in ${dirname(kept)}: ${err.message}`);
+            }
+            return [200, small, "image/png"];
+        })().finally(() => {
+            if (making.get(kept)?.done === done) {
+                making.delete(kept);
+            }
+        });
+        making.set(kept, { urgent, done });
+        return done;
+    }
+
+    /**
+     * Makes, in the background, the grid thumbnail of every item of a capture that needs a
+     * decision, so a grid opens with its tiles ready.
+     * @param {string} dir the capture's directory
+     * @param {{ items: object[] }} r its results.json
+     */
+    function prewarm(dir, r) {
+        for (const item of r.items) {
+            const kind = item.capture ? "capture" : "baseline";
+            const hash = item[kind];
+            if (REVIEWABLE.has(item.status) && hash && !existsSync(join(tmp, "thumbs", `${hash}.png`))) {
+                const own = kind === "capture" || item.baseline === item.capture;
+                const path = own ? join(dir, item.file) : join(dir, "baselines", item.file);
+                thumbOf({ path, hash, file: item.file, dir }, false).catch((err) =>
+                    warnOnce(`could not make the thumbnail of ${path}: ${err.message}`),
+                );
+            }
+        }
+    }
 
     // The unpublished count after a write, so the page's Finish button stays current.
     const unpublishedOf = (t) => finishList(t).list.length;
@@ -1024,10 +1208,12 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     const routes = {
         "GET /api/prs": async (_, __, query) => {
             // ?cached=1 answers at once (starting the first load if there is none); ?refresh=1
-            // also starts a refresh. Neither waits for GitHub.
+            // also starts a refresh. Neither waits for GitHub. After a first load that failed, only
+            // ?refresh=1 (the page's Retry) tries again.
+            await restored;
             const cachedOnly = query?.get("cached") === "1" || query?.get("refresh") === "1";
             if (cachedOnly) {
-                if (query.get("refresh") === "1" || !loadedOnce) {
+                if (query.get("refresh") === "1" || (!loadedOnce && failure === null)) {
                     refresh().catch((err) => console.error(`visual-review: refresh failed: ${err.message}`));
                 }
             } else {
@@ -1042,6 +1228,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     updatedAt: refreshedAt || null,
                     now: Date.now(),
                     refreshing: progress,
+                    // Why the last refresh got no list at all; a gh call waiting to retry.
+                    error: failure,
+                    network: networkTrouble(),
                 },
             ];
         },
@@ -1057,6 +1246,11 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             const { t, p } = await projectOf(id, name);
             if (!t) {
                 return gone(id);
+            }
+            if (t.projects.find((x) => x.project === name)?.downloading) {
+                // The reviewer is waiting for this one: it downloads next. The page asks again.
+                hurry((dir) => basename(dir) === name && dir.startsWith(join(tmp, `${t.runId}-`)));
+                return [202, { downloading: true, target: summary(t), network: networkTrouble(), now: Date.now() }];
             }
             if (!p) {
                 return [404, { error: "no such capture" }];
@@ -1089,33 +1283,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             if (Array.isArray(where)) {
                 return where;
             }
-            const kept = join(tmp, "thumbs", `${where.hash}.png`);
-            const cached = await readFile(kept).catch(() => null);
-            if (cached) {
-                return [200, cached, "image/png"];
-            }
-            // Tiles showing the same image at once share one scaling.
-            if (!making.has(kept)) {
-                making.set(
-                    kept,
-                    (async () => {
-                        const full = await readImage(where);
-                        if (full[0] !== 200) {
-                            return full;
-                        }
-                        const small = thumbnail(full[1]);
-                        try {
-                            mkdirSync(dirname(kept), { recursive: true });
-                            writeFileSync(`${kept}.tmp`, small);
-                            renameSync(`${kept}.tmp`, kept);
-                        } catch (err) {
-                            warnOnce(`could not keep thumbnails in ${dirname(kept)}: ${err.message}`);
-                        }
-                        return [200, small, "image/png"];
-                    })().finally(() => making.delete(kept)),
-                );
-            }
-            return making.get(kept);
+            return thumbOf(where, true);
         },
         "POST /api/decide": async (_, body) => {
             const { p, t } = await projectOf(String(body.id), body.project);
@@ -1526,9 +1694,14 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         return body;
     }
 
+    // The list a previous run of the server kept: read before any request for the list is answered.
+    const restored = warm && !results ? restore() : Promise.resolve();
     if (warm) {
-        // Download the captures now, so they are on disk before the page first asks.
-        refresh().catch((err) => console.error(`visual-review: startup refresh failed: ${err.message}`));
+        // Download the captures now, and again every POLL so that a CI run that finished meanwhile
+        // is on disk before the page first asks for it.
+        const failed = (when) => (err) => console.error(`visual-review: ${when} refresh failed: ${err.message}`);
+        restored.then(() => refresh().catch(failed("startup")));
+        setInterval(() => refresh().catch(failed("background")), POLL).unref();
     }
 
     return async (req, res) => {

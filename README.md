@@ -264,15 +264,24 @@ Errors are shown there in red. **Keys** (or `?`) lists every key, the last
 20 messages in full, and a switch that turns the single-letter keys off.
 
 No wait is silent: anything that takes longer than a third of a second says what it is waiting
-for, with a count or the time spent, and a failed one offers Retry.
+for, with a count or the time spent, and a failed one offers Retry. A wait that keeps you from
+working (the first list after the server starts, opening a project, a project whose captures are
+still downloading, Finish) is a box in the middle of the screen, over the page: what it waits for,
+its progress ("1 of 2 artifacts, 41 MB of 120 MB"), the time spent, GitHub's network retries
+("GitHub did not answer (Could not resolve host: api.github.com). Trying again in 4 s, try 2 of
+4."), and **Cancel** where there is something to go back to. A wait that fails becomes the error
+in the same box, with **Retry**. Work in the background (checking GitHub for new CI runs,
+downloading captures nobody has opened yet) is said in the status row and never blocks.
 
 1. **Targets.** Each open pull request with a run of the capturing workflow, and the default
    branch (shown as `<branch> seed`, for example "master seed") when started with
    `--master-run`. The list is the server's, shown at once with "Updated 40 s ago" and
    **Refresh**; it is checked again with GitHub when you press Refresh or when it is over a minute
-   old, and the line above the cards shows the check's step ("Checking pull requests: Finding CI
-   runs: 3 of 5, 12 s"). The first load after the server starts shows its step under a placeholder
-   card. Above the cards, one line says whether Finish is approved with your passkey ("Finish is
+   old, and the server checks every two minutes on its own, downloading the captures of every CI
+   run that finished, so they are there before you open them. The status row shows a check's step
+   ("Checking GitHub for new CI runs", then "Finding CI runs: 3 of 5, 12 s"). The server keeps the
+   list on disk, so after a restart it shows at once and is checked behind; only the very first
+   start waits for GitHub, in the box. Above the cards, one line says whether Finish is approved with your passkey ("Finish is
    approved with your passkey (iPad passkey, 2026-10-01), and the CI gate refuses accepts
    without it."), or that accepts are not yet protected ("No passkey registered: accepts are not
    yet protected. ..."), with **Register passkey**, or **Register another device** once one is
@@ -287,8 +296,10 @@ for, with a count or the time spent, and a failed one offers Retry.
       pull request. Merge the default branch into the pull request's branch (by merge, never
       rebase) and wait for CI.
     - **Downloading...**: the captures are still downloading from GitHub. The card says how many
-      projects have landed and for how long ("Downloading (2 of 5 projects), 14 s"), and each
-      row fills in by itself as its own download lands; the page checks every 3 seconds.
+      artifacts and bytes have landed and for how long ("Downloading: 2 of 5 artifacts, 41 MB of
+      120 MB, 14 s"), and each row fills in by itself as its own download lands. Pressing it
+      opens the project as soon as it lands: its download goes ahead of the others, and the box
+      shows its progress.
     - **capture failed**, **CI still running**, **waiting for CI**: there is nothing to review
       yet. **Job log** opens the capturing job; **Retry** checks GitHub again.
     - **artifact expired**: GitHub deleted the capture after 30 days and it was never

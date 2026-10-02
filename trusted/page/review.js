@@ -196,29 +196,205 @@ function sayBusy(text, ...extra) {
     statusLine.append(...extra);
 }
 
-// Shows `label` once a wait has taken SLOW_MS, then the time spent beside it (outside the live
-// region, so it is not read out every second); the returned function ends it.
-function waiting(label) {
-    const start = performance.now();
-    let shown = false;
-    let timer = setTimeout(function tick() {
-        if (!shown) {
-            sayBusy(label);
-        }
-        shown = true;
-        const s = Math.floor((performance.now() - start) / 1000);
-        elapsedLine.textContent = s >= 1 ? `${s} s` : "";
-        timer = setTimeout(tick, 1000);
-    }, SLOW_MS);
-    return () => {
-        clearTimeout(timer);
-        if (shown) {
-            say("");
-        }
-    };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ---------------------------------------------------------------- the wait box
+
+// A wait that blocks what the reader can do (the first list, a project still downloading or still
+// opening, Finish) is said in a box in the middle of the screen, over everything: what it waits
+// for, its progress in counts, the time spent, and Cancel or Retry where they make sense. A
+// failure turns the box into the error, with Retry. A wait in the background stays in the status
+// row instead. The box appears only once a wait has taken SLOW_MS, so a quick one never flashes.
+let blocking = null; // the wait the box shows, or will show once it has taken SLOW_MS
+const waitPart = (name) => document.getElementById(`wait-${name}`);
+
+// The box, made when a wait first shows it and removed when it ends, so a page with no wait has
+// none. Its lines are always there, empty or not, so nothing in it moves as they change.
+function waitBox() {
+    let box = document.getElementById("wait");
+    if (box) {
+        return box;
+    }
+    const button = (name, label, onclick, cls = null) =>
+        el("button", { type: "button", id: `wait-${name}`, class: cls, onclick }, label);
+    box = el(
+        "dialog",
+        { id: "wait", class: "wait", tabindex: "-1", "aria-labelledby": "wait-title", "aria-describedby": "wait-text" },
+        el("h2", { id: "wait-title" }),
+        el("p", { id: "wait-text", role: "status" }),
+        el("div", { id: "wait-body" }),
+        el("progress", { id: "wait-bar" }),
+        el("p", { id: "wait-detail", "aria-hidden": "true" }),
+        el("div", { id: "wait-notes" }, el("p", { id: "wait-net" }), el("p", { id: "wait-error", role: "alert" })),
+        el(
+            "p",
+            { class: "actions" },
+            el("span", { id: "wait-elapsed", "aria-hidden": "true" }),
+            // Cancel (Close once the wait failed) and Retry.
+            button("cancel", "Cancel", () => {
+                const w = blocking;
+                if (w && (w.cancel || w.failed)) {
+                    w.end();
+                    (w.failed ? w.closed : w.cancel)?.();
+                }
+            }),
+            button(
+                "retry",
+                "Retry",
+                () => {
+                    const w = blocking;
+                    if (w?.failed && w.retry) {
+                        w.end();
+                        w.retry();
+                    }
+                },
+                "primary",
+            ),
+        ),
+    );
+    // Escape cancels only what Cancel would; it never just hides a wait.
+    box.addEventListener("cancel", (e) => {
+        e.preventDefault();
+        waitPart("cancel").click();
+    });
+    document.body.append(box);
+    return box;
+}
+const waitOpen = () => document.getElementById("wait")?.open === true;
+
+const duration = (s) => (s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`);
+const megabytes = (b) => `${b < 1e7 ? (b / 1e6).toFixed(1) : Math.round(b / 1e6)} MB`;
+
+// A gh call the server is waiting to retry after a network failure, said plainly.
+function networkLine(n, now) {
+    if (!n) {
+        return "";
+    }
+    const s = Math.max(0, Math.ceil((n.until - now) / 1000));
+    return `GitHub did not answer (${n.error}). Trying again in ${s} s, try ${n.attempt} of ${n.of}.`;
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Starts a blocking wait. `cancel` (when given) is what Cancel and Escape do after the box closes.
+// The returned wait has `update(fields)` (title, text, detail, done and total for the bar, net,
+// body, since: when it began, by performance.now()), `fail(message, retry, closed)` and `end()`.
+function block(title, { cancel = null, delay = SLOW_MS } = {}) {
+    blocking?.end();
+    const w = {
+        title,
+        text: "",
+        detail: "",
+        done: null,
+        total: null,
+        net: "",
+        body: null,
+        error: "",
+        since: performance.now(),
+        cancel,
+        retry: null,
+        closed: null,
+        failed: false,
+        ended: false,
+    };
+    const draw = () => {
+        if (w.ended || !waitOpen()) {
+            return;
+        }
+        waitBox().classList.toggle("failed", w.failed);
+        waitPart("title").textContent = w.title;
+        // Rewritten only when it changes, so a screen reader reads it once.
+        if (waitPart("text").textContent !== w.text) {
+            waitPart("text").textContent = w.text;
+        }
+        if (waitPart("body").firstChild !== w.body) {
+            waitPart("body").replaceChildren(...(w.body ? [w.body] : []));
+        }
+        const bar = waitPart("bar");
+        if (w.total > 0) {
+            bar.max = w.total;
+            bar.value = Math.min(w.done ?? 0, w.total);
+        } else {
+            bar.removeAttribute("value"); // moving, with no count to show yet
+        }
+        waitPart("detail").textContent = w.detail;
+        waitPart("net").textContent = w.failed ? "" : w.net;
+        waitPart("error").textContent = w.error;
+        const cancelButton = waitPart("cancel");
+        cancelButton.textContent = w.failed ? "Close" : "Cancel";
+        cancelButton.classList.toggle("unused", !w.failed && !w.cancel);
+        waitPart("retry").classList.toggle("unused", !(w.failed && w.retry));
+    };
+    const tick = () => {
+        const s = Math.max(0, Math.floor((performance.now() - w.since) / 1000));
+        waitPart("elapsed").textContent = w.failed ? `Stopped after ${duration(s)}` : duration(s);
+    };
+    const show = () => {
+        if (!w.ended && !waitOpen()) {
+            const box = waitBox();
+            box.showModal();
+            // On the box, not a button: a key pressed as it appears must not press Cancel.
+            box.focus();
+        }
+        draw();
+        tick();
+    };
+    let timer = setTimeout(function again() {
+        show();
+        timer = setTimeout(again, 1000);
+    }, delay);
+    w.update = (fields) => {
+        Object.assign(w, fields);
+        draw();
+        if (waitOpen()) {
+            tick();
+        }
+    };
+    w.fail = (message, retry = null, closed = null) => {
+        clearTimeout(timer);
+        Object.assign(w, { failed: true, error: message, retry, closed, detail: "" });
+        messages.push(message);
+        show();
+    };
+    w.end = () => {
+        if (w.ended) {
+            return;
+        }
+        clearTimeout(timer);
+        w.ended = true;
+        if (blocking === w) {
+            blocking = null;
+            document.getElementById("wait")?.remove();
+        }
+    };
+    blocking = w;
+    return w;
+}
+
+// The status row's line for work in the background (a refresh, downloads): written only over an
+// empty row or its own earlier line, never over another message, and not kept in the recent
+// messages. `extra` changes every second, outside the live region.
+let backgroundSaid = "";
+function sayBackground(text, extra = "") {
+    const mine =
+        alertLine.textContent === "" && (statusLine.textContent === "" || statusLine.textContent === backgroundSaid);
+    if (!mine || running()) {
+        return;
+    }
+    if (text === "") {
+        if (backgroundSaid !== "") {
+            backgroundSaid = "";
+            statusLine.textContent = "";
+            elapsedLine.textContent = "";
+            statusRow.classList.remove("busy");
+        }
+        return;
+    }
+    if (statusLine.textContent !== text) {
+        statusLine.replaceChildren(spinner(), text);
+        statusRow.classList.add("busy");
+    }
+    backgroundSaid = text;
+    elapsedLine.textContent = extra;
+}
 
 // Asks in the page, never with confirm(): once a browser stops a page's dialogs ("prevent this
 // page from creating additional dialogs"), confirm() returns false without showing anything, and
@@ -541,11 +717,15 @@ function drawHeader() {
     );
     pickProject.replaceChildren(
         ...state.target.projects
-            .filter((p) => p.reviewable > 0 || p.project === state.project)
+            .filter((p) => p.reviewable > 0 || p.downloading || p.project === state.project)
             .map((p) =>
                 el(
                     "option",
-                    { value: p.project, selected: p.project === state.project, disabled: p.reviewable === 0 },
+                    {
+                        value: p.project,
+                        selected: p.project === state.project,
+                        disabled: p.reviewable === 0 && !p.downloading,
+                    },
                     `${p.project} (${p.undecided})`,
                 ),
             ),
@@ -610,8 +790,11 @@ function stepText(r) {
 const secondsSince = (from, now) => Math.max(0, Math.round((now - from) / 1000));
 
 // Every target, from the server's cached list: drawn at once, and refreshed in the background
-// when the list is over a minute old or Refresh is pressed.
-async function showTargets(notice = "", refresh = false) {
+// when the list is over a minute old or Refresh is pressed. Until there is a list at all (the
+// server's first load), the wait box says what the server is doing; after that a refresh and the
+// downloads go on in the status row. The screen keeps asking while it is shown, so it never looks
+// idle while the server works: that goes on after this returns, until another screen opens.
+function showTargets(notice = "", refresh = false) {
     const seq = ++nav;
     stopFlash();
     state.screen = "targets";
@@ -622,18 +805,31 @@ async function showTargets(notice = "", refresh = false) {
     remember();
     say(notice);
     drawTargets();
-    let ask = refresh ? "refresh" : "cached";
+    followTargets(seq, refresh ? "refresh" : "cached");
+}
+
+async function followTargets(seq, ask) {
+    let box = null; // the wait box, while there is no list to show
+    const first = () =>
+        box && !box.ended && !box.failed ? box : (box = block("Loading the pull requests", { delay: 0 }));
+    const retry = () => showTargets("", true);
     for (;;) {
         let list;
         try {
             list = await api(`/api/prs?${ask}=1`);
         } catch (err) {
             if (seq === nav) {
-                say(`Could not read the targets: ${err.message}`, true);
+                const message = `The review server did not answer: ${err.message}`;
+                if (state.list?.targets) {
+                    say(message, true);
+                } else {
+                    first().fail(message, retry);
+                }
             }
             return;
         }
         if (seq !== nav) {
+            box?.end();
             return;
         }
         const before = JSON.stringify(state.list?.targets ?? null);
@@ -648,38 +844,60 @@ async function showTargets(notice = "", refresh = false) {
         } else {
             drawTargets();
         }
-        const downloading = list.targets?.some((t) => t.downloading);
-        if (!list.refreshing && !downloading) {
-            return;
+        const net = networkLine(list.network, list.now);
+        if (!list.targets) {
+            const r = list.refreshing;
+            if (!r && list.error) {
+                first().fail(`Could not read the pull requests from GitHub: ${list.error}`, retry);
+                return;
+            }
+            first().update({
+                text: "Reading the open pull requests and their CI runs from GitHub.",
+                detail: r ? stepText(r) : "Starting",
+                done: r?.done ?? null,
+                total: r?.total ?? null,
+                net,
+                since: r ? performance.now() - (list.now - r.startedAt) : performance.now(),
+            });
+        } else {
+            box?.end();
+            backgroundLine(list, net);
         }
         ask = "cached";
-        await sleep(list.refreshing ? 700 : 3000);
+        const busy = list.refreshing || !list.targets || list.targets.some((t) => t.downloading);
+        await sleep(busy ? 700 : 5000);
         if (seq !== nav) {
+            box?.end();
             return;
         }
     }
 }
 
-// The line above the cards: how old the list is, and Refresh; or the refresh under way.
+// What the server does in the background, in the status row: a refresh, with its step and time
+// beside it, or the captures still downloading.
+function backgroundLine(list, net) {
+    const r = list.refreshing;
+    const downloading = list.targets.filter((t) => t.downloading);
+    if (r) {
+        const s = secondsSince(r.startedAt, list.now);
+        sayBackground(
+            net ? `Checking GitHub for new CI runs. ${net}` : "Checking GitHub for new CI runs",
+            `${stepText(r)}, ${s} s`,
+        );
+    } else if (downloading.length > 0) {
+        sayBackground(`Downloading captures in the background: ${downloading.map(labelOf).join(", ")}`, net);
+    } else {
+        sayBackground("");
+    }
+}
+
+// The line above the cards: how old the list is, and Refresh.
 function listLine() {
     const list = state.list;
-    if (!list) {
-        return el("p", { class: "listline", id: "listline" }, spinner(), "Loading pull requests...");
-    }
-    if (list.refreshing) {
-        const s = secondsSince(list.refreshing.startedAt, list.now);
-        const what = list.targets ? "Checking pull requests" : "Loading pull requests";
-        return el(
-            "p",
-            { class: "listline", id: "listline" },
-            spinner(),
-            `${what}: ${stepText(list.refreshing)}, ${s} s`,
-        );
-    }
     return el(
         "p",
         { class: "listline", id: "listline" },
-        list.updatedAt ? `Updated ${secondsSince(list.updatedAt, list.now)} s ago` : "",
+        list?.updatedAt ? `Updated ${secondsSince(list.updatedAt, list.now)} s ago` : "",
         el("button", { type: "button", onclick: () => showTargets("", true) }, "Refresh"),
     );
 }
@@ -984,14 +1202,16 @@ function targetCard(t) {
     );
 }
 
-// "Downloading (1 of 3 projects), 12 s": the projects landed so far, and the time since it began.
+// "Downloading: 1 of 3 artifacts, 41 MB of 120 MB, 12 s": what has landed so far, and the time
+// since it began.
 function downloadText(t) {
     const d = t.download;
     if (!d) {
         return "Downloading the captures...";
     }
+    const bytes = d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : "";
     const s = d.startedAt && state.list?.now ? `, ${secondsSince(d.startedAt, state.list.now)} s` : "";
-    return `Downloading (${d.done} of ${plural(d.total, "project")})${s}`;
+    return `Downloading: ${d.done} of ${plural(d.total, "artifact")}${bytes}${s}`;
 }
 
 function projectRow(t, p) {
@@ -1031,7 +1251,12 @@ function projectRow(t, p) {
             "td",
             {},
             p.downloading
-                ? el("button", { type: "button", disabled: true }, spinner(), "Downloading...")
+                ? el(
+                      "button",
+                      { type: "button", onclick: () => openProject(t.id, p.project) },
+                      spinner(),
+                      "Downloading...",
+                  )
                 : p.reviewable > 0
                   ? el("button", { type: "button", onclick: () => openProject(t.id, p.project) }, "Review")
                   : null,
@@ -1050,9 +1275,12 @@ function nextTarget(id) {
 // or with `story`, its first undecided item).
 async function openTarget(id, story) {
     const t = state.list?.targets?.find((x) => x.id === id);
-    const p = t?.projects.find((x) => x.undecided > 0 && !x.downloading) ?? t?.projects.find((x) => x.reviewable > 0);
+    const p =
+        t?.projects.find((x) => x.undecided > 0 && !x.downloading) ??
+        t?.projects.find((x) => x.reviewable > 0) ??
+        t?.projects.find((x) => x.downloading);
     if (!p) {
-        await showTargets(t ? `${labelOf(t)} has nothing to review yet.` : "");
+        showTargets(t ? `${labelOf(t)} has nothing to review yet.` : "");
         return;
     }
     await openProject(id, p.project, story);
@@ -1060,28 +1288,81 @@ async function openTarget(id, story) {
 
 // ---------------------------------------------------------------- screen: project grid
 
+// A project's items, in the wait box for as long as that takes. A project whose captures are still
+// downloading is asked for again until they land: the server downloads it ahead of the others, and
+// the box counts the artifacts and bytes. Resolves null when the wait was cancelled or another
+// screen took over; { data } once loaded; { error, box } when it failed, the box still open for the
+// caller to say so.
+async function loadProject(targetId, project, seq) {
+    const box = block(`Opening ${project}`, {
+        cancel: () => {
+            nav++;
+            if (state.screen === "targets") {
+                showTargets();
+            }
+        },
+    });
+    box.update({ text: `Reading the ${project} captures from the server.` });
+    for (;;) {
+        let data;
+        try {
+            data = await api(`/api/pr/${encodeURIComponent(targetId)}/${encodeURIComponent(project)}`);
+        } catch (error) {
+            if (seq !== nav) {
+                box.end();
+                return null;
+            }
+            return { error, box };
+        }
+        if (seq !== nav) {
+            box.end();
+            return null;
+        }
+        if (!data.downloading) {
+            box.end();
+            return { data };
+        }
+        const t = data.target;
+        const d = t.download;
+        const size = t.projects.find((x) => x.project === project)?.bytes;
+        box.update({
+            title: `Downloading ${project} captures for ${labelOf(t)}`,
+            text:
+                `CI run ${t.runId}'s captures are not on this computer yet. ${project}` +
+                `${size ? ` (${megabytes(size)})` : ""} downloads first; the rest go on in the background.`,
+            detail: d
+                ? `${d.done} of ${plural(d.total, "artifact")}${d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : ""}`
+                : "",
+            done: d?.done ?? null,
+            total: d?.total ?? null,
+            net: networkLine(data.network, data.now),
+        });
+        await sleep(700);
+        if (seq !== nav) {
+            box.end();
+            return null;
+        }
+    }
+}
+
 // Opens a project's grid, or with `story` its first undecided item (Next project).
 async function openProject(targetId, project, story = false) {
     const seq = ++nav;
     stopFlash();
-    const done = waiting(`Loading ${project}...`);
-    if (state.screen === "targets") {
-        render(el("p", { class: "meta" }, spinner(), `Loading ${project}...`));
-    }
-    let data;
-    try {
-        data = await api(`/api/pr/${encodeURIComponent(targetId)}/${encodeURIComponent(project)}`);
-    } catch (err) {
-        done();
-        if (seq === nav) {
-            say(err.message, true);
-        }
+    const got = await loadProject(targetId, project, seq);
+    if (!got) {
         return;
     }
-    done();
-    if (seq !== nav) {
+    if (got.error) {
+        const message = `${project} could not be opened: ${got.error.message}`;
+        got.box.fail(
+            message,
+            () => openProject(targetId, project, story),
+            () => say(message, true),
+        );
         return;
     }
+    const { data } = got;
     adopt(data, project);
     state.filter = "undecided";
     state.text = "";
@@ -2462,7 +2743,7 @@ async function fillEnd(card, seq) {
                               "li",
                               {},
                               t.download
-                                  ? `${p.project}: downloading (${t.download.done} of ${plural(t.download.total, "project")} done)`
+                                  ? `${p.project}: downloading (${t.download.done} of ${plural(t.download.total, "artifact")} done)`
                                   : `${p.project}: downloading`,
                           ),
                       ),
@@ -3169,6 +3450,17 @@ async function watchFinish() {
     }
     state.finishSeen = null;
     say("");
+    // The box closes on a Finish that worked: its result is the card on the targets screen. One
+    // that failed keeps the box, as the error; the card below it says what was pushed.
+    const job = state.job;
+    if (job && (job.error !== null || job.interrupted) && finishBox && !finishBox.ended) {
+        const label = job.pr === null ? `${branchName()} seed` : `#${job.pr}`;
+        finishBox.update({ title: `Finish of ${label} failed`, body: null, detail: "" });
+        finishBox.fail(job.error ?? "it was interrupted", null);
+    } else {
+        finishBox?.end();
+    }
+    finishBox = null;
     if (state.screen === "targets") {
         showTargets("", true);
         document.getElementById("outcome-heading")?.focus();
@@ -3190,10 +3482,13 @@ const FINISH_STEPS = [
     ["status", "Posting the status", /^posting the status/],
 ];
 
+let finishBox = null; // the wait box following the running Finish
+
 // The running Finish's steps, each marked done, in progress or waiting, with the count of the
-// current one and the time spent: at the top of the targets screen.
+// current one and the time spent: in the wait box, over whatever screen is open. Finish runs on
+// the server, so the box has no Cancel: closing or reloading the page does not stop it.
 function drawFinishPanel() {
-    if (state.screen !== "targets" || !running()) {
+    if (!running()) {
         return;
     }
     const plan = state.plan;
@@ -3218,16 +3513,10 @@ function drawFinishPanel() {
     const step = state.job.step ?? "";
     const now = steps.findIndex(([, , match]) => match.test(step));
     const count = /\((\d+) of (\d+) done\)/.exec(step);
-    const secs = Math.round((performance.now() - (state.finishSeen ?? performance.now())) / 1000);
-    const time = secs >= 60 ? `${Math.floor(secs / 60)} min ${secs % 60} s` : `${secs} s`;
+    const label = state.job.pr === null ? `${branchName()} seed` : `#${state.job.pr}`;
     const panel = el(
         "section",
-        { class: "card finish-panel", id: "finish-panel", "aria-labelledby": "finish-panel-title" },
-        el(
-            "h2",
-            { id: "finish-panel-title" },
-            `Finishing ${state.job.pr === null ? `${branchName()} seed` : `#${state.job.pr}`}, ${time}`,
-        ),
+        { class: "finish-panel", id: "finish-panel" },
         el(
             "ol",
             {},
@@ -3245,14 +3534,19 @@ function drawFinishPanel() {
                 ),
             ),
         ),
-        el("p", { class: "meta" }, "Closing or reloading this page does not stop it."),
     );
-    const old = document.getElementById("finish-panel");
-    if (old) {
-        old.replaceWith(panel);
-    } else {
-        app.prepend(panel);
+    if (!finishBox || finishBox.ended) {
+        finishBox = block(`Finishing ${label}`, { delay: 0 });
     }
+    finishBox.update({
+        title: `Finishing ${label}`,
+        text: "Publishing your decisions. Closing or reloading this page does not stop it.",
+        body: panel,
+        detail: `${Math.max(now, 0)} of ${plural(steps.length, "step")} done`,
+        done: Math.max(now, 0),
+        total: steps.length,
+        since: state.finishSeen ?? performance.now(),
+    });
 }
 
 // Takes the server's newest Finish. A server restarted during a Finish says it was interrupted;
@@ -3459,30 +3753,34 @@ async function route() {
     try {
         const id = p.get("target");
         if (!id) {
-            await showTargets();
+            showTargets();
             return;
         }
         const project = p.get("project");
         if (state.data === null || state.target?.id !== id || state.project !== project) {
-            const done = waiting(`Loading ${project ?? id}...`);
-            let data;
-            try {
-                data = await api(`/api/pr/${encodeURIComponent(id)}/${encodeURIComponent(project)}`);
-            } catch (err) {
-                done();
-                if (seq === nav) {
-                    const what =
-                        err.status === 404 && /not listed/.test(err.message)
-                            ? `${id} is no longer listed`
-                            : `${project} of ${id} could not be opened: ${err.message}`;
-                    await showTargets(`${what}: showing every target.`);
+            const got = await loadProject(id, project, seq);
+            if (!got) {
+                return;
+            }
+            if (got.error) {
+                const err = got.error;
+                if (err.status === 404) {
+                    // Gone (a closed pull request, a project not in this run): the nearest screen.
+                    got.box.end();
+                    const what = /not listed/.test(err.message)
+                        ? `${id} is no longer listed`
+                        : `${project} of ${id} could not be opened: ${err.message}`;
+                    showTargets(`${what}: showing every target.`);
+                } else {
+                    got.box.fail(
+                        `${project} of ${id} could not be opened: ${err.message}`,
+                        () => route(),
+                        () => showTargets(),
+                    );
                 }
                 return;
             }
-            done();
-            if (seq !== nav) {
-                return;
-            }
+            const { data } = got;
             adopt(data, project);
             state.sequence = [];
             listForPickers();

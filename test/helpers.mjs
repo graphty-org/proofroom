@@ -209,7 +209,9 @@ export function fakeGh({
             return JSON.stringify({ jobs: jobs[m[1]] ?? [] });
         }
         if ((m = /actions\/runs\/(\d+)\/artifacts/.exec(path))) {
-            return JSON.stringify({ artifacts: (artifacts[m[1]] ?? []).map((name) => ({ name, expired: false })) });
+            return JSON.stringify({
+                artifacts: (artifacts[m[1]] ?? []).map((name) => ({ name, expired: false, size_in_bytes: 1000000 })),
+            });
         }
         if ((m = /actions\/runs\/(\d+)$/.exec(path))) {
             return JSON.stringify(run(runsById[m[1]]));
