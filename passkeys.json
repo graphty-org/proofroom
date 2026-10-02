@@ -1,4 +1,12 @@
 {
     "version": 1,
-    "keys": []
+    "keys": [
+        {
+            "id": "738fFZY3-Pa709BzFejFYRRnYVXX9K-eYpqc4bd7JMdzkEG2UGoy1M-r9Qm0l913",
+            "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8z31IvZlEdGMeLiJUDbkH59yBlVOrbhnsR4LDOwd1boR_3qRnzcDyjRGjWdk98l8WWBUmOmLuXHbrEVKGpHChA",
+            "rpId": "dev.ato.ms",
+            "label": "iPad passkey, 2026-10-02",
+            "registeredAt": "2026-10-02T03:39:55.278Z"
+        }
+    ]
 }
