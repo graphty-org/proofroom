@@ -68,6 +68,16 @@ The URL to open, with its session token, is printed at every start.
 
     gate: null, // gate.mjs's own usage
 
+    update: `usage: visual-review update <pull request number>
+
+Merges the default branch into the pull request's branch (a merge commit, never a rebase) and
+pushes it, so CI captures again against the default branch's baselines. A file under the
+baselines directory that conflicts takes the default branch's side, and the commit names each
+one; it accepts nothing, and the review shows whatever still differs. A conflict anywhere else
+refuses, lists the files and changes nothing. The commit is signed as your git configuration
+signs. For a pull request whose capture is stale against the default branch's baselines, or
+whose branch conflicts with it only under the baselines directory.`,
+
     "install-browser": `usage: visual-review install-browser
 
 Installs the Chromium, and on Linux the system libraries, that this package's Playwright uses
@@ -81,6 +91,7 @@ const COMMANDS = {
     compare,
     serve,
     gate,
+    update,
     "install-browser": installBrowser,
 };
 
@@ -95,6 +106,7 @@ Commands:
   reference        download the default branch's newest capture (CI, before capture)
   gate             fail a pull request that holds changes nobody accepted (CI)
   serve            the review page
+  update           merge the default branch into a pull request, taking its baselines
   compare          compare two directories of PNGs (local use)
   install-browser  install the Chromium capture uses
 
@@ -231,6 +243,48 @@ async function serve(args) {
     // Keep running until the process is stopped.
     await new Promise(() => {});
     return 0;
+}
+
+async function update(args) {
+    const { positionals } = parseArgs({ args, allowPositionals: true });
+    const pr = Number(positionals[0]);
+    if (positionals.length !== 1 || !Number.isInteger(pr) || pr <= 0) {
+        console.error(HELP.update);
+        return 2;
+    }
+    const { root, config } = await settings();
+    const { ghRunner } = await import("./lib/github.mjs");
+    const { AcceptError, updateFromMaster } = await import("./lib/accept.mjs");
+    const about = JSON.parse(await ghRunner(root)(["api", `repos/{owner}/{repo}/pulls/${pr}`]));
+    if (about.state !== "open") {
+        console.error(`visual-review update: #${pr} is ${about.state}, not open`);
+        return 1;
+    }
+    try {
+        const out = await updateFromMaster({
+            repo: root,
+            pr,
+            branch: about.head.ref,
+            config,
+            progress: (step) => console.log(`visual-review update: ${step}`),
+        });
+        console.log(`visual-review update: pushed ${out.commit} to ${out.branch}`);
+        for (const path of out.taken) {
+            console.log(`  took ${config.defaultBranch}'s side: ${path}`);
+        }
+        console.log(
+            out.recapture.length === 0
+                ? "CI captures again; no baseline changed on the branch."
+                : `CI captures again and compares these with their new baselines:\n${out.recapture.map((p) => `  ${p}`).join("\n")}`,
+        );
+        return 0;
+    } catch (err) {
+        if (err instanceof AcceptError) {
+            console.error(`visual-review update: ${err.message}`);
+            return 1;
+        }
+        throw err;
+    }
 }
 
 async function compare(args) {

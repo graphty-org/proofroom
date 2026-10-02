@@ -363,7 +363,9 @@ describe("finish: refusals", () => {
     it("refuses when master has a baseline commit the captured head lacks", async () => {
         const s = setup();
         pushCommit(s.remote, "master", "visual-baselines/compact-mantine/other.png");
-        await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(/merge master into the branch first/);
+        await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(
+            'merge master into the branch first: master has newer compact-mantine baselines; press "Update from master" on the review page, or run `visual-review update 123`',
+        );
     });
 
     it("ignores master's baseline commits for another project", async () => {
