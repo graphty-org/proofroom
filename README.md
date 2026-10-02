@@ -508,8 +508,8 @@ Finish applies every decision on one target, across all its projects, at once:
 - **Approvals from before the passkey.** Once a key is on the default branch, the gate counts
   those version 1 records for nothing, but the images they accepted are already on the branch, so
   the page finds nothing to decide. Finish still offers them: its button counts the files those
-  records accepted that no signed record covers, and the sheet says "Sign again N files approved
-  before passkeys, and remove N unsigned review records from <branch>". Your passkey signs a
+  records accepted that no signed record covers, and the sheet says `Sign again N files approved
+before passkeys, and remove N unsigned review records from <branch>`. Your passkey signs a
   version 2 record taking each of those files from the default branch's contents to the branch's,
   and the same commit removes the pull request's own unsigned records, which the gate refuses
   while they are there. Only files an unsigned record of this pull request accepted are signed
