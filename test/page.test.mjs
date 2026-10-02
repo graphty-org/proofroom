@@ -14,6 +14,7 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
+import { withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import { CONFIG, FIXTURE, fakeGh, git, isolateGit, job, makeRepo, onePr, withMoved } from "./helpers.mjs";
 
@@ -128,6 +129,15 @@ const status = () =>
             .join(" "),
     );
 const position = () => page.locator("#position").textContent();
+// The wait box: whether it is open, and each of its lines.
+const box = (part = null) =>
+    page.evaluate((name) => {
+        const d = globalThis.document.getElementById("wait");
+        if (!d?.open) {
+            return null;
+        }
+        return name ? globalThis.document.getElementById(`wait-${name}`).textContent : "open";
+    }, part);
 // The item's images have been on screen long enough for a decision to count.
 const ready = () => page.locator("#stage[data-ready]").waitFor();
 const progress = () => page.locator("#progress").textContent();
@@ -957,7 +967,7 @@ describe("review page: the decision bar", () => {
 });
 
 describe("review page: waits that say what they wait for", () => {
-    it("shows the server's step with the time while the first list loads, then the targets", async () => {
+    it("shows the server's step, counts and time in the wait box while the first list loads, then the targets", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
         await open(
@@ -974,12 +984,16 @@ describe("review page: waits that say what they wait for", () => {
             },
             { review: false },
         );
-        await expect
-            .poll(() => page.locator("#listline").textContent())
-            .toMatch(/^Loading pull requests: Listing pull requests, \d+ s$/);
+        await expect.poll(() => box("title")).toBe("Loading the pull requests");
+        expect(await box("text")).toBe("Reading the open pull requests and their CI runs from GitHub.");
+        expect(await box("detail")).toBe("Listing pull requests");
+        await expect.poll(() => box("elapsed")).toMatch(/^\d+ s$/);
+        // Nothing to cancel: there is nothing else to show yet.
+        expect(await page.locator("#wait-cancel").isVisible()).toBe(false);
         expect(await page.locator(".card.placeholder").count()).toBe(1);
         release();
         await page.getByRole("button", { name: "Review", exact: true }).first().waitFor();
+        expect(await box()).toBeNull();
         await expect.poll(() => page.locator("#listline").textContent()).toMatch(/^Updated \d+ s agoRefresh$/);
     });
 
@@ -1001,13 +1015,16 @@ describe("review page: waits that say what they wait for", () => {
             { review: false },
         );
         const downloading = page.getByRole("button", { name: "Downloading..." });
-        // Every project of the run, while its captures download.
-        await expect.poll(() => downloading.count(), { timeout: 10000 }).toBe(5);
-        expect(await downloading.first().isDisabled()).toBe(true);
+        // The two projects the run uploaded captures for, while they download; the three it did
+        // not are listed as such at once.
+        await expect.poll(() => downloading.count(), { timeout: 10000 }).toBe(2);
         const card = await page.locator('.card[data-target="123"]').textContent();
-        // How many projects have landed, and for how long it has been downloading.
-        expect(card).toMatch(/Downloading \(0 of 5 projects\), \d+ s/);
+        // How many artifacts and bytes have landed, and for how long it has been downloading.
+        expect(card).toMatch(/Downloading: 0 of 2 artifacts, 0\.0 MB of 2\.0 MB, \d+ s/);
         expect(card).not.toContain("none");
+        // In the background: said in the status row, never in the box.
+        await expect.poll(status).toMatch(/^Downloading captures in the background: #123/);
+        expect(await box()).toBeNull();
         release();
         await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
         expect(await downloading.count()).toBe(0);
@@ -1022,9 +1039,11 @@ describe("review page: waits that say what they wait for", () => {
             await route.continue();
         });
         await page.getByRole("button", { name: "Review", exact: true }).first().click();
-        await expect.poll(status).toMatch(/^Loading compact-mantine\.\.\./);
+        await expect.poll(() => box("title")).toBe("Opening compact-mantine");
+        expect(await box("text")).toBe("Reading the compact-mantine captures from the server.");
         release();
         await page.locator(".component").first().waitFor();
+        expect(await box()).toBeNull();
         await page.unroute("**/api/pr/123/compact-mantine");
         await page.locator("#review-undecided").click();
         await page.keyboard.press("j");
@@ -1042,6 +1061,155 @@ describe("review page: waits that say what they wait for", () => {
         save();
         await expect.poll(status).toMatch(/^Accepted #2\. Now #3/);
     });
+});
+
+describe("review page: the wait box", () => {
+    // graphty-element's captures are held until the test releases them.
+    const heldDownload = () => {
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        const options = (r) => {
+            const gh = onePr()(r);
+            return {
+                gh: async (args, input) => {
+                    if (args[0] === "run" && args[4] === "visual-graphty-element-1") {
+                        await held;
+                    }
+                    return gh(args, input);
+                },
+            };
+        };
+        return { options, release: () => release() };
+    };
+    const geRow = () => page.locator('.card[data-target="123"] tr', { hasText: "graphty-element" });
+
+    it("shows a project still downloading in the middle of an iPad's screen, with its progress, and opens it when it lands", async () => {
+        const { options, release } = heldDownload();
+        const viewport = { width: 820, height: 1180 };
+        await open(options, { review: false, touch: true, viewport });
+        await geRow().getByRole("button", { name: "Downloading..." }).waitFor({ timeout: 10000 });
+        await geRow().getByRole("button", { name: "Downloading..." }).click();
+        await expect.poll(() => box("title")).toBe("Downloading graphty-element captures for #123");
+        expect(await box("text")).toBe(
+            "CI run 1000's captures are not on this computer yet. graphty-element (1.0 MB) downloads first; " +
+                "the rest go on in the background.",
+        );
+        await expect.poll(() => box("detail")).toBe("1 of 2 artifacts, 1.0 MB of 2.0 MB");
+        await expect.poll(() => box("elapsed")).toMatch(/^\d+ s$/);
+        expect(await page.locator("#wait-bar").evaluate((b) => [b.value, b.max])).toEqual([1, 2]);
+        // Centered, whole on the screen, and the same size while its lines change.
+        const at = await page.locator("#wait").boundingBox();
+        expect(Math.abs(at.x + at.width / 2 - viewport.width / 2)).toBeLessThan(2);
+        expect(Math.abs(at.y + at.height / 2 - viewport.height / 2)).toBeLessThan(2);
+        expect(at.x).toBeGreaterThanOrEqual(16);
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+        expect(await page.locator("#wait").boundingBox()).toEqual(at);
+        // Cancel closes it and leaves the targets as they were; the download goes on.
+        expect(await page.locator("#wait-retry").isVisible()).toBe(false);
+        await page.locator("#wait-cancel").click();
+        expect(await box()).toBeNull();
+        expect(await page.locator('.card[data-target="123"]').count()).toBe(1);
+        await geRow().getByRole("button", { name: "Downloading..." }).click();
+        await expect.poll(() => box("title")).toBe("Downloading graphty-element captures for #123");
+        release();
+        await page.locator(".component").first().waitFor({ timeout: 10000 });
+        expect(await box()).toBeNull();
+        expect(await page.locator("#pick-project").inputValue()).toBe("graphty-element");
+    }, 30000);
+
+    it("says in the box which GitHub call waits to retry, then turns a failure into an error with Retry", async () => {
+        let fails = 1;
+        let down = false;
+        await open(
+            (r) => {
+                const gh = onePr()(r);
+                return {
+                    gh: withRetries(
+                        async (args, input) => {
+                            if ((args[1] ?? "").includes("/pulls?")) {
+                                if (down) {
+                                    throw new Error("HTTP 401: Bad credentials");
+                                }
+                                if (fails-- > 0) {
+                                    throw new Error("Could not resolve host: api.github.com");
+                                }
+                            }
+                            return gh(args, input);
+                        },
+                        [1500],
+                    ),
+                };
+            },
+            { review: false },
+        );
+        await expect
+            .poll(() => box("net"))
+            .toMatch(
+                /^GitHub did not answer \(Could not resolve host: api\.github\.com\)\. Trying again in \d s, try 2 of 2\.$/,
+            );
+        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
+        expect(await box()).toBeNull();
+    }, 30000);
+
+    it("turns the first load into an error with Retry when GitHub refuses, and Retry loads the list", async () => {
+        let down = true;
+        await open(
+            (r) => {
+                const gh = onePr()(r);
+                return {
+                    gh: async (args, input) => {
+                        if (down && (args[1] ?? "").includes("/pulls?")) {
+                            throw new Error("HTTP 401: Bad credentials");
+                        }
+                        return gh(args, input);
+                    },
+                };
+            },
+            { review: false },
+        );
+        await expect
+            .poll(() => box("error"))
+            .toBe("Could not read the pull requests from GitHub: HTTP 401: Bad credentials");
+        expect(await box("title")).toBe("Loading the pull requests");
+        await expect.poll(() => box("elapsed")).toMatch(/^Stopped after \d+ s$/);
+        expect(await page.locator("#wait-retry").isVisible()).toBe(true);
+        expect(await page.locator("#wait-cancel").textContent()).toBe("Close");
+        down = false;
+        await page.locator("#wait-retry").click();
+        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
+        expect(await box()).toBeNull();
+    }, 30000);
+
+    it("never shows the box for a refresh in the background: the status row says it", async () => {
+        let release = () => {};
+        let hold = false;
+        await open(
+            (r) => {
+                const gh = onePr()(r);
+                return {
+                    gh: async (args, input) => {
+                        if (hold && (args[1] ?? "").includes("/pulls?")) {
+                            await new Promise((resolve) => (release = resolve));
+                        }
+                        return gh(args, input);
+                    },
+                };
+            },
+            { review: false },
+        );
+        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor();
+        hold = true;
+        await page.getByRole("button", { name: "Refresh" }).click();
+        await expect.poll(status).toMatch(/^Checking GitHub for new CI runs Listing pull requests, \d+ s$/);
+        for (let i = 0; i < 5; i++) {
+            expect(await box()).toBeNull();
+            await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        // The targets stay usable meanwhile.
+        expect(await page.getByRole("button", { name: "Review", exact: true }).first().isEnabled()).toBe(true);
+        release();
+        await expect.poll(status).toBe("");
+    }, 30000);
 });
 
 describe("review page: moving on", () => {
@@ -1386,10 +1554,12 @@ describe("review page: Finish", () => {
         // The commit, the LFS upload and the push come first: seconds on a busy runner.
         const slow = { timeout: 30000 };
         await expect.poll(status, slow).toBe("Finishing #123: posting the status...");
-        // The targets screen follows it step by step.
+        // The wait box follows it step by step, over the page.
+        await expect.poll(() => box("title")).toBe("Finishing #123");
         await expect
-            .poll(() => page.locator("#finish-panel li.now").textContent())
+            .poll(() => page.locator("#wait #finish-panel li.now").textContent())
             .toBe("Posting the status: in progress");
+        expect(await box("detail")).toBe("5 of 6 steps done");
         expect(await page.locator("#finish-panel li.done").allTextContents()).toEqual([
             "Checking: done",
             "Writing the files: done",
@@ -1404,10 +1574,10 @@ describe("review page: Finish", () => {
             .poll(() => page.locator(".finish-running").textContent())
             .toBe("Finish is running: posting the status...");
         expect(await page.getByRole("button", { name: /^Finish #123/ }).count()).toBe(0);
-        // Read at once, not polled: opening a screen must not blank the Finish's step until the
-        // next once-a-second check writes it again (on a slow runner that took over a second).
-        await page.locator("#home").click();
-        expect(await status()).toBe("Finishing #123: posting the status...");
+        // A reload finds the running Finish and blocks the page again, with no Cancel: closing the
+        // page never stops a Finish.
+        await expect.poll(() => box("title")).toBe("Finishing #123");
+        expect(await page.locator("#wait-cancel").isVisible()).toBe(false);
 
         release();
         await expect
@@ -1416,6 +1586,7 @@ describe("review page: Finish", () => {
                 /^Finished #123\.Committed \w{10} to feature\.Commit status: pending -- 4 accepted, 0 rejected, 0 excluded, 3 undecided, not loaded: layout, algorithms, graphty\./,
             );
         expect(await page.locator(".finish-running").count()).toBe(0);
+        expect(await box()).toBeNull();
         // Focus is on the result, so a screen reader reads it.
         await expect.poll(() => page.evaluate(() => globalThis.document.activeElement.id)).toBe("outcome-heading");
         expect(await page.locator(".finish-outcome .offers button").allTextContents()).toEqual([

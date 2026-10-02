@@ -58,6 +58,14 @@ const TRANSIENT =
     /could not resolve host|no such host|error connecting to|connection (reset|refused|timed out)|i\/o timeout|TLS handshake timeout|HTTP 5\d\d|unexpected EOF|GOAWAY|stream error|context deadline exceeded|timed out after/i;
 
 /**
+ * The gh calls waiting to retry after a network failure, newest last, each with its error, which
+ * try it waits for and until when: the review page shows the newest, so a dropped DNS lookup reads
+ * as "retrying" and never as a hang.
+ * @type {Set<{ error: string, attempt: number, of: number, until: number }>}
+ */
+export const retrying = new Set();
+
+/**
  * Retries a gh runner's calls that failed on the network, after each delay in turn. A write
  * (`--input`) is never retried: GitHub may have applied it before the connection dropped. Every
  * failure and retry is logged to stderr, so the server's log shows what happened.
@@ -79,7 +87,15 @@ export const withRetries =
                 if (!retry) {
                     throw err;
                 }
+                const wait = {
+                    error: err.message.split("\n")[0],
+                    attempt: i + 2,
+                    of: delays.length + 1,
+                    until: Date.now() + delays[i],
+                };
+                retrying.add(wait);
                 await new Promise((resolve) => setTimeout(resolve, delays[i]));
+                retrying.delete(wait);
             }
         }
     };
@@ -158,6 +174,29 @@ export async function visualJobs(gh, run, attempt, projects) {
 // Downloads in flight, by target directory: concurrent refreshes of one run await the same one.
 const downloading = new Map();
 
+// At most this many `gh run download` at once: every open pull request's captures start at once,
+// and dozens of parallel transfers only slow each other (and the one the reviewer is waiting for).
+const DOWNLOADS = 8;
+let active = 0;
+/** Downloads waiting for a slot, by target directory, in the order they start. */
+const queued = [];
+const pump = () => {
+    while (active < DOWNLOADS && queued.length > 0) {
+        active++;
+        queued.shift().start();
+    }
+};
+
+/**
+ * Moves the waiting downloads whose directory `wanted` picks to the front of the queue: the
+ * project the reviewer is opening downloads next, before the ones nobody is waiting for.
+ * @param {(dir: string) => boolean} wanted picks the directories to hurry
+ */
+export function hurry(wanted) {
+    const first = queued.filter((q) => wanted(q.dir));
+    queued.splice(0, queued.length, ...first, ...queued.filter((q) => !wanted(q.dir)));
+}
+
 /**
  * Downloads one artifact into `dir`, unless it is already there. It is extracted into a sibling
  * temporary directory and renamed into place only once its results.json is there, so `dir` either
@@ -192,6 +231,10 @@ function download(gh, runId, name, dir) {
                     rmSync(join(dirname(dir), f), { recursive: true, force: true });
                 }
             }
+            await new Promise((start) => {
+                queued.push({ dir, start });
+                pump();
+            });
             const part = mkdtempSync(`${dir}.part-`);
             try {
                 await gh(["run", "download", String(runId), "-n", name, "-D", part]);
@@ -200,6 +243,8 @@ function download(gh, runId, name, dir) {
                 }
             } finally {
                 rmSync(part, { recursive: true, force: true });
+                active--;
+                pump();
             }
         })().finally(() => downloading.delete(dir));
         downloading.set(dir, done);
@@ -220,11 +265,14 @@ function download(gh, runId, name, dir) {
  * @param {string[]} [others] receives the projects the run captured that are not in `projects`
  * @param {(project: string, got: object | null) => void} [landed] told as each project's download
  *     ends, with what the result holds for it, so a page can fill rows in one by one
- * @returns {Promise<Record<string, { dir: string | null, attempt: number, error?: string,
- *     expired?: true } | null>>} null for a project with no artifact; `error` (and no `dir`) when
- *     its download failed; `expired` (and no `dir`) when GitHub deleted it and it is not on disk
+ * @param {(sizes: Record<string, number>) => void} [planned] told first, with the size in bytes
+ *     of each project's artifact, so a page can count the bytes still to come
+ * @returns {Promise<Record<string, { dir: string | null, attempt: number, bytes: number,
+ *     error?: string, expired?: true } | null>>} null for a project with no artifact; `error`
+ *     (and no `dir`) when its download failed; `expired` (and no `dir`) when GitHub deleted it and
+ *     it is not on disk
  */
-export async function downloadCaptures(gh, run, projects, tmp, others = [], landed = () => {}) {
+export async function downloadCaptures(gh, run, projects, tmp, others = [], landed = () => {}, planned = () => {}) {
     const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
     for (const a of artifacts) {
         const p = /^visual-(.+)-\d+$/.exec(a.name)?.[1];
@@ -232,33 +280,49 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
             others.push(p);
         }
     }
-    /** @type {Record<string, { dir: string | null, attempt: number, error?: string, expired?: true } | null>} */
+    const newest = Object.fromEntries(
+        projects.map((project) => {
+            const pattern = new RegExp(`^visual-${project}-(\\d+)$`);
+            const a = artifacts
+                .filter((x) => pattern.test(x.name))
+                .map((x) => ({
+                    name: x.name,
+                    expired: x.expired,
+                    bytes: x.size_in_bytes ?? 0,
+                    attempt: Number(pattern.exec(x.name)[1]),
+                }))
+                .sort((x, y) => y.attempt - x.attempt)[0];
+            return [project, a ?? null];
+        }),
+    );
+    planned(Object.fromEntries(Object.entries(newest).flatMap(([p, a]) => (a ? [[p, a.bytes]] : []))));
+    /** @type {Record<string, { dir: string | null, attempt: number, bytes: number, error?: string, expired?: true } | null>} */
     const out = {};
-    for (const project of projects) {
-        const pattern = new RegExp(`^visual-${project}-(\\d+)$`);
-        const newest = artifacts
-            .filter((a) => pattern.test(a.name))
-            .map((a) => ({ name: a.name, expired: a.expired, attempt: Number(pattern.exec(a.name)[1]) }))
-            .sort((a, b) => b.attempt - a.attempt)[0];
-        if (!newest) {
-            out[project] = null;
-        } else {
-            const dir = join(tmp, `${run.id}-${newest.attempt}`, project);
-            if (newest.expired) {
-                out[project] = existsSync(join(dir, "results.json"))
-                    ? { dir, attempt: newest.attempt }
-                    : { dir: null, attempt: newest.attempt, expired: true };
+    // Every project at once: the shared cap on downloads keeps the number of transfers sane.
+    await Promise.all(
+        projects.map(async (project) => {
+            const a = newest[project];
+            if (!a) {
+                out[project] = null;
             } else {
-                try {
-                    await download(gh, run.id, newest.name, dir);
-                    out[project] = { dir, attempt: newest.attempt };
-                } catch (err) {
-                    out[project] = { dir: null, attempt: newest.attempt, error: err.message };
+                const dir = join(tmp, `${run.id}-${a.attempt}`, project);
+                const got = { attempt: a.attempt, bytes: a.bytes };
+                if (a.expired) {
+                    out[project] = existsSync(join(dir, "results.json"))
+                        ? { dir, ...got }
+                        : { dir: null, ...got, expired: true };
+                } else {
+                    try {
+                        await download(gh, run.id, a.name, dir);
+                        out[project] = { dir, ...got };
+                    } catch (err) {
+                        out[project] = { dir: null, ...got, error: err.message };
+                    }
                 }
             }
-        }
-        landed(project, out[project]);
-    }
+            landed(project, out[project]);
+        }),
+    );
     return out;
 }
 
