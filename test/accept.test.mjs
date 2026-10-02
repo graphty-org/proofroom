@@ -693,11 +693,22 @@ describe("finish: approvals from before passkeys", () => {
         expect(legacyApprovals({ repo: s.repo, pr: null, head: s.head, base: s.master, config: CONFIG })).toBeNull();
     });
 
-    it("offers nothing while master holds no key, or when the branch lacks master's tip", () => {
-        for (const opts of [{ keys: false }, { merged: false }]) {
-            const s = legacySetup(opts);
-            expect(legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG })).toBeNull();
-        }
+    it("offers nothing while master holds no key", () => {
+        const s = legacySetup({ keys: false });
+        expect(legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG })).toBeNull();
+    });
+
+    it("on a branch behind master, offers the files master has not changed since, and only those", () => {
+        const s = legacySetup({ merged: false });
+        const offered = () => legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG });
+        // master's later commit (the key) is not counted as the branch's change.
+        expect(offered()).toMatchObject({ drop: [OLD], items: [{ path: PNG }] });
+        // Once master changes the file too, signing it from the fork point would not match what
+        // the gate compares with: the branch has to be updated first.
+        writeFileSync(join(s.repo, PNG), "changed on master later");
+        git(s.repo, "commit", "-q", "-am", "master moves");
+        s.master = git(s.repo, "rev-parse", "HEAD");
+        expect(offered()).toEqual({ drop: [OLD], items: [] });
     });
 
     it("signs them with nothing decided, removes the unsigned record, and the gate reports only the unreviewed change", async () => {

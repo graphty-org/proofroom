@@ -402,8 +402,8 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * @param {string} input.base the default branch's tip, as fetched
  * @param {{ baselines: string }} input.config the settings
  * @returns {{ items: object[], drop: string[] } | null} the record items to sign (base branch
- *     contents to head contents) and the refused records to remove, or null when there are none
- *     or the branch does not contain the default branch's tip (merge it first)
+ *     contents to head contents) and the refused records to remove, or null when there are none;
+ *     a file the default branch changed after the branch left it is not offered (update the branch)
  */
 export function legacyApprovals({ repo, pr, head, base, config }) {
     if (pr === null) {
@@ -416,12 +416,26 @@ export function legacyApprovals({ repo, pr, head, base, config }) {
     } catch {
         return null; // no key on the default branch: the gate checks no approvals
     }
+    // From where the branch left the default branch, so the default branch's later changes are not
+    // counted as this pull request's. The gate compares with the default branch's tip, so a file
+    // the default branch changed since then is left out: it needs the branch updated first.
+    let fork;
     try {
-        run(["merge-base", "--is-ancestor", base, head]);
+        fork = run(["merge-base", base, head]).toString("utf8").trim();
     } catch {
-        return null; // behind the default branch: base..head would count its changes as this one's
+        return null;
     }
-    const { refused, missing } = reviewGaps(base, head, repo, config.baselines, { keys, pr });
+    const blob = (ref, path) => {
+        try {
+            return run(["rev-parse", `${ref}:${path}`])
+                .toString("utf8")
+                .trim();
+        } catch {
+            return null;
+        }
+    };
+    const { refused, missing: all } = reviewGaps(fork, head, repo, config.baselines, { keys, pr });
+    const missing = fork === base ? all : all.filter((m) => blob(fork, m.path) === blob(base, m.path));
     const covered = new Set();
     const drop = [];
     for (const path of refused) {
