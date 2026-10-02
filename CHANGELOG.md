@@ -1,3 +1,32 @@
+## 0.2.2 (2026-10-02)
+
+### 🚀 Features
+
+- **visual-review:** blocking waits in a centered modal, and faster loading ([8fe5078a](https://github.com/graphty-org/graphty-monorepo/commit/8fe5078a))
+- **visual-review:** approve Finish with the owner's passkey and enforce it in the gate ([d04b4d6c](https://github.com/graphty-org/graphty-monorepo/commit/d04b4d6c))
+- **visual-review:** fixed decision bar, loading progress and next-project flow in the review page ([94564d06](https://github.com/graphty-org/graphty-monorepo/commit/94564d06))
+- **visual-review:** cached target list, download progress, thumbnails and a Finish preview ([a4d30061](https://github.com/graphty-org/graphty-monorepo/commit/a4d30061))
+- **visual-review:** publish accept notes in Finish's comment and the seed pull request ([1720f048](https://github.com/graphty-org/graphty-monorepo/commit/1720f048))
+- **visual-review:** register a passkey and approve Finish with Face ID in the page ([6ca1466f](https://github.com/graphty-org/graphty-monorepo/commit/6ca1466f))
+- **visual-review:** passkey registration and approval routes in the review server ([cce0cfb7](https://github.com/graphty-org/graphty-monorepo/commit/cce0cfb7))
+- **visual-review:** commit only the passkey-approved record at Finish ([83e1e617](https://github.com/graphty-org/graphty-monorepo/commit/83e1e617))
+- **visual-review:** gate requires passkey approvals once a key is registered ([3912c7d6](https://github.com/graphty-org/graphty-monorepo/commit/3912c7d6))
+- **visual-review:** verify passkey approvals of review records ([68ca01f2](https://github.com/graphty-org/graphty-monorepo/commit/68ca01f2))
+
+### 🩹 Fixes
+
+- **visual-review:** review page on narrow windows and touch, and the Keys overlay ([edc72f0b](https://github.com/graphty-org/graphty-monorepo/commit/edc72f0b))
+- **visual-review:** steady story panes, next project first, finished decisions kept in view ([61f4d890](https://github.com/graphty-org/graphty-monorepo/commit/61f4d890))
+- **visual-review:** keep the grid bar's labels on one line, in two rows on an iPad ([04a514c0](https://github.com/graphty-org/graphty-monorepo/commit/04a514c0))
+- **visual-review:** start Face ID inside the press, and trust only master's keys ([17b40be5](https://github.com/graphty-org/graphty-monorepo/commit/17b40be5))
+- **visual-review:** refuse approvals from another host and numbers with two forms ([9fa904d5](https://github.com/graphty-org/graphty-monorepo/commit/9fa904d5))
+- **visual-review:** count a review record only from the base branch's contents ([d18af012](https://github.com/graphty-org/graphty-monorepo/commit/d18af012))
+- **visual-review:** fail closed when the server cannot read its passkeys ([9b75eaea](https://github.com/graphty-org/graphty-monorepo/commit/9b75eaea))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.1 (2026-10-02)
 
 ### 🚀 Features
