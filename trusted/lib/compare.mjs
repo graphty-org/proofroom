@@ -18,7 +18,7 @@ export const DEFAULT_THRESHOLD = 0.063;
 
 /**
  * Hashes PNG bytes; equal hashes mean the images are identical without decoding either.
- * @param {Buffer} bytes the file's bytes
+ * @param {Buffer | string} bytes the file's bytes (or text)
  * @returns {string} the hex SHA-256 of the bytes
  */
 export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");

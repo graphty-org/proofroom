@@ -249,7 +249,7 @@ const TYPES = {
  * @param {string} dir the directory to serve
  * @returns {Promise<[import("node:http").Server, string]>} the server and its base URL
  */
-function serve(dir) {
+export function serve(dir) {
     const server = createServer(async (req, res) => {
         try {
             let p = normalize(decodeURIComponent(new URL(req.url, "http://x").pathname)).replace(/^(\.\.[/\\])+/, "");
