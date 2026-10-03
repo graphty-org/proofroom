@@ -1794,12 +1794,10 @@ function showGrid() {
             ),
         ),
     );
-    const empty =
-        state.filter === "undecided"
-            ? isLocal()
-                ? "Nothing here."
-                : `Everything is decided. Finish ${labelOf(state.target)} when ready.`
-            : "No stories match this filter.";
+    let empty = "No stories match this filter.";
+    if (state.filter === "undecided") {
+        empty = isLocal() ? "Nothing here." : `Everything is decided. Finish ${labelOf(state.target)} when ready.`;
+    }
     render(
         isLocal()
             ? el(
@@ -2288,11 +2286,7 @@ function noteBox(item, d) {
             maxlength: "2000",
             autocomplete: "off",
             readonly: Boolean(d) || isLocal() || state.ended,
-            placeholder: d
-                ? ""
-                : state.pending
-                  ? `Reason to ${state.pending}, then Enter`
-                  : "Needed to Reject or Exclude",
+            placeholder: notePlaceholder(d),
             value: d ? (d.reason ?? "") : draft,
             oninput: (e) => drafts.set(draftKey(item), e.target.value),
             onkeydown: (e) => {
@@ -2532,11 +2526,27 @@ const paneError = (message) =>
 // missing image leaves its pane empty, the same size, so the other one never moves. With the
 // Baseline pane off (P) only one pane is drawn, as wide as the two: the right one, or the
 // baseline when there is no capture (a removed story).
+function notePlaceholder(decided) {
+    if (decided) {
+        return "";
+    }
+    return state.pending ? `Reason to ${state.pending}, then Enter` : "Needed to Reject or Exclude";
+}
+
+// Which single pane to draw when the baseline is hidden: the capture (or a failed item's error),
+// else the baseline of a removed story. Null draws both.
+function onlyPane(item) {
+    if (state.baselinePane) {
+        return null;
+    }
+    return item.capture || item.status === "failed" ? "right" : "left";
+}
+
 async function renderStage(item, view, keep) {
     const seq = ++stageRender;
     const stage = document.getElementById("stage");
-    const only = state.baselinePane ? null : item.capture || item.status === "failed" ? "right" : "left";
-    const panes = (l, r) => (only === "right" ? [r] : only === "left" ? [l] : [l, r]);
+    const only = onlyPane(item);
+    const panes = (l, r) => ({ right: [r], left: [l] })[only] ?? [l, r];
     const baseName = item.from ? `Baseline of ${item.from}` : "Baseline";
     const imgOf = async (kind) => {
         const img = await loaded(
@@ -3439,10 +3449,9 @@ async function acceptAll(component) {
     if (!component) {
         // Accepting a removal deletes its baseline, so the question says how many it holds.
         const removals = items.filter((i) => i.status === "removed").length;
+        const theirs = removals === 1 ? "its baseline" : "their baselines";
         const deletes =
-            removals === 0
-                ? ""
-                : ` This includes ${plural(removals, "removal")}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
+            removals === 0 ? "" : ` This includes ${plural(removals, "removal")}: accepting deletes ${theirs}.`;
         const stuck = state.data.items.filter((i) => onlyExclude(i) && !decisionOf(i));
         const left =
             stuck.length === 0 || narrowed()
