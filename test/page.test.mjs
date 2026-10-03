@@ -264,6 +264,68 @@ describe("review page: a component's Accept in a long grid, on an iPad", () => {
     });
 });
 
+// Thirty components of three removed and three new stories each.
+const MIXED = [];
+{
+    const items = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
+    const card = items.find((i) => i.file === "card--legacy.png");
+    const badge = items.find((i) => i.file === "badge--default.light.png");
+    for (let c = 0; c < 30; c++) {
+        for (let m = 0; m < 6; m++) {
+            const id = `comp${String(c).padStart(2, "0")}--s${m}`;
+            MIXED.push({ ...(m < 3 ? card : badge), id, mode: null, file: `${id}.png` });
+        }
+    }
+}
+
+describe("review page: Accept takes what the filter shows, on an iPad", () => {
+    const scroll = () => page.evaluate(() => globalThis.document.getElementById("app").scrollTop);
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: under Removed, a component's Accept and the bar's take only removed items`, async () => {
+            await open((r) => ({ gh: withMoved(r, MIXED) }), { viewport, touch: true });
+            await show("removed");
+            const bar = page.locator("#accept-all");
+            await expect.poll(() => bar.textContent()).toBe("Accept 91 removed");
+            const comp = page.locator('.component[data-component="comp20"]');
+            expect(await comp.locator("h3").textContent()).toBe("comp20Accept 3");
+            await comp.locator("h3 .accept").click();
+            await expect.poll(status).toBe("Accepted 3 items in comp20.");
+            expect(dialogs).toEqual([]);
+            expect(await comp.locator(".decision .what").allTextContents()).toEqual(
+                Array(3).fill("Accepted (not opened)"),
+            );
+            expect(await comp.locator("h3").textContent()).toBe("comp20Undo 3");
+            expect(await bar.textContent()).toBe("Accept 88 removed");
+            expect(await progress()).toBe("3 of 186 decided");
+            // Find story narrows both Accepts as it narrows the grid.
+            await page.locator("#find").fill("comp05--s0");
+            await expect.poll(() => bar.textContent()).toBe("Accept 1 matching");
+            expect(await page.locator('.component[data-component="comp05"] h3').textContent()).toBe("comp05Accept 1");
+            await page.locator("#find").fill("");
+            await expect.poll(() => bar.textContent()).toBe("Accept 88 removed");
+            // Find story's short grid scrolled it to the top: down to comp20 again.
+            await comp.evaluate((c) => c.scrollIntoView());
+            const before = await scroll();
+            expect(before).toBeGreaterThan(0);
+            await bar.click();
+            await expect.poll(progress).toBe("91 of 186 decided");
+            expect(dialogs).toEqual([
+                "Accept 88 removed items of compact-mantine without opening them? This includes 88 removals: " +
+                    "accepting deletes their baselines.",
+            ]);
+            expect(await scroll()).toBe(before);
+            expect(await bar.textContent()).toBe("Accept 0 removed");
+            // Nothing new was taken: the 90 new stories and the fixture's three are still undecided.
+            await page.getByRole("button", { name: /^Needs a decision/ }).click();
+            expect(await bar.textContent()).toBe("Accept all undecided (93)");
+        });
+    }
+});
+
 describe("review page: a pull request", () => {
     beforeEach(async () => {
         await open((r) => ({ gh: onePr()(r) }));
@@ -778,6 +840,29 @@ describe("review page: a pull request", () => {
         expect(await status()).toBe("Accepted 1 item in badge.");
         expect(dialogs).toEqual([]);
         expect(await page.getByRole("button", { name: /^Finish/ }).textContent()).toBe("Finish #123 (1)");
+    });
+
+    it("under New, Shift+A accepts only the new items, after naming them", async () => {
+        await show("new");
+        expect(await page.locator("#accept-all").textContent()).toBe("Accept 1 new");
+        await page.evaluate(() => globalThis.document.activeElement.blur());
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("1 of 6 decided");
+        expect(dialogs).toEqual(["Accept 1 new item of compact-mantine without opening them?"]);
+        await show("accept");
+        expect(await page.locator(".tile-box").evaluateAll((b) => b.map((x) => x.dataset.file))).toEqual([
+            "badge--default.light.png",
+        ]);
+    });
+
+    it("Find story narrows Accept to the stories it shows, and the question says so", async () => {
+        await page.locator("#find").fill("slider");
+        const bar = page.locator("#accept-all");
+        await expect.poll(() => bar.textContent()).toBe("Accept 1 matching");
+        await bar.click();
+        await expect.poll(progress).toBe("1 of 6 decided");
+        expect(dialogs).toEqual(['Accept 1 undecided item of compact-mantine matching "slider" without opening them?']);
+        expect(await bar.textContent()).toBe("Accept 0 matching");
     });
 
     it("Shift+A accepts the project, and Finish states what it will do and who signs", async () => {

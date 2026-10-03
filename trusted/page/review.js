@@ -1584,11 +1584,33 @@ function errorRow(item) {
     );
 }
 
-// The items of `component` Accept would take without opening them.
+// The items of `component` (or the project) Accept would take without opening them: the undecided
+// ones the grid's filter and Find story show, never one hidden from the reviewer.
 const undecided = (component) =>
-    state.data.items.filter(
+    visibleItems().filter(
         (i) => ACCEPTABLE.includes(i.status) && !decisionOf(i) && (!component || componentOf(i.id) === component),
     );
+
+// Whether the grid shows less than everything undecided: a status or decision filter, or Find story.
+const narrowed = () => !["undecided", "all"].includes(state.filter) || findText(state.text) !== "";
+
+// The grid bar's Accept, named for what the grid shows: "Accept 131 removed", "Accept 12 matching".
+function acceptShownButton() {
+    const n = undecided(null).length;
+    const shown = findText(state.text) !== "" ? "matching" : (STATUS_FILTERS[state.filter]?.toLowerCase() ?? "shown");
+    return el(
+        "button",
+        {
+            type: "button",
+            class: "accept",
+            id: "accept-all",
+            "aria-keyshortcuts": "Shift+A",
+            "aria-disabled": String(n === 0),
+            onclick: () => acceptAll(null),
+        },
+        narrowed() ? `Accept ${n} ${shown}` : `Accept all undecided (${n})`,
+    );
+}
 
 // The files whose decisions a bulk Undo in `component` (or the whole project) clears: every
 // decision not yet posted by Finish.
@@ -1706,7 +1728,6 @@ function gridBar() {
     const decided = all.filter(decisionOf).length;
     const open = all.length - decided;
     const acceptable = state.data.acceptable && !isLocal();
-    const takeable = undecided(null).length;
     const counts = {};
     for (const i of all) {
         counts[i.status] = (counts[i.status] ?? 0) + 1;
@@ -1760,6 +1781,7 @@ function gridBar() {
             findTimer = setTimeout(() => {
                 state.text = e.target.value;
                 applyFind();
+                refreshAccepts();
                 remember();
             }, 200);
         },
@@ -1802,20 +1824,7 @@ function gridBar() {
             "div",
             { class: "row" },
             el("label", { for: "find" }, "Find story", find),
-            acceptable
-                ? el(
-                      "button",
-                      {
-                          type: "button",
-                          class: "accept",
-                          id: "accept-all",
-                          "aria-keyshortcuts": "Shift+A",
-                          "aria-disabled": String(takeable === 0),
-                          onclick: () => acceptAll(null),
-                      },
-                      `Accept all undecided (${takeable})`,
-                  )
-                : null,
+            acceptable ? acceptShownButton() : null,
             el(
                 "details",
                 { class: "menu" },
@@ -1871,6 +1880,14 @@ function applyFind() {
     }
     for (const c of app.querySelectorAll(".component")) {
         c.hidden = c.querySelector(".story:not([hidden])") === null;
+    }
+}
+
+// Find story changes what Accept takes: its buttons are drawn again (never the field being typed in).
+function refreshAccepts() {
+    document.getElementById("accept-all")?.replaceWith(acceptShownButton());
+    for (const c of app.querySelectorAll(".component")) {
+        c.querySelector("h3").replaceWith(groupHead(c.dataset.component));
     }
 }
 
@@ -3167,6 +3184,7 @@ async function bulkUndo(component) {
 }
 
 // Accept all undecided (Shift+A) asks first; a component's Accept N does not: Undo N takes it back.
+// Both take only what the grid's filter and Find story show, and name those files to the server.
 // Neither reloads the project: the server names the files it accepted, and the page marks them.
 async function acceptAll(component) {
     if (!state.data.acceptable || isLocal()) {
@@ -3177,7 +3195,7 @@ async function acceptAll(component) {
     const n = items.length;
     const where = component ?? state.project;
     if (n === 0) {
-        say(`Nothing undecided to accept in ${where}.`);
+        say(`Nothing undecided to accept in ${where}${narrowed() ? " that the grid shows" : ""}.`);
         return;
     }
     if (!component) {
@@ -3189,10 +3207,12 @@ async function acceptAll(component) {
                 : ` This includes ${plural(removals, "removal")}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
         const stuck = state.data.items.filter((i) => onlyExclude(i) && !decisionOf(i));
         const left =
-            stuck.length === 0
+            stuck.length === 0 || narrowed()
                 ? ""
                 : ` ${stuck.length} more (${[...new Set(stuck.map((i) => i.status))].sort().join(", ")}) can only be excluded and stay undecided.`;
-        const question = `Accept ${n} undecided ${n === 1 ? "item" : "items"} of ${where} without opening them?`;
+        const what = STATUS_FILTERS[state.filter]?.toLowerCase() ?? "undecided";
+        const find = findText(state.text) === "" ? "" : ` matching "${state.text.trim()}"`;
+        const question = `Accept ${n} ${what} ${n === 1 ? "item" : "items"} of ${where}${find} without opening them?`;
         if (!(await ask(`${question}${deletes}${left}`, `Accept ${n}`))) {
             return;
         }
@@ -3205,6 +3225,7 @@ async function acceptAll(component) {
             runId: state.data.target.runId,
             runAttempt: state.data.target.runAttempt,
             ...(component ? { component } : {}),
+            files: items.map((i) => i.file),
         });
     } catch (err) {
         say(err.message, true);

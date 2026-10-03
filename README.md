@@ -316,7 +316,9 @@ downloading captures nobody has opened yet) is said in the status row and never 
    way in, which opens the first undecided item and walks every undecided item; **Needs a
    decision** and **All**, each counted, and **More filters** (each status, and what you
    **Accepted**, **Rejected** and **Excluded**, each counted); **Find story**; **Accept all
-   undecided (N)**; and **More**, with **Undo all decisions...** and **Copy link to this grid**.
+   undecided (N)**, which under a filter or Find story takes only what the grid shows and says so
+   ("Accept 131 removed", "Accept 12 matching"; a component's Accept N counts only its shown
+   items too); and **More**, with **Undo all decisions...** and **Copy link to this grid**.
    Failed captures come first as one line, "6 failed captures: only Exclude applies"; opened (the
    page remembers), it lists each with its reason and, under "console and stack", the story's
    console output and the thrown error's stack (a play function's failed `expect` included). An
@@ -446,7 +448,7 @@ least 44 px tall.
 | B                | Outline the changed area, or stop outlining it                                                |
 | N                | Next change                                                                                   |
 | Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                |
-| Shift+A          | Grid: accept every undecided item of this project without opening it (asks first)             |
+| Shift+A          | Grid: accept every undecided item the grid shows without opening it (asks first)              |
 | /                | Grid: Find story                                                                              |
 | Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish              |
 | ?                | Show or hide the key list                                                                     |
