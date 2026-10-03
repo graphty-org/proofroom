@@ -326,6 +326,112 @@ describe("review page: Accept takes what the filter shows, on an iPad", () => {
     }
 });
 
+describe("review page: the Baseline pane, on an iPad", () => {
+    // Each pane's frame, its label and its picture, and where the decision buttons are.
+    const stage = () =>
+        page.evaluate(() => {
+            const { document } = globalThis;
+            const rect = (e) => {
+                const r = e.getBoundingClientRect();
+                return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), width: r.width };
+            };
+            return {
+                panes: [...document.querySelectorAll("#stage figure")].map((f) => ({
+                    label: f.querySelector(".label").textContent,
+                    frame: rect(f.querySelector(".frame")),
+                    pic: f.querySelector("img, canvas") ? rect(f.querySelector("img, canvas")) : null,
+                })),
+                accept: rect(document.getElementById("accept")),
+                reject: rect(document.getElementById("reject")),
+            };
+        });
+    const labels = async () => (await stage()).panes.map((p) => p.label);
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: P shows the new image alone across both panes, and the buttons stay put`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            await openStory(2);
+            await page.locator("#stage figure:nth-child(2) img").waitFor();
+            const two = await stage();
+            expect(two.panes.map((p) => p.label)).toEqual(["Baseline", "New"]);
+            const option = page.getByRole("button", { name: "Baseline", exact: true });
+            expect(await option.getAttribute("aria-pressed")).toBe("true");
+            await page.keyboard.press("p");
+            await expect.poll(labels).toEqual(["New"]);
+            await page.locator("#stage img").waitFor();
+            const one = await stage();
+            expect(await option.getAttribute("aria-pressed")).toBe("false");
+            // One frame from the left edge of the baseline's to the right edge of the new one's.
+            expect(one.panes[0].frame.left).toBe(two.panes[0].frame.left);
+            expect(one.panes[0].frame.right).toBe(two.panes[1].frame.right);
+            expect(one.panes[0].frame.width).toBeGreaterThan(2 * two.panes[1].frame.width);
+            // The image is never smaller, and larger when the width was what limited it.
+            expect(one.panes[0].pic.width).toBeGreaterThanOrEqual(two.panes[1].pic.width);
+            expect(one.panes[0].frame.top).toBe(two.panes[1].frame.top);
+            expect(one.accept).toEqual(two.accept);
+            expect(one.reject).toEqual(two.reject);
+            expect(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("baseline")).toBe("off");
+            // The option sits on the views' row, so the bar is no taller: one row from 1280 px wide.
+            const top = (name) =>
+                page
+                    .getByRole("button", { name, exact: true })
+                    .evaluate((e) => Math.round(e.getBoundingClientRect().top));
+            expect(await top("Baseline")).toBe(await top("Side by side"));
+            if (viewport.width >= 1280) {
+                expect(await top("Fit")).toBe(await top("Side by side"));
+            }
+            // P again brings the baseline back.
+            await page.keyboard.press("p");
+            await expect.poll(labels).toEqual(["Baseline", "New"]);
+        });
+    }
+
+    it("keeps the choice for the next item and a fresh page, shows a removed item's baseline, and still flashes", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await page.getByRole("button", { name: "Baseline", exact: true }).click();
+        await expect.poll(labels).toEqual(["New"]);
+        // The next item opens the same way.
+        await page.keyboard.press("j");
+        await expect.poll(() => page.locator(".itemline .number").textContent()).not.toBe("#2");
+        await expect.poll(labels).toEqual(["New"]);
+        // A fresh page on a link that does not say: this browser's choice holds.
+        await openStoryFromGrid(2);
+        const link = new URL(page.url());
+        const p = new URLSearchParams(link.hash.slice(1));
+        p.delete("baseline");
+        link.hash = String(p);
+        await page.goto("about:blank");
+        await page.goto(link.href);
+        await expect.poll(position).toMatch(/^2 of /);
+        await expect.poll(labels).toEqual(["New"]);
+        // Flash alternates baseline and new in the one pane.
+        await page.keyboard.press("f");
+        await expect.poll(stageClass).toContain("flash");
+        // A flash view's stage is empty until its pictures are made: only a drawn pane counts.
+        const seen = new Set();
+        await expect
+            .poll(async () => {
+                const shown = (await labels()).join();
+                if (shown) {
+                    seen.add(shown);
+                }
+                return [...seen].sort().join("|");
+            })
+            .toBe("Flash: baseline|Flash: new");
+        await page.keyboard.press("f");
+        // A removed story has only a baseline: that is what the one pane shows.
+        await openStoryFromGrid(6);
+        await expect.poll(labels).toEqual(["Baseline"]);
+        await page.locator("#stage img").waitFor();
+    });
+});
+
 describe("review page: a pull request", () => {
     beforeEach(async () => {
         await open((r) => ({ gh: onePr()(r) }));

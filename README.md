@@ -226,11 +226,11 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 
 The address always names the screen you are on, after the token: the targets list; a pull
 request (or the default branch's seed) and project with the grid's filter and Find text; or one
-story with its pass, view, zoom, outline, blink and Spotlight flash, for example
-`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&pass=undecided&view=flash&zoom=2&box=on&blink=off&flash=off`.
-A link's `box`, `blink` and `flash` apply to the page it opens; the choice this browser remembers
-for B, L and F in Spotlight is left as it was. Flash, Blink and Spotlight flash open stopped from
-a link; the first press of F, L or the button starts them.
+story with its pass, view, zoom, outline, baseline pane, blink and Spotlight flash, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&pass=undecided&view=flash&zoom=2&box=on&baseline=on&blink=off&flash=off`.
+A link's `box`, `baseline`, `blink` and `flash` apply to the page it opens; the choice this
+browser remembers for B, P, L and F in Spotlight is left as it was. Flash, Blink and Spotlight
+flash open stopped from a link; the first press of F, L or the button starts them.
 Opening that address, in another tab or on another device, opens the same screen. **Copy link**
 at the top right copies it. The link carries your session token, so it works on your iPad the way
 the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
@@ -357,8 +357,8 @@ downloading captures nobody has opened yet) is said in the status row and never 
       Tap it to read all of a long line.
     - **The view bar**: **Side by side**, **Flash** (F), **Highlight** (H), **Spotlight** (S);
       **Blink** (L) while Highlight is on and **Spotlight flash** (F) while Spotlight is on;
-      **Outline** (B); **Next change** (N) with "1 of 3"; the zoom, **Fit**, **1x**, **2x**,
-      **4x**, **8x** (Z cycles it); and **Details** (the threshold, the anti-aliasing setting, the
+      **Baseline** (P); **Outline** (B); **Next change** (N) with "1 of 3"; the zoom, **Fit**,
+      **1x**, **2x**, **4x**, **8x** (Z cycles it); and **Details** (the threshold, the anti-aliasing setting, the
       capture's scale, and any console output). Below 1280 pixels wide (an iPad either way up) it
       is always two rows, the views on the first, so the zoom is always on screen and the panes
       start at the same height on every item and in every view.
@@ -373,6 +373,9 @@ downloading captures nobody has opened yet) is said in the status row and never 
     scrolls. With no baseline (a new story, or "no baseline yet") the left pane stays as an empty
     frame labeled "No baseline", so the new image sits exactly where it would beside one; a
     removed story leaves the right pane empty the same way, and a failed one shows its log there.
+    **Baseline** (P) hides the left pane, remembered in this browser: one pane as wide as the two
+    shows the new image (or the view's picture; Flash still alternates baseline and new in it),
+    so at Fit it is drawn up to twice as large; a removed story shows its baseline there instead.
     **1x** is one CSS pixel of the page for each CSS pixel the story was drawn at (a capture holds
     two image pixels per CSS pixel). **2x**, **4x** and **8x** enlarge it; from 4x pixels are
     drawn as hard squares. Zoomed, the images grow past their panes, which scroll: scrolling one
@@ -446,6 +449,7 @@ least 44 px tall.
 | L                | In Highlight: blink the red changed pixels, or hold them on                                   |
 | S                | Spotlight the changes; S again returns to side by side                                        |
 | B                | Outline the changed area, or stop outlining it                                                |
+| P                | Show the baseline pane, or hide it so the new image takes both panes' width                   |
 | N                | Next change                                                                                   |
 | Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                |
 | Shift+A          | Grid: accept every undecided item the grid shows without opening it (asks first)              |

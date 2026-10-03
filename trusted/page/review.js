@@ -57,7 +57,7 @@ const SLOW_MS = 300; // a wait longer than this says what it waits for
 // The grid's decision filters, and how a decision reads on a tile.
 const DECISIONS = { accept: "Accepted", reject: "Rejected", exclude: "Excluded" };
 const DONE = { accept: "accepted", reject: "rejected", exclude: "excluded" };
-// The reviewer's own display choices (the changed-area outline, blinking the overlay, Spotlight
+// The reviewer's own display choices (the changed-area outline, the baseline pane, blinking the overlay, Spotlight
 // flash, whether single-letter keys work, the failed-captures list), kept in this browser.
 const OPTIONS_KEY = "visual-review:options";
 const saved = loadOptions();
@@ -82,6 +82,7 @@ const state = {
     zoom: "fit",
     box: 0, // which changed area Next change is on
     showBox: saved.showBox ?? true, // outline the changed area (B)
+    baselinePane: saved.baselinePane ?? true, // show the baseline beside the new image (P)
     blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
     spotFlash: saved.spotFlash ?? false, // Spotlight flashes baseline and new (F in Spotlight)
     shortcuts: saved.shortcuts ?? true, // single-letter keys on
@@ -651,6 +652,7 @@ function saveOptions(extra = {}) {
             JSON.stringify({
                 ...loadOptions(),
                 showBox: state.showBox,
+                baselinePane: state.baselinePane,
                 blink: state.blink,
                 spotFlash: state.spotFlash,
                 shortcuts: state.shortcuts,
@@ -2304,6 +2306,8 @@ function viewBar(item, view, note) {
             view === "highlight" ? option("blink", "Blink", "L") : null,
             view === "spotlight" ? option("spotFlash", "Spotlight flash", "F") : null,
         ),
+        // On the views' row: below 1280 px it has room to spare, so the panes start no lower.
+        option("baselinePane", "Baseline", "P"),
         el("span", { class: "row-break", "aria-hidden": "true" }),
         option("showBox", "Outline", "B"),
         el(
@@ -2386,12 +2390,16 @@ const paneError = (message) =>
         el("button", { type: "button", onclick: () => showStory() }, "Retry"),
     );
 
-// Two panes, always: the baseline on the left and the new image (or the view's picture) on the
-// right, both drawn at once with what they are waiting for, so nothing moves when the images
-// arrive. A missing image leaves its pane empty, the same size, so the other one never moves.
+// Two panes: the baseline on the left and the new image (or the view's picture) on the right,
+// both drawn at once with what they are waiting for, so nothing moves when the images arrive. A
+// missing image leaves its pane empty, the same size, so the other one never moves. With the
+// Baseline pane off (P) only one pane is drawn, as wide as the two: the right one, or the
+// baseline when there is no capture (a removed story).
 async function renderStage(item, view, keep) {
     const seq = ++stageRender;
     const stage = document.getElementById("stage");
+    const only = state.baselinePane ? null : item.capture || item.status === "failed" ? "right" : "left";
+    const panes = (l, r) => (only === "right" ? [r] : only === "left" ? [l] : [l, r]);
     const baseName = item.from ? `Baseline of ${item.from}` : "Baseline";
     const imgOf = async (kind) => {
         const img = await loaded(
@@ -2414,7 +2422,7 @@ async function renderStage(item, view, keep) {
     const left = item.baseline ? pane(baseName, paneWait("baseline")) : pane("No baseline", null, true);
     const right = item.capture ? pane("New", paneWait("new image")) : emptyRight();
     if (!keep) {
-        stage.replaceChildren(left, right);
+        stage.replaceChildren(...panes(left, right));
     }
     // Skimming (J held): the item before was left before its images even showed, so this one waits
     // SKIM_MS before fetching; passed in that time, it fetches nothing, and the item stopped on is
@@ -2448,12 +2456,15 @@ async function renderStage(item, view, keep) {
                     throw err;
                 }
             };
-            await Promise.all([item.baseline && fill("baseline", left), item.capture && fill("capture", right)]);
+            await Promise.all([
+                item.baseline && only !== "right" && fill("baseline", left),
+                item.capture && fill("capture", right),
+            ]);
             if (seq !== stageRender) {
                 return;
             }
             if (keep) {
-                stage.replaceChildren(left, right);
+                stage.replaceChildren(...panes(left, right));
             }
         } else {
             diff = await diffOf(item);
@@ -2484,7 +2495,7 @@ async function renderStage(item, view, keep) {
                 el("div", { class: "sheet" }, leftPics),
             );
             const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics));
-            stage.replaceChildren(l, r);
+            stage.replaceChildren(...panes(l, r));
             if (flashing) {
                 const [base, next] = rightPics;
                 next.style.visibility = "hidden";
@@ -2516,9 +2527,11 @@ async function renderStage(item, view, keep) {
     } catch (err) {
         if (seq === stageRender) {
             if (view !== "side") {
-                stage.replaceChildren(pane(baseName, paneError(err.message)), pane("New", paneError(err.message)));
+                stage.replaceChildren(
+                    ...panes(pane(baseName, paneError(err.message)), pane("New", paneError(err.message))),
+                );
             } else if (keep) {
-                stage.replaceChildren(left, right);
+                stage.replaceChildren(...panes(left, right));
             }
         }
         return;
@@ -3973,7 +3986,7 @@ function updateOutcome(job, t, dismiss) {
 // ---------------------------------------------------------------- the address
 
 // Every screen is in the address, after the session token, so a copied link opens it again:
-// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&pass=undecided&view=side&zoom=fit&box=on&blink=off&flash=off
+// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&pass=undecided&view=side&zoom=fit&box=on&baseline=on&blink=off&flash=off
 // Only the fragment holds it: a browser never sends a fragment to a server or in a Referer.
 function hashFor() {
     const p = new URLSearchParams({ token });
@@ -3991,6 +4004,7 @@ function hashFor() {
         p.set("view", state.held ?? state.view);
         p.set("zoom", String(state.zoom));
         p.set("box", state.showBox ? "on" : "off");
+        p.set("baseline", state.baselinePane ? "on" : "off");
         p.set("blink", state.blink ? "on" : "off");
         p.set("flash", state.spotFlash ? "on" : "off");
     }
@@ -4100,9 +4114,12 @@ async function route() {
         state.view = VIEWS.includes(p.get("view")) ? p.get("view") : "side";
         const zoom = p.get("zoom") === "fit" ? "fit" : Number(p.get("zoom"));
         state.zoom = ZOOMS.includes(zoom) ? zoom : "fit";
-        // A link's box, blink and flash apply to this page; the browser's remembered choice is unchanged.
+        // A link's box, baseline, blink and flash apply to this page; the browser's remembered choice is unchanged.
         if (["on", "off"].includes(p.get("box"))) {
             state.showBox = p.get("box") === "on";
+        }
+        if (["on", "off"].includes(p.get("baseline"))) {
+            state.baselinePane = p.get("baseline") === "on";
         }
         if (["on", "off"].includes(p.get("blink"))) {
             state.blink = p.get("blink") === "on";
@@ -4176,6 +4193,7 @@ const KEYS = [
     ["L", "In Highlight: Blink on or off"],
     ["S", "Spotlight, or back to side by side (on an iPad held upright, the way to see a change large)"],
     ["B", "Outline the changed area, or not"],
+    ["P", "Baseline: show the baseline beside the new image, or the new image alone at twice the width"],
     ["N", "Next change"],
     ["Z", "Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again (from Fit, 2x is two presses, or one tap on 2x)"],
     ["Shift+A", "Grid: accept every undecided item (asks first)"],
@@ -4329,6 +4347,7 @@ document.addEventListener("keydown", (e) => {
         h: () => toggleView("highlight"),
         s: () => toggleView("spotlight"),
         b: () => toggleOption("showBox"),
+        p: () => toggleOption("baselinePane"),
         l: () => {
             if (state.view !== "highlight") {
                 say("Blink works in Highlight (H).");
