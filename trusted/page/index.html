@@ -10,14 +10,22 @@
     <body>
         <header id="top">
             <h1><button type="button" id="home" class="link">Visual review</button></h1>
-            <label class="picker"
-                ><span>Target</span
-                ><select id="pick-target"></select
-            ></label>
-            <label class="picker"
-                ><span>Project</span
-                ><select id="pick-project"></select
-            ></label>
+            <nav id="crumbs" aria-label="Where you are" hidden>
+                <label class="picker"
+                    ><span>Target</span
+                    ><select id="pick-target"></select
+                ></label>
+                <button type="button" id="prev-project" aria-keyshortcuts="[" aria-label="Previous project">
+                    &lt;
+                </button>
+                <label class="picker"
+                    ><span>Project</span
+                    ><select id="pick-project"></select
+                ></label>
+                <button type="button" id="next-project" aria-keyshortcuts="]" aria-label="Next project">&gt;</button>
+                <button type="button" id="to-grid" class="link crumb" aria-keyshortcuts="Escape" hidden>Grid</button>
+                <button type="button" id="to-item" class="link crumb" hidden></button>
+            </nav>
             <span id="finish-slot"></span>
             <button type="button" id="keys-button" aria-keyshortcuts="?">Keys <kbd aria-hidden="true">?</kbd></button>
             <button type="button" id="copy-link">Copy link</button>

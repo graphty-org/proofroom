@@ -1745,6 +1745,93 @@ describe("review page: moving on", () => {
     });
 });
 
+describe("review page: navigation, on an iPad", () => {
+    const hash = () => new URLSearchParams(new URL(page.url()).hash.slice(1));
+    const shown = (id) => page.locator(`#${id}`).isVisible();
+    const project = () => page.locator("#pick-project").inputValue();
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: the header's crumbs go up to the grid and the targets, and forward into the item last opened`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            // The grid: target and project, no Grid crumb, nothing opened yet.
+            expect(await shown("crumbs")).toBe(true);
+            expect(await shown("to-grid")).toBe(false);
+            expect(await shown("to-item")).toBe(false);
+            // A pass, two items in: the Grid crumb goes up, keeping the pass.
+            await page.locator("#review-undecided").click();
+            await page.keyboard.press("j");
+            await page.keyboard.press("j");
+            await expect.poll(position).toMatch(/^3 of 6 /);
+            expect(await shown("to-grid")).toBe(true);
+            expect(await shown("to-item")).toBe(false);
+            await page.locator("#to-grid").click();
+            await page.locator(".component").first().waitFor();
+            expect(hash().has("item")).toBe(false);
+            // On the grid the last crumb is the item just left; it goes back into it, in its pass.
+            expect(await page.locator("#to-item").textContent()).toBe("#3 slider--sizes");
+            await page.locator("#to-item").click();
+            await expect.poll(position).toMatch(/^3 of 6 /);
+            expect(hash().get("pass")).toBe("undecided");
+            // Escape goes up one level at a time: the grid, then the targets.
+            await page.keyboard.press("Escape");
+            await page.locator(".component").first().waitFor();
+            await page.keyboard.press("Escape");
+            await page.locator(".card").first().waitFor();
+            expect(await shown("crumbs")).toBe(false);
+            expect([...hash().keys()]).toEqual(["token"]);
+            // Back returns to the grid.
+            await page.goBack();
+            await page.locator(".component").first().waitFor();
+            expect(hash().get("project")).toBe("compact-mantine");
+            // Every crumb is inside the window and tall enough for a finger.
+            const bad = await page.evaluate(() =>
+                [...globalThis.document.querySelectorAll("#crumbs > *")]
+                    .filter((e) => e.getClientRects().length > 0)
+                    .map((e) => [e.id || e.className, e.getBoundingClientRect()])
+                    .filter(([, r]) => r.right > globalThis.innerWidth + 0.5 || r.height < 44)
+                    .map(([name]) => name),
+            );
+            expect(bad).toEqual([]);
+        });
+    }
+
+    it("steps to the next and previous project with undecided items with ] and [, skipping the rest", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        expect(await project()).toBe("compact-mantine");
+        // From the grid, the next project's grid; it wraps.
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("graphty-element");
+        expect(hash().has("item")).toBe(false);
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("compact-mantine");
+        await page.locator("#prev-project").click();
+        await expect.poll(project).toBe("graphty-element");
+        await page.keyboard.press("[");
+        await expect.poll(project).toBe("compact-mantine");
+        await page.locator("#review-undecided").click();
+        await expect.poll(position).toMatch(/^1 of 6 /);
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("graphty-element");
+        await expect.poll(position).toMatch(/^1 of 1 /);
+        // Decided, graphty-element is skipped: nothing else has undecided items from compact-mantine.
+        await ready();
+        await page.keyboard.press("a");
+        await page.locator("#endcard").waitFor();
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("compact-mantine");
+        await expect.poll(position).toMatch(/^1 of 6 /);
+        expect(await page.locator("#next-project").getAttribute("aria-disabled")).toBe("true");
+        await page.keyboard.press("]");
+        await expect.poll(status).toBe("No other project of #123 has undecided items.");
+        expect(await project()).toBe("compact-mantine");
+    });
+});
+
 describe("review page: links and the frozen pass", () => {
     beforeEach(async () => {
         await open((r) => ({ gh: onePr()(r) }));
@@ -2453,7 +2540,10 @@ describe("review page: a local preview", () => {
 
 // From a story view, back to the grid and into another story.
 async function openStoryFromGrid(number) {
-    await page.keyboard.press("Escape");
+    // Escape goes up one level: from a story to the grid, but from the grid to the targets.
+    if ((await page.locator(".decisionbar").count()) > 0) {
+        await page.keyboard.press("Escape");
+    }
     await page.locator(".component").first().waitFor();
     await openStory(number);
 }

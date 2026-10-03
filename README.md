@@ -252,9 +252,14 @@ starts the same server from your own shell.
 
 ## The screens
 
-Every screen has the same frame. The header holds **Visual review** (the targets list), the
-**Target** and **Project** menus (on the grid and story screens: jump to any pull request or
-project, each with its count of undecided items), **Finish** with the number of decisions it
+Every screen has the same frame. The header holds a breadcrumb: **Visual review** (the targets
+list), then on the grid and story screens the **Target** and **Project** menus (jump to any pull
+request or project, each with its count of undecided items), with **<** and **>** around the
+project menu (`[` and `]`: the previous or next project of the target with undecided items,
+skipping the rest; its grid from the grid, its first undecided item from a story), and last
+**Grid** on the story screen or, on the grid, the item last opened ("#3 slider--sizes"), which goes
+back into it in its pass at its place. Escape goes up one level (story to grid, grid to targets),
+and the browser's Back and Forward move between the screens. Then **Finish** with the number of decisions it
 would publish ("Finish #201 (12)"; at 0 it is unavailable and says "Nothing new to finish",
 shortened to "Nothing new" on an iPad; whether a passkey must approve it is said in Finish's
 sheet), **Keys** and **Copy link**. Finish never shrinks: on a narrow window the
@@ -340,7 +345,7 @@ downloading captures nobody has opened yet) is said in the status row and never 
    match, or the item with that number. Coming back from a story, its tile is outlined and
    scrolled into view.
 3. **Story.** One item, on one screen that never scrolls (only the panes do). From the top:
-    - **The decision bar**: **Grid** (Escape), **Prev** (K), "12 of 230 -- 18 left" (in this
+    - **The decision bar**: **Prev** (K), "12 of 230 -- 18 left" (in this
       pass), **Next** (J), **Accept** (A), **Reject** (R), **Exclude** (E), **Undo** (U) and the
       **Note** box ("Needed to Reject or Exclude"; a note typed before Accept is published with
       it). Below 1280 px it is two rows, the decisions, then the movement and the note; on an
@@ -439,30 +444,31 @@ nothing. Turning the letters off says so in the status row, and so does every le
 they are off (the switch is remembered in this browser). On a touch screen every control is at
 least 44 px tall.
 
-| Key              | Action                                                                                        |
-| ---------------- | --------------------------------------------------------------------------------------------- |
-| J / K            | Next / previous item of this pass; J on the last item shows what is next                      |
-| A                | Accept, once the images are shown                                                             |
-| (type), Esc, A   | Accept with a note: type it in the note box, leave the box, accept                            |
-| R                | Reject; with an empty note box, type the reason, then Enter                                   |
-| E                | Exclude; with an empty note box, type the reason, then Enter, then confirm                    |
-| U                | Undo the item's decision; you stay on the item                                                |
-| Enter (note box) | Send the Reject or Exclude waiting for its reason; otherwise just leave the box               |
-| F                | Flash between baseline and new; F again returns to side by side                               |
-| F                | In Spotlight: flash the spotlighted baseline and new, or stop flashing                        |
-| Space (hold)     | Flash while held                                                                              |
-| H                | Highlight changed pixels; H again returns to side by side                                     |
-| L                | In Highlight: blink the red changed pixels, or hold them on                                   |
-| S                | Spotlight the changes; S again returns to side by side                                        |
-| B                | Outline the changed area, or stop outlining it                                                |
-| P                | Show the baseline pane, or hide it so the new image takes both panes' width                   |
-| N                | Next change                                                                                   |
-| Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                |
-| Shift+A          | Grid: accept every undecided item the grid shows without opening it (asks first)              |
-| /                | Grid: Find story                                                                              |
-| Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish              |
-| ?                | Show or hide the key list                                                                     |
-| Escape           | Story: back to the grid; in the note box, first leaves the box (its text stays with the item) |
+| Key              | Action                                                                              |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| J / K            | Next / previous item of this pass; J on the last item shows what is next            |
+| A                | Accept, once the images are shown                                                   |
+| (type), Esc, A   | Accept with a note: type it in the note box, leave the box, accept                  |
+| R                | Reject; with an empty note box, type the reason, then Enter                         |
+| E                | Exclude; with an empty note box, type the reason, then Enter, then confirm          |
+| U                | Undo the item's decision; you stay on the item                                      |
+| Enter (note box) | Send the Reject or Exclude waiting for its reason; otherwise just leave the box     |
+| F                | Flash between baseline and new; F again returns to side by side                     |
+| F                | In Spotlight: flash the spotlighted baseline and new, or stop flashing              |
+| Space (hold)     | Flash while held                                                                    |
+| H                | Highlight changed pixels; H again returns to side by side                           |
+| L                | In Highlight: blink the red changed pixels, or hold them on                         |
+| S                | Spotlight the changes; S again returns to side by side                              |
+| B                | Outline the changed area, or stop outlining it                                      |
+| P                | Show the baseline pane, or hide it so the new image takes both panes' width         |
+| N                | Next change                                                                         |
+| Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                      |
+| Shift+A          | Grid: accept every undecided item the grid shows without opening it (asks first)    |
+| /                | Grid: Find story                                                                    |
+| Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish    |
+| ?                | Show or hide the key list                                                           |
+| [ / ]            | Grid and story: previous / next project with undecided items                        |
+| Escape           | Up one level: story to grid, grid to targets; in the note box, first leaves the box |
 
 No key reverses a decision. A, R and E on an item that is already decided say "Already accepted.
 Undo it to change it."; press U (or Undo) first. A held A, R, E or U decides once, and an A, R or

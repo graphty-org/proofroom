@@ -97,6 +97,42 @@ header h1 {
     white-space: nowrap;
 }
 
+/* The breadcrumb: target / < project > / Grid (or, on the grid, the item last opened). */
+#crumbs {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+#crumbs[hidden],
+#crumbs .crumb[hidden] {
+    display: none;
+}
+
+#crumbs > .picker::before,
+#crumbs > .crumb::before {
+    content: "/";
+    margin-right: 6px;
+    color: var(--muted);
+}
+
+#prev-project,
+#next-project {
+    flex: none;
+    min-width: 2.5em;
+}
+
+#crumbs .crumb {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 16em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* The pickers shrink first when the window is narrow; a native menu truncates its own label. */
 .picker {
     display: flex;
@@ -150,9 +186,17 @@ header h1 {
         row-gap: 6px;
     }
 
-    .picker {
+    #crumbs {
         order: 1;
-        flex: 1 1 calc(50% - 5px);
+        flex: 1 1 100%;
+    }
+
+    #crumbs > .picker:first-child::before {
+        content: none;
+    }
+
+    .picker {
+        flex: 1 1 0;
     }
 }
 

@@ -23,6 +23,9 @@ const statusMore = document.getElementById("status-more");
 const pickTarget = document.getElementById("pick-target");
 const pickProject = document.getElementById("pick-project");
 const finishSlot = document.getElementById("finish-slot");
+const crumbs = document.getElementById("crumbs");
+const toGridCrumb = document.getElementById("to-grid");
+const toItemCrumb = document.getElementById("to-item");
 
 const REVIEWABLE = ["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"];
 const ACCEPTABLE = ["changed", "moved", "new", "unseeded", "removed"];
@@ -706,14 +709,27 @@ function counted(item, before, after, unpublished) {
 
 // ---------------------------------------------------------------- header
 
-// The target and project pickers (on the grid and story screens) and Finish.
+// The breadcrumb (on the grid and story screens: Visual review / target / project / Grid, or on the
+// grid the item last opened) and Finish.
 function drawHeader() {
     const onTargets = state.screen === "targets" || state.target === null;
-    pickTarget.parentElement.hidden = onTargets;
-    pickProject.parentElement.hidden = onTargets;
+    crumbs.hidden = onTargets;
     finishSlot.replaceChildren();
     if (onTargets) {
         return;
+    }
+    toGridCrumb.hidden = state.screen !== "story";
+    const last = state.screen === "grid" && state.data?.items.find((i) => i.file === state.lastFile);
+    toItemCrumb.hidden = !last;
+    if (last) {
+        toItemCrumb.textContent = `#${numberOf(last)} ${itemName(last)}`;
+        toItemCrumb.title = `Back to #${numberOf(last)} ${itemName(last)}`;
+    }
+    for (const [button, step] of [
+        [document.getElementById("prev-project"), -1],
+        [document.getElementById("next-project"), 1],
+    ]) {
+        button.setAttribute("aria-disabled", String(!projectAt(step)));
     }
     const targets = state.list?.targets ?? [state.target];
     const listed = targets.some((t) => t.id === state.target.id) ? targets : [state.target, ...targets];
@@ -789,6 +805,10 @@ statusMore.addEventListener("click", () => {
 });
 pickTarget.addEventListener("change", () => openTarget(pickTarget.value, false));
 pickProject.addEventListener("change", () => openProject(state.target.id, pickProject.value));
+toGridCrumb.addEventListener("click", () => toGrid());
+toItemCrumb.addEventListener("click", () => backToItem());
+document.getElementById("prev-project").addEventListener("click", () => stepProject(-1));
+document.getElementById("next-project").addEventListener("click", () => stepProject(1));
 
 // ---------------------------------------------------------------- screen: targets
 
@@ -1291,6 +1311,43 @@ function nextTarget(id) {
     const list = (state.list?.targets ?? []).filter((t) => !t.local);
     const at = list.findIndex((t) => t.id === id);
     return [...list.slice(at + 1), ...list.slice(0, Math.max(at, 0))].find((t) => t.id !== id && undecidedOf(t) > 0);
+}
+
+// The project `step` places on (1 the next, -1 the previous, wrapping) among this target's projects
+// with undecided items, skipping the others; null when no other has any.
+function projectAt(step) {
+    const list = state.target?.projects ?? [];
+    const at = list.findIndex((p) => p.project === state.project);
+    for (let n = 1; n < list.length; n++) {
+        const p = list[(((at + step * n) % list.length) + list.length) % list.length];
+        if (p.undecided > 0 && !p.downloading) {
+            return p;
+        }
+    }
+    return null;
+}
+
+// [ and ] (and the header's < and >): the previous or next project with undecided items, on the
+// same screen: its grid from the grid, its first undecided item from a story.
+function stepProject(step) {
+    const p = projectAt(step);
+    if (!p) {
+        say(`No other project of ${labelOf(state.target)} has undecided items.`);
+        return;
+    }
+    openProject(state.target.id, p.project, state.screen === "story");
+}
+
+// The grid's last crumb: back into the item last opened, in its pass, at its place.
+function backToItem() {
+    const at = state.sequence.indexOf(state.lastFile);
+    if (at < 0) {
+        openItem(state.lastFile);
+        return;
+    }
+    state.index = at;
+    say("");
+    enterStory();
 }
 
 // A target from the pickers or an offer: its first project with something undecided (its grid,
@@ -2122,12 +2179,6 @@ function decisionBar(item, items, d) {
     return el(
         "div",
         { class: "decisionbar", role: "toolbar", "aria-label": "Decide" },
-        el(
-            "button",
-            { type: "button", id: "to-grid", "aria-keyshortcuts": "Escape", onclick: () => toGrid() },
-            "Grid",
-            kbd("Esc"),
-        ),
         el(
             "button",
             { type: "button", id: "prev", "aria-keyshortcuts": "K", onclick: () => move(-1) },
@@ -4305,7 +4356,8 @@ const KEYS = [
     ["Shift+A", "Grid: accept every undecided item (asks first)"],
     ["/", "Grid: Find story"],
     ["?", "Show or hide this list"],
-    ["Esc", "Story: back to the grid; in the note box, first leaves the box (its text stays)"],
+    ["[ / ]", "Previous / next project with undecided items: its grid, or from a story its first undecided item"],
+    ["Esc", "Up one level: story to grid, grid to targets; in the note box, first leaves the box (its text stays)"],
     ["Enter (end card)", "Take the first offer: the next project, the undecided items left here, or Finish"],
 ];
 
@@ -4396,9 +4448,12 @@ document.addEventListener("keydown", (e) => {
             }
             return;
         }
-        app.querySelector("details.menu[open]")?.removeAttribute("open");
+        const menu = app.querySelector("details.menu[open]");
+        menu?.removeAttribute("open");
         if (state.screen === "story") {
             toGrid();
+        } else if (!menu) {
+            showTargets();
         }
         return;
     }
@@ -4406,8 +4461,13 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (!state.shortcuts && /^[a-z/]$/.test(key)) {
+    if (!state.shortcuts && /^[a-z/[\]]$/.test(key)) {
         say(SHORTCUTS_OFF);
+        return;
+    }
+    if (key === "[" || key === "]") {
+        e.preventDefault();
+        stepProject(key === "]" ? 1 : -1);
         return;
     }
     if (state.screen === "grid") {
