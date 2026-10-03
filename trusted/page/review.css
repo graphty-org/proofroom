@@ -209,13 +209,30 @@ header h1 {
         display: none;
     }
 
-    #crumbs:not([hidden]) ~ #keys-button .keys-word,
+    #crumbs:not([hidden]) ~ #keys-button .keys-word {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+}
+
+/* Finish's width never moves the crumbs: Grid and the project steps are pressed on every item, and a
+   first decision that hid "Nothing new to finish" would slide them sideways. Under 1400 px, where the
+   header is full, the reason is for screen readers (a press on Finish says it too), and Finish keeps
+   room for a three-digit count. */
+@media (max-width: 1399.98px) {
     #crumbs:not([hidden]) ~ #finish-slot .finish-why {
         position: absolute;
         width: 1px;
         height: 1px;
         overflow: hidden;
         clip-path: inset(50%);
+    }
+
+    #crumbs:not([hidden]) ~ #finish-slot .finish {
+        min-width: 10.5em;
     }
 }
 
@@ -1249,6 +1266,11 @@ details.menu > div {
     summary,
     details.menu > summary {
         min-height: 44px;
+    }
+
+    #prev-project,
+    #next-project {
+        min-width: 44px;
     }
 }
 

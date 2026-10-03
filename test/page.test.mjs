@@ -1918,9 +1918,13 @@ describe("review page: navigation, on an iPad", () => {
             await page.locator("#to-item").click();
             await expect.poll(position).toMatch(/^3 of 6 /);
             expect(hash().get("pass")).toBe("undecided");
-            // Escape goes up one level at a time: the grid, then the targets.
+            // Escape goes up one level at a time: the grid, then the targets; an open More closes first.
             await page.keyboard.press("Escape");
             await page.locator(".component").first().waitFor();
+            await page.locator(".gridbar details.menu > summary").click();
+            await page.keyboard.press("Escape");
+            expect(await page.locator(".gridbar details.menu").evaluate((d) => d.open)).toBe(false);
+            expect(await page.locator(".component").count()).toBeGreaterThan(0);
             await page.keyboard.press("Escape");
             await page.locator(".card").first().waitFor();
             expect(await shown("crumbs")).toBe(false);
@@ -1934,7 +1938,12 @@ describe("review page: navigation, on an iPad", () => {
                 [...globalThis.document.querySelectorAll("#crumbs > *")]
                     .filter((e) => e.getClientRects().length > 0)
                     .map((e) => [e.id || e.className, e.getBoundingClientRect()])
-                    .filter(([, r]) => r.right > globalThis.innerWidth + 0.5 || r.height < 44)
+                    .filter(
+                        ([name, r]) =>
+                            r.right > globalThis.innerWidth + 0.5 ||
+                            r.height < 44 ||
+                            (/-project$/.test(name) && r.width < 44),
+                    )
                     .map(([name]) => name),
             );
             expect(bad).toEqual([]);

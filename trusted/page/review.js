@@ -137,7 +137,8 @@ let optionsOpen = false; // the story's Options menu stays open across redraws o
 const WIDE = matchMedia("(min-width: 1100px)");
 WIDE.addEventListener("change", () => {
     if (state.screen === "story") {
-        showStory();
+        // The note box moves rows; a reason being typed keeps the focus.
+        showStory({ focusNote: document.activeElement?.id === "note" });
     }
 });
 
@@ -4544,7 +4545,8 @@ document.addEventListener("keydown", (e) => {
             }
             return;
         }
-        const menu = app.querySelector("details.menu[open]");
+        // The grid's More menu is in the bar, outside app: any open menu closes before a level is left.
+        const menu = document.querySelector("details.menu[open]");
         if (menu) {
             menu.removeAttribute("open");
         } else if (state.screen === "story") {
