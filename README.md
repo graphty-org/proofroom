@@ -357,7 +357,7 @@ downloading captures nobody has opened yet) is said in the status row and never 
       Tap it to read all of a long line.
     - **The view bar**: **Side by side**, **Flash** (F), **Highlight** (H), **Spotlight** (S);
       **Blink** (L) while Highlight is on and **Spotlight flash** (F) while Spotlight is on;
-      **Baseline** (P); **Outline** (B); **Next change** (N) with "1 of 3"; the zoom, **Fit**,
+      **Baseline** (P); **Outline** (B); **Focus** (O); **Next change** (N) with "1 of 3"; the zoom, **Fit**,
       **1x**, **2x**, **4x**, **8x** (Z cycles it); and **Details** (the threshold, the anti-aliasing setting, the
       capture's scale, and any console output). Below 1280 pixels wide (an iPad either way up) it
       is always two rows, the views on the first, so the zoom is always on screen and the panes
@@ -376,6 +376,12 @@ downloading captures nobody has opened yet) is said in the status row and never 
     **Baseline** (P) hides the left pane, remembered in this browser: one pane as wide as the two
     shows the new image (or the view's picture; Flash still alternates baseline and new in it),
     so at Fit it is drawn up to twice as large; a removed story shows its baseline there instead.
+    **Focus** (O), remembered in this browser, opens every item zoomed in with its panes scrolled
+    so the place to look is in the middle: the largest changed area of a changed story, or the
+    content (everything that is not the story's background) of a new or removed one. The zoom you
+    chose stays from item to item, and the next item's place is worked out while you look at this
+    one, so after Accept it appears already framed. Next change still steps through the other
+    areas, centering each. At Fit the whole image shows, so nothing scrolls.
     **1x** is one CSS pixel of the page for each CSS pixel the story was drawn at (a capture holds
     two image pixels per CSS pixel). **2x**, **4x** and **8x** enlarge it; from 4x pixels are
     drawn as hard squares. Zoomed, the images grow past their panes, which scroll: scrolling one

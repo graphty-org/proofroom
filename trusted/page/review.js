@@ -83,6 +83,7 @@ const state = {
     box: 0, // which changed area Next change is on
     showBox: saved.showBox ?? true, // outline the changed area (B)
     baselinePane: saved.baselinePane ?? true, // show the baseline beside the new image (P)
+    focus: saved.focus ?? false, // open each item centered on where to look (O)
     blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
     spotFlash: saved.spotFlash ?? false, // Spotlight flashes baseline and new (F in Spotlight)
     shortcuts: saved.shortcuts ?? true, // single-letter keys on
@@ -111,6 +112,10 @@ const thumbs = new Map();
 const THUMBS_KEPT = 400;
 const diffs = new Map();
 const DIFFS_KEPT = 4;
+// Each item's focus point, as the box [x, y, width, height] in image pixels to center on: a few
+// numbers each, kept for the items of a long session.
+const focusBoxes = new Map();
+const FOCUS_KEPT = 2000;
 let stageRender = 0; // the newest renderStage: an older one finishing late writes nothing
 let lastStageAt = 0; // when the last renderStage began
 let lastStageFile = null; // and for which item
@@ -653,6 +658,7 @@ function saveOptions(extra = {}) {
                 ...loadOptions(),
                 showBox: state.showBox,
                 baselinePane: state.baselinePane,
+                focus: state.focus,
                 blink: state.blink,
                 spotFlash: state.spotFlash,
                 shortcuts: state.shortcuts,
@@ -666,6 +672,9 @@ function saveOptions(extra = {}) {
 
 function toggleOption(key) {
     state[key] = !state[key];
+    if (key === "focus") {
+        stageKey = null; // reframe the item on screen, not keep its scroll
+    }
     state.motion = true;
     saveOptions();
     showStory();
@@ -2310,6 +2319,7 @@ function viewBar(item, view, note) {
         option("baselinePane", "Baseline", "P"),
         el("span", { class: "row-break", "aria-hidden": "true" }),
         option("showBox", "Outline", "B"),
+        option("focus", "Focus", "O"),
         el(
             "button",
             {
@@ -2448,6 +2458,11 @@ async function renderStage(item, view, keep) {
                     if (seq === stageRender) {
                         frame.replaceChildren(el("div", { class: "sheet" }, img));
                         fit(stage);
+                        // Known ahead (shown() works out the next item's), so it appears framed.
+                        const at = focusBoxes.get(focusKey(item));
+                        if (state.focus && at && !keep) {
+                            center(stage, at);
+                        }
                     }
                 } catch (err) {
                     if (seq === stageRender) {
@@ -2576,6 +2591,12 @@ async function renderStage(item, view, keep) {
         showBox(stage, diff.boxes, false, !keep);
     } else {
         shownBoxes = [];
+        if (state.focus && !keep) {
+            const at = await focusBox(item).catch(() => null);
+            if (at && seq === stageRender) {
+                center(stage, at);
+            }
+        }
     }
 }
 
@@ -2593,12 +2614,17 @@ function shown(stage, item) {
     }
     if (first) {
         appearedAt = performance.now();
-        for (const next of passItems().slice(state.index + 1, state.index + 3)) {
+        const after = passItems().slice(state.index + 1, state.index + 3);
+        for (const next of after) {
             for (const kind of ["baseline", "capture"]) {
                 if (next[kind]) {
                     image(kind, next.file, next[kind]).catch(() => {});
                 }
             }
+        }
+        // The next item's focus point, so after Accept it opens already framed.
+        if (state.focus && after[0]) {
+            focusBox(after[0]).catch(() => {});
         }
     }
     setTimeout(
@@ -2645,6 +2671,10 @@ function showBox(stage, boxes, jump, reset = true) {
         if (!jump && !reset) {
             continue;
         }
+        if (state.focus) {
+            centerFrame(frame, sheet, [x, y, w, h]);
+            continue;
+        }
         if (!jump) {
             frame.scrollLeft = 0;
             frame.scrollTop = 0;
@@ -2663,6 +2693,74 @@ function showBox(stage, boxes, jump, reset = true) {
         frame.scrollLeft = reveal(ox + left, ox + right, frame.scrollLeft, frame.clientWidth);
         frame.scrollTop = reveal(oy + top, oy + bottom, frame.scrollTop, frame.clientHeight);
     }
+}
+
+// Scrolls a pane so the middle of a box (image pixels) is in the middle of the pane, as near as
+// the image's edges allow. At Fit nothing scrolls.
+function centerFrame(frame, sheet, [x, y, w, h]) {
+    frame.scrollLeft = sheet.offsetLeft + (x + w / 2) * factor - frame.clientWidth / 2;
+    frame.scrollTop = sheet.offsetTop + (y + h / 2) * factor - frame.clientHeight / 2;
+}
+
+function center(stage, box) {
+    for (const frame of stage.querySelectorAll(".frame")) {
+        const sheet = frame.querySelector(".sheet");
+        if (sheet) {
+            centerFrame(frame, sheet, box);
+        }
+    }
+}
+
+const focusKey = (item) => `${state.target.id}/${state.project}/${item.file}/${item.baseline}/${item.capture}`;
+
+// Where the reviewer should look first: the largest changed area of a changed item, or the
+// content of an item with one image (new, no baseline yet, removed). None for a failed or
+// unstable item.
+async function focusBox(item) {
+    if (onlyExclude(item)) {
+        return null;
+    }
+    const key = focusKey(item);
+    if (!focusBoxes.has(key)) {
+        let box;
+        if (item.baseline && item.capture) {
+            box = (await diffOf(item)).boxes[0] ?? null;
+        } else {
+            const kind = item.capture ? "capture" : "baseline";
+            box = contentBox(await loaded(await image(kind, item.file, item[kind]), `${kind} of ${item.file}`));
+        }
+        focusBoxes.set(key, box);
+        if (focusBoxes.size > FOCUS_KEPT) {
+            focusBoxes.delete(focusBoxes.keys().next().value);
+        }
+    }
+    return focusBoxes.get(key);
+}
+
+// The box around every pixel that differs from the image's top-left pixel (the story's
+// background), or the whole image when nothing does.
+function contentBox(img) {
+    const [w, h] = [img.naturalWidth, img.naturalHeight];
+    const ctx = new OffscreenCanvas(w, h).getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, w, h).data;
+    const TOLERANCE = 16; // per channel: compression noise and anti-aliased edges of the background
+    let [x0, y0, x1, y1] = [w, h, -1, -1];
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            for (let c = 0; c < 4; c++) {
+                if (Math.abs(px[i + c] - px[c]) > TOLERANCE) {
+                    x0 = Math.min(x0, x);
+                    x1 = Math.max(x1, x);
+                    y0 = Math.min(y0, y);
+                    y1 = Math.max(y1, y);
+                    break;
+                }
+            }
+        }
+    }
+    return x1 < 0 ? [0, 0, w, h] : [x0, y0, x1 - x0 + 1, y1 - y0 + 1];
 }
 
 async function nextBox() {
@@ -3986,7 +4084,7 @@ function updateOutcome(job, t, dismiss) {
 // ---------------------------------------------------------------- the address
 
 // Every screen is in the address, after the session token, so a copied link opens it again:
-// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&pass=undecided&view=side&zoom=fit&box=on&baseline=on&blink=off&flash=off
+// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&pass=undecided&view=side&zoom=fit&box=on&baseline=on&focus=off&blink=off&flash=off
 // Only the fragment holds it: a browser never sends a fragment to a server or in a Referer.
 function hashFor() {
     const p = new URLSearchParams({ token });
@@ -4005,6 +4103,7 @@ function hashFor() {
         p.set("zoom", String(state.zoom));
         p.set("box", state.showBox ? "on" : "off");
         p.set("baseline", state.baselinePane ? "on" : "off");
+        p.set("focus", state.focus ? "on" : "off");
         p.set("blink", state.blink ? "on" : "off");
         p.set("flash", state.spotFlash ? "on" : "off");
     }
@@ -4114,7 +4213,10 @@ async function route() {
         state.view = VIEWS.includes(p.get("view")) ? p.get("view") : "side";
         const zoom = p.get("zoom") === "fit" ? "fit" : Number(p.get("zoom"));
         state.zoom = ZOOMS.includes(zoom) ? zoom : "fit";
-        // A link's box, baseline, blink and flash apply to this page; the browser's remembered choice is unchanged.
+        if (["on", "off"].includes(p.get("focus"))) {
+            state.focus = p.get("focus") === "on";
+        }
+        // A link's box, baseline, focus, blink and flash apply to this page; the browser's remembered choice is unchanged.
         if (["on", "off"].includes(p.get("box"))) {
             state.showBox = p.get("box") === "on";
         }
@@ -4194,6 +4296,10 @@ const KEYS = [
     ["S", "Spotlight, or back to side by side (on an iPad held upright, the way to see a change large)"],
     ["B", "Outline the changed area, or not"],
     ["P", "Baseline: show the baseline beside the new image, or the new image alone at twice the width"],
+    [
+        "O",
+        "Focus: open each item centered on where to look (its largest change, or a new or removed image's content) at the zoom chosen",
+    ],
     ["N", "Next change"],
     ["Z", "Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again (from Fit, 2x is two presses, or one tap on 2x)"],
     ["Shift+A", "Grid: accept every undecided item (asks first)"],
@@ -4348,6 +4454,7 @@ document.addEventListener("keydown", (e) => {
         s: () => toggleView("spotlight"),
         b: () => toggleOption("showBox"),
         p: () => toggleOption("baselinePane"),
+        o: () => toggleOption("focus"),
         l: () => {
             if (state.view !== "highlight") {
                 say("Blink works in Highlight (H).");

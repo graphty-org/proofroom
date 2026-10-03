@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { chromium } from "playwright";
+import { PNG } from "pngjs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
@@ -429,6 +430,130 @@ describe("review page: the Baseline pane, on an iPad", () => {
         await openStoryFromGrid(6);
         await expect.poll(labels).toEqual(["Baseline"]);
         await page.locator("#stage img").waitFor();
+    });
+});
+
+describe("review page: the Focus point, on an iPad", () => {
+    // For each pane with a picture: where it is scrolled, how far it can scroll, where the image
+    // starts in it and the CSS pixels per image pixel.
+    const panes = () =>
+        page.evaluate(() =>
+            [...globalThis.document.querySelectorAll("#stage .frame")]
+                .filter((f) => f.querySelector(".sheet img, .sheet canvas"))
+                .map((f) => {
+                    const sheet = f.querySelector(".sheet");
+                    const pic = sheet.querySelector("img, canvas");
+                    const [fr, sr] = [f.getBoundingClientRect(), sheet.getBoundingClientRect()];
+                    return {
+                        scroll: [f.scrollLeft, f.scrollTop],
+                        max: [f.scrollWidth - f.clientWidth, f.scrollHeight - f.clientHeight],
+                        client: [f.clientWidth, f.clientHeight],
+                        start: [
+                            sr.left - fr.left - f.clientLeft + f.scrollLeft,
+                            sr.top - fr.top - f.clientTop + f.scrollTop,
+                        ],
+                        k: pic.getBoundingClientRect().width / (pic.naturalWidth ?? pic.width),
+                    };
+                }),
+        );
+    // Every pane is scrolled to put image point [x, y] in its middle, as near as its edges allow,
+    // within `tolerance` image pixels.
+    const centeredOn = async ([x, y], tolerance = 1) => {
+        const all = await panes();
+        return (
+            all.length > 0 &&
+            all.every((p) =>
+                [x, y].every((v, a) => {
+                    const want = Math.min(p.max[a], Math.max(0, p.start[a] + v * p.k - p.client[a] / 2));
+                    return Math.abs(p.scroll[a] - want) <= tolerance * p.k + 1;
+                }),
+            )
+        );
+    };
+    const scrolled = async () => (await panes()).every((p) => p.scroll[0] > 0 || p.scroll[1] > 0);
+    const focus = () => page.getByRole("button", { name: "Focus", exact: true });
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: O at 4x centers the largest change, and after Accept the next item opens on its own`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            await openStory(2);
+            await page.locator("#stage figure:nth-child(2) img").waitFor();
+            await page.getByRole("button", { name: "4x", exact: true }).click();
+            expect(await focus().getAttribute("aria-pressed")).toBe("false");
+            await page.keyboard.press("o");
+            await expect.poll(() => focus().getAttribute("aria-pressed")).toBe("true");
+            expect(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("focus")).toBe("on");
+            // The changed area [160, 80, 40, 40] has its middle at (180, 100), in both panes.
+            await expect.poll(() => centeredOn([180, 100])).toBe(true);
+            expect((await panes()).length).toBe(2);
+            expect(await scrolled()).toBe(true);
+            await ready();
+            // Whether the next item's new image is already scrolled in the first frame that draws it.
+            await page.evaluate(() => {
+                const { document, requestAnimationFrame } = globalThis;
+                globalThis.firstFramed = null;
+                const tick = () => {
+                    const img = document.querySelector('#stage img[alt="new image of slider--sizes"]');
+                    if (!img) {
+                        requestAnimationFrame(tick);
+                        return;
+                    }
+                    const f = img.closest(".frame");
+                    globalThis.firstFramed = f.scrollLeft > 0 || f.scrollTop > 0;
+                };
+                requestAnimationFrame(tick);
+            });
+            await page.keyboard.press("a");
+            await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#3");
+            await expect.poll(() => page.evaluate(() => globalThis.firstFramed)).toBe(true);
+            // slider--sizes grew 40 rows at the bottom, across its width: its middle is (160, 220).
+            await page.locator("#stage figure:nth-child(2) img").waitFor();
+            await expect.poll(() => centeredOn([160, 220], 12)).toBe(true);
+            await ready();
+            expect(await centeredOn([160, 220], 12)).toBe(true);
+            // At Fit the whole image shows: nothing scrolls.
+            await page.getByRole("button", { name: "Fit", exact: true }).click();
+            await expect
+                .poll(async () => (await panes()).map((p) => p.scroll))
+                .toEqual([
+                    [0, 0],
+                    [0, 0],
+                ]);
+        });
+    }
+
+    it("centers a new image on its content, and stays off until turned on", async () => {
+        // The new badge capture: the story's background with one dark box at [200, 120, 40, 30].
+        const png = new PNG({ width: 320, height: 200 });
+        for (let y = 0; y < 200; y++) {
+            for (let x = 0; x < 320; x++) {
+                const inside = x >= 200 && x < 240 && y >= 120 && y < 150;
+                png.data.set(inside ? [30, 30, 40, 255] : [248, 249, 250, 255], (y * 320 + x) * 4);
+            }
+        }
+        const body = PNG.sync.write(png);
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.route("**/api/img/123/compact-mantine/capture/badge--default.light.png", (route) =>
+            route.fulfill({ status: 200, contentType: "image/png", body }),
+        );
+        await page.locator(".component").first().waitFor();
+        await openStory(4);
+        await page.locator("#stage img").waitFor();
+        await page.getByRole("button", { name: "8x", exact: true }).click();
+        // Off (the default), the pane opens at the top left as before.
+        await expect.poll(async () => (await panes()).map((p) => p.scroll)).toEqual([[0, 0]]);
+        await focus().click();
+        await expect.poll(() => centeredOn([220, 135])).toBe(true);
+        expect(await scrolled()).toBe(true);
+        // A fresh page remembers it, and opens the item framed.
+        await page.reload();
+        await page.locator("#stage img").waitFor();
+        expect(await focus().getAttribute("aria-pressed")).toBe("true");
+        await expect.poll(() => centeredOn([220, 135])).toBe(true);
     });
 });
 
