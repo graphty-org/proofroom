@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { fileName, hasBaselines, loadSettings, storyIds, storySettings, storyUrl } from "../capture/capture.mjs";
+import { fileName, hasBaselines, loadSettings, serve, storyIds, storySettings, storyUrl } from "../capture/capture.mjs";
 
 describe("storyUrl", () => {
     it("opens the story alone with the chromatic flag", () => {
@@ -120,5 +120,37 @@ describe("baselines directory", () => {
         expect(await loadSettings(dir, "a--one")).toBeNull();
         await writeFile(join(dir, "a--one.json"), JSON.stringify({ delay: 100 }));
         expect(await loadSettings(dir, "a--one")).toEqual({ delay: 100 });
+    });
+});
+
+describe("serve", () => {
+    let dir;
+    let server;
+    let base;
+
+    beforeEach(async () => {
+        dir = await mkdtemp(join(tmpdir(), "serve-"));
+        await writeFile(join(dir, "index.html"), "<p>home</p>");
+        await writeFile(join(dir, "iframe.html"), "<p>story</p>");
+        [server, base] = await serve(dir);
+    });
+
+    afterEach(async () => {
+        server.close();
+        await rm(dir, { recursive: true, force: true });
+    });
+
+    it("serves a file with its type, and the index at the root", async () => {
+        expect(base).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+        const story = await fetch(`${base}iframe.html?id=a--b`);
+        expect(story.status).toBe(200);
+        expect(story.headers.get("content-type")).toBe("text/html");
+        expect(await story.text()).toBe("<p>story</p>");
+        expect(await (await fetch(base)).text()).toBe("<p>home</p>");
+    });
+
+    it("answers 404 for a missing file and does not climb out of the directory", async () => {
+        expect((await fetch(`${base}missing.js`)).status).toBe(404);
+        expect((await fetch(`${base}..%2F..%2Fetc%2Fpasswd`)).status).toBe(404);
     });
 });

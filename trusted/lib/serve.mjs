@@ -42,7 +42,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -62,6 +62,7 @@ import {
     updateFromMaster,
 } from "./accept.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
+import { sha256 } from "./compare.mjs";
 import {
     downloadCaptures,
     exec,
@@ -492,7 +493,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         if (args[0] !== "api") {
             return gh(args, input);
         }
-        const name = createHash("sha256").update(args.join(" ")).digest("hex").slice(0, 16);
+        const name = sha256(args.join(" ")).slice(0, 16);
         const file = join(tmp, `${run.id}-${run.attempt}`, "gh", `${name}.json`);
         const saved = await readFile(file, "utf8").catch(() => null);
         if (saved !== null) {
@@ -1048,7 +1049,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 const at = k.indexOf("/");
                 return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
             });
-        return { list, digest: createHash("sha256").update(JSON.stringify(list)).digest("hex") };
+        return { list, digest: sha256(JSON.stringify(list)) };
     };
     const CHANGED_SINCE = "Decisions changed since this sheet opened: check the summary again.";
 
@@ -1252,7 +1253,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
 
     async function readImage({ path, hash, file, dir }) {
         const bytes = await readFile(path).catch(() => null);
-        if (!bytes || createHash("sha256").update(bytes).digest("hex") !== hash) {
+        if (!bytes || sha256(bytes) !== hash) {
             // CI hashed the bytes it uploaded, so the copy on this disk is damaged: drop it,
             // and the next reload downloads it again.
             console.error(
