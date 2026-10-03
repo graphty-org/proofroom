@@ -131,6 +131,54 @@ let flashTimer = null;
 let factor = 1; // CSS pixels per image pixel of the pictures on the stage
 let shownBoxes = []; // the changed areas of the item on the stage
 let stageKey = null; // "file|zoom" of what is on the stage, to keep its scroll across view changes
+let optionsOpen = false; // the story's Options menu stays open across redraws of the same item
+// A wide window (an iPad on its side, a desktop) has room for the note box at the end of the
+// decision row; a narrower one puts it at the end of the item row. Turning the iPad moves it.
+const WIDE = matchMedia("(min-width: 1100px)");
+WIDE.addEventListener("change", () => {
+    if (state.screen === "story") {
+        showStory();
+    }
+});
+
+// How often each control and key is pressed, in this browser only (nothing is sent anywhere):
+// the Keys overlay lists the most used, so the bars can be laid out from real use.
+const USAGE_KEY = "visual-review:usage";
+function usage() {
+    try {
+        return JSON.parse(localStorage.getItem(USAGE_KEY) ?? "{}") ?? {};
+    } catch {
+        return {};
+    }
+}
+function count(name) {
+    try {
+        const all = usage();
+        all[name] = (all[name] ?? 0) + 1;
+        localStorage.setItem(USAGE_KEY, JSON.stringify(all));
+    } catch {
+        // Not counted; nothing else depends on it.
+    }
+}
+document.addEventListener(
+    "click",
+    (e) => {
+        const b = e.target.closest?.("button, summary");
+        if (b && b.isConnected) {
+            const words = [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent);
+            count(b.dataset.count ?? (b.id || words.join("").trim() || "button"));
+        }
+    },
+    true,
+);
+// A tap outside an open menu closes it, as a menu does.
+document.addEventListener("pointerdown", (e) => {
+    for (const m of document.querySelectorAll("details.menu[open]")) {
+        if (!m.contains(e.target)) {
+            m.removeAttribute("open");
+        }
+    }
+});
 // At fit, the stage refits when the window (or an iPad's orientation) changes its size.
 const refit = new ResizeObserver(() => {
     const stage = document.getElementById("stage");
@@ -2097,6 +2145,7 @@ function showStory({ focusNote = false } = {}) {
         state.pending = null;
         stageShown = null;
         appearedAt = performance.now();
+        optionsOpen = false;
     }
     state.lastFile = item.file;
     const d = decisionOf(item);
@@ -2132,8 +2181,7 @@ function showStory({ focusNote = false } = {}) {
         el(
             "div",
             { class: "story-view" },
-            itemLine(item, d),
-            viewBar(item, view, note),
+            el("div", { class: "story-head" }, itemLine(item, d), viewBar(item, view, note)),
             state.ended
                 ? endCard()
                 : el("div", { id: "stage", class: `stage ${view} zoom-${state.zoom}`, "data-file": item.file }),
@@ -2154,8 +2202,10 @@ function showStory({ focusNote = false } = {}) {
     remember();
 }
 
-// The decision bar: Grid, Previous, the count, Next, then Accept, Reject, Exclude, Undo and the
-// note box, each always present in the same place.
+// The decision bar, in order of reach: Previous, the count and Next at the left end; Undo and
+// Exclude, the least used, in the middle; Reject, then Accept, the widest, at the right end, with
+// a gap between them. Each always present in the same place. In a wide window the note box ends
+// the row; narrower, it sits in the item row (noteBox).
 function decisionBar(item, items, d) {
     const can = available(item, d);
     const left = items.filter((i) => !decisionOf(i)).length;
@@ -2175,7 +2225,6 @@ function decisionBar(item, items, d) {
             name,
             kbd(key),
         );
-    const draft = drafts.get(draftKey(item)) ?? "";
     return el(
         "div",
         { class: "decisionbar", role: "toolbar", "aria-label": "Decide" },
@@ -2196,6 +2245,17 @@ function decisionBar(item, items, d) {
             "Next",
             kbd("J"),
         ),
+        button("undo", "Undo", "U", can.undo, { onclick: () => decide(null) }),
+        button("exclude", "Exclude", "E", can.exclude, {
+            class: state.pending === "exclude" ? "waiting" : null,
+            "aria-pressed": String(d?.decision === "exclude"),
+            onclick: () => decide("exclude"),
+        }),
+        button("reject", "Reject", "R", can.reject, {
+            class: `reject ${state.pending === "reject" ? "waiting" : ""}`,
+            "aria-pressed": String(d?.decision === "reject"),
+            onclick: () => decide("reject"),
+        }),
         button(
             "accept",
             "Accept",
@@ -2208,50 +2268,48 @@ function decisionBar(item, items, d) {
             },
             waitingImages ? spinner() : null,
         ),
-        button("reject", "Reject", "R", can.reject, {
-            class: `reject ${state.pending === "reject" ? "waiting" : ""}`,
-            "aria-pressed": String(d?.decision === "reject"),
-            onclick: () => decide("reject"),
-        }),
-        button("exclude", "Exclude", "E", can.exclude, {
-            class: state.pending === "exclude" ? "waiting" : null,
-            "aria-pressed": String(d?.decision === "exclude"),
-            onclick: () => decide("exclude"),
-        }),
-        button("undo", "Undo", "U", can.undo, { onclick: () => decide(null) }),
-        el(
-            "span",
-            { class: "notebox" },
-            el("label", { for: "note" }, "Note"),
-            el("input", {
-                id: "note",
-                type: "text",
-                maxlength: "2000",
-                autocomplete: "off",
-                readonly: Boolean(d) || isLocal() || state.ended,
-                placeholder: d
-                    ? ""
-                    : state.pending
-                      ? `Reason to ${state.pending}, then Enter`
-                      : "Needed to Reject or Exclude",
-                value: d ? (d.reason ?? "") : draft,
-                oninput: (e) => drafts.set(draftKey(item), e.target.value),
-                onkeydown: (e) => {
-                    if (e.key === "Enter" && !e.repeat) {
-                        e.preventDefault();
-                        if (state.pending) {
-                            decide(state.pending);
-                        } else {
-                            e.target.blur();
-                        }
-                    }
-                },
-            }),
-        ),
+        WIDE.matches ? noteBox(item, d) : null,
     );
 }
 
-// Item number, name and badges; then one explanation. Not a live region: the status row speaks.
+// The note box: the reason a Reject or Exclude needs, or a note typed before an Accept. One box,
+// at the end of the decision row in a wide window and at the end of the item row otherwise, so it
+// never takes a row of its own; a reject waiting for its reason moves nothing.
+function noteBox(item, d) {
+    const draft = drafts.get(draftKey(item)) ?? "";
+    return el(
+        "span",
+        { class: "notebox" },
+        el("label", { for: "note" }, "Note"),
+        el("input", {
+            id: "note",
+            type: "text",
+            maxlength: "2000",
+            autocomplete: "off",
+            readonly: Boolean(d) || isLocal() || state.ended,
+            placeholder: d
+                ? ""
+                : state.pending
+                  ? `Reason to ${state.pending}, then Enter`
+                  : "Needed to Reject or Exclude",
+            value: d ? (d.reason ?? "") : draft,
+            oninput: (e) => drafts.set(draftKey(item), e.target.value),
+            onkeydown: (e) => {
+                if (e.key === "Enter" && !e.repeat) {
+                    e.preventDefault();
+                    if (state.pending) {
+                        decide(state.pending);
+                    } else {
+                        e.target.blur();
+                    }
+                }
+            },
+        }),
+    );
+}
+
+// Item number, name and badges, then one explanation, on one row cut short; a tap shows it all.
+// Not a live region: the status row speaks.
 function itemLine(item, d) {
     const sizeChanged =
         item.size &&
@@ -2259,7 +2317,14 @@ function itemLine(item, d) {
         (item.size[0] !== item.baselineSize[0] || item.size[1] !== item.baselineSize[1]);
     return el(
         "div",
-        { class: "itemline", onclick: (e) => e.currentTarget.classList.toggle("open") },
+        {
+            class: "itemline",
+            onclick: (e) => {
+                if (!e.target.closest(".notebox")) {
+                    e.currentTarget.classList.toggle("open");
+                }
+            },
+        },
         el(
             "h2",
             {},
@@ -2291,19 +2356,25 @@ function itemLine(item, d) {
                 : null,
         ),
         el("p", { id: "explain" }, explanation(item, d)),
+        WIDE.matches ? null : noteBox(item, d),
     );
 }
 
+// The view bar: the four views and the five zoom steps, used on most items, stay on the bar; the
+// options set once and left (Outline, the view's own Blink or Spotlight flash, Baseline, Focus),
+// Next change and the details sit in one Options menu at its end, each with its key.
 function viewBar(item, view, note) {
     const two = Boolean(item.baseline && item.capture);
-    const viewButton = (v, label, key) =>
+    const viewButton = (v, label, key, name = null) =>
         el(
             "button",
             {
                 type: "button",
+                "aria-label": name,
                 "aria-pressed": String(view === v),
                 "aria-disabled": String(Boolean(note) && v !== "side"),
                 "aria-keyshortcuts": key,
+                "data-count": `view-${v}`,
                 onclick: () => {
                     if (note && v !== "side") {
                         say(note);
@@ -2336,6 +2407,7 @@ function viewBar(item, view, note) {
             {
                 type: "button",
                 "aria-pressed": String(state.zoom === z),
+                "data-count": `zoom-${z}`,
                 onclick: () => {
                     state.zoom = z;
                     showStory();
@@ -2354,49 +2426,52 @@ function viewBar(item, view, note) {
         el(
             "span",
             { role: "group", "aria-label": "View" },
-            viewButton("side", "Side by side", null),
+            viewButton("side", "Side", null, "Side by side"),
             viewButton("flash", "Flash", "F"),
             viewButton("highlight", "Highlight", "H"),
             viewButton("spotlight", "Spotlight", "S"),
         ),
-        // One slot of fixed width for the view's own option, so no view moves or wraps the bar.
-        el(
-            "span",
-            { class: "view-option" },
-            view === "highlight" ? option("blink", "Blink", "L") : null,
-            view === "spotlight" ? option("spotFlash", "Spotlight flash", "F") : null,
-        ),
-        // On the views' row: below 1280 px it has room to spare, so the panes start no lower.
-        option("baselinePane", "Baseline", "P"),
-        el("span", { class: "row-break", "aria-hidden": "true" }),
-        option("showBox", "Outline", "B"),
-        option("focus", "Focus", "O"),
-        el(
-            "button",
-            {
-                type: "button",
-                id: "next-box",
-                "aria-disabled": String(!two),
-                "aria-keyshortcuts": "N",
-                onclick: nextBox,
-            },
-            "Next change",
-            kbd("N"),
-        ),
-        el("span", { id: "box-count", class: "meta" }),
         el("span", { role: "group", "aria-label": "Zoom" }, ZOOMS.map(zoomButton)),
         kbd("Z"),
         el(
             "details",
-            { class: "details-pop" },
-            el("summary", {}, "Details"),
+            {
+                class: "menu",
+                id: "options",
+                open: optionsOpen,
+                ontoggle: (e) => (optionsOpen = e.currentTarget.open),
+            },
+            el("summary", { "data-count": "options" }, "Options"),
             el(
                 "div",
                 {},
-                details.map((t) => el("p", {}, t)),
-                item.console.length > 0 && item.status !== "failed"
-                    ? el("pre", { class: "console" }, item.console.join("\n"))
-                    : null,
+                option("showBox", "Outline", "B"),
+                view === "highlight" ? option("blink", "Blink", "L") : null,
+                view === "spotlight" ? option("spotFlash", "Spotlight flash", "F") : null,
+                option("baselinePane", "Baseline", "P"),
+                option("focus", "Focus", "O"),
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        id: "next-box",
+                        "aria-disabled": String(!two),
+                        "aria-keyshortcuts": "N",
+                        onclick: nextBox,
+                    },
+                    "Next change",
+                    el("span", { id: "box-count", class: "meta" }),
+                    kbd("N"),
+                ),
+                el("button", { type: "button", id: "copy-story-link", onclick: copyLink }, "Copy link"),
+                el(
+                    "div",
+                    { class: "details" },
+                    details.map((t) => el("p", {}, t)),
+                    item.console.length > 0 && item.status !== "failed"
+                        ? el("pre", { class: "console" }, item.console.join("\n"))
+                        : null,
+                ),
             ),
         ),
     );
@@ -4335,7 +4410,7 @@ const SHORTCUTS_OFF = "Single-key shortcuts are off: letters do nothing until yo
 const KEYS = [
     ["J / K", "Next / previous item of the pass; J on the last item shows what is next"],
     ["A", "Accept, once the images are shown"],
-    ["(type), Esc, A", "Accept with a note: type it, leave the note box, accept"],
+    ["(type), Esc, A", "Accept with a note: type it in the note box, leave the box, accept"],
     ["R", "Reject; with an empty note, type the reason, then Enter"],
     ["E", "Exclude; with an empty note, type the reason, then Enter, then confirm"],
     ["U", "Undo the item's decision; you stay on the item"],
@@ -4345,23 +4420,42 @@ const KEYS = [
     ["H", "Highlight the changed pixels in red, or back to side by side"],
     ["L", "In Highlight: Blink on or off"],
     ["S", "Spotlight, or back to side by side (on an iPad held upright, the way to see a change large)"],
-    ["B", "Outline the changed area, or not"],
-    ["P", "Baseline: show the baseline beside the new image, or the new image alone at twice the width"],
+    ["B", "Outline the changed area, or not (in Options)"],
+    ["P", "Baseline: show the baseline beside the new image, or the new image alone at twice the width (in Options)"],
     [
         "O",
-        "Focus: open each item centered on where to look (its largest change, or a new or removed image's content) at the zoom chosen",
+        "Focus: open each item centered on where to look (its largest change, or a new or removed image's content) at the zoom chosen (in Options)",
     ],
-    ["N", "Next change"],
+    ["N", "Next change (in Options)"],
     ["Z", "Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again (from Fit, 2x is two presses, or one tap on 2x)"],
     ["Shift+A", "Grid: accept every undecided item (asks first)"],
     ["/", "Grid: Find story"],
     ["?", "Show or hide this list"],
     ["[ / ]", "Previous / next project with undecided items: its grid, or from a story its first undecided item"],
-    ["Esc", "Up one level: story to grid, grid to targets; in the note box, first leaves the box (its text stays)"],
+    [
+        "Esc",
+        "Up one level: story to grid, grid to targets; first closes an open menu, and in the note box first leaves the box (its text stays)",
+    ],
     ["Enter (end card)", "Take the first offer: the next project, the undecided items left here, or Finish"],
 ];
 
-// The key overlay: every key, the last messages in full, and the single-key shortcuts switch.
+// The ten controls and keys pressed most in this browser: a button by its id or label, a key as
+// "key-J". Kept only here, never sent anywhere.
+function mostUsed() {
+    const top = Object.entries(usage())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+    return top.length === 0
+        ? el("p", { class: "meta" }, "Nothing counted yet.")
+        : el(
+              "ol",
+              { class: "usage" },
+              top.map(([name, n]) => el("li", {}, `${name}: ${n}`)),
+          );
+}
+
+// The key overlay: every key, the most used controls, the last messages in full, and the
+// single-key shortcuts switch.
 function toggleKeys() {
     const open = document.querySelector("dialog.keys");
     if (open) {
@@ -4395,6 +4489,8 @@ function toggleKeys() {
             {},
             KEYS.map(([k, what]) => el("tr", {}, el("td", {}, k), el("td", {}, what))),
         ),
+        el("h3", {}, "Most used in this browser"),
+        mostUsed(),
         el("h3", {}, "Recent messages"),
         el(
             "ol",
@@ -4449,10 +4545,11 @@ document.addEventListener("keydown", (e) => {
             return;
         }
         const menu = app.querySelector("details.menu[open]");
-        menu?.removeAttribute("open");
-        if (state.screen === "story") {
+        if (menu) {
+            menu.removeAttribute("open");
+        } else if (state.screen === "story") {
             toGrid();
-        } else if (!menu) {
+        } else {
             showTargets();
         }
         return;
@@ -4543,6 +4640,7 @@ document.addEventListener("keydown", (e) => {
     }
     if (action) {
         e.preventDefault();
+        count(`key-${key.toUpperCase()}`);
         action();
     }
 });

@@ -359,7 +359,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
             await page.locator("#stage figure:nth-child(2) img").waitFor();
             const two = await stage();
             expect(two.panes.map((p) => p.label)).toEqual(["Baseline", "New"]);
-            const option = page.getByRole("button", { name: "Baseline", exact: true });
+            const option = page.locator("#opt-baselinePane");
             expect(await option.getAttribute("aria-pressed")).toBe("true");
             await page.keyboard.press("p");
             await expect.poll(labels).toEqual(["New"]);
@@ -376,15 +376,12 @@ describe("review page: the Baseline pane, on an iPad", () => {
             expect(one.accept).toEqual(two.accept);
             expect(one.reject).toEqual(two.reject);
             expect(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("baseline")).toBe("off");
-            // The option sits on the views' row, so the bar is no taller: one row from 1280 px wide.
+            // The option is in the Options menu, so the view bar stays one row.
             const top = (name) =>
                 page
                     .getByRole("button", { name, exact: true })
                     .evaluate((e) => Math.round(e.getBoundingClientRect().top));
-            expect(await top("Baseline")).toBe(await top("Side by side"));
-            if (viewport.width >= 1280) {
-                expect(await top("Fit")).toBe(await top("Side by side"));
-            }
+            expect(await top("Fit")).toBe(await top("Side by side"));
             // P again brings the baseline back.
             await page.keyboard.press("p");
             await expect.poll(labels).toEqual(["Baseline", "New"]);
@@ -395,7 +392,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
         await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.locator(".component").first().waitFor();
         await openStory(2);
-        await page.getByRole("button", { name: "Baseline", exact: true }).click();
+        await (await menuOption("Baseline")).click();
         await expect.poll(labels).toEqual(["New"]);
         // The next item opens the same way.
         await page.keyboard.press("j");
@@ -471,7 +468,7 @@ describe("review page: the Focus point, on an iPad", () => {
         );
     };
     const scrolled = async () => (await panes()).every((p) => p.scroll[0] > 0 || p.scroll[1] > 0);
-    const focus = () => page.getByRole("button", { name: "Focus", exact: true });
+    const focus = () => page.locator("#opt-focus");
 
     for (const [held, viewport] of [
         ["upright", { width: 1024, height: 1366 }],
@@ -546,7 +543,7 @@ describe("review page: the Focus point, on an iPad", () => {
         await page.getByRole("button", { name: "8x", exact: true }).click();
         // Off (the default), the pane opens at the top left as before.
         await expect.poll(async () => (await panes()).map((p) => p.scroll)).toEqual([[0, 0]]);
-        await focus().click();
+        await (await menuOption("Focus")).click();
         await expect.poll(() => centeredOn([220, 135])).toBe(true);
         expect(await scrolled()).toBe(true);
         // A fresh page remembers it, and opens the item framed.
@@ -554,6 +551,151 @@ describe("review page: the Focus point, on an iPad", () => {
         await page.locator("#stage img").waitFor();
         expect(await focus().getAttribute("aria-pressed")).toBe("true");
         await expect.poll(() => centeredOn([220, 135])).toBe(true);
+    });
+});
+
+describe("review page: the control panel, on an iPad", () => {
+    // Where each control people use on most items is, whether a menu hides it, and how much of
+    // the screen the controls above the panes take.
+    const panel = () =>
+        page.evaluate(() => {
+            const { document, innerWidth } = globalThis;
+            const byName = (name) =>
+                [...document.querySelectorAll("button")].find(
+                    (b) => (b.getAttribute("aria-label") ?? b.firstChild?.textContent?.trim()) === name,
+                );
+            const names = ["Side by side", "Flash", "Highlight", "Spotlight", "Fit", "1x", "2x", "4x", "8x"];
+            const controls = {
+                ...Object.fromEntries(
+                    ["prev", "next", "undo", "exclude", "reject", "accept"].map((id) => [
+                        id,
+                        document.getElementById(id),
+                    ]),
+                ),
+                ...Object.fromEntries(names.map((n) => [n, byName(n)])),
+                finish: document.querySelector("#finish-slot .finish"),
+            };
+            const out = {};
+            for (const [name, e] of Object.entries(controls)) {
+                const r = e?.getBoundingClientRect();
+                out[name] =
+                    e && e.checkVisibility() && !e.closest("details:not([open])")
+                        ? { left: r.left, right: r.right, top: r.top, width: r.width, height: r.height }
+                        : null;
+            }
+            const short = [...document.querySelectorAll("button, select, input, summary")]
+                .filter((e) => e.checkVisibility() && e.getBoundingClientRect().height < 44)
+                .map((e) => e.id || e.textContent.trim());
+            return {
+                controls: out,
+                stageTop: document.getElementById("stage").getBoundingClientRect().top,
+                sideways: document.documentElement.scrollWidth > innerWidth,
+                outside: Object.entries(out)
+                    .filter(([, r]) => r && (r.left < 0 || r.right > innerWidth + 0.5))
+                    .map(([n]) => n),
+                short,
+            };
+        });
+
+    for (const [held, viewport, most] of [
+        ["upright", { width: 1024, height: 1366 }, 220],
+        ["sideways", { width: 1366, height: 1024 }, 190],
+        ["upright (iPad Air)", { width: 820, height: 1180 }, 220],
+        ["sideways (iPad Air)", { width: 1180, height: 820 }, 190],
+        ["upright (iPad mini)", { width: 744, height: 1133 }, 220],
+    ]) {
+        it(`held ${held}: the controls used on most items show without a menu, in ${most} px above the panes`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            await openStory(2);
+            await ready();
+            const p = await panel();
+            const hidden = Object.entries(p.controls)
+                .filter(([, r]) => r === null)
+                .map(([n]) => n);
+            expect(hidden).toEqual([]);
+            expect(p.outside).toEqual([]);
+            expect(p.sideways).toBe(false);
+            expect(p.short).toEqual([]);
+            expect(p.stageTop).toBeLessThanOrEqual(most);
+            const c = p.controls;
+            // The decision row is one row: Previous and Next at the left end, then Undo and
+            // Exclude, then Reject and Accept, the widest, with a gap between Exclude and Reject.
+            const row = ["prev", "next", "undo", "exclude", "reject", "accept"];
+            expect(new Set(row.map((id) => c[id].top)).size).toBe(1);
+            for (let i = 1; i < row.length; i++) {
+                expect(c[row[i]].left).toBeGreaterThan(c[row[i - 1]].left);
+            }
+            expect(Math.max(...row.slice(0, -1).map((id) => c[id].width))).toBeLessThan(c.accept.width);
+            expect(c.reject.left - c.exclude.right).toBeGreaterThan(c.accept.left - c.reject.right);
+            // The views and the zoom steps share one row.
+            expect(new Set(["Side by side", "Spotlight", "Fit", "8x"].map((n) => c[n].top)).size).toBe(1);
+        });
+    }
+
+    it("opens the note for a reject in the row it is in, moving nothing", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await ready();
+        const before = await panel();
+        await page.keyboard.press("r");
+        await expect.poll(() => page.locator("#note:focus").count()).toBe(1);
+        expect(await page.locator("#note").getAttribute("placeholder")).toBe("Reason to reject, then Enter");
+        const after = await panel();
+        expect(after.controls).toEqual(before.controls);
+        expect(after.stageTop).toBe(before.stageTop);
+        // Upright, the note box ends the item row; on its side, the decision row.
+        expect(await page.locator(".itemline #note").count()).toBe(1);
+        await page.keyboard.press("Escape");
+        await page.setViewportSize({ width: 1180, height: 820 });
+        await expect.poll(() => page.locator(".decisionbar #note").count()).toBe(1);
+    });
+
+    it("keeps the rarer options in one Options menu, each with its key, and Escape closes it first", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await ready();
+        const menu = page.locator("#options");
+        expect(await menu.evaluate((d) => d.open)).toBe(false);
+        await page.locator("#options > summary").click();
+        const names = await menu.locator("button").evaluateAll((bs) => bs.map((b) => b.textContent.trim()));
+        expect(names).toEqual(["OutlineB", "BaselineP", "FocusO", "Next change1 of 1N", "Copy link"]);
+        // An option stays open for the next, and its key works as before.
+        await page.getByRole("button", { name: "Outline", exact: true }).click();
+        await expect.poll(() => page.locator("#opt-showBox").getAttribute("aria-pressed")).toBe("false");
+        expect(await menu.evaluate((d) => d.open)).toBe(true);
+        await page.keyboard.press("b");
+        await expect.poll(() => page.locator("#opt-showBox").getAttribute("aria-pressed")).toBe("true");
+        // Escape closes the menu and stays on the item; the next Escape goes up to the grid.
+        await page.keyboard.press("Escape");
+        await expect.poll(() => menu.evaluate((d) => d.open)).toBe(false);
+        expect(await page.locator("#stage").count()).toBe(1);
+        // A tap outside closes it too.
+        await page.locator("#options > summary").click();
+        await page.locator("#stage").click();
+        await expect.poll(() => menu.evaluate((d) => d.open)).toBe(false);
+        await page.keyboard.press("Escape");
+        await page.locator(".component").first().waitFor();
+    });
+
+    it("counts each tap and key in this browser only, and lists the most used in Keys", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await ready();
+        await page.getByRole("button", { name: "4x", exact: true }).click();
+        await page.locator("#accept").click();
+        await expect.poll(position).toMatch(/^3 of /);
+        await page.keyboard.press("j");
+        await expect.poll(position).toMatch(/^4 of /);
+        const counted = await page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:usage")));
+        expect(counted).toMatchObject({ "zoom-4": 1, accept: 1, "key-J": 1 });
+        await page.keyboard.press("?");
+        const list = await page.locator("dialog.keys .usage li").allTextContents();
+        expect(list).toEqual(expect.arrayContaining(["zoom-4: 1", "accept: 1", "key-J: 1"]));
+        expect(list.length).toBeLessThanOrEqual(10);
     });
 });
 
@@ -628,7 +770,7 @@ describe("review page: a pull request", () => {
     it("fits both whole images side by side on one screen, at one scale, in panes of one size", async () => {
         // Short enough that the images shrink to the height of the panes, not their width.
         for (const [w, h] of [
-            [1000, 480],
+            [1000, 400],
             [600, 900],
         ]) {
             await page.setViewportSize({ width: w, height: h });
@@ -792,7 +934,7 @@ describe("review page: a pull request", () => {
         await openStory(2);
         await page.keyboard.press("s");
         await page.locator("#stage canvas").first().waitFor();
-        const toggle = page.getByRole("button", { name: "Spotlight flash", exact: true });
+        const toggle = page.locator("#opt-spotFlash");
         expect(await toggle.getAttribute("aria-pressed")).toBe("false");
         await page.keyboard.press("f");
         // Still Spotlight, now two dimmed canvases in the same place, one shown at a time.
@@ -887,7 +1029,7 @@ describe("review page: a pull request", () => {
         expect(red.box[2]).toBeLessThan(200);
         expect(red.box[3]).toBeLessThan(120);
         // L blinks both overlays together; L again holds them on.
-        const blink = page.getByRole("button", { name: "Blink", exact: true });
+        const blink = page.locator("#opt-blink");
         await page.keyboard.press("l");
         await expect.poll(() => blink.getAttribute("aria-pressed")).toBe("true");
         const seen = new Set();
@@ -917,7 +1059,7 @@ describe("review page: a pull request", () => {
         await openStory(2);
         await expect.poll(() => page.locator("#box-count").textContent()).toBe("1 of 1");
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
-        const box = page.getByRole("button", { name: "Outline", exact: true });
+        const box = page.locator("#opt-showBox");
         expect(await box.getAttribute("aria-pressed")).toBe("true");
         await page.keyboard.press("b");
         // B re-renders the story; the count is written once the diff is ready, so wait for it
@@ -1883,11 +2025,9 @@ describe("review page: links and the frozen pass", () => {
         boxed.hash = String(p);
         await visit(boxed.href);
         await expect.poll(position).toMatch(/^2 of 6 /);
-        const box = page.getByRole("button", { name: "Outline", exact: true });
+        const box = page.locator("#opt-showBox");
         await expect.poll(() => box.getAttribute("aria-pressed")).toBe("false");
-        expect(await page.getByRole("button", { name: "Blink", exact: true }).getAttribute("aria-pressed")).toBe(
-            "true",
-        );
+        expect(await page.locator("#opt-blink").getAttribute("aria-pressed")).toBe("true");
         // The targets screen.
         await page.locator("#home").click();
         await expect.poll(() => [...hash().keys()]).toEqual(["token"]);
@@ -2315,7 +2455,7 @@ describe("review page: narrow windows, touch and wording", () => {
     const outside = () =>
         page.evaluate(() => {
             const { document, innerWidth } = globalThis;
-            return [...document.querySelectorAll("header > *, .decisionbar > *, .decisionbar input")]
+            return [...document.querySelectorAll("header > *, .decisionbar > *, #note, .viewbar > *")]
                 .filter((e) => e.getClientRects().length > 0)
                 .map((e) => [e.id || e.className || e.tagName, e.getBoundingClientRect()])
                 .filter(([, r]) => r.left < 0 || r.right > innerWidth + 0.5)
@@ -2343,9 +2483,14 @@ describe("review page: narrow windows, touch and wording", () => {
         // A wide desktop, an iPad on its side and upright, a zoomed page and iPad Split View.
         for (const width of [1280, 1180, 1024, 820, 600, 375, 320]) {
             await page.setViewportSize({ width, height: 900 });
+            // Crossing 1100 px moves the note box between the decision row and the item row.
+            await expect
+                .poll(async () => {
+                    const hint = await fits("#note");
+                    return hint.need <= hint.room;
+                }, `the note's hint at ${width} px`)
+                .toBe(true);
             expect({ width, outside: await outside() }).toEqual({ width, outside: [] });
-            const hint = await fits("#note");
-            expect(hint.need, `the note's hint at ${width} px`).toBeLessThanOrEqual(hint.room);
         }
     });
 
@@ -2537,6 +2682,14 @@ describe("review page: a local preview", () => {
         await expect.poll(status).toBe("Local preview: look only. Nothing is decided on it.");
     });
 });
+
+// An option in the story's Options menu, the menu opened first when it is closed.
+async function menuOption(name) {
+    if (!(await page.locator("#options").evaluate((d) => d.open))) {
+        await page.locator("#options > summary").click();
+    }
+    return page.getByRole("button", { name, exact: true });
+}
 
 // From a story view, back to the grid and into another story.
 async function openStoryFromGrid(number) {
