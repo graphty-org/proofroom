@@ -2091,6 +2091,8 @@ describe("review page: links and the frozen pass", () => {
 
     it("copies the link to the screen", async () => {
         await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+        // The header keeps Copy link from 1050 px; narrower, it is in the Options and More menus.
+        await page.setViewportSize({ width: 1280, height: 800 });
         await openStory(2);
         await page.locator("#copy-link").click();
         await expect.poll(status).toContain("Link copied");
@@ -2512,6 +2514,46 @@ describe("review page: narrow windows, touch and wording", () => {
         const shown = await fits("#pick-project", name);
         expect(shown.need + 24).toBeLessThanOrEqual(shown.room);
     });
+
+    // Text cut short in a label: the menus' chosen names (their arrow takes about 24 px) and the
+    // position, each measured in its own font.
+    const cut = (selectors) =>
+        page.evaluate((sels) => {
+            const { document, getComputedStyle } = globalThis;
+            const ctx = document.createElement("canvas").getContext("2d");
+            return sels.flatMap((sel) => {
+                const e = document.querySelector(sel);
+                const css = getComputedStyle(e);
+                ctx.font = `${css.fontStyle} ${css.fontWeight} ${css.fontSize} ${css.fontFamily}`;
+                const text = e.tagName === "SELECT" ? e.selectedOptions[0].textContent : e.textContent;
+                const need = Math.ceil(ctx.measureText(text).width) + (e.tagName === "SELECT" ? 24 : 0);
+                const room = e.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+                return need > room ? [`${sel} "${text}" needs ${need}, has ${room}`] : [];
+            });
+        }, selectors);
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held} with hundreds of items: whole menu names, a whole position, and a tile's Undo a finger can press`, async () => {
+            await open((r) => ({ gh: withMoved(r, MANY) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            expect(await page.locator("#pick-project option:checked").textContent()).toBe("compact-mantine (186)");
+            expect(await cut(["#pick-target", "#pick-project"])).toEqual([]);
+            await page.locator("#review-undecided").click();
+            await page.keyboard.press("j");
+            await expect.poll(position).toMatch(/^2 of \d{3} -- \d{3} left$/);
+            expect(await cut(["#pick-target", "#pick-project", "#position"])).toEqual([]);
+            // Back on the grid under All, a decided tile's Undo is as tall as any other control.
+            await page.keyboard.press("Escape");
+            await page.getByRole("button", { name: /^All/ }).click();
+            await page.locator('.component[data-component="comp00"] h3 .accept').click();
+            await expect.poll(status).toBe("Accepted 6 items in comp00.");
+            const undo = page.locator('.component[data-component="comp00"] .decision button').first();
+            expect((await undo.boundingBox()).height).toBeGreaterThanOrEqual(44);
+        });
+    }
 
     it("makes every control at least 44 px tall on a touch screen", async () => {
         await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });

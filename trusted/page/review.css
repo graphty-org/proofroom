@@ -102,7 +102,7 @@ header h1 {
     display: flex;
     gap: 6px;
     align-items: center;
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     min-width: 0;
 }
 
@@ -158,6 +158,12 @@ header h1 {
     display: none;
 }
 
+/* A project's name is longer than a target's: on a wide header ("graphty-element (121)" beside its
+   label) the project's menu starts wider, and still shrinks first when the header is full. */
+#crumbs > label.picker:nth-of-type(2) {
+    flex-basis: 22em;
+}
+
 /* Finish never shrinks: the pickers give up their width first, so its count is always whole. */
 #finish-slot {
     display: flex;
@@ -194,7 +200,8 @@ header h1 {
     }
 
     #crumbs > label.picker:nth-of-type(2) {
-        flex-grow: 2;
+        flex-basis: 0;
+        flex-grow: 1.6;
     }
 
     #crumbs .crumb {
@@ -202,13 +209,16 @@ header h1 {
     }
 }
 
-/* Under 900 px the header keeps one row: Keys shows only its key, and Copy link moves into the
-   story's Options menu and the grid's More menu (the targets list keeps it: it has the room). */
-@media (max-width: 899.98px) {
+/* Under 1050 px Copy link moves into the story's Options menu and the grid's More menu (the
+   targets list keeps it: it has the room), so an iPad held upright shows whole menu labels; under
+   900 px the header keeps one row by showing only Keys' key. */
+@media (max-width: 1049.98px) {
     #crumbs:not([hidden]) ~ #copy-link {
         display: none;
     }
+}
 
+@media (max-width: 899.98px) {
     #crumbs:not([hidden]) ~ #keys-button .keys-word {
         position: absolute;
         width: 1px;
@@ -1020,12 +1030,22 @@ details.menu > div {
 .decisionbar {
     display: grid;
     grid-template-columns:
-        minmax(0, 5.5em) minmax(0, 7.5em) minmax(0, 5.5em) minmax(4px, 1fr) minmax(0, 5.5em) minmax(0, 6.8em)
+        minmax(0, 5.5em) minmax(0, 9.5em) minmax(0, 5.5em) minmax(4px, 1fr) minmax(0, 5.5em) minmax(0, 6.8em)
         minmax(12px, 1fr) minmax(0, 6em) minmax(0, 8.5em);
     grid-template-areas: "prev pos next . undo exclude . reject accept";
     gap: 4px;
     align-items: center;
     padding: 2px 16px;
+}
+
+/* An iPad held upright has room for the whole "111 of 121 -- 10 left"; the width is fixed so Next
+   and the buttons after it never move from item to item. */
+@media (min-width: 900px) and (max-width: 1099.98px) {
+    .decisionbar {
+        grid-template-columns:
+            minmax(0, 5.5em) minmax(0, 11em) minmax(0, 5.5em) minmax(4px, 1fr) minmax(0, 5.5em) minmax(0, 6.8em)
+            minmax(12px, 1fr) minmax(0, 6em) minmax(0, 8.5em);
+    }
 }
 
 @media (min-width: 1100px) {
@@ -1264,7 +1284,8 @@ details.menu > div {
     input[type="text"],
     input[type="search"],
     summary,
-    details.menu > summary {
+    details.menu > summary,
+    .decision button {
         min-height: 44px;
     }
 
