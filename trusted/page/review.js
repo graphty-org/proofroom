@@ -1597,17 +1597,112 @@ const undoableIn = (component) =>
         .filter((i) => decisionOf(i) && !decisionOf(i).posted && (!component || componentOf(i.id) === component))
         .map((i) => i.file);
 
+// The project whose grid is on screen, so a redraw of the same grid keeps its place.
+let gridShown = null;
+
 function showGrid() {
     stopFlash();
     nearScreen.disconnect();
     thumbQueue.length = 0;
+    const here = `${state.target.id}/${state.project}`;
+    // A redraw of the grid already on screen (an Undo, a filter) keeps its scroll. The focus leaves
+    // the grid first: a focused button the redraw removes takes the scroll to the top.
+    const keep = state.screen === "grid" && gridShown === here ? app.scrollTop : null;
+    if (keep !== null && app.contains(document.activeElement)) {
+        app.focus({ preventScroll: true });
+    }
+    gridShown = here;
     state.screen = "grid";
     state.ended = false;
     state.pending = null;
     app.classList.remove("story-screen");
     drawHeader();
-    const all = reviewable();
+    setBar(gridBar());
     const items = visibleItems();
+    const errors = [];
+    const groups = new Map(); // component -> story id -> [tile]
+    for (const item of items) {
+        if (item.status === "failed") {
+            errors.push(errorRow(item));
+            continue;
+        }
+        const c = componentOf(item.id);
+        if (!groups.has(c)) {
+            groups.set(c, new Map());
+        }
+        const stories = groups.get(c);
+        if (!stories.has(item.id)) {
+            stories.set(item.id, []);
+        }
+        stories.get(item.id).push(tile(item));
+    }
+    const sections = [...groups].map(([component, stories]) =>
+        el(
+            "section",
+            { class: "component", "data-component": component },
+            groupHead(component),
+            el(
+                "div",
+                { class: "stories" },
+                [...stories].map(([id, tiles]) =>
+                    el(
+                        "div",
+                        { class: "story", "data-story": id },
+                        el("div", { class: "story-name" }, id.slice(component.length + 2) || id),
+                        el("div", { class: "modes" }, tiles),
+                    ),
+                ),
+            ),
+        ),
+    );
+    const empty =
+        state.filter === "undecided"
+            ? isLocal()
+                ? "Nothing here."
+                : `Everything is decided. Finish ${labelOf(state.target)} when ready.`
+            : "No stories match this filter.";
+    render(
+        isLocal()
+            ? el(
+                  "p",
+                  { class: "badge warn" },
+                  "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
+              )
+            : null,
+        staleBanner(),
+        errors.length > 0
+            ? el(
+                  "details",
+                  {
+                      class: "errors",
+                      open: loadOptions().showFailed === true,
+                      ontoggle: (e) => saveOptions({ showFailed: e.target.open }),
+                  },
+                  el("summary", {}, `${plural(errors.length, "failed capture")}: only Exclude applies`),
+                  el(
+                      "p",
+                      { class: "meta" },
+                      "An error is never accepted. Fix the story, re-run the visual job for a one-off timeout, " +
+                          "or exclude the story with a reason.",
+                  ),
+                  el("ol", { class: "error-list" }, errors),
+              )
+            : null,
+        ...(items.length === 0 ? [el("p", { class: "empty" }, empty)] : sections),
+    );
+    applyFind();
+    remember();
+    if (keep !== null) {
+        app.scrollTop = keep;
+        return;
+    }
+    // Back from a story: show where it is in the grid.
+    app.querySelector(".current")?.scrollIntoView({ block: "center" });
+}
+
+// The grid's bar: the counts, the filters, Find story and Accept all undecided.
+function gridBar() {
+    const all = reviewable();
     const decided = all.filter(decisionOf).length;
     const open = all.length - decided;
     const acceptable = state.data.acceptable && !isLocal();
@@ -1677,172 +1772,92 @@ function showGrid() {
         },
     });
     const undoAll = undoableIn(null);
-    setBar(
+    return el(
+        "div",
+        { class: "gridbar" },
         el(
             "div",
-            { class: "gridbar" },
+            { class: "row" },
+            el("strong", { id: "progress" }, `${decided} of ${all.length} decided`),
             el(
-                "div",
-                { class: "row" },
-                el("strong", { id: "progress" }, `${decided} of ${all.length} decided`),
-                el(
-                    "button",
-                    {
-                        type: "button",
-                        class: "primary",
-                        id: "review-undecided",
-                        "aria-disabled": String(open === 0),
-                        onclick: () => startPass("undecided"),
-                    },
-                    `Review ${open} undecided`,
-                ),
-                el(
-                    "span",
-                    { role: "group", "aria-label": "Show" },
-                    filterButton("undecided", `Needs a decision (${open})`),
-                    filterButton("all", `All (${all.length})`),
-                    more,
-                ),
+                "button",
+                {
+                    type: "button",
+                    class: "primary",
+                    id: "review-undecided",
+                    "aria-disabled": String(open === 0),
+                    onclick: () => startPass("undecided"),
+                },
+                `Review ${open} undecided`,
             ),
             el(
-                "div",
-                { class: "row" },
-                el("label", { for: "find" }, "Find story", find),
-                acceptable
-                    ? el(
-                          "button",
-                          {
-                              type: "button",
-                              class: "accept",
-                              id: "accept-all",
-                              "aria-keyshortcuts": "Shift+A",
-                              "aria-disabled": String(takeable === 0),
-                              onclick: () => acceptAll(null),
-                          },
-                          `Accept all undecided (${takeable})`,
-                      )
-                    : null,
+                "span",
+                { role: "group", "aria-label": "Show" },
+                filterButton("undecided", `Needs a decision (${open})`),
+                filterButton("all", `All (${all.length})`),
+                more,
+            ),
+        ),
+        el(
+            "div",
+            { class: "row" },
+            el("label", { for: "find" }, "Find story", find),
+            acceptable
+                ? el(
+                      "button",
+                      {
+                          type: "button",
+                          class: "accept",
+                          id: "accept-all",
+                          "aria-keyshortcuts": "Shift+A",
+                          "aria-disabled": String(takeable === 0),
+                          onclick: () => acceptAll(null),
+                      },
+                      `Accept all undecided (${takeable})`,
+                  )
+                : null,
+            el(
+                "details",
+                { class: "menu" },
+                el("summary", {}, "More"),
                 el(
-                    "details",
-                    { class: "menu" },
-                    el("summary", {}, "More"),
-                    el(
-                        "div",
-                        {},
-                        isLocal()
-                            ? null
-                            : el(
-                                  "button",
-                                  {
-                                      type: "button",
-                                      class: "undo-all",
-                                      "aria-disabled": String(undoAll.length === 0),
-                                      onclick: () => bulkUndo(null),
-                                  },
-                                  "Undo all decisions...",
-                              ),
-                        el("button", { type: "button", onclick: copyLink }, "Copy link to this grid"),
-                    ),
+                    "div",
+                    {},
+                    isLocal()
+                        ? null
+                        : el(
+                              "button",
+                              {
+                                  type: "button",
+                                  class: "undo-all",
+                                  "aria-disabled": String(undoAll.length === 0),
+                                  onclick: () => bulkUndo(null),
+                              },
+                              "Undo all decisions...",
+                          ),
+                    el("button", { type: "button", onclick: copyLink }, "Copy link to this grid"),
                 ),
             ),
         ),
     );
-    const errors = [];
-    const groups = new Map(); // component -> story id -> [tile]
-    for (const item of items) {
-        if (item.status === "failed") {
-            errors.push(errorRow(item));
-            continue;
-        }
-        const c = componentOf(item.id);
-        if (!groups.has(c)) {
-            groups.set(c, new Map());
-        }
-        const stories = groups.get(c);
-        if (!stories.has(item.id)) {
-            stories.set(item.id, []);
-        }
-        stories.get(item.id).push(tile(item));
-    }
-    const sections = [...groups].map(([component, stories]) => {
-        const n = undecided(component).length;
-        const k = undoableIn(component).length;
-        return el(
-            "section",
-            { class: "component", "data-component": component },
-            el(
-                "h3",
-                {},
-                component,
-                acceptable && n > 0
-                    ? el(
-                          "button",
-                          { type: "button", class: "accept", onclick: () => acceptAll(component) },
-                          `Accept ${n}`,
-                      )
-                    : null,
-                !isLocal() && k > 0
-                    ? el(
-                          "button",
-                          { type: "button", class: "undo-all", onclick: () => bulkUndo(component) },
-                          `Undo ${k}`,
-                      )
-                    : null,
-            ),
-            el(
-                "div",
-                { class: "stories" },
-                [...stories].map(([id, tiles]) =>
-                    el(
-                        "div",
-                        { class: "story", "data-story": id },
-                        el("div", { class: "story-name" }, id.slice(component.length + 2) || id),
-                        el("div", { class: "modes" }, tiles),
-                    ),
-                ),
-            ),
-        );
-    });
-    const empty =
-        state.filter === "undecided"
-            ? isLocal()
-                ? "Nothing here."
-                : `Everything is decided. Finish ${labelOf(state.target)} when ready.`
-            : "No stories match this filter.";
-    render(
-        isLocal()
-            ? el(
-                  "p",
-                  { class: "badge warn" },
-                  "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
-              )
+}
+
+// A component's heading, with its Accept N and Undo N.
+function groupHead(component) {
+    const acceptable = state.data.acceptable && !isLocal();
+    const n = undecided(component).length;
+    const k = undoableIn(component).length;
+    return el(
+        "h3",
+        {},
+        component,
+        acceptable && n > 0
+            ? el("button", { type: "button", class: "accept", onclick: () => acceptAll(component) }, `Accept ${n}`)
             : null,
-        staleBanner(),
-        errors.length > 0
-            ? el(
-                  "details",
-                  {
-                      class: "errors",
-                      open: loadOptions().showFailed === true,
-                      ontoggle: (e) => saveOptions({ showFailed: e.target.open }),
-                  },
-                  el("summary", {}, `${plural(errors.length, "failed capture")}: only Exclude applies`),
-                  el(
-                      "p",
-                      { class: "meta" },
-                      "An error is never accepted. Fix the story, re-run the visual job for a one-off timeout, " +
-                          "or exclude the story with a reason.",
-                  ),
-                  el("ol", { class: "error-list" }, errors),
-              )
+        !isLocal() && k > 0
+            ? el("button", { type: "button", class: "undo-all", onclick: () => bulkUndo(component) }, `Undo ${k}`)
             : null,
-        ...(items.length === 0 ? [el("p", { class: "empty" }, empty)] : sections),
     );
-    applyFind();
-    remember();
-    // Back from a story: show where it is in the grid.
-    const here = app.querySelector(".current");
-    here?.scrollIntoView({ block: "center" });
 }
 
 // Find story narrows the grid by hiding tiles (not rebuilding them), so typing stays quick.
@@ -3151,6 +3166,8 @@ async function bulkUndo(component) {
     }
 }
 
+// Accept all undecided (Shift+A) asks first; a component's Accept N does not: Undo N takes it back.
+// Neither reloads the project: the server names the files it accepted, and the page marks them.
 async function acceptAll(component) {
     if (!state.data.acceptable || isLocal()) {
         say(isLocal() ? "Local preview: look only. Nothing is decided on it." : notSeeded());
@@ -3163,24 +3180,22 @@ async function acceptAll(component) {
         say(`Nothing undecided to accept in ${where}.`);
         return;
     }
-    // Accepting a removal deletes its baseline, so the question says how many it holds.
-    const removals = items.filter((i) => i.status === "removed").length;
-    const deletes =
-        removals === 0
-            ? ""
-            : ` This includes ${plural(removals, "removal")}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
-    const stuck = state.data.items.filter(
-        (i) => onlyExclude(i) && !decisionOf(i) && (!component || componentOf(i.id) === component),
-    );
-    const left =
-        stuck.length === 0
-            ? ""
-            : ` ${stuck.length} more (${[...new Set(stuck.map((i) => i.status))].sort().join(", ")}) can only be excluded and stay undecided.`;
-    const question = component
-        ? `Accept the ${n} undecided ${n === 1 ? "item" : "items"} of ${component} without opening them?`
-        : `Accept ${n} undecided ${n === 1 ? "item" : "items"} of ${where} without opening them?`;
-    if (!(await ask(`${question}${deletes}${left}`, `Accept ${n}`))) {
-        return;
+    if (!component) {
+        // Accepting a removal deletes its baseline, so the question says how many it holds.
+        const removals = items.filter((i) => i.status === "removed").length;
+        const deletes =
+            removals === 0
+                ? ""
+                : ` This includes ${plural(removals, "removal")}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
+        const stuck = state.data.items.filter((i) => onlyExclude(i) && !decisionOf(i));
+        const left =
+            stuck.length === 0
+                ? ""
+                : ` ${stuck.length} more (${[...new Set(stuck.map((i) => i.status))].sort().join(", ")}) can only be excluded and stay undecided.`;
+        const question = `Accept ${n} undecided ${n === 1 ? "item" : "items"} of ${where} without opening them?`;
+        if (!(await ask(`${question}${deletes}${left}`, `Accept ${n}`))) {
+            return;
+        }
     }
     let answer;
     try {
@@ -3191,13 +3206,84 @@ async function acceptAll(component) {
             runAttempt: state.data.target.runAttempt,
             ...(component ? { component } : {}),
         });
-        await reload();
     } catch (err) {
         say(err.message, true);
         return;
     }
-    (state.screen === "story" ? showStory : showGrid)();
+    for (const file of answer.files) {
+        state.data.decisions[file] = { decision: "accept", reason: null, bulk: true };
+    }
+    const p = state.target.projects.find((x) => x.project === state.project);
+    if (p) {
+        p.decided += answer.files.length;
+        p.undecided -= answer.files.length;
+    }
+    state.target.unpublished = answer.unpublished;
+    if (state.screen === "story") {
+        showStory();
+    } else if (component && state.screen === "grid") {
+        acceptedInGrid(component, answer.files);
+    } else {
+        showGrid();
+    }
     say(`Accepted ${plural(answer.accepted, "item")} in ${where}.`);
+}
+
+// After a component's Accept N: its accepted tiles show their decision, or leave a filter that no
+// longer shows them, and the rest of the grid stays as it is, scrolled where it was. The focus goes
+// to the next component's Accept, which a filter that drops this component brings to the same spot.
+function acceptedInGrid(component, files) {
+    const shown = new Set(visibleItems().map((i) => i.file));
+    const boxes = files.map((f) => app.querySelector(`.tile-box[data-file="${CSS.escape(f)}"]`));
+    const section = app.querySelector(`.component[data-component="${CSS.escape(component)}"]`);
+    // A filter that now shows a tile the grid lacks (Accepted): draw the grid again.
+    if (!section || files.some((f, n) => shown.has(f) && !boxes[n])) {
+        showGrid();
+        return;
+    }
+    // Focus first: a focused button removed from the grid takes its scroll to the top.
+    const later = [...app.querySelectorAll(".component")];
+    const next = later
+        .slice(later.indexOf(section) + 1)
+        .map((c) => (c.hidden ? null : c.querySelector("h3 .accept")))
+        .find(Boolean);
+    (next ?? app).focus({ preventScroll: true });
+    // Where the grid is scrolled, or the component's own start when that is above the screen.
+    // Restored by hand: scroll anchoring would hold the next component where it was instead.
+    const top = Math.min(
+        app.scrollTop,
+        app.scrollTop + section.getBoundingClientRect().top - app.getBoundingClientRect().top,
+    );
+    const byFile = new Map(state.data.items.map((i) => [i.file, i]));
+    for (const [n, file] of files.entries()) {
+        const box = boxes[n];
+        if (!box) {
+            continue;
+        }
+        if (shown.has(file)) {
+            box.querySelector(".tile").classList.add("decided", "accept");
+            box.append(decisionLine(byFile.get(file)));
+        } else {
+            box.remove();
+        }
+    }
+    for (const story of section.querySelectorAll(".story")) {
+        if (!story.querySelector(".tile-box")) {
+            story.remove();
+        }
+    }
+    if (section.querySelector(".tile-box")) {
+        section.querySelector("h3").replaceWith(groupHead(component));
+    } else {
+        section.remove();
+    }
+    if (shown.size === 0) {
+        showGrid();
+        return;
+    }
+    app.scrollTop = top;
+    setBar(gridBar());
+    drawHeader();
 }
 
 // When the default branch has newer baselines for this project than the capture was compared with:

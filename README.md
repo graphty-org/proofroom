@@ -327,8 +327,9 @@ downloading captures nobody has opened yet) is said in the status row and never 
    stays the same however the grid is filtered or decided (its place under All), and the story
    screen shows it too. Tiles show small copies the server makes once, loaded as they come near
    the screen; one that fails reads "Failed -- tap to retry". A component's **Accept N** accepts
-   its undecided items without opening them, and **Undo N** clears its decisions; both ask first,
-   naming the count. Under every decided tile its decision is spelled out: "Accepted",
+   its undecided items without opening them, at once and in place: the grid stays where it is,
+   the next component takes the accepted one's place, and the focus moves to its Accept N, so
+   Enter (or a tap) takes that one too. **Undo N** clears a component's decisions, after asking. Under every decided tile its decision is spelled out: "Accepted",
    "Accepted (not opened)" for one Accept all took, or "Rejected" or "Excluded" with the reason,
    with an **Undo** that clears it without opening the story. A reject an earlier Finish already
    posted says "Posted by an earlier Finish: it stays.", and an accept or exclusion it pushed says

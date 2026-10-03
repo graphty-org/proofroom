@@ -1430,7 +1430,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             // With `component`, only that component's stories: the story id before "--".
             const inScope = (item) => typeof body.component !== "string" || componentOf(item.id) === body.component;
             const mine = decisionsOf(t);
-            let accepted = 0;
+            // The files it accepted, so the page updates their tiles in place instead of reloading.
+            const files = [];
             update(t, (saved) => {
                 for (const item of p.results.items) {
                     const key = `${body.project}/${item.file}`;
@@ -1442,11 +1443,11 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                             hash: imageHash(item),
                             base: item.baseline ?? null,
                         };
-                        accepted++;
+                        files.push(item.file);
                     }
                 }
             });
-            return [200, { accepted, unpublished: unpublishedOf(t) }];
+            return [200, { accepted: files.length, files, unpublished: unpublishedOf(t) }];
         },
         "GET /api/passkeys": async () => {
             const { main, pending } = await knownKeys();

@@ -673,7 +673,7 @@ describe("serve: review extras", () => {
             project: "compact-mantine",
             component: "badge",
         });
-        expect(one.body).toEqual({ accepted: 1, unpublished: 1 });
+        expect(one.body).toEqual({ accepted: 1, files: ["badge--default.light.png"], unpublished: 1 });
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         expect(Object.keys(body.decisions)).toEqual(["badge--default.light.png"]);
     });
@@ -740,7 +740,8 @@ describe("serve: review extras", () => {
         });
         expect(one.status).toBe(200);
         const all = await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" });
-        expect(all.body).toEqual({ accepted: 3, unpublished: 4 });
+        expect(all.body).toMatchObject({ accepted: 3, unpublished: 4 });
+        expect(all.body.files).toHaveLength(3);
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         expect(body.decisions["badge--default.light.png"]).toMatchObject({ decision: "accept" });
         const target = (await s.api("GET", "/api/target/123")).body.projects[0];
