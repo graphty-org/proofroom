@@ -15,6 +15,8 @@
  * iPad) keeps one request open. POST /api/finish starts it and GET /api/finish-status reports its
  * step, then its result or error, so a reload finds the running Finish. The job is also written
  * to `<tmp>/state/finish.json`, so a server restarted during a Finish says it was interrupted.
+ * POST /api/update runs an update from the default branch (accept.mjs updateFromMaster) the same
+ * way, as the same job, so only one of them runs at a time.
  *
  * Passkeys: once any key is known (passkeys.json on the fetched default branch, or one this server
  * registered whose pull request is not merged yet, `<tmp>/state/passkeys-pending.json`), Finish
@@ -39,6 +41,7 @@
  * kept on disk.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -52,8 +55,11 @@ import {
     commitStatus,
     decisionProblem,
     finish,
+    legacyApprovals,
+    newerOnMaster,
     prepareRecord,
     proposeKey,
+    updateFromMaster,
 } from "./accept.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import {
@@ -93,7 +99,7 @@ const HEADERS = {
 const componentOf = (id) => id.split("--")[0];
 
 const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"]);
-const WRITES = new Set(["decide", "accept-all", "finish", "finish-prepare", "passkey-challenge", "register"]);
+const WRITES = new Set(["decide", "accept-all", "finish", "finish-prepare", "passkey-challenge", "register", "update"]);
 // A registration challenge is good for one use within this long; a prepared approval for this long.
 const CHALLENGE_MS = 5 * 60000;
 const APPROVAL_MS = 10 * 60000;
@@ -264,10 +270,11 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     let finishing = false;
     const jobFile = join(stateDir, "finish.json");
     /**
-     * The newest Finish, kept after it ends so a reload still shows its result.
-     * @type {{ id: number, target: string, pr: number | null, branch: string | null, running: boolean,
-     *     step: string | null, result: object | null, error: string | null, warnings: string[],
-     *     interrupted?: true } | null}
+     * The newest Finish (or update from the default branch, `kind: "update"`), kept after it ends
+     * so a reload still shows its result.
+     * @type {{ id: number, kind?: "update", target: string, pr: number | null, branch: string | null,
+     *     running: boolean, step: string | null, result: object | null, error: string | null,
+     *     warnings: string[], interrupted?: true } | null}
      */
     let job = null;
     try {
@@ -308,7 +315,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
     /**
      * The record each target's Finish was prepared with, waiting for its approval.
      * @type {Map<string, { challenge: string, record: object, work: object, digest: string,
-     *     expires: number }>}
+     *     expires: number, legacy?: { items: object[], drop: string[] } | null }>}
      */
     const approvals = new Map();
     // Fails closed: only a missing file means no pending key; any other failure throws.
@@ -385,12 +392,12 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
 
     /**
      * A target's saved decisions by `<project>/<file>`, each with the hash of the image it was
-     * taken on; `bulk` marks an accept from Accept all that was never opened one by one, `posted`
+     * taken on and of the baseline it was compared with (`base`); `bulk` marks an accept from Accept all that was never opened one by one, `posted`
      * a reject an earlier Finish already commented. A file that is not a decisions file is moved
      * aside, never overwritten, so the owner can still recover what it held.
      * @param {object} t the target
      * @returns {Record<string, { decision: string, reason: string | null, hash: string | null,
-     *     bulk?: true, posted?: true }>} the decisions
+     *     base?: string | null, bulk?: true, posted?: true }>} the decisions
      */
     const readState = (t) => {
         const file = stateFile(t);
@@ -436,19 +443,24 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
 
     /**
      * The decisions that apply to this run: those whose item is in it, with the image the decision
-     * was taken on, and still decidable that way. The others stay in the file.
+     * was taken on and the baseline it was compared with (`base`; a decision saved before it was
+     * kept matches any), and still decidable that way. The others stay in the file. So after the
+     * branch is updated from the default branch and captured again, a story whose capture and
+     * baseline are both unchanged keeps its decision, and one whose baseline moved comes back
+     * undecided.
      * @param {object} t the target
      * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true }>}
      *     by `<project>/<file>`
      */
     const decisionsOf = (t) => {
         const mine = new Map();
-        for (const [k, { hash, ...d }] of Object.entries(readState(t))) {
+        for (const [k, { hash, base, ...d }] of Object.entries(readState(t))) {
             const item = itemOf(t, k);
             const project = k.slice(0, k.indexOf("/"));
             if (
                 item &&
                 imageHash(item) === hash &&
+                (base === undefined || base === (item.baseline ?? null)) &&
                 !decisionProblem(item, d.decision, d.reason ?? null) &&
                 (d.decision === "reject" || acceptable(t, project))
             ) {
@@ -865,10 +877,15 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             ));
         t.mergeMasterFirst = false;
         for (const p of t.projects) {
+            p.newer = [];
             if (!t.local && p.results && base) {
                 const behind = known ? await behindMaster(repo, base, p.project, config).catch(() => null) : null;
                 if (behind !== false && t.mergeMasterFirst !== true) {
                     t.mergeMasterFirst = behind;
+                }
+                // What the review page lists as out of date when the project opens.
+                if (behind && t.pr !== null) {
+                    p.newer = await newerOnMaster(repo, base, p.project, config).catch(() => []);
                 }
             }
         }
@@ -923,7 +940,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 : null,
             defaultBranch,
             // Decisions the next Finish would publish (a reject an earlier Finish posted is not).
-            unpublished: [...decided.values()].filter((d) => !d.posted).length,
+            unpublished: [...decided.values()].filter((d) => !d.posted).length + legacyCount(t),
             warnings,
             signer,
             startCommand,
@@ -973,6 +990,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     notOpened: mine.filter(([, d]) => d.bulk).length,
                     acceptable: acceptable(t, p.project),
                     local: p.results?.local ?? null,
+                    // The default branch's baseline files this capture was not compared with.
+                    newer: p.newer ?? [],
                 };
             }),
         };
@@ -1055,6 +1074,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 .filter((p) => p.undecided > 0)
                 .map((p) => ({ project: p.project, undecided: p.undecided })),
             unloaded,
+            // Approvals from before passkeys a signed Finish signs again, and the unsigned records
+            // it removes.
+            legacy: legacyOf(t) && { files: legacyOf(t).items.length, records: legacyOf(t).drop },
             status: commitStatus({
                 accepted: count("accept"),
                 rejected: count("reject"),
@@ -1080,6 +1102,42 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         undecided: summary(t).projects.reduce((n, p) => n + p.undecided, 0),
         unloaded: t.projects.filter((p) => !p.results).map((p) => p.project),
     });
+
+    /**
+     * A pull request's approvals from before passkeys (legacyApprovals): what a signed Finish
+     * signs again and which unsigned records it removes. Cached per captured head and default
+     * branch tip; null when there are none or they cannot be read here.
+     */
+    const legacyCache = new Map();
+    const legacyOf = (t) => {
+        if (t.local || t.pr === null || !t.headSha) {
+            return null;
+        }
+        const base = `refs/remotes/origin/${defaultBranch}`;
+        let tip;
+        try {
+            tip = execFileSync("git", ["rev-parse", base], { cwd: repo }).toString("utf8").trim();
+        } catch {
+            return null;
+        }
+        const key = `${t.headSha}:${tip}`;
+        if (!legacyCache.has(t.id) || legacyCache.get(t.id).key !== key) {
+            let value = null;
+            try {
+                value = legacyApprovals({ repo, pr: t.pr, head: t.headSha, base: tip, config });
+            } catch (err) {
+                console.error(`visual-review: could not read the approvals of #${t.pr}: ${err.message}`);
+            }
+            legacyCache.set(t.id, { key, value });
+        }
+        return legacyCache.get(t.id).value;
+    };
+    // How many things a signed Finish of the old approvals publishes: the files it signs again,
+    // or, when none are left, the unsigned records it removes.
+    const legacyCount = (t) => {
+        const l = legacyOf(t);
+        return l === null ? 0 : l.items.length || l.drop.length;
+    };
 
     const capturesOf = (t) =>
         Object.fromEntries(
@@ -1163,8 +1221,9 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         }
     }
 
-    // The unpublished count after a write, so the page's Finish button stays current.
-    const unpublishedOf = (t) => finishList(t).list.length;
+    // The unpublished count after a write, so the page's Finish button stays current: the
+    // decisions, plus the files approved before passkeys that a signed Finish signs again.
+    const unpublishedOf = (t) => finishList(t).list.length + legacyCount(t);
 
     /**
      * Where a target's image is on this disk, by results.json.
@@ -1341,7 +1400,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 return [409, { error: `${body.file} is already ${done}: Undo it first to change it` }];
             }
             update(t, (saved) => {
-                saved[key] = { decision: body.decision, reason, hash: imageHash(item) };
+                saved[key] = { decision: body.decision, reason, hash: imageHash(item), base: item.baseline ?? null };
             });
             return [200, { ok: true, unpublished: unpublishedOf(t) }];
         },
@@ -1375,7 +1434,13 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 for (const item of p.results.items) {
                     const key = `${body.project}/${item.file}`;
                     if (inScope(item) && !mine.has(key) && !decisionProblem(item, "accept", null)) {
-                        saved[key] = { decision: "accept", reason: null, bulk: true, hash: imageHash(item) };
+                        saved[key] = {
+                            decision: "accept",
+                            reason: null,
+                            bulk: true,
+                            hash: imageHash(item),
+                            base: item.baseline ?? null,
+                        };
                         accepted++;
                     }
                 }
@@ -1487,6 +1552,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 ];
             }
             const work = finishWork(t);
+            const legacy = legacyOf(t);
             let prepared;
             try {
                 prepared = await prepareRecord({
@@ -1496,6 +1562,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     decisions: work.list,
                     now: new Date(),
                     config,
+                    legacy,
                 });
             } catch (err) {
                 if (err instanceof AcceptError) {
@@ -1508,6 +1575,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 challenge,
                 record: prepared.record,
                 work,
+                legacy,
                 digest: work.digest,
                 expires: Date.now() + APPROVAL_MS,
             });
@@ -1543,6 +1611,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 return [409, { error: CHANGED_SINCE }];
             }
             let approval = null;
+            let legacy = null;
             const { main, trusted } = await knownKeys();
             if (trusted.length > 0) {
                 if (!body.approval) {
@@ -1565,6 +1634,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 approvals.delete(t.id);
                 // The decisions the approved record was built from, not a fresh read of the state.
                 work = p.work;
+                legacy = p.legacy;
                 approval = { record, pendingKeys: main.length > 0 ? [] : trusted, origin };
             }
             const { list, captures, undecided } = work;
@@ -1593,12 +1663,76 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 undecided,
                 unloaded: work.unloaded,
                 config,
-                ...(approval && { approval, now: new Date(approval.record.reviewedAt) }),
+                ...(approval && { approval, legacy, now: new Date(approval.record.reviewedAt) }),
             });
             return [202, { job }];
         },
         "GET /api/finish-status": async () => [200, { job }],
+        // Update from the default branch: a background job like Finish, followed the same way.
+        "POST /api/update": async (_, body) => {
+            const t = await targetOf(String(body.id));
+            if (!t) {
+                return gone(String(body.id));
+            }
+            if (t.local || t.pr === null) {
+                return [403, { error: `only a pull request is updated from ${defaultBranch}` }];
+            }
+            if (finishing) {
+                return [409, { error: "a Finish or an update is already running" }];
+            }
+            finishing = true;
+            job = {
+                id: (job?.id ?? 0) + 1,
+                kind: "update",
+                target: t.id,
+                pr: t.pr,
+                branch: t.branch,
+                running: true,
+                step: "starting",
+                result: null,
+                error: null,
+                warnings: [],
+            };
+            persist(job);
+            runUpdate(job, t);
+            return [202, { job }];
+        },
     };
+
+    /**
+     * Runs one update from the default branch to its end, then refreshes the list so the target
+     * shows the new head waiting for CI. Decisions stay saved and apply again where the new capture
+     * and its baseline are unchanged. It never throws: nothing awaits it.
+     * @param {object} j the job
+     * @param {object} t the target
+     */
+    async function runUpdate(j, t) {
+        console.log(`visual-review: update of #${t.pr} from ${defaultBranch} started`);
+        try {
+            j.result = await updateFromMaster({
+                repo,
+                pr: t.pr,
+                branch: t.branch,
+                config,
+                progress: (step) => {
+                    j.step = step;
+                    persist(j);
+                },
+            });
+            console.log(`visual-review: update of #${t.pr} done: commit ${j.result.commit}`);
+        } catch (err) {
+            j.error = err.message;
+            console.error(`visual-review: update of #${t.pr} failed: ${j.error}`);
+        } finally {
+            j.running = false;
+            j.step = null;
+            finishing = false;
+            persist(j);
+        }
+        if (j.result) {
+            await refresh().catch((err) => console.error(`visual-review: refresh failed: ${err.message}`));
+        }
+    }
 
     /**
      * Runs one Finish to its end, recording its steps and outcome on `j` (and in the log). It

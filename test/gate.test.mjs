@@ -13,6 +13,7 @@ import {
     gatedProjects,
     MAX_THRESHOLD,
     newestResults,
+    reviewGaps,
     seededAt,
     trustFilesChanged,
     unrecordedChanges,
@@ -393,6 +394,35 @@ describe("passkey approvals", () => {
 
     const check = (r, pr = 7) =>
         unrecordedChanges("master", "pr", r.repo, "visual-baselines", { keys: [KEY.entry], pr });
+
+    it("words the same messages from reviewGaps' data as before it was split out, and names the refused records", () => {
+        const r = repoWith(passkeysJson(KEY));
+        const files = { [PATH]: "new image", "visual-baselines/reviews/old.json": { version: 1, items: [] } };
+        for (let i = 0; i < 22; i++) {
+            files[`visual-baselines/compact-mantine/extra-${String(i).padStart(2, "0")}.png`] = `image ${i}`;
+        }
+        commit(r, files);
+        const gaps = reviewGaps("master", "pr", r.repo, "visual-baselines", { keys: [KEY.entry], pr: 7 });
+        expect(gaps.refused).toEqual(["visual-baselines/reviews/old.json"]);
+        expect(gaps.missing).toHaveLength(23);
+        expect(gaps.missing).toContainEqual({ path: PATH, from: LEGACY, to: TO });
+        // The exact lines the gate printed before reviewGaps existed: records first, then at most
+        // twenty files in path order, then the count of the rest.
+        const unrecorded = (p) =>
+            `${p}: changed with no review record taking it from its base branch contents to these`;
+        expect(check(r)).toEqual(
+            [
+                "visual-baselines/reviews/old.json: a version 1 record has no passkey approval; review it again with Face ID",
+                PATH,
+                ...Array.from(
+                    { length: 19 },
+                    (_, i) => `visual-baselines/compact-mantine/extra-${String(i).padStart(2, "0")}.png`,
+                ),
+            ]
+                .map((p, i) => (i === 0 ? p : unrecorded(p)))
+                .concat(["... and 3 more baseline files with no review record"]),
+        );
+    });
 
     it("passes version 1 records while the base has no passkeys.json or no keys", () => {
         for (const passkeys of [undefined, '{ "version": 1, "keys": [] }\n']) {

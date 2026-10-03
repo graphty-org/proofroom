@@ -1,3 +1,18 @@
+## 0.2.3 (2026-10-03)
+
+### 🚀 Features
+
+- **visual-review:** update a pull request from master in one step ([#673](https://github.com/graphty-org/graphty-monorepo/issues/673))
+
+### 🩹 Fixes
+
+- **visual-review:** offer approvals from before passkeys on a branch behind master ([21920e63](https://github.com/graphty-org/graphty-monorepo/commit/21920e63))
+- **visual-review:** sign approvals made before passkeys again from the review page ([2a478234](https://github.com/graphty-org/graphty-monorepo/commit/2a478234))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.2 (2026-10-02)
 
 ### 🚀 Features

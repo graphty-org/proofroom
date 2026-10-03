@@ -19,6 +19,7 @@ your login.
 - [Your first review: seeding baselines](#your-first-review-seeding-baselines)
 - [Opening the review page](#opening-the-review-page), [the screens](#the-screens), [keys](#keys),
   [decisions](#what-each-decision-does), [Finish](#finish), [the passkey](#approving-with-a-passkey)
+- [Updating from the default branch](#updating-from-the-default-branch)
 - [Seeding one story at a time](#seeding-one-story-at-a-time)
 - [Iterating on a story before a pull request exists](#iterating-on-a-story-before-a-pull-request-exists)
 - [Story parameters](#story-parameters)
@@ -293,8 +294,8 @@ downloading captures nobody has opened yet) is said in the status row and never 
    **Results** (count per status), **Decided** ("12 of 40") and **Review**. Projects with nothing
    to review are one line ("3 projects unchanged: ..."). Badges:
     - **merge master first**: the default branch has newer baselines for this project than the
-      pull request. Merge the default branch into the pull request's branch (by merge, never
-      rebase) and wait for CI.
+      pull request. **Update from master** beside it merges the default branch into the pull
+      request's branch for you ([Updating from the default branch](#updating-from-the-default-branch)).
     - **Downloading...**: the captures are still downloading from GitHub. The card says how many
       artifacts and bytes have landed and for how long ("Downloading: 2 of 5 artifacts, 41 MB of
       120 MB, 14 s"), and each row fills in by itself as its own download lands. Pressing it
@@ -308,7 +309,10 @@ downloading captures nobody has opened yet) is said in the status row and never 
     - **Reject only here: accept on a pull request**: this project is not reviewed on the default
       branch (`"seedFromDefaultBranch": false` in the config); its first baselines are accepted on
       a pull request.
-2. **Grid.** A bar that stays at the top: "18 of 170 decided"; **Review 152 undecided**, the main
+2. **Grid.** When the default branch has newer baselines for the project than the capture was
+   compared with, the grid starts with "master has 3 newer compact-mantine baselines since this
+   capture; this review is out of date", the changed files under **Changed on master**, and
+   **Update from master and recapture**. A bar that stays at the top: "18 of 170 decided"; **Review 152 undecided**, the main
    way in, which opens the first undecided item and walks every undecided item; **Needs a
    decision** and **All**, each counted, and **More filters** (each status, and what you
    **Accepted**, **Rejected** and **Excluded**, each counted); **Find story**; **Accept all
@@ -505,6 +509,16 @@ Finish applies every decision on one target, across all its projects, at once:
   unapproved (version 1) record, and both the targets screen ("No passkey registered: accepts
   are not yet protected.") and the Finish sheet ("Not yet protected: ...") say so. Rejects never
   wait for a passkey to be registered.
+- **Approvals from before the passkey.** Once a key is on the default branch, the gate counts
+  those version 1 records for nothing, but the images they accepted are already on the branch, so
+  the page finds nothing to decide. Finish still offers them: its button counts the files those
+  records accepted that no signed record covers, and the sheet says `Sign again N files approved
+before passkeys, and remove N unsigned review records from <branch>`. Your passkey signs a
+  version 2 record taking each of those files from the default branch's contents to the branch's,
+  and the same commit removes the pull request's own unsigned records, which the gate refuses
+  while they are there. Only files an unsigned record of this pull request accepted are signed
+  this way (images, settings files, removals and renames alike); a change nobody reviewed still
+  needs a decision.
 - **One commit status**, "Visual review", posted once when Finish completes (never per
   decision), on the commit Finish pushed, or on the captured commit when it pushed none. It
   fails when anything was rejected, is pending while items are left undecided or a project did
@@ -552,7 +566,9 @@ message:
 
 - **capture is stale, wait for CI**: someone pushed to the branch after the capture. Wait for the
   new CI run, then decide again what still differs.
-- **merge master first**: see the badge above.
+- **merge master first**: the capture is older than the default branch's baselines. The message
+  names the fix, and the result offers **Update from master**
+  ([Updating from the default branch](#updating-from-the-default-branch)).
 - **failed to write commit object** or a signing error: unlock or plug in the signing key, then
   Finish again.
 - **the accepts were pushed ..., but the comment with the rejects failed**: the accepts are done
@@ -634,6 +650,34 @@ administrator past the failing check. Removing every key is refused the same way
 `visual-review/passkeys.json` sits at that path in every repository that uses this tool. It
 holds public keys only: `{ "version": 1, "keys": [{ "id", "publicKey", "rpId", "label",
 "registeredAt" }] }`, with the public key as base64url SubjectPublicKeyInfo (P-256).
+
+## Updating from the default branch
+
+A capture compares a pull request's stories with the baselines on its own branch. When the
+default branch accepts newer baselines for the same project afterwards (another pull request's
+Finish merged), the capture is out of date, and Finish refuses it: committing decisions made
+against old baselines could overwrite the newer ones. A pull request whose branch and the default
+branch changed the same baseline PNGs cannot merge at all. Both are fixed the same way, from the
+page or a terminal:
+
+- **On the page:** **Update from master** on the targets screen (beside "merge master first"), at
+  the top of the project's grid, or in a Finish that refused. It asks first, then runs on the
+  server like Finish, with its steps in the box.
+- **In a terminal:** `npx visual-review update <pull request number>`.
+
+Either way it fetches the default branch and the pull request's branch, merges the default
+branch into the branch with a merge commit (never a rebase, so an accept commit stays as it was
+made), and for every conflicting file under the baselines directory takes the default branch's
+side. The commit names those files, and is signed as your git configuration signs. It pushes to
+the branch, and CI captures again. A conflict anywhere else refuses: it lists the files, and
+nothing is committed or pushed; merge that by hand.
+
+It accepts nothing and writes no review record. The default branch's baselines are already
+approved, and a file that ends up as it is on the default branch is no change for the gate, which
+compares the pull request with its base. Whatever the pull request's capture still shows
+differently from them comes back as `changed`, for you to review. Your decisions carry over: one
+whose story's capture and baseline are both unchanged in the new capture applies again, and only
+the stories that now differ come back undecided.
 
 ## Seeding: one story at a time
 
@@ -723,8 +767,8 @@ the pull request.
   commits, and pushes to the pull request's branch. CI then runs again on that branch.
 - **Nothing restarts from scratch.** Every push captures again and compares with the baselines
   the branch holds now, so after an accept the accepted items read `unchanged` and only what is
-  still undecided shows. Decisions you made but did not Finish are kept for every image whose
-  hash did not change.
+  still undecided shows. Decisions you made but did not Finish are kept for every item whose
+  capture and baseline both have the same hash as when you decided it.
 
 ## Story parameters
 
@@ -882,8 +926,8 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
 - **Finish says "capture is stale, wait for CI".** Someone pushed to the branch after the capture.
   Wait for the new run, then decide again what still differs.
 - **"merge master first".** The default branch has newer baselines for that project than the
-  pull request. Merge the default branch into the branch (by merge, never by rebase, so an accept
-  commit stays as it was made) and wait for CI.
+  pull request. Press **Update from master**, or run `visual-review update <pr>`, and wait for CI
+  ([Updating from the default branch](#updating-from-the-default-branch)).
 - **Finish fails with "failed to write commit object"** or another signing error: unlock or plug
   in your signing key, then press Finish again. Your decisions are kept.
 - **"the accepts were pushed ..., but the comment with the rejects failed".** The accepts are
@@ -920,8 +964,10 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
 - **Opening the seed issue fails.** Every label in `issueLabels` must exist in the repository.
 - **The pnpm setup step fails in CI.** `pnpm/action-setup` reads the pnpm version from the
   `packageManager` field of your root `package.json`; add one.
-- **A merge conflict under the baselines directory.** Take the default branch's side for every
-  file there and let CI capture again; review what still differs.
+- **A merge conflict under the baselines directory.** Run `visual-review update <pr>` (or press
+  **Update from master**): it takes the default branch's side for every conflicting file there,
+  pushes, and CI captures again; review what still differs. It refuses, changing nothing, when
+  anything outside the baselines directory conflicts too.
 - **Captures differ from what you see locally.** Only CI's captures are compared: fonts and the
   graphics stack differ from machine to machine. Look locally with `capture --stories` and
   `serve --results`, but let CI's capture become the baseline.

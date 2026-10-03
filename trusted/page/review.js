@@ -1164,6 +1164,13 @@ function targetCard(t) {
             "p",
             { class: "badges" },
             t.mergeMasterFirst ? el("span", { class: "badge warn" }, "merge master first") : null,
+            t.mergeMasterFirst === true && t.pr !== null && !t.local && !busy
+                ? el(
+                      "button",
+                      { type: "button", class: "update", onclick: () => updateTarget(t) },
+                      `Update from ${branchName(t)}`,
+                  )
+                : null,
             t.local
                 ? el(
                       "span",
@@ -1197,7 +1204,11 @@ function targetCard(t) {
         t.local
             ? null
             : busy
-              ? el("p", { class: "finish-running" }, `Finish is running: ${state.job.step}...`)
+              ? el(
+                    "p",
+                    { class: "finish-running" },
+                    `${isUpdate(state.job) ? `Update from ${branchName(t)}` : "Finish"} is running: ${state.job.step}...`,
+                )
               : el("p", { class: "finish-line" }, ...finishControl(t)),
     );
 }
@@ -1806,6 +1817,7 @@ function showGrid() {
                   "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
               )
             : null,
+        staleBanner(),
         errors.length > 0
             ? el(
                   "details",
@@ -3188,10 +3200,85 @@ async function acceptAll(component) {
     say(`Accepted ${plural(answer.accepted, "item")} in ${where}.`);
 }
 
+// When the default branch has newer baselines for this project than the capture was compared with:
+// the count, the files one click away, and Update from the default branch.
+function staleBanner() {
+    const t = state.data.target;
+    const newer = t.projects.find((p) => p.project === state.project)?.newer ?? [];
+    if (newer.length === 0) {
+        return null;
+    }
+    const master = branchName(t);
+    return el(
+        "section",
+        { class: "card stale", id: "stale" },
+        el(
+            "p",
+            { class: "warning" },
+            `${master} has ${plural(newer.length, `newer ${state.project} baseline`)} since this capture; ` +
+                "this review is out of date. Finish refuses it until the branch has them.",
+        ),
+        el(
+            "details",
+            {},
+            el("summary", {}, `Changed on ${master} (${newer.length})`),
+            el(
+                "ul",
+                {},
+                newer.map((f) => el("li", {}, f)),
+            ),
+        ),
+        el(
+            "p",
+            { class: "offers" },
+            el(
+                "button",
+                { type: "button", class: "primary", id: "update-from-master", onclick: () => updateTarget(t) },
+                `Update from ${master} and recapture`,
+            ),
+        ),
+    );
+}
+
+// Update from the default branch: the server merges it into the pull request's branch, taking its
+// side for every conflicting baseline file, and pushes; the page follows it as it follows Finish.
+// It accepts nothing: CI captures again, and the decisions on stories whose capture and baseline
+// are unchanged apply again.
+async function updateTarget(t) {
+    if (running()) {
+        say("A Finish or an update is running: wait for it to end.");
+        return;
+    }
+    const master = branchName(t);
+    const go = await ask(
+        `Update ${labelOf(t)} from ${master}? This merges ${master} into ${t.branch} with a merge commit and ` +
+            `pushes it. A conflicting file under the baselines takes ${master}'s side; any other conflict stops ` +
+            "it with nothing changed. It accepts nothing: CI captures again, and your decisions on stories " +
+            "whose capture and baseline are unchanged apply again.",
+        `Update ${labelOf(t)}`,
+    );
+    if (!go) {
+        return;
+    }
+    try {
+        state.job = (await api("/api/update", { id: t.id })).job;
+    } catch (err) {
+        say(`Update of ${labelOf(t)} failed: ${err.message}`, true);
+        return;
+    }
+    state.plan = null;
+    state.finishSeen = performance.now();
+    showTargets();
+    await watchFinish();
+}
+
+const isUpdate = (job) => job?.kind === "update";
+const jobLabel = (job) => (job.pr === null ? `${branchName()} seed` : `#${job.pr}`);
+
 // ---------------------------------------------------------------- Finish
 
 const finishing = () =>
-    `Finishing ${state.job.pr === null ? `${branchName()} seed` : `#${state.job.pr}`}: ${state.job.step}...`;
+    `${isUpdate(state.job) ? "Updating" : "Finishing"} ${jobLabel(state.job)}: ${state.job.step}...`;
 
 // What Finish's sheet says it will do, from the server's preview: every line is the server's count.
 function sheet(t, f, prepared, notice) {
@@ -3202,8 +3289,20 @@ function sheet(t, f, prepared, notice) {
         f.accepts > 0 ? plural(f.accepts, "accept") : null,
         f.excludes > 0 ? plural(f.excludes, "exclusion") : null,
     ].filter(Boolean);
+    const legacy = f.legacy && f.legacy.files + f.legacy.records.length > 0 ? f.legacy : null;
+    if (legacy) {
+        // Approved in this pull request before passkeys existed: the gate counts those approvals
+        // for nothing until they are signed.
+        lines.push(
+            `Sign again ${plural(legacy.files, "file")} approved before passkeys, and remove ` +
+                `${plural(legacy.records.length, "unsigned review record")} from ${t.branch}: ` +
+                `${legacy.records.join(", ")}.`,
+        );
+    }
     if (kinds.length === 0) {
-        lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
+        if (!legacy) {
+            lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
+        }
     } else if (seed) {
         const day = new Date().toISOString().slice(0, 10);
         lines.push(
@@ -3335,7 +3434,7 @@ async function finishTarget(id, button) {
         }
         const f = t.finish;
         const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
-        const commits = f.accepts + f.excludes > 0;
+        const commits = f.accepts + f.excludes > 0 || (f.legacy !== null && f.legacy !== undefined);
         // When the server cannot prepare an approval the final button is unavailable, and the sheet
         // says why.
         let approval = null;
@@ -3454,8 +3553,8 @@ async function watchFinish() {
     // that failed keeps the box, as the error; the card below it says what was pushed.
     const job = state.job;
     if (job && (job.error !== null || job.interrupted) && finishBox && !finishBox.ended) {
-        const label = job.pr === null ? `${branchName()} seed` : `#${job.pr}`;
-        finishBox.update({ title: `Finish of ${label} failed`, body: null, detail: "" });
+        const what = isUpdate(job) ? `Update of ${jobLabel(job)}` : `Finish of ${jobLabel(job)}`;
+        finishBox.update({ title: `${what} failed`, body: null, detail: "" });
         finishBox.fail(job.error ?? "it was interrupted", null);
     } else {
         finishBox?.end();
@@ -3482,6 +3581,14 @@ const FINISH_STEPS = [
     ["status", "Posting the status", /^posting the status/],
 ];
 
+// The steps of an update from the default branch.
+const UPDATE_STEPS = [
+    ["fetching", "Fetching", /^(starting|fetching)/],
+    ["merging", "Merging", /^merging/],
+    ["committing", "Committing", /^committing/],
+    ["pushing", "Pushing", /^pushing/],
+];
+
 let finishBox = null; // the wait box following the running Finish
 
 // The running Finish's steps, each marked done, in progress or waiting, with the count of the
@@ -3492,7 +3599,10 @@ function drawFinishPanel() {
         return;
     }
     const plan = state.plan;
-    const steps = FINISH_STEPS.filter(([key]) => {
+    const steps = (isUpdate(state.job) ? UPDATE_STEPS : FINISH_STEPS).filter(([key]) => {
+        if (isUpdate(state.job)) {
+            return true;
+        }
         if (!plan) {
             return key !== "passkey";
         }
@@ -3535,12 +3645,15 @@ function drawFinishPanel() {
             ),
         ),
     );
+    const title = isUpdate(state.job) ? `Updating ${label} from ${branchName()}` : `Finishing ${label}`;
     if (!finishBox || finishBox.ended) {
-        finishBox = block(`Finishing ${label}`, { delay: 0 });
+        finishBox = block(title, { delay: 0 });
     }
     finishBox.update({
-        title: `Finishing ${label}`,
-        text: "Publishing your decisions. Closing or reloading this page does not stop it.",
+        title,
+        text: isUpdate(state.job)
+            ? `Merging ${branchName()} into ${state.job.branch}. Closing or reloading this page does not stop it.`
+            : "Publishing your decisions. Closing or reloading this page does not stop it.",
         body: panel,
         detail: `${Math.max(now, 0)} of ${plural(steps.length, "step")} done`,
         done: Math.max(now, 0),
@@ -3591,6 +3704,18 @@ function finishOutcome() {
         "Dismiss",
     );
     const warnings = (job.warnings ?? []).map((w) => el("p", { class: "warning" }, w));
+    if (isUpdate(job)) {
+        return updateOutcome(job, t, dismiss);
+    }
+    // Finish refuses a capture older than the default branch's baselines: offer the update.
+    const stale =
+        t && /has newer .* baselines/.test(job.error ?? "")
+            ? el(
+                  "button",
+                  { type: "button", class: "primary", onclick: () => updateTarget(t) },
+                  `Update from ${branchName(t)}`,
+              )
+            : null;
     if (job.interrupted || job.error !== null) {
         return el(
             "section",
@@ -3604,7 +3729,7 @@ function finishOutcome() {
             ),
             el("pre", { class: "error" }, job.error),
             warnings,
-            el("p", { class: "offers" }, dismiss),
+            el("p", { class: "offers" }, stale, dismiss),
         );
     }
     const out = job.result;
@@ -3684,6 +3809,57 @@ function finishOutcome() {
         parts,
         warnings,
         el("p", { class: "offers" }, offers),
+    );
+}
+
+// What the newest update from the default branch did: the merge commit, the baselines that took
+// the default branch's side, and the baselines CI now compares again; or why nothing was changed.
+function updateOutcome(job, t, dismiss) {
+    const label = jobLabel(job);
+    const master = branchName();
+    if (job.interrupted || job.error !== null) {
+        return el(
+            "section",
+            { class: "card finish-outcome" },
+            el(
+                "h2",
+                { id: "outcome-heading", tabindex: "-1", class: "error" },
+                `Update of ${label} from ${master} ${job.interrupted ? "was interrupted" : "failed"}.`,
+            ),
+            el("pre", { class: "error" }, job.error),
+            el("p", { class: "offers" }, dismiss),
+        );
+    }
+    const out = job.result;
+    const repo = repoUrl(t?.url);
+    const list = (files) =>
+        el(
+            "ul",
+            {},
+            files.map((f) => el("li", {}, f)),
+        );
+    return el(
+        "section",
+        { class: "card finish-outcome" },
+        el("h2", { id: "outcome-heading", tabindex: "-1" }, `Updated ${label} from ${master}.`),
+        el(
+            "p",
+            {},
+            "Pushed the merge commit ",
+            repo ? link(`${repo}/commit/${out.commit}`, short(out.commit)) : short(out.commit),
+            ` to ${out.branch}. CI captures again; your decisions apply again to every story whose capture and ` +
+                "baseline are unchanged.",
+        ),
+        out.taken.length > 0
+            ? [
+                  el("p", {}, `Took ${master}'s side for ${plural(out.taken.length, "conflicting baseline file")}:`),
+                  list(out.taken),
+              ]
+            : null,
+        out.recapture.length > 0
+            ? [el("p", {}, `Baselines that changed on the branch, compared again:`), list(out.recapture)]
+            : null,
+        el("p", { class: "offers" }, dismiss),
     );
 }
 

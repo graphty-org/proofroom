@@ -20,7 +20,7 @@
  * code (approval.mjs). `proposeKey` opens the pull request that registers a passkey.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -28,6 +28,7 @@ import { dirname, join } from "node:path";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval } from "./approval.mjs";
 import { commentOnPullRequest, createIssue, createPullRequest, exec, postStatus } from "./github.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
+import { reviewGaps } from "../gate.mjs";
 
 /** The statuses an item can be accepted or rejected in; unstable and failed are only excluded. */
 const DECIDABLE = new Set(["changed", "moved", "new", "unseeded", "removed"]);
@@ -103,11 +104,13 @@ export async function lfsProblem(repo) {
 /**
  * The generated commit message.
  * @param {{ pr: number | null, counts: { accept: number, exclude: number, remove: number },
- *     runId: number, runAttempt: number, record: string, prefix: string }} input what the commit
- *     holds, and the conventional-commit type and scope it starts with (`commitPrefix`)
+ *     runId: number, runAttempt: number, record: string, prefix: string,
+ *     legacy?: { items: object[], drop: string[] } | null }} input what the commit holds, the
+ *     conventional-commit type and scope it starts with (`commitPrefix`), and the approvals from
+ *     before passkeys it signs again
  * @returns {string} a conventional commit message
  */
-export function commitMessage({ pr, counts, runId, runAttempt, record, prefix }) {
+export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, legacy = null }) {
     const subject = pr === null ? `${prefix}: seed visual baselines` : `${prefix}: accept visual baselines for #${pr}`;
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     return [
@@ -116,6 +119,12 @@ export function commitMessage({ pr, counts, runId, runAttempt, record, prefix })
         `Accepted in the review page: ${n(counts.accept, "image", "images")}, ` +
             `${n(counts.exclude, "exclusion", "exclusions")}, ${n(counts.remove, "removal", "removals")}.`,
         `Captured by CI run ${runId}, attempt ${runAttempt}.`,
+        ...(legacy
+            ? [
+                  `Signed again: ${n(legacy.items.length, "file", "files")} approved before passkeys.`,
+                  ...legacy.drop.map((d) => `Removed the unsigned record ${d}, which the gate refuses.`),
+              ]
+            : []),
         `Record: ${record}`,
         "",
     ].join("\n");
@@ -200,6 +209,8 @@ function check(projects, decisions) {
  * @param {{ record: object, pendingKeys?: object[], origin: string } | null} [input.approval] the
  *     record prepareRecord built, with the owner's `approval`, the keys registered but not yet on
  *     the default branch, and the page's origin; without it the record is version 1 (no key known)
+ * @param {{ items: object[], drop: string[] } | null} [input.legacy] approvals from before
+ *     passkeys to sign again (only with an approval), as legacyApprovals returns
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, acceptNotes: number, state: string, status: string | null,
  *     statusError: string | null, commentError: string | null }>} what was pushed and posted
@@ -220,10 +231,13 @@ export async function finish({
     progress = () => {},
     config,
     approval = null,
+    legacy = null,
 }) {
     progress("checking");
     const { accepts, rejects } = check(projects, decisions);
-    const first = (accepts[0] ?? rejects[0])?.capture.results;
+    // Approvals from before passkeys are signed again only with a passkey.
+    legacy = approval ? legacy : null;
+    const first = (accepts[0] ?? rejects[0])?.capture.results ?? (legacy && firstCapture(projects));
     if (!first) {
         throw new AcceptError("nothing decided");
     }
@@ -236,7 +250,7 @@ export async function finish({
     let branch = target.branch;
     let pullRequest = null;
     let issue = null;
-    if (accepts.length > 0) {
+    if (accepts.length > 0 || legacy) {
         ({ commit, branch, record } = await commitAccepts({
             repo,
             target,
@@ -247,6 +261,7 @@ export async function finish({
             progress,
             config,
             approval,
+            legacy,
         }));
         if (isMaster) {
             progress("opening the pull request");
@@ -372,6 +387,96 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
 }
 
 /**
+ * Approvals a pull request carries from before passkeys: the review records it added that the
+ * gate refuses (version 1, unsigned), and the baseline changes those records covered that no
+ * counted record accounts for. Uses the gate's own calculation, so a signed Finish covers exactly
+ * the files the gate reports, and only files an earlier review of this pull request accepted --
+ * a change nobody reviewed still has to be decided in the page.
+ * @param {object} input the work
+ * @param {string} input.repo the repository, with the head and the default branch fetched
+ * @param {number | null} input.pr the pull request; null (master) never has any
+ * @param {string} input.head the captured head of the pull request
+ * @param {string} input.base the default branch's tip, as fetched
+ * @param {{ baselines: string }} input.config the settings
+ * @returns {{ items: object[], drop: string[] } | null} the record items to sign (base branch
+ *     contents to head contents) and the refused records to remove, or null when there are none;
+ *     a file the default branch changed after the branch left it is not offered (update the branch)
+ */
+export function legacyApprovals({ repo, pr, head, base, config }) {
+    if (pr === null) {
+        return null;
+    }
+    const run = (args) => execFileSync("git", args, { cwd: repo, maxBuffer: 1 << 26 });
+    let keys;
+    try {
+        keys = parsePasskeys(run(["show", `${base}:${PASSKEYS_FILE}`]).toString("utf8"));
+    } catch {
+        return null; // no key on the default branch: the gate checks no approvals
+    }
+    // From where the branch left the default branch, so the default branch's later changes are not
+    // counted as this pull request's. The gate compares with the default branch's tip, so a file
+    // the default branch changed since then is left out: it needs the branch updated first.
+    let fork;
+    try {
+        fork = run(["merge-base", base, head]).toString("utf8").trim();
+    } catch {
+        return null;
+    }
+    const blob = (ref, path) => {
+        try {
+            return run(["rev-parse", `${ref}:${path}`])
+                .toString("utf8")
+                .trim();
+        } catch {
+            return null;
+        }
+    };
+    const { refused, missing: all } = reviewGaps(fork, head, repo, config.baselines, { keys, pr });
+    const missing = fork === base ? all : all.filter((m) => blob(fork, m.path) === blob(base, m.path));
+    const covered = new Set();
+    const drop = [];
+    for (const path of refused) {
+        let record = null;
+        try {
+            record = JSON.parse(run(["show", `${head}:${path}`]).toString("utf8"));
+        } catch {
+            // unreadable: removed below like any refused record, and it covers nothing
+        }
+        if (record !== null && record.version !== 1) {
+            continue; // only unsigned records from before passkeys are signed again
+        }
+        drop.push(path);
+        for (const item of Array.isArray(record?.items) ? record.items : []) {
+            if (typeof item?.path === "string") {
+                covered.add(item.path);
+            }
+        }
+    }
+    const items = missing
+        .filter((m) => m.path !== PASSKEYS_FILE && covered.has(m.path))
+        .map((m) => ({ path: m.path, from: m.from, to: m.to, reason: "approved before passkeys; signed again" }));
+    return items.length + drop.length > 0 ? { items, drop } : null;
+}
+
+/**
+ * A Finish's record items with the legacy ones added: a file decided in this Finish too keeps its
+ * decision, taken from the base branch's contents (what the gate compares) rather than from the
+ * unsigned approval's.
+ * @param {object[]} items the decided items
+ * @param {{ items: object[] } | null} legacy as legacyApprovals returns
+ * @returns {object[]} the items to record
+ */
+function withLegacy(items, legacy) {
+    if (!legacy) {
+        return items;
+    }
+    const old = new Map(legacy.items.map((i) => [i.path, i]));
+    const out = items.map((i) => (old.has(i.path) ? { ...i, from: old.get(i.path).from } : i));
+    const decided = new Set(items.map((i) => i.path));
+    return [...out, ...legacy.items.filter((i) => !decided.has(i.path))];
+}
+
+/**
  * The version 2 record a Finish of these decisions will commit, without its approval, built before
  * any worktree exists so the owner's device can sign its hash.
  * @param {object} input the work
@@ -381,12 +486,14 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * @param {object[]} input.decisions as in finish
  * @param {Date} input.now the review time, which becomes the record's `reviewedAt`
  * @param {{ baselines: string }} input.config the settings
+ * @param {{ items: object[], drop: string[] } | null} [input.legacy] approvals from before
+ *     passkeys to sign again, as legacyApprovals returns
  * @returns {Promise<{ record: object, accepts: number, excludes: number, rejects: number }>} the
  *     record and what it holds, counted as Finish's commit status counts them
  */
-export async function prepareRecord({ repo, target, projects, decisions, now, config }) {
+export async function prepareRecord({ repo, target, projects, decisions, now, config, legacy = null }) {
     const { accepts, rejects } = check(projects, decisions);
-    const first = (accepts[0] ?? rejects[0])?.capture.results;
+    const first = (accepts[0] ?? rejects[0])?.capture.results ?? (legacy && firstCapture(projects));
     if (!first) {
         throw new AcceptError("nothing decided");
     }
@@ -396,7 +503,15 @@ export async function prepareRecord({ repo, target, projects, decisions, now, co
     }
     const { items } = await planWrites(repo, base, accepts, config.baselines);
     return {
-        record: buildRecord({ version: 2, target, first, items, rejects, now, baselines: config.baselines }),
+        record: buildRecord({
+            version: 2,
+            target,
+            first,
+            items: withLegacy(items, legacy),
+            rejects,
+            now,
+            baselines: config.baselines,
+        }),
         accepts: accepts.filter((a) => a.decision === "accept").length,
         excludes: accepts.filter((a) => a.decision !== "accept").length,
         rejects: rejects.length,
@@ -470,10 +585,22 @@ async function keysAt(repo, ref) {
  * @param {(step: string) => void} input.progress as in finish
  * @param {object} input.config as in finish
  * @param {{ record: object, pendingKeys?: object[], origin: string } | null} input.approval as in finish
+ * @param {{ items: object[], drop: string[] } | null} [input.legacy] as in finish
  * @returns {Promise<{ commit: string, branch: string, record: string | null }>} the pushed commit
  *     and branch, and the record's path (null for a seed pushed earlier and reused)
  */
-async function commitAccepts({ repo, target, accepts, rejects, first, now, progress, config, approval }) {
+async function commitAccepts({
+    repo,
+    target,
+    accepts,
+    rejects,
+    first,
+    now,
+    progress,
+    config,
+    approval,
+    legacy = null,
+}) {
     const { baselines, defaultBranch } = config;
     // Finish fetches into refs of its own, never the remote-tracking refs a page reload fetches
     // into at the same time (two fetches of one ref fail on its lock).
@@ -533,7 +660,8 @@ async function commitAccepts({ repo, target, accepts, rejects, first, now, progr
     for (const project of new Set(accepts.map((a) => a.project))) {
         if (await behindMaster(repo, base, project, config, tracking)) {
             throw new AcceptError(
-                `merge ${defaultBranch} into the branch first: ${defaultBranch} has newer ${project} baselines`,
+                `merge ${defaultBranch} into the branch first: ${defaultBranch} has newer ${project} baselines; ` +
+                    `press "Update from ${defaultBranch}" on the review page, or run \`visual-review update ${target.pr}\``,
             );
         }
     }
@@ -545,7 +673,7 @@ async function commitAccepts({ repo, target, accepts, rejects, first, now, progr
         version: approval ? 2 : 1,
         target,
         first,
-        items: plan.items,
+        items: withLegacy(plan.items, legacy),
         rejects,
         now,
         baselines,
@@ -571,6 +699,16 @@ async function commitAccepts({ repo, target, accepts, rejects, first, now, progr
         for (const f of plan.files) {
             await (f.bytes === null ? rm(join(tree, f.path), { force: true }) : put(join(tree, f.path), f.bytes));
         }
+        // The unsigned records this pull request added count for nothing, and the gate fails while
+        // they are on the branch; the signed record replaces them.
+        for (const path of legacy?.drop ?? []) {
+            if (!path.startsWith(`${baselines}/reviews/`) || (await blobAt(repo, tracking, path)) !== null) {
+                throw new AcceptError(
+                    `${path} is not an unsigned record this pull request added; nothing was committed`,
+                );
+            }
+            await rm(join(tree, path), { force: true });
+        }
         const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
         const record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
         if (approval) {
@@ -595,6 +733,7 @@ async function commitAccepts({ repo, target, accepts, rejects, first, now, progr
             runAttempt: first.runAttempt,
             record,
             prefix: config.commitPrefix,
+            legacy,
         });
         await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
         for (const { path, to } of items) {
@@ -722,6 +861,133 @@ export async function behindMaster(
 }
 
 /**
+ * The files under a project's baselines that the default branch changed since `head` forked from
+ * it: what a capture of `head` was not compared with.
+ * @param {string} repo the repository, with the default branch fetched
+ * @param {string} head the captured head
+ * @param {string} project the project id
+ * @param {{ defaultBranch: string, baselines: string }} config the settings
+ * @param {string} [tracking] the fetched default branch
+ * @returns {Promise<string[]>} the files, relative to the project's baselines directory
+ */
+export async function newerOnMaster(
+    repo,
+    head,
+    project,
+    { defaultBranch, baselines },
+    tracking = `refs/remotes/origin/${defaultBranch}`,
+) {
+    const dir = `${baselines}/${project}/`;
+    const out = await git(repo, ["diff", "--name-only", "--no-renames", `${head}...${tracking}`, "--", dir]);
+    return out
+        .split("\n")
+        .filter(Boolean)
+        .map((p) => p.slice(dir.length));
+}
+
+/**
+ * Update from the default branch: merges it into a pull request's branch (a merge commit, never a
+ * rebase, so an accept commit stays as it was made) and pushes, so CI captures again against the
+ * default branch's baselines. A conflicting file under the baselines directory takes the default
+ * branch's side: its contents there are already approved, and whatever the pull request's capture
+ * still shows differently comes back to the review as changed. Any other conflict refuses, naming
+ * the files, and nothing is committed or pushed.
+ *
+ * It accepts nothing and writes no review record: a baseline that ends up as on the default
+ * branch is no change for the gate, which diffs the pull request against its base.
+ * @param {object} input the work
+ * @param {string} input.repo the repository
+ * @param {number} input.pr the pull request
+ * @param {string} input.branch its branch
+ * @param {{ defaultBranch: string, baselines: string, workDir: string, commitPrefix: string }} input.config
+ *     the settings
+ * @param {(step: string) => void} [input.progress] told each step as it starts
+ * @returns {Promise<{ commit: string, branch: string, taken: string[], recapture: string[] }>} the
+ *     pushed merge commit, the conflicting baseline files that took the default branch's side, and
+ *     the baseline files the branch now has different from before (paths under the baselines
+ *     directory), whose stories CI compares again
+ */
+export async function updateFromMaster({ repo, pr, branch, config, progress = () => {} }) {
+    const { baselines, defaultBranch } = config;
+    const own = (b) => `refs/visual-review/origin/${b}`;
+    const master = own(defaultBranch);
+    try {
+        if (!branch || !(await gitOk(repo, ["check-ref-format", `refs/heads/${branch}`]))) {
+            throw new AcceptError(`no usable branch for #${pr}: ${branch}`);
+        }
+        progress("fetching");
+        for (const b of [defaultBranch, branch]) {
+            await git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${own(b)}`]);
+        }
+        const head = await git(repo, ["rev-parse", own(branch)]);
+        if (await gitOk(repo, ["merge-base", "--is-ancestor", master, head])) {
+            throw new AcceptError(`${branch} already has everything on ${defaultBranch}: nothing to update`);
+        }
+        const tree = join(repo, config.workDir, "worktrees", `update-${pr}`);
+        await removeWorktree(repo, tree);
+        await git(repo, ["worktree", "add", "-q", "--detach", tree, head]);
+        try {
+            progress("merging");
+            let conflicts = [];
+            await git(tree, ["merge", "-q", "--no-ff", "--no-commit", master]).catch(async (err) => {
+                conflicts = (await git(tree, ["diff", "--name-only", "-z", "--diff-filter=U"]))
+                    .split("\0")
+                    .filter(Boolean);
+                if (conflicts.length === 0) {
+                    throw err;
+                }
+            });
+            const outside = conflicts.filter((p) => !p.startsWith(`${baselines}/`));
+            if (outside.length > 0) {
+                throw new AcceptError(
+                    `${branch} conflicts with ${defaultBranch} outside ${baselines}/, so nothing was changed; ` +
+                        `merge ${defaultBranch} into it by hand: ${outside.join(", ")}`,
+                );
+            }
+            for (const path of conflicts) {
+                await ((await gitOk(tree, ["cat-file", "-e", `${master}:${path}`]))
+                    ? git(tree, ["checkout", master, "--", path])
+                    : git(tree, ["rm", "-q", "--", path]));
+            }
+            const recapture = (await git(tree, ["diff", "--cached", "--name-only", "-z", head, "--", `${baselines}/`]))
+                .split("\0")
+                .filter((p) => p && !p.startsWith(`${baselines}/reviews/`));
+            progress("committing");
+            const taken =
+                conflicts.length === 0
+                    ? ["No conflicts."]
+                    : [
+                          `Takes ${defaultBranch}'s side for ${conflicts.length} conflicting baseline ${conflicts.length === 1 ? "file" : "files"}, ` +
+                              "already approved there; CI captures them again and the review shows what still differs:",
+                          "",
+                          ...conflicts.map((p) => `- ${p}`),
+                      ];
+            const message = [
+                `${config.commitPrefix}: merge ${defaultBranch} into ${branch} for visual review`,
+                "",
+                `Updates #${pr} from ${defaultBranch} (visual-review update). It accepts nothing.`,
+                ...taken,
+                "",
+            ].join("\n");
+            await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
+            progress("pushing");
+            await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]).catch((err) => {
+                throw /\[rejected\].*\((fetch first|non-fast-forward)\)/.test(err.message)
+                    ? new AcceptError(`${branch} moved while it was being updated; nothing was pushed: update again`)
+                    : err;
+            });
+            return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, taken: conflicts, recapture };
+        } finally {
+            await removeWorktree(repo, tree).catch((err) =>
+                console.error(`visual-review: could not remove the update worktree ${tree}: ${err.message}`),
+            );
+        }
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    }
+}
+
+/**
  * What the decisions write, computed from the captured commit, never from a worktree: prepareRecord
  * and the commit both use it, so the record approved and the record committed cannot drift.
  * @param {string} repo the repository
@@ -794,6 +1060,9 @@ const blobAt = (repo, ref, path) =>
             resolve(err ? null : out),
         ),
     );
+
+// The results.json a Finish with nothing decided reports on: its first loaded project's.
+const firstCapture = (projects) => Object.values(projects).find((p) => p?.results)?.results ?? null;
 
 // Two modes of one story excluded together write one settings file: keep one record item.
 const dedupe = (items) => [...new Map(items.map((i) => [i.path, i])).values()];

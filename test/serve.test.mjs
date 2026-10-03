@@ -178,6 +178,27 @@ describe("serve: pull requests", () => {
         expect(body.targets[0].mergeMasterFirst).toBe(true);
     });
 
+    it("lists, when a project opens, the baselines master changed since its capture", async () => {
+        const r = makeRepo();
+        pushCommit(r.remote, "master", "visual-baselines/compact-mantine/other.png");
+        pushCommit(r.remote, "master", "visual-baselines/compact-mantine/button--primary.dark.png");
+        const s = await start({ ...r, gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const newer = Object.fromEntries(body.target.projects.map((p) => [p.project, p.newer]));
+        expect(newer).toEqual({
+            "compact-mantine": ["button--primary.dark.png", "other.png"],
+            "graphty-element": [],
+        });
+    });
+
+    it("lists nothing as newer when the branch has master's baselines", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.target.projects.map((p) => p.newer)).toEqual([[], []]);
+    });
+
     it("returns a project's items and its decisions", async () => {
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
@@ -186,6 +207,82 @@ describe("serve: pull requests", () => {
         expect(body.items).toHaveLength(7);
         expect(body.acceptable).toBe(true);
         expect(body.decisions).toEqual({});
+    });
+});
+
+describe("serve: update from master", () => {
+    it("merges master into the branch as a background job, then lists the new head", async () => {
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => out.mockRestore());
+        const r = makeRepo();
+        pushCommit(r.remote, "master", "visual-baselines/compact-mantine/other.png");
+        const s = await start({ ...r, gh: onePr() });
+        expect((await s.api("GET", "/api/prs")).body.targets[0].mergeMasterFirst).toBe(true);
+        const begun = await s.api("POST", "/api/update", { id: "123" });
+        expect(begun.status).toBe(202);
+        expect(begun.body.job).toMatchObject({ kind: "update", target: "123", pr: 123, running: true });
+        const job = await endedJob(s);
+        expect(job.error).toBeNull();
+        expect(job.result).toMatchObject({
+            commit: git(r.remote, "rev-parse", "feature"),
+            branch: "feature",
+            taken: [],
+            recapture: ["visual-baselines/compact-mantine/other.png"],
+        });
+        expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.head);
+    });
+
+    it("refuses a second job, and fails on a branch that already has master", async () => {
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => {
+            err.mockRestore();
+            out.mockRestore();
+        });
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        expect((await s.api("POST", "/api/update", { id: "123" })).status).toBe(202);
+        expect(await s.api("POST", "/api/update", { id: "123" })).toMatchObject({
+            status: 409,
+            body: { error: "a Finish or an update is already running" },
+        });
+        // The branch already has master: the job fails and says so.
+        expect((await endedJob(s)).error).toBe("feature already has everything on master: nothing to update");
+    });
+
+    it("keeps a decision whose capture and baseline are unchanged in the new run, and drops one whose baseline moved", async () => {
+        let second = false;
+        const s = await start({
+            gh: (r) => {
+                const first = onePr()(r);
+                const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+                // The new run: master's newer baseline of slider--sizes, the same captures.
+                const items = fixture.items.map((i) =>
+                    i.file === "slider--sizes.png" ? { ...i, baseline: "f".repeat(64) } : i,
+                );
+                const at = { commit: r.head, headSha: r.head, runId: 1001 };
+                const next = onePr({
+                    runs: { [r.head]: { id: 1001, head: r.head, attempt: 1 } },
+                    jobs: { 1001: [job("compact-mantine"), job("graphty-element")] },
+                    artifacts: { 1001: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+                    results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at },
+                })(r);
+                return (args, input) => (second ? next : first)(args, input);
+            },
+        });
+        await s.api("GET", "/api/prs");
+        const decide = (file, decision, reason) =>
+            s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
+        expect((await decide("button--primary.dark.png", "accept")).status).toBe(200);
+        expect((await decide("slider--sizes.png", "accept")).status).toBe(200);
+        expect((await decide("badge--default.light.png", "reject", "too wide")).status).toBe(200);
+        second = true;
+        expect((await s.api("GET", "/api/prs")).body.targets[0].runId).toBe(1001);
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.decisions).toEqual({
+            "button--primary.dark.png": { decision: "accept", reason: null },
+            "badge--default.light.png": { decision: "reject", reason: "too wide" },
+        });
     });
 });
 

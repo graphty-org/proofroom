@@ -5,7 +5,15 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { contentHash, unrecordedChanges } from "../trusted/gate.mjs";
-import { commitMessage, finish, lfsProblem, prepareRecord, proposeKey, rejectComment } from "../trusted/lib/accept.mjs";
+import {
+    commitMessage,
+    finish,
+    legacyApprovals,
+    lfsProblem,
+    prepareRecord,
+    proposeKey,
+    rejectComment,
+} from "../trusted/lib/accept.mjs";
 import { parsePasskeys, recordHash, verifyRecord } from "../trusted/lib/approval.mjs";
 import { isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
 import { CONFIG, copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
@@ -355,7 +363,9 @@ describe("finish: refusals", () => {
     it("refuses when master has a baseline commit the captured head lacks", async () => {
         const s = setup();
         pushCommit(s.remote, "master", "visual-baselines/compact-mantine/other.png");
-        await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(/merge master into the branch first/);
+        await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(
+            'merge master into the branch first: master has newer compact-mantine baselines; press "Update from master" on the review page, or run `visual-review update 123`',
+        );
     });
 
     it("ignores master's baseline commits for another project", async () => {
@@ -625,6 +635,136 @@ describe("finish and the gate's record check", () => {
             `visual-baselines/compact-mantine/button--primary.json: ${why}`,
             `visual-baselines/compact-mantine/slider--sizes.json: ${why}`,
         ]);
+    });
+});
+
+describe("finish: approvals from before passkeys", () => {
+    const KEY = makeKey();
+    const ORIGIN = "https://dev.ato.ms:9443";
+    const PNG = "visual-baselines/compact-mantine/card--legacy.png";
+    const UNREVIEWED = "visual-baselines/compact-mantine/tooltip--hover.png";
+    const OLD = "visual-baselines/reviews/20260901T000000Z-pr123.json";
+    const gate = (s) =>
+        unrecordedChanges(s.master, "origin/feature", s.repo, "visual-baselines", { keys: [KEY.entry], pr: 123 });
+
+    /**
+     * master with the key, and `feature` holding master plus an accept made before passkeys: a
+     * changed PNG with a version 1 record, and a second changed PNG nobody reviewed.
+     * @param {{ keys?: boolean, merged?: boolean }} [opts] leave the key off master, or leave
+     *     master's key commit out of the branch
+     * @returns {object} the repository, master's and the branch's shas, and the captured projects
+     */
+    function legacySetup({ keys = true, merged = true } = {}) {
+        const r = makeRepo();
+        if (keys) {
+            mkdirSync(join(r.repo, "visual-review"), { recursive: true });
+            writeFileSync(join(r.repo, "visual-review/passkeys.json"), passkeysJson(KEY));
+            git(r.repo, "add", "-A");
+            git(r.repo, "commit", "-q", "-m", "keys");
+            git(r.repo, "push", "-q", "origin", "master");
+        }
+        const master = git(r.repo, "rev-parse", "HEAD");
+        git(r.repo, "checkout", "-q", "feature");
+        if (merged) {
+            git(r.repo, "merge", "-q", "--no-edit", "master");
+        }
+        writeFileSync(join(r.repo, PNG), "re-rendered before passkeys");
+        writeFileSync(join(r.repo, UNREVIEWED), "changed, never reviewed");
+        mkdirSync(join(r.repo, "visual-baselines/reviews"), { recursive: true });
+        writeFileSync(
+            join(r.repo, OLD),
+            JSON.stringify({ version: 1, unproven: true, pr: 123, items: [{ path: PNG, from: "x", to: "y" }] }),
+        );
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "accept before passkeys");
+        git(r.repo, "push", "-q", "origin", "feature");
+        const head = git(r.repo, "rev-parse", "HEAD");
+        git(r.repo, "checkout", "-q", "master");
+        const at = { commit: head, headSha: head };
+        const projects = {
+            "compact-mantine": copyFixture("compact-mantine", join(r.dir, "art/compact-mantine"), at),
+        };
+        return { ...r, master, head, projects };
+    }
+
+    it("finds only the files the unsigned record accepted, and that record", () => {
+        const s = legacySetup();
+        const legacy = legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG });
+        expect(legacy.drop).toEqual([OLD]);
+        expect(legacy.items.map((i) => i.path)).toEqual([PNG]);
+        expect(legacyApprovals({ repo: s.repo, pr: null, head: s.head, base: s.master, config: CONFIG })).toBeNull();
+    });
+
+    it("offers nothing while master holds no key", () => {
+        const s = legacySetup({ keys: false });
+        expect(legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG })).toBeNull();
+    });
+
+    it("on a branch behind master, offers the files master has not changed since, and only those", () => {
+        const s = legacySetup({ merged: false });
+        const offered = () => legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG });
+        // master's later commit (the key) is not counted as the branch's change.
+        expect(offered()).toMatchObject({ drop: [OLD], items: [{ path: PNG }] });
+        // Once master changes the file too, signing it from the fork point would not match what
+        // the gate compares with: the branch has to be updated first.
+        writeFileSync(join(s.repo, PNG), "changed on master later");
+        git(s.repo, "commit", "-q", "-am", "master moves");
+        s.master = git(s.repo, "rev-parse", "HEAD");
+        expect(offered()).toEqual({ drop: [OLD], items: [] });
+    });
+
+    it("signs them with nothing decided, removes the unsigned record, and the gate reports only the unreviewed change", async () => {
+        const s = legacySetup();
+        const legacy = legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG });
+        const why = "changed with no review record taking it from its base branch contents to these";
+        git(s.repo, "fetch", "-q", "origin");
+        expect(gate(s)).toEqual([
+            `${OLD}: a version 1 record has no passkey approval; review it again with Face ID`,
+            `${PNG}: ${why}`,
+            `${UNREVIEWED}: ${why}`,
+        ]);
+        const target = { pr: 123, branch: "feature" };
+        const { record } = await prepareRecord({
+            repo: s.repo,
+            target,
+            projects: s.projects,
+            decisions: [],
+            now: NOW,
+            config: CONFIG,
+            legacy,
+        });
+        expect(record.items).toEqual(legacy.items);
+        const approval = { record: { ...record, approval: approve(record, KEY, { origin: ORIGIN }) }, origin: ORIGIN };
+        // Without an approval nothing is signed again: an unsigned Finish of nothing is refused.
+        await expect(
+            finish({
+                repo: s.repo,
+                gh: async () => "{}",
+                target,
+                projects: s.projects,
+                decisions: [],
+                now: NOW,
+                config: CONFIG,
+                legacy,
+            }),
+        ).rejects.toThrow("nothing decided");
+        await finish({
+            repo: s.repo,
+            gh: async () => "{}",
+            target,
+            projects: s.projects,
+            decisions: [],
+            now: NOW,
+            config: CONFIG,
+            approval,
+            legacy,
+        });
+        git(s.repo, "fetch", "-q", "origin");
+        expect(spawnSync("git", ["cat-file", "-e", `origin/feature:${OLD}`], { cwd: s.repo }).status).not.toBe(0);
+        const message = git(s.remote, "log", "-1", "--format=%B", "feature");
+        expect(message).toContain("Signed again: 1 file approved before passkeys.");
+        expect(message).toContain(`Removed the unsigned record ${OLD}, which the gate refuses.`);
+        expect(gate(s)).toEqual([`${UNREVIEWED}: ${why}`]);
     });
 });
 
