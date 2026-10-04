@@ -720,7 +720,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             const ref = (b) => `+refs/heads/${b}:refs/remotes/origin/${b}`;
             const logFetch = (what) => (err) => {
                 console.error(`visual-review: git fetch of ${what} failed: ${err.message}`);
-                listWarnings.push(`git fetch of ${what} failed, so "merge master first" may be wrong: ${err.message}`);
+                listWarnings.push(`git fetch of ${what} failed, so "behind master" may be wrong: ${err.message}`);
             };
             const fetched = (async () => {
                 if (finishing) {
