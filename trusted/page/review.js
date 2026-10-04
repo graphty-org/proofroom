@@ -2605,12 +2605,14 @@ async function renderStage(item, view, keep) {
                 const frame = figure.querySelector(".frame");
                 try {
                     const img = await imgOf(kind);
+                    // With Focus on, an image is put in its pane only once its focus point is known,
+                    // so it appears framed, never at the top left and then jumping. shown() works it
+                    // out for the next item ahead, so after a decision this rarely waits.
+                    const at = state.focus && !keep ? await focusBox(item).catch(() => null) : null;
                     if (seq === stageRender) {
                         frame.replaceChildren(el("div", { class: "sheet" }, img));
                         fit(stage);
-                        // Known ahead (shown() works out the next item's), so it appears framed.
-                        const at = focusBoxes.get(focusKey(item));
-                        if (state.focus && at && !keep) {
+                        if (at) {
                             center(stage, at);
                         }
                     }
