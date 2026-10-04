@@ -643,7 +643,21 @@ describe("finish when master has newer baselines", () => {
             return null;
         }
         const tree = merged.stdout.split("\n")[0];
-        return git(s.remote, "-c", "user.name=Q", "-c", "user.email=q@example.com", "commit-tree", tree, "-p", "master", "-p", "feature", "-m", "merge master");
+        return git(
+            s.remote,
+            "-c",
+            "user.name=Q",
+            "-c",
+            "user.email=q@example.com",
+            "commit-tree",
+            tree,
+            "-p",
+            "master",
+            "-p",
+            "feature",
+            "-m",
+            "merge master",
+        );
     };
 
     it("records the decisions when master changed other stories, and the gate accepts them merged", async () => {
@@ -662,9 +676,24 @@ describe("finish when master has newer baselines", () => {
         }).trim();
         const index = { ...process.env, GIT_INDEX_FILE: join(s.dir, "forge.index") };
         execFileSync("git", ["read-tree", merged], { cwd: s.remote, env: index });
-        execFileSync("git", ["update-index", "--cacheinfo", `100644,${forged},${BUTTON}`], { cwd: s.remote, env: index });
+        execFileSync("git", ["update-index", "--cacheinfo", `100644,${forged},${BUTTON}`], {
+            cwd: s.remote,
+            env: index,
+        });
         const tree = execFileSync("git", ["write-tree"], { cwd: s.remote, env: index, encoding: "utf8" }).trim();
-        const bad = git(s.remote, "-c", "user.name=F", "-c", "user.email=f@example.com", "commit-tree", tree, "-p", master, "-m", "forge");
+        const bad = git(
+            s.remote,
+            "-c",
+            "user.name=F",
+            "-c",
+            "user.email=f@example.com",
+            "commit-tree",
+            tree,
+            "-p",
+            master,
+            "-m",
+            "forge",
+        );
         expect(unrecordedChanges(master, bad, s.remote)).toEqual([
             `${BUTTON}: changed with no review record taking it from its base branch contents to these`,
         ]);
