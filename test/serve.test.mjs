@@ -628,6 +628,126 @@ describe("serve: local results", () => {
     });
 });
 
+describe("serve: local previews of a pull request", () => {
+    /**
+     * Writes a local preview of one project as tools/visual-preview.sh leaves it.
+     * @param {string} previews the previews directory
+     * @param {string} project the fixture project
+     * @param {string} head the pull request head it captured
+     * @param {object} [extra] more results.json fields
+     * @returns {{ dir: string, results: object }} the copy
+     */
+    const preview = (previews, project, head, extra = {}) =>
+        copyFixture(project, join(previews, "123", project), {
+            commit: "3".repeat(40),
+            headSha: head,
+            pr: 123,
+            runId: null,
+            runAttempt: null,
+            local: {
+                describe: "abc1234-dirty",
+                diff: "0".repeat(64),
+                preview: { merge: "3".repeat(40), host: "devbox", tool: "test" },
+            },
+            ...extra,
+        });
+    // #123 with no CI run yet.
+    const noRun = (r) => fakeGh({ prs: [{ number: 123, head: r.head, branch: "feature" }] });
+    const decide = (s, file, decision, reason, project = "compact-mantine") =>
+        s.api("POST", "/api/decide", { id: "123", project, file, decision, reason });
+
+    it("lists a complete preview of the head while CI is pending, and never one of an older head or an ad hoc capture", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        preview(previews, "graphty-element", "4".repeat(40));
+        const s = await start({ ...r, gh: noRun, previews });
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        const [cm, ge] = t.projects;
+        expect(cm).toMatchObject({ preview: true, acceptable: true, reviewable: 6, problem: null });
+        expect(ge).toMatchObject({ preview: false, problem: `waiting for CI on ${r.head.slice(0, 10)}` });
+        expect(t.headSha).toBe(r.head);
+
+        // A capture without the preview's provenance (an ad hoc `capture --stories`) stays look only.
+        const adhoc = join(r.dir, "adhoc");
+        preview(adhoc, "compact-mantine", r.head, {
+            pr: null,
+            headSha: null,
+            local: { describe: "x", diff: "0".repeat(64) },
+        });
+        const other = await start({ ...r, gh: noRun, previews: adhoc });
+        expect((await other.api("GET", "/api/prs")).body.targets[0].projects[0].preview).toBe(false);
+    });
+
+    it("decides and finishes on a preview, and the record and commit say it was captured locally", async () => {
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => out.mockRestore());
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        const s = await start({ ...r, gh: noRun, previews });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const sheet = (await s.api("GET", "/api/target/123?finish=1")).body.finish;
+        expect(sheet.previews).toEqual(["compact-mantine"]);
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        expect(git(s.remote, "rev-parse", "feature~1")).toBe(s.head);
+        const message = git(s.remote, "log", "-1", "--format=%B", "feature");
+        expect(message).toMatch(/Captured locally at 3{40} \(compact-mantine\)/);
+        const path = /Record: (\S+)/.exec(message)[1];
+        const record = JSON.parse(git(s.remote, "show", `feature:${path}`));
+        expect(record.subject).toMatchObject({
+            head: r.head,
+            runId: null,
+            runAttempt: null,
+            local: [{ project: "compact-mantine", merge: "3".repeat(40), host: "devbox", tool: "test" }],
+        });
+        expect(record.items).toEqual([
+            expect.objectContaining({ path: "visual-baselines/compact-mantine/badge--default.light.png", from: null }),
+        ]);
+    });
+
+    it("carries decisions over to CI's capture where its bytes are identical, and shows a differing image undecided", async () => {
+        // The made-up hash of CI's slider--sizes has no such bytes on disk: its thumbnail says so.
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => err.mockRestore());
+        let ci = false;
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        // CI draws slider--sizes differently from the preview; everything else byte for byte.
+        const items = fixture.items.map((i) =>
+            i.file === "slider--sizes.png" ? { ...i, capture: "e".repeat(64) } : i,
+        );
+        const at = { commit: r.head, headSha: r.head };
+        const s = await start({
+            ...r,
+            previews,
+            gh: (repo) => {
+                const before = noRun(repo);
+                const after = onePr({
+                    results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at },
+                })(repo);
+                return (args, input) => (ci ? after : before)(args, input);
+            },
+        });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        expect((await decide(s, "slider--sizes.png", "accept")).status).toBe(200);
+        expect((await decide(s, "card--legacy.png", "reject", "keep the card")).status).toBe(200);
+        ci = true;
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.runId).toBe(1000);
+        expect(t.projects[0]).toMatchObject({ preview: false, decided: 2, undecided: 4 });
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
+            "button--primary.dark.png": { decision: "accept", reason: null },
+            "card--legacy.png": { decision: "reject", reason: "keep the card" },
+        });
+    });
+});
+
 describe("serve: review extras", () => {
     const decide = (s, file, decision, reason, project = "compact-mantine") =>
         s.api("POST", "/api/decide", { id: "123", project, file, decision, reason });

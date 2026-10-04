@@ -104,13 +104,13 @@ export async function lfsProblem(repo) {
 /**
  * The generated commit message.
  * @param {{ pr: number | null, counts: { accept: number, exclude: number, remove: number },
- *     runId: number, runAttempt: number, record: string, prefix: string,
- *     legacy?: { items: object[], drop: string[] } | null }} input what the commit holds, the
- *     conventional-commit type and scope it starts with (`commitPrefix`), and the approvals from
- *     before passkeys it signs again
+ *     runId: number | null, runAttempt: number | null, record: string, prefix: string,
+ *     legacy?: { items: object[], drop: string[] } | null, local?: object[] }} input what the commit
+ *     holds, the conventional-commit type and scope it starts with (`commitPrefix`), the approvals
+ *     from before passkeys it signs again, and the projects captured by a local preview
  * @returns {string} a conventional commit message
  */
-export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, legacy = null }) {
+export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, legacy = null, local = [] }) {
     const subject = pr === null ? `${prefix}: seed visual baselines` : `${prefix}: accept visual baselines for #${pr}`;
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     return [
@@ -118,7 +118,12 @@ export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, l
         "",
         `Accepted in the review page: ${n(counts.accept, "image", "images")}, ` +
             `${n(counts.exclude, "exclusion", "exclusions")}, ${n(counts.remove, "removal", "removals")}.`,
-        `Captured by CI run ${runId}, attempt ${runAttempt}.`,
+        ...(local.length > 0
+            ? [
+                  `Captured locally at ${local[0].merge} (${local.map((l) => l.project).join(", ")}).`,
+                  "CI checks it; anything CI draws differently comes back to review.",
+              ]
+            : [`Captured by CI run ${runId}, attempt ${runAttempt}.`]),
         ...(legacy
             ? [
                   `Signed again: ${n(legacy.items.length, "file", "files")} approved before passkeys.`,
@@ -163,13 +168,37 @@ export function decisionProblem(item, decision, reason) {
 export const cleanReason = (r) => (typeof r === "string" && r.trim() !== "" ? r.trim().slice(0, 2000) : null);
 
 /**
+ * Whether a capture is a local preview of this pull request's merge tree (tools/visual-preview.sh):
+ * decidable like a CI capture, and checked by CI's own capture at the gate. An ad hoc local
+ * capture (no `local.preview`) and a preview of another pull request are not.
+ * @param {object} r the results.json
+ * @param {number | null} pr the pull request being finished; null (master) takes none
+ * @returns {boolean} whether it is
+ */
+export const isPreviewOf = (r, pr) => pr !== null && Boolean(r.local?.preview) && r.pr === pr && r.headSha !== null;
+
+/**
+ * The projects of the decided captures that came from a local preview, for the record's
+ * `subject.local` and the commit message.
+ * @param {object[]} decided the checked accepts and rejects
+ * @param {number | null} pr the pull request
+ * @returns {{ project: string, merge: string, host: string, tool: string }[]} by project
+ */
+const previewsOf = (decided, pr) =>
+    [...new Map(decided.map((d) => [d.project, d.capture.results])).entries()]
+        .filter(([, r]) => isPreviewOf(r, pr))
+        .map(([project, r]) => ({ project, ...r.local.preview }))
+        .sort((a, b) => a.project.localeCompare(b.project));
+
+/**
  * Checks every decision against its results.json and sorts it into accepts and rejects.
  * @param {Record<string, { dir: string, results: object }>} projects the captures, by project
  * @param {{ project: string, file: string, decision: string, reason: string | null }[]} decisions
  *     the owner's decisions
+ * @param {number | null} pr the pull request being finished (null for master)
  * @returns {{ accepts: object[], rejects: object[] }} each with its results item attached
  */
-function check(projects, decisions) {
+function check(projects, decisions, pr) {
     const accepts = [];
     const rejects = [];
     for (const d of decisions) {
@@ -178,8 +207,11 @@ function check(projects, decisions) {
         if (!item) {
             throw new AcceptError(`${d.project}/${d.file} is not in this capture`);
         }
-        if (capture.results.local !== null || capture.results.runId === null) {
-            throw new AcceptError(`${d.project} is a local preview, not acceptable: only CI captures are`);
+        const preview = isPreviewOf(capture.results, pr);
+        if (!preview && (capture.results.local !== null || capture.results.runId === null)) {
+            throw new AcceptError(
+                `${d.project} is a local capture, not acceptable: only CI captures and local previews of this pull request are`,
+            );
         }
         const reason = cleanReason(d.reason);
         const problem = decisionProblem(item, d.decision, reason);
@@ -234,7 +266,7 @@ export async function finish({
     legacy = null,
 }) {
     progress("checking");
-    const { accepts, rejects } = check(projects, decisions);
+    const { accepts, rejects } = check(projects, decisions, target.pr);
     // Approvals from before passkeys are signed again only with a passkey.
     legacy = approval ? legacy : null;
     const first = (accepts[0] ?? rejects[0])?.capture.results ?? (legacy && firstCapture(projects));
@@ -492,7 +524,7 @@ function withLegacy(items, legacy) {
  *     record and what it holds, counted as Finish's commit status counts them
  */
 export async function prepareRecord({ repo, target, projects, decisions, now, config, legacy = null }) {
-    const { accepts, rejects } = check(projects, decisions);
+    const { accepts, rejects } = check(projects, decisions, target.pr);
     const first = (accepts[0] ?? rejects[0])?.capture.results ?? (legacy && firstCapture(projects));
     if (!first) {
         throw new AcceptError("nothing decided");
@@ -507,6 +539,7 @@ export async function prepareRecord({ repo, target, projects, decisions, now, co
             version: 2,
             target,
             first,
+            local: previewsOf([...accepts, ...rejects], target.pr),
             items: withLegacy(items, legacy),
             rejects,
             now,
@@ -524,13 +557,15 @@ export async function prepareRecord({ repo, target, projects, decisions, now, co
  * @param {1 | 2} input.version 1 while no passkey is known, 2 for an approved record
  * @param {{ pr: number | null }} input.target the pull request, or null for master
  * @param {object} input.first the results.json of the first decided project
+ * @param {object[]} [input.local] the decided projects a local preview captured: then the record
+ *     names no CI run, and `subject.local` lists them
  * @param {object[]} input.items the record items planWrites made
  * @param {object[]} input.rejects the checked rejects
  * @param {Date} input.now the review time
  * @param {string} input.baselines the baselines directory
  * @returns {object} the record, without `approval`
  */
-function buildRecord({ version, target, first, items, rejects, now, baselines }) {
+function buildRecord({ version, target, first, local = [], items, rejects, now, baselines }) {
     const byPath = (a, b) => a.path.localeCompare(b.path);
     return {
         version,
@@ -539,10 +574,11 @@ function buildRecord({ version, target, first, items, rejects, now, baselines })
         subject: {
             builtMerge: first.commit,
             head: first.headSha,
-            runId: first.runId,
-            runAttempt: first.runAttempt,
+            runId: local.length > 0 ? null : first.runId,
+            runAttempt: local.length > 0 ? null : first.runAttempt,
             environment: first.environment,
             scale: first.scale ?? 1,
+            ...(local.length > 0 && { local }),
         },
         items: dedupe(items).sort(byPath),
         ...(version === 2 && {
@@ -613,10 +649,14 @@ async function commitAccepts({
         throw new AcceptError(lfs);
     }
     const base = isMaster ? first.commit : first.headSha;
+    // One head: CI's projects of one run, or (on a pull request) local previews of the same head.
+    const sameRun = (r) => r.runId === first.runId || isPreviewOf(r, target.pr) || isPreviewOf(first, target.pr);
     for (const { capture } of accepts) {
         const r = capture.results;
-        if ((isMaster ? r.commit : r.headSha) !== base || r.runId !== first.runId) {
-            throw new AcceptError("the projects of one Finish must come from one CI run");
+        if ((isMaster ? r.commit : r.headSha) !== base || !sameRun(r)) {
+            throw new AcceptError(
+                "the projects of one Finish must come from one CI run, or one head of the pull request",
+            );
         }
     }
     const branch = isMaster ? `visual/seed-${now.toISOString().slice(0, 10)}` : target.branch;
@@ -665,10 +705,12 @@ async function commitAccepts({
     // The items come from the captured commit, as prepareRecord's did: the record built here must
     // hash to exactly what the owner approved.
     const plan = await planWrites(repo, base, writes, baselines);
+    const local = previewsOf([...accepts, ...rejects], target.pr);
     const body = buildRecord({
         version: approval ? 2 : 1,
         target,
         first,
+        local,
         items: withLegacy(plan.items, legacy),
         rejects,
         now,
@@ -730,6 +772,7 @@ async function commitAccepts({
             record,
             prefix: config.commitPrefix,
             legacy,
+            local,
         });
         await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
         for (const { path, to } of items) {
@@ -1116,7 +1159,7 @@ export function rejectComment(pr, results, rejects, notes, branch, about = {}) {
         notes.length > 0 ? `${notes.length} accepted with a note` : null,
     ].filter(Boolean);
     const lines = [
-        `**Visual review: ${counts.join(", ")}** (CI run ${results.runId}, ${pr === null ? `${branch} at` : "head"} ${head.slice(0, 10)}).`,
+        `**Visual review: ${counts.join(", ")}** (${results.runId === null ? "local preview" : `CI run ${results.runId}`}, ${pr === null ? `${branch} at` : "head"} ${head.slice(0, 10)}).`,
     ];
     if (items.length > 0) {
         lines.push(
