@@ -65,7 +65,7 @@ header {
     gap: 10px;
     align-items: center;
     min-height: 3.15em;
-    padding: max(4px, env(safe-area-inset-top)) 16px 4px;
+    padding: max(2px, env(safe-area-inset-top)) 16px 2px;
     border-bottom: 1px solid var(--line);
     background: var(--card);
     flex: none;
@@ -97,6 +97,47 @@ header h1 {
     white-space: nowrap;
 }
 
+/* The breadcrumb: target / < project > / Grid (or, on the grid, the item last opened). */
+#crumbs {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#crumbs[hidden],
+#crumbs .crumb[hidden] {
+    display: none;
+}
+
+#crumbs > .picker::before,
+#crumbs > .crumb::before {
+    content: "/";
+    margin-right: 6px;
+    color: var(--muted);
+}
+
+#prev-project,
+#next-project {
+    flex: none;
+    min-width: 2.5em;
+}
+
+#crumbs .crumb {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 16em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Grid is short: it never shrinks to nothing while the pickers have width to give. */
+#crumbs #to-grid {
+    flex: none;
+}
+
 /* The pickers shrink first when the window is narrow; a native menu truncates its own label. */
 .picker {
     display: flex;
@@ -117,6 +158,12 @@ header h1 {
     display: none;
 }
 
+/* A project's name is longer than a target's: on a wide header ("graphty-element (121)" beside its
+   label) the project's menu starts wider, and still shrinks first when the header is full. */
+#crumbs > label.picker:nth-of-type(2) {
+    flex-basis: 22em;
+}
+
 /* Finish never shrinks: the pickers give up their width first, so its count is always whole. */
 #finish-slot {
     display: flex;
@@ -132,7 +179,8 @@ header h1 {
 }
 
 /* Narrow: the pickers' labels and the tail of Finish's reason keep their text for screen readers
-   (a press on Finish says the reason too), and give the width to the menus. */
+   (a press on Finish says the reason too), and give the width to the menus, the project's twice
+   the target's, so a project's name is readable on an iPad held upright. */
 @media (max-width: 1049.98px) {
     .picker > span,
     #finish-slot .wide-only {
@@ -143,16 +191,76 @@ header h1 {
         clip-path: inset(50%);
     }
 
-    /* An iPad held upright, Split View or a zoomed page: the menus take a row of their own, half
-       each, so a project's name is readable; nothing in the header runs past the screen's edge. */
+    #crumbs {
+        flex: 1 1 auto;
+    }
+
+    .picker {
+        flex: 1 1 0;
+    }
+
+    #crumbs > label.picker:nth-of-type(2) {
+        flex-basis: 0;
+        flex-grow: 1.6;
+    }
+
+    #crumbs .crumb {
+        max-width: 8em;
+    }
+}
+
+/* Under 1050 px Copy link moves into the story's Options menu and the grid's More menu (the
+   targets list keeps it: it has the room), so an iPad held upright shows whole menu labels; under
+   900 px the header keeps one row by showing only Keys' key. */
+@media (max-width: 1049.98px) {
+    #crumbs:not([hidden]) ~ #copy-link {
+        display: none;
+    }
+}
+
+@media (max-width: 899.98px) {
+    #crumbs:not([hidden]) ~ #keys-button .keys-word {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+}
+
+/* Finish's width never moves the crumbs: Grid and the project steps are pressed on every item, and a
+   first decision that hid "Nothing new to finish" would slide them sideways. Under 1400 px, where the
+   header is full, the reason is for screen readers (a press on Finish says it too), and Finish keeps
+   room for a three-digit count. */
+@media (max-width: 1399.98px) {
+    #crumbs:not([hidden]) ~ #finish-slot .finish-why {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+
+    #crumbs:not([hidden]) ~ #finish-slot .finish {
+        min-width: 10.5em;
+    }
+}
+
+/* A phone-sized window or a zoomed page: the menus take a row of their own; nothing in the header
+   runs past the screen's edge. */
+@media (max-width: 699.98px) {
     header {
         flex-wrap: wrap;
         row-gap: 6px;
     }
 
-    .picker {
+    #crumbs {
         order: 1;
-        flex: 1 1 calc(50% - 5px);
+        flex: 1 1 100%;
+    }
+
+    #crumbs > .picker:first-child::before {
+        content: none;
     }
 }
 
@@ -166,14 +274,15 @@ header h1 {
     display: none;
 }
 
-/* One line tall from 1050 px, two below, whatever it says: a message never moves anything. */
+/* One line tall from 600 px, two below, whatever it says: a message never moves anything; More
+   shows a long one whole. */
 #status-row {
     flex: none;
     display: flex;
     gap: 6px;
     align-items: flex-start;
-    height: calc(1.4em + 10px);
-    padding: 5px 16px;
+    height: calc(1.4em + 6px);
+    padding: 3px 16px;
     overflow: hidden;
     color: var(--muted);
     border-bottom: 1px solid var(--line);
@@ -210,9 +319,9 @@ header h1 {
     display: none;
 }
 
-@media (max-width: 1049.98px) {
+@media (max-width: 599.98px) {
     #status-row {
-        height: calc(2.8em + 10px);
+        height: calc(2.8em + 6px);
     }
 
     #status-row > span {
@@ -911,31 +1020,51 @@ details.menu > div {
 /* ---------------------------------------------------------------- the story */
 
 /*
- * The decision bar: every button always present, each in a cell of fixed width, so a button's
- * box is the same on every item. One row from 1280 px; below, the cells share the window's width
- * (never more), in two rows, or three (decisions, movement, the note) on an iPad held upright and
- * below 900 px, and four columns below 600 px (Split View, a zoomed page), so Undo and the note
- * box are always on screen.
+ * The decision bar, in order of reach: Previous, the count and Next at the left end, for the left
+ * thumb; Undo and Exclude, the least used, in the middle; Reject, then Accept, the widest, at the
+ * right end, a gap between them so a slip lands on nothing. Every button is always present, each
+ * in a cell whose size depends only on the window, so a button's box is the same on every item.
+ * One row from 600 px, the note box at its end from 1100 px (narrower, it ends the item row); two
+ * rows below 600 px (Split View, a zoomed page), so Undo is always on screen.
  */
 .decisionbar {
     display: grid;
-    grid-template-columns: 6.2em 6em 12em 6em 7em 7em 7.5em 6.5em minmax(8em, 1fr);
-    grid-template-areas: "grid prev pos next accept reject exclude undo note";
-    gap: 6px;
+    grid-template-columns:
+        minmax(0, 5.5em) minmax(0, 9.5em) minmax(0, 5.5em) minmax(4px, 1fr) minmax(0, 5.5em) minmax(0, 6.8em)
+        minmax(12px, 1fr) minmax(0, 6em) minmax(0, 8.5em);
+    grid-template-areas: "prev pos next . undo exclude . reject accept";
+    gap: 4px;
     align-items: center;
-    padding: 4px 16px;
+    padding: 2px 16px;
+}
+
+/* An iPad held upright has room for the whole "111 of 121 -- 10 left"; the width is fixed so Next
+   and the buttons after it never move from item to item. */
+@media (min-width: 900px) and (max-width: 1099.98px) {
+    .decisionbar {
+        grid-template-columns:
+            minmax(0, 5.5em) minmax(0, 11em) minmax(0, 5.5em) minmax(4px, 1fr) minmax(0, 5.5em) minmax(0, 6.8em)
+            minmax(12px, 1fr) minmax(0, 6em) minmax(0, 8.5em);
+    }
+}
+
+@media (min-width: 1100px) {
+    .decisionbar {
+        grid-template-columns:
+            6em 11em 6em minmax(8px, 1fr) 6.5em 7.5em minmax(16px, 1fr) 7em 9.5em
+            minmax(14em, 24em);
+        gap: 6px;
+        grid-template-areas: "prev pos next . undo exclude . reject accept note";
+    }
 }
 
 .decisionbar > button {
     width: 100%;
     min-height: 44px;
+    padding-inline: 6px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-#to-grid {
-    grid-area: grid;
 }
 
 #prev {
@@ -989,34 +1118,12 @@ details.menu > div {
     min-height: 44px;
 }
 
-@media (max-width: 1279.98px) {
-    .decisionbar {
-        grid-template-columns: repeat(6, minmax(0, 1fr));
-        grid-template-areas:
-            "grid accept reject exclude undo ."
-            "prev pos pos next note note";
-    }
-}
-
-/* Three rows on an iPad held upright, or any window under 900 px: a short landscape window keeps
-   two, so its panes keep their height. */
-@media (max-width: 899.98px), (max-width: 1049.98px) and (orientation: portrait) {
-    .decisionbar {
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        grid-template-areas:
-            "grid accept reject exclude undo"
-            "prev pos pos pos next"
-            "note note note note note";
-    }
-}
-
 @media (max-width: 599.98px) {
     .decisionbar {
         grid-template-columns: repeat(4, minmax(0, 1fr));
         grid-template-areas:
-            "accept reject exclude undo"
-            "grid prev pos next"
-            "note note note note";
+            "prev pos pos next"
+            "undo exclude reject accept";
     }
 
     /* The keys are in the Keys list; here the words need the width. */
@@ -1045,22 +1152,59 @@ details.menu > div {
     border-width: 1.5px;
 }
 
-/* The item line: two lines, clamped; tapping it shows it all (the reader's choice to move the panes). */
-.itemline {
+/* Above the panes: the item row and the view bar, one row each; from 1100 px both share one row. */
+.story-head {
     flex: none;
-    height: calc(2 * 1.5em + 8px);
-    padding: 4px 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 12px;
+}
+
+.story-head > * {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+@media (min-width: 1100px) {
+    .story-head > .itemline {
+        flex: 1 1 0;
+        min-width: 8em;
+    }
+
+    .story-head > .viewbar {
+        flex: none;
+    }
+
+    .story-head > .itemline.open {
+        flex-basis: 100%;
+        order: 1;
+    }
+}
+
+/* The item row: number, name and badges, then the explanation, cut short on one row of fixed
+   height (the note box's, when it is here); tapping it shows it all (the reader's choice to move
+   the panes). */
+.itemline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    height: 44px;
     overflow: hidden;
     cursor: pointer;
 }
 
 .itemline.open {
+    flex-wrap: wrap;
     height: auto;
     max-height: 40vh;
     overflow: auto;
+    padding: 4px 0;
 }
 
 .itemline h2 {
+    flex: 0 1 auto;
+    min-width: 0;
     margin: 0;
     font-size: 0.9375rem;
     line-height: 1.5em;
@@ -1070,6 +1214,8 @@ details.menu > div {
 }
 
 .itemline p {
+    flex: 1 1 0;
+    min-width: 0;
     margin: 0;
     line-height: 1.5em;
     color: var(--muted);
@@ -1078,21 +1224,56 @@ details.menu > div {
     text-overflow: ellipsis;
 }
 
+.itemline .notebox {
+    flex: 0 0 19em;
+    margin-left: auto;
+    cursor: auto;
+}
+
 .itemline.open h2,
 .itemline.open p {
+    flex-basis: 100%;
     white-space: normal;
 }
 
-/* The view bar: one row from 1280 px; below (an iPad either way up) always two, the views on the
-   first, so the panes start at the same height whichever view and options an item shows. */
+@media (max-width: 599.98px) {
+    .itemline {
+        flex-wrap: wrap;
+        height: auto;
+        padding-bottom: 4px;
+    }
+
+    .itemline .notebox {
+        flex-basis: 100%;
+    }
+}
+
+/* The view bar: one row from 700 px (an iPad either way up), so the panes start at the same height
+   whichever view an item shows; it wraps only on a phone-sized window. The Options menu ends it. */
 .viewbar {
-    flex: none;
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 6px 8px;
     align-items: center;
-    padding: 2px 0 8px;
+    padding: 0 0 4px;
     white-space: nowrap;
+}
+
+@media (max-width: 699.98px) {
+    .viewbar {
+        flex-wrap: wrap;
+    }
+}
+
+/* A phone: the keys are in the Keys list; the words need the width. */
+@media (max-width: 599.98px) {
+    .viewbar kbd {
+        display: none;
+    }
+
+    .viewbar [role="group"] {
+        flex-wrap: wrap;
+    }
 }
 
 /* A finger needs 44 px: every control, in every bar and dialog. */
@@ -1103,8 +1284,14 @@ details.menu > div {
     input[type="text"],
     input[type="search"],
     summary,
-    details.menu > summary {
+    details.menu > summary,
+    .decision button {
         min-height: 44px;
+    }
+
+    #prev-project,
+    #next-project {
+        min-width: 44px;
     }
 }
 
@@ -1131,56 +1318,41 @@ details.menu > div {
     flex: none;
 }
 
-.viewbar > .row-break {
-    display: none;
+.viewbar > #options {
+    margin-left: auto;
 }
 
-/* Fixed widths for what changes between items and views: the bar wraps the same way on all. */
-.viewbar > .view-option {
-    width: 10.5em;
+/* The Options menu: one option a row, its key at the right. */
+#options > div > button {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+    text-align: left;
 }
 
-.viewbar > #box-count {
-    width: 5.5em;
+#options #box-count {
+    margin-left: auto;
+}
+
+#options .details {
+    max-width: min(28em, calc(100vw - 48px));
+    max-height: 40vh;
+    overflow: auto;
+    white-space: normal;
+    color: var(--muted);
+    font-size: 0.8125rem;
+}
+
+#options .details p {
+    margin: 4px 0;
 }
 
 #ask-alert:empty {
     display: none;
 }
 
-@media (max-width: 1279.98px) {
-    .viewbar > .row-break {
-        display: block;
-        flex-basis: 100%;
-        height: 0;
-    }
-}
-
-.details-pop {
-    position: relative;
-}
-
-.details-pop > div {
-    position: fixed;
-    right: 16px;
-    z-index: 10;
-    max-width: min(640px, calc(100vw - 32px));
-    max-height: 50vh;
-    overflow: auto;
-    padding: 8px 12px;
-    white-space: normal;
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    box-shadow: 0 4px 16px #0003;
-}
-
-.details-pop > summary {
-    cursor: pointer;
-    padding: 4px 6px;
-}
-
-/* The story screen fills main: item line, view bar, then the panes taking all the height left. */
+/* The story screen fills main: the item row and the view bar, then the panes taking all the height left. */
 .story-view {
     display: flex;
     flex-direction: column;

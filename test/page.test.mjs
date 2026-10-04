@@ -6,11 +6,12 @@
  * last block serves the fixture as a local preview.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { chromium } from "playwright";
+import { PNG } from "pngjs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
@@ -146,6 +147,558 @@ const visibleTiles = () => page.locator(".tile-box:not([hidden]) .tile").count()
 const show = (value) => page.locator("#more-filters").selectOption(value);
 const option = (value) => page.locator(`#more-filters option[value="${value}"]`).textContent();
 
+// Thirty more components of six new stories each: a grid far taller than the screen.
+const MANY = [];
+{
+    const badge = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items.find(
+        (i) => i.file === "badge--default.light.png",
+    );
+    for (let c = 0; c < 30; c++) {
+        for (let m = 0; m < 6; m++) {
+            const id = `comp${String(c).padStart(2, "0")}--s${m}`;
+            MANY.push({ ...badge, id, mode: null, file: `${id}.png` });
+        }
+    }
+}
+
+describe("review page: a component's Accept in a long grid, on an iPad", () => {
+    const section = (c) => page.locator(`.component[data-component="${c}"]`);
+    // Where the grid is scrolled, where a component starts on screen, and what has the focus.
+    const where = (c) =>
+        page.evaluate((name) => {
+            const { document } = globalThis;
+            const s = document.querySelector(`.component[data-component="${name}"]`);
+            const a = document.activeElement;
+            return {
+                scroll: document.getElementById("app").scrollTop,
+                top: s ? Math.round(s.getBoundingClientRect().top) : null,
+                focus: a.closest(".component") ? `${a.closest(".component").dataset.component} ${a.textContent}` : a.id,
+            };
+        }, c);
+    let reloads;
+
+    async function openMany(viewport) {
+        await open((r) => ({ gh: withMoved(r, MANY) }), { viewport, touch: true });
+        await section("comp20").waitFor();
+        await page.evaluate(() => {
+            const { document } = globalThis;
+            const app = document.getElementById("app");
+            app.scrollTop +=
+                document.querySelector('.component[data-component="comp20"]').getBoundingClientRect().top - 400;
+            // A tile of another component, to see that it is never drawn again.
+            globalThis.kept = document.querySelector('.component[data-component="comp25"] .tile-box');
+        });
+        reloads = 0;
+        page.on("request", (req) => {
+            if (req.method() === "GET" && new URL(req.url()).pathname.startsWith("/api/pr/")) {
+                reloads++;
+            }
+        });
+    }
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: accepts in place, puts the next component where it was, and Enter takes that one too`, async () => {
+            await openMany(viewport);
+            const before = await where("comp20");
+            expect(before.scroll).toBeGreaterThan(5000);
+            await section("comp20").locator("h3 .accept").click();
+            await expect.poll(status).toBe("Accepted 6 items in comp20.");
+            expect(dialogs).toEqual([]);
+            expect(reloads).toBe(0);
+            expect(await section("comp20").count()).toBe(0);
+            // The grid did not move: the next component slid up into the accepted one's place.
+            expect(await where("comp21")).toEqual({ scroll: before.scroll, top: before.top, focus: "comp21 Accept 6" });
+            expect(await page.evaluate(() => globalThis.kept.isConnected)).toBe(true);
+            expect(await progress()).toBe("6 of 186 decided");
+            expect(await page.locator("#review-undecided").textContent()).toBe("Review 180 undecided");
+            // The focus is on the next Accept: one more press takes that component, in the same place.
+            await page.keyboard.press("Enter");
+            await expect.poll(status).toBe("Accepted 6 items in comp21.");
+            expect(await where("comp22")).toEqual({ scroll: before.scroll, top: before.top, focus: "comp22 Accept 6" });
+            expect(reloads).toBe(0);
+            expect(await page.getByRole("button", { name: /^Finish/ }).textContent()).toBe("Finish #123 (12)");
+        });
+    }
+
+    it("brings the next component to the top of the grid when the accepted one began above it", async () => {
+        await open((r) => ({ gh: withMoved(r, MANY) }), { viewport: { width: 1000, height: 800 } });
+        await section("comp20").waitFor();
+        // Scrolled into comp20, its heading out of sight above, its Accept reached by Tab.
+        const gridTop = await page.evaluate(() => {
+            const { document } = globalThis;
+            const app = document.getElementById("app");
+            const s = document.querySelector('.component[data-component="comp20"]');
+            app.scrollTop += s.getBoundingClientRect().top - app.getBoundingClientRect().top + 150;
+            s.querySelector("h3 .accept").focus({ preventScroll: true });
+            return Math.round(app.getBoundingClientRect().top);
+        });
+        await page.keyboard.press("Enter");
+        await expect.poll(status).toBe("Accepted 6 items in comp20.");
+        expect((await where("comp21")).top).toBe(gridTop);
+    });
+
+    it("under All, marks the tiles accepted where they stand, and Undo 6 keeps the place", async () => {
+        await openMany({ width: 1024, height: 1366 });
+        await page.getByRole("button", { name: /^All/ }).click();
+        await page.evaluate(() => {
+            const { document } = globalThis;
+            document.getElementById("app").scrollTop +=
+                document.querySelector('.component[data-component="comp20"]').getBoundingClientRect().top - 400;
+        });
+        const before = await where("comp20");
+        await section("comp20").locator("h3 .accept").click();
+        await expect.poll(status).toBe("Accepted 6 items in comp20.");
+        expect(reloads).toBe(0);
+        expect(await section("comp20").locator(".decision .what").allTextContents()).toEqual(
+            Array(6).fill("Accepted (not opened)"),
+        );
+        expect(await section("comp20").locator("h3").textContent()).toBe("comp20Undo 6");
+        expect(await where("comp20")).toEqual({ ...before, focus: "comp21 Accept 6" });
+        // Undo reloads the project, and the grid stays where it was.
+        await section("comp20").locator("h3 .undo-all").click();
+        await expect.poll(status).toBe("Undid 6 decisions of the component comp20.");
+        expect((await where("comp20")).scroll).toBe(before.scroll);
+        expect((await where("comp20")).top).toBe(before.top);
+    });
+});
+
+// Thirty components of three removed and three new stories each.
+const MIXED = [];
+{
+    const items = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
+    const card = items.find((i) => i.file === "card--legacy.png");
+    const badge = items.find((i) => i.file === "badge--default.light.png");
+    for (let c = 0; c < 30; c++) {
+        for (let m = 0; m < 6; m++) {
+            const id = `comp${String(c).padStart(2, "0")}--s${m}`;
+            MIXED.push({ ...(m < 3 ? card : badge), id, mode: null, file: `${id}.png` });
+        }
+    }
+}
+
+describe("review page: Accept takes what the filter shows, on an iPad", () => {
+    const scroll = () => page.evaluate(() => globalThis.document.getElementById("app").scrollTop);
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: under Removed, a component's Accept and the bar's take only removed items`, async () => {
+            await open((r) => ({ gh: withMoved(r, MIXED) }), { viewport, touch: true });
+            await show("removed");
+            const bar = page.locator("#accept-all");
+            await expect.poll(() => bar.textContent()).toBe("Accept 91 removed");
+            const comp = page.locator('.component[data-component="comp20"]');
+            expect(await comp.locator("h3").textContent()).toBe("comp20Accept 3");
+            await comp.locator("h3 .accept").click();
+            await expect.poll(status).toBe("Accepted 3 items in comp20.");
+            expect(dialogs).toEqual([]);
+            expect(await comp.locator(".decision .what").allTextContents()).toEqual(
+                Array(3).fill("Accepted (not opened)"),
+            );
+            expect(await comp.locator("h3").textContent()).toBe("comp20Undo 3");
+            expect(await bar.textContent()).toBe("Accept 88 removed");
+            expect(await progress()).toBe("3 of 186 decided");
+            // Find story narrows both Accepts as it narrows the grid.
+            await page.locator("#find").fill("comp05--s0");
+            await expect.poll(() => bar.textContent()).toBe("Accept 1 matching");
+            expect(await page.locator('.component[data-component="comp05"] h3').textContent()).toBe("comp05Accept 1");
+            await page.locator("#find").fill("");
+            await expect.poll(() => bar.textContent()).toBe("Accept 88 removed");
+            // Find story's short grid scrolled it to the top: down to comp20 again.
+            await comp.evaluate((c) => c.scrollIntoView());
+            const before = await scroll();
+            expect(before).toBeGreaterThan(0);
+            await bar.click();
+            await expect.poll(progress).toBe("91 of 186 decided");
+            expect(dialogs).toEqual([
+                "Accept 88 removed items of compact-mantine without opening them? This includes 88 removals: " +
+                    "accepting deletes their baselines.",
+            ]);
+            expect(await scroll()).toBe(before);
+            expect(await bar.textContent()).toBe("Accept 0 removed");
+            // Nothing new was taken: the 90 new stories and the fixture's three are still undecided.
+            await page.getByRole("button", { name: /^Needs a decision/ }).click();
+            expect(await bar.textContent()).toBe("Accept all undecided (93)");
+        });
+    }
+});
+
+describe("review page: the Baseline pane, on an iPad", () => {
+    // Each pane's frame, its label and its picture, and where the decision buttons are.
+    const stage = () =>
+        page.evaluate(() => {
+            const { document } = globalThis;
+            const rect = (e) => {
+                const r = e.getBoundingClientRect();
+                return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), width: r.width };
+            };
+            return {
+                panes: [...document.querySelectorAll("#stage figure")].map((f) => ({
+                    label: f.querySelector(".label").textContent,
+                    frame: rect(f.querySelector(".frame")),
+                    pic: f.querySelector("img, canvas") ? rect(f.querySelector("img, canvas")) : null,
+                })),
+                accept: rect(document.getElementById("accept")),
+                reject: rect(document.getElementById("reject")),
+            };
+        });
+    const labels = async () => (await stage()).panes.map((p) => p.label);
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: P shows the new image alone across both panes, and the buttons stay put`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            await openStory(2);
+            await page.locator("#stage figure:nth-child(2) img").waitFor();
+            const two = await stage();
+            expect(two.panes.map((p) => p.label)).toEqual(["Baseline", "New"]);
+            const option = page.locator("#opt-baselinePane");
+            expect(await option.getAttribute("aria-pressed")).toBe("true");
+            await page.keyboard.press("p");
+            await expect.poll(labels).toEqual(["New"]);
+            await page.locator("#stage img").waitFor();
+            const one = await stage();
+            expect(await option.getAttribute("aria-pressed")).toBe("false");
+            // One frame from the left edge of the baseline's to the right edge of the new one's.
+            expect(one.panes[0].frame.left).toBe(two.panes[0].frame.left);
+            expect(one.panes[0].frame.right).toBe(two.panes[1].frame.right);
+            expect(one.panes[0].frame.width).toBeGreaterThan(2 * two.panes[1].frame.width);
+            // The image is never smaller, and larger when the width was what limited it.
+            expect(one.panes[0].pic.width).toBeGreaterThanOrEqual(two.panes[1].pic.width);
+            expect(one.panes[0].frame.top).toBe(two.panes[1].frame.top);
+            expect(one.accept).toEqual(two.accept);
+            expect(one.reject).toEqual(two.reject);
+            expect(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("baseline")).toBe("off");
+            // The option is in the Options menu, so the view bar stays one row.
+            const top = (name) =>
+                page
+                    .getByRole("button", { name, exact: true })
+                    .evaluate((e) => Math.round(e.getBoundingClientRect().top));
+            expect(await top("Fit")).toBe(await top("Side by side"));
+            // P again brings the baseline back.
+            await page.keyboard.press("p");
+            await expect.poll(labels).toEqual(["Baseline", "New"]);
+        });
+    }
+
+    it("keeps the choice for the next item and a fresh page, shows a removed item's baseline, and still flashes", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await (await menuOption("Baseline")).click();
+        await expect.poll(labels).toEqual(["New"]);
+        // The next item opens the same way.
+        await page.keyboard.press("j");
+        await expect.poll(() => page.locator(".itemline .number").textContent()).not.toBe("#2");
+        await expect.poll(labels).toEqual(["New"]);
+        // A fresh page on a link that does not say: this browser's choice holds.
+        await openStoryFromGrid(2);
+        const link = new URL(page.url());
+        const p = new URLSearchParams(link.hash.slice(1));
+        p.delete("baseline");
+        link.hash = String(p);
+        await page.goto("about:blank");
+        await page.goto(link.href);
+        await expect.poll(position).toMatch(/^2 of /);
+        await expect.poll(labels).toEqual(["New"]);
+        // Flash alternates baseline and new in the one pane.
+        await page.keyboard.press("f");
+        await expect.poll(stageClass).toContain("flash");
+        // A flash view's stage is empty until its pictures are made: only a drawn pane counts.
+        const seen = new Set();
+        await expect
+            .poll(async () => {
+                const shown = (await labels()).join();
+                if (shown) {
+                    seen.add(shown);
+                }
+                return [...seen].sort().join("|");
+            })
+            .toBe("Flash: baseline|Flash: new");
+        await page.keyboard.press("f");
+        // A removed story has only a baseline: that is what the one pane shows.
+        await openStoryFromGrid(6);
+        await expect.poll(labels).toEqual(["Baseline"]);
+        await page.locator("#stage img").waitFor();
+    });
+});
+
+describe("review page: the Focus point, on an iPad", () => {
+    // For each pane with a picture: where it is scrolled, how far it can scroll, where the image
+    // starts in it and the CSS pixels per image pixel.
+    const panes = () =>
+        page.evaluate(() =>
+            [...globalThis.document.querySelectorAll("#stage .frame")]
+                .filter((f) => f.querySelector(".sheet img, .sheet canvas"))
+                .map((f) => {
+                    const sheet = f.querySelector(".sheet");
+                    const pic = sheet.querySelector("img, canvas");
+                    const [fr, sr] = [f.getBoundingClientRect(), sheet.getBoundingClientRect()];
+                    return {
+                        scroll: [f.scrollLeft, f.scrollTop],
+                        max: [f.scrollWidth - f.clientWidth, f.scrollHeight - f.clientHeight],
+                        client: [f.clientWidth, f.clientHeight],
+                        start: [
+                            sr.left - fr.left - f.clientLeft + f.scrollLeft,
+                            sr.top - fr.top - f.clientTop + f.scrollTop,
+                        ],
+                        k: pic.getBoundingClientRect().width / (pic.naturalWidth ?? pic.width),
+                    };
+                }),
+        );
+    // Every pane is scrolled to put image point [x, y] in its middle, as near as its edges allow,
+    // within `tolerance` image pixels.
+    const centeredOn = async ([x, y], tolerance = 1) => {
+        const all = await panes();
+        return (
+            all.length > 0 &&
+            all.every((p) =>
+                [x, y].every((v, a) => {
+                    const want = Math.min(p.max[a], Math.max(0, p.start[a] + v * p.k - p.client[a] / 2));
+                    return Math.abs(p.scroll[a] - want) <= tolerance * p.k + 1;
+                }),
+            )
+        );
+    };
+    const scrolled = async () => (await panes()).every((p) => p.scroll[0] > 0 || p.scroll[1] > 0);
+    const focus = () => page.locator("#opt-focus");
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: O at 4x centers the largest change, and after Accept the next item opens on its own`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            await openStory(2);
+            await page.locator("#stage figure:nth-child(2) img").waitFor();
+            await page.getByRole("button", { name: "4x", exact: true }).click();
+            expect(await focus().getAttribute("aria-pressed")).toBe("false");
+            await page.keyboard.press("o");
+            await expect.poll(() => focus().getAttribute("aria-pressed")).toBe("true");
+            expect(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("focus")).toBe("on");
+            // The changed area [160, 80, 40, 40] has its middle at (180, 100), in both panes.
+            await expect.poll(() => centeredOn([180, 100])).toBe(true);
+            expect((await panes()).length).toBe(2);
+            expect(await scrolled()).toBe(true);
+            await ready();
+            // Whether the next item's new image is already scrolled in the first frame that draws it.
+            await page.evaluate(() => {
+                const { document, requestAnimationFrame } = globalThis;
+                globalThis.firstFramed = null;
+                const tick = () => {
+                    const img = document.querySelector('#stage img[alt="new image of slider--sizes"]');
+                    if (!img) {
+                        requestAnimationFrame(tick);
+                        return;
+                    }
+                    const f = img.closest(".frame");
+                    globalThis.firstFramed = f.scrollLeft > 0 || f.scrollTop > 0;
+                };
+                requestAnimationFrame(tick);
+            });
+            await page.keyboard.press("a");
+            await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#3");
+            await expect.poll(() => page.evaluate(() => globalThis.firstFramed)).toBe(true);
+            // slider--sizes grew 40 rows at the bottom, across its width: its middle is (160, 220).
+            await page.locator("#stage figure:nth-child(2) img").waitFor();
+            await expect.poll(() => centeredOn([160, 220], 12)).toBe(true);
+            await ready();
+            expect(await centeredOn([160, 220], 12)).toBe(true);
+            // At Fit the whole image shows: nothing scrolls.
+            await page.getByRole("button", { name: "Fit", exact: true }).click();
+            await expect
+                .poll(async () => (await panes()).map((p) => p.scroll))
+                .toEqual([
+                    [0, 0],
+                    [0, 0],
+                ]);
+        });
+    }
+
+    it("centers a new image on its content, and stays off until turned on", async () => {
+        // The new badge capture: the story's background with one dark box at [200, 120, 40, 30].
+        const png = new PNG({ width: 320, height: 200 });
+        for (let y = 0; y < 200; y++) {
+            for (let x = 0; x < 320; x++) {
+                const inside = x >= 200 && x < 240 && y >= 120 && y < 150;
+                png.data.set(inside ? [30, 30, 40, 255] : [248, 249, 250, 255], (y * 320 + x) * 4);
+            }
+        }
+        const body = PNG.sync.write(png);
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.route("**/api/img/123/compact-mantine/capture/badge--default.light.png", (route) =>
+            route.fulfill({ status: 200, contentType: "image/png", body }),
+        );
+        await page.locator(".component").first().waitFor();
+        await openStory(4);
+        await page.locator("#stage img").waitFor();
+        await page.getByRole("button", { name: "8x", exact: true }).click();
+        // Off (the default), the pane opens at the top left as before.
+        await expect.poll(async () => (await panes()).map((p) => p.scroll)).toEqual([[0, 0]]);
+        await (await menuOption("Focus")).click();
+        await expect.poll(() => centeredOn([220, 135])).toBe(true);
+        expect(await scrolled()).toBe(true);
+        // A fresh page remembers it, and opens the item framed.
+        await page.reload();
+        await page.locator("#stage img").waitFor();
+        expect(await focus().getAttribute("aria-pressed")).toBe("true");
+        await expect.poll(() => centeredOn([220, 135])).toBe(true);
+    });
+});
+
+describe("review page: the control panel, on an iPad", () => {
+    // Where each control people use on most items is, whether a menu hides it, and how much of
+    // the screen the controls above the panes take.
+    const panel = () =>
+        page.evaluate(() => {
+            const { document, innerWidth } = globalThis;
+            const byName = (name) =>
+                [...document.querySelectorAll("button")].find(
+                    (b) => (b.getAttribute("aria-label") ?? b.firstChild?.textContent?.trim()) === name,
+                );
+            const names = ["Side by side", "Flash", "Highlight", "Spotlight", "Fit", "1x", "2x", "4x", "8x"];
+            const controls = {
+                ...Object.fromEntries(
+                    ["prev", "next", "undo", "exclude", "reject", "accept"].map((id) => [
+                        id,
+                        document.getElementById(id),
+                    ]),
+                ),
+                ...Object.fromEntries(names.map((n) => [n, byName(n)])),
+                finish: document.querySelector("#finish-slot .finish"),
+            };
+            const out = {};
+            for (const [name, e] of Object.entries(controls)) {
+                const r = e?.getBoundingClientRect();
+                out[name] =
+                    e && e.checkVisibility() && !e.closest("details:not([open])")
+                        ? { left: r.left, right: r.right, top: r.top, width: r.width, height: r.height }
+                        : null;
+            }
+            const short = [...document.querySelectorAll("button, select, input, summary")]
+                .filter((e) => e.checkVisibility() && e.getBoundingClientRect().height < 44)
+                .map((e) => e.id || e.textContent.trim());
+            return {
+                controls: out,
+                stageTop: document.getElementById("stage").getBoundingClientRect().top,
+                sideways: document.documentElement.scrollWidth > innerWidth,
+                outside: Object.entries(out)
+                    .filter(([, r]) => r && (r.left < 0 || r.right > innerWidth + 0.5))
+                    .map(([n]) => n),
+                short,
+            };
+        });
+
+    for (const [held, viewport, most] of [
+        ["upright", { width: 1024, height: 1366 }, 220],
+        ["sideways", { width: 1366, height: 1024 }, 190],
+        ["upright (iPad Air)", { width: 820, height: 1180 }, 220],
+        ["sideways (iPad Air)", { width: 1180, height: 820 }, 190],
+        ["upright (iPad mini)", { width: 744, height: 1133 }, 220],
+    ]) {
+        it(`held ${held}: the controls used on most items show without a menu, in ${most} px above the panes`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            await openStory(2);
+            await ready();
+            const p = await panel();
+            const hidden = Object.entries(p.controls)
+                .filter(([, r]) => r === null)
+                .map(([n]) => n);
+            expect(hidden).toEqual([]);
+            expect(p.outside).toEqual([]);
+            expect(p.sideways).toBe(false);
+            expect(p.short).toEqual([]);
+            expect(p.stageTop).toBeLessThanOrEqual(most);
+            const c = p.controls;
+            // The decision row is one row: Previous and Next at the left end, then Undo and
+            // Exclude, then Reject and Accept, the widest, with a gap between Exclude and Reject.
+            const row = ["prev", "next", "undo", "exclude", "reject", "accept"];
+            expect(new Set(row.map((id) => c[id].top)).size).toBe(1);
+            for (let i = 1; i < row.length; i++) {
+                expect(c[row[i]].left).toBeGreaterThan(c[row[i - 1]].left);
+            }
+            expect(Math.max(...row.slice(0, -1).map((id) => c[id].width))).toBeLessThan(c.accept.width);
+            expect(c.reject.left - c.exclude.right).toBeGreaterThan(c.accept.left - c.reject.right);
+            // The views and the zoom steps share one row.
+            expect(new Set(["Side by side", "Spotlight", "Fit", "8x"].map((n) => c[n].top)).size).toBe(1);
+        });
+    }
+
+    it("opens the note for a reject in the row it is in, moving nothing", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await ready();
+        const before = await panel();
+        await page.keyboard.press("r");
+        await expect.poll(() => page.locator("#note:focus").count()).toBe(1);
+        expect(await page.locator("#note").getAttribute("placeholder")).toBe("Reason to reject, then Enter");
+        const after = await panel();
+        expect(after.controls).toEqual(before.controls);
+        expect(after.stageTop).toBe(before.stageTop);
+        // Upright, the note box ends the item row; on its side, the decision row.
+        expect(await page.locator(".itemline #note").count()).toBe(1);
+        await page.keyboard.press("Escape");
+        await page.setViewportSize({ width: 1180, height: 820 });
+        await expect.poll(() => page.locator(".decisionbar #note").count()).toBe(1);
+    });
+
+    it("keeps the rarer options in one Options menu, each with its key, and Escape closes it first", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await ready();
+        const menu = page.locator("#options");
+        expect(await menu.evaluate((d) => d.open)).toBe(false);
+        await page.locator("#options > summary").click();
+        const names = await menu.locator("button").evaluateAll((bs) => bs.map((b) => b.textContent.trim()));
+        expect(names).toEqual(["OutlineB", "BaselineP", "FocusO", "Next change1 of 1N", "Copy link"]);
+        // An option stays open for the next, and its key works as before.
+        await page.getByRole("button", { name: "Outline", exact: true }).click();
+        await expect.poll(() => page.locator("#opt-showBox").getAttribute("aria-pressed")).toBe("false");
+        expect(await menu.evaluate((d) => d.open)).toBe(true);
+        await page.keyboard.press("b");
+        await expect.poll(() => page.locator("#opt-showBox").getAttribute("aria-pressed")).toBe("true");
+        // Escape closes the menu and stays on the item; the next Escape goes up to the grid.
+        await page.keyboard.press("Escape");
+        await expect.poll(() => menu.evaluate((d) => d.open)).toBe(false);
+        expect(await page.locator("#stage").count()).toBe(1);
+        // A tap outside closes it too.
+        await page.locator("#options > summary").click();
+        await page.locator("#stage").click();
+        await expect.poll(() => menu.evaluate((d) => d.open)).toBe(false);
+        await page.keyboard.press("Escape");
+        await page.locator(".component").first().waitFor();
+    });
+
+    it("counts each tap and key in this browser only, and lists the most used in Keys", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await ready();
+        await page.getByRole("button", { name: "4x", exact: true }).click();
+        await page.locator("#accept").click();
+        await expect.poll(position).toMatch(/^3 of /);
+        await page.keyboard.press("j");
+        await expect.poll(position).toMatch(/^4 of /);
+        const counted = await page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:usage")));
+        expect(counted).toMatchObject({ "zoom-4": 1, accept: 1, "key-J": 1 });
+        await page.keyboard.press("?");
+        const list = await page.locator("dialog.keys .usage li").allTextContents();
+        expect(list).toEqual(expect.arrayContaining(["zoom-4: 1", "accept: 1", "key-J: 1"]));
+        expect(list.length).toBeLessThanOrEqual(10);
+    });
+});
+
 describe("review page: a pull request", () => {
     beforeEach(async () => {
         await open((r) => ({ gh: onePr()(r) }));
@@ -217,7 +770,7 @@ describe("review page: a pull request", () => {
     it("fits both whole images side by side on one screen, at one scale, in panes of one size", async () => {
         // Short enough that the images shrink to the height of the panes, not their width.
         for (const [w, h] of [
-            [1000, 480],
+            [1000, 400],
             [600, 900],
         ]) {
             await page.setViewportSize({ width: w, height: h });
@@ -381,7 +934,7 @@ describe("review page: a pull request", () => {
         await openStory(2);
         await page.keyboard.press("s");
         await page.locator("#stage canvas").first().waitFor();
-        const toggle = page.getByRole("button", { name: "Spotlight flash", exact: true });
+        const toggle = page.locator("#opt-spotFlash");
         expect(await toggle.getAttribute("aria-pressed")).toBe("false");
         await page.keyboard.press("f");
         // Still Spotlight, now two dimmed canvases in the same place, one shown at a time.
@@ -476,7 +1029,7 @@ describe("review page: a pull request", () => {
         expect(red.box[2]).toBeLessThan(200);
         expect(red.box[3]).toBeLessThan(120);
         // L blinks both overlays together; L again holds them on.
-        const blink = page.getByRole("button", { name: "Blink", exact: true });
+        const blink = page.locator("#opt-blink");
         await page.keyboard.press("l");
         await expect.poll(() => blink.getAttribute("aria-pressed")).toBe("true");
         const seen = new Set();
@@ -506,7 +1059,7 @@ describe("review page: a pull request", () => {
         await openStory(2);
         await expect.poll(() => page.locator("#box-count").textContent()).toBe("1 of 1");
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
-        const box = page.getByRole("button", { name: "Outline", exact: true });
+        const box = page.locator("#opt-showBox");
         expect(await box.getAttribute("aria-pressed")).toBe("true");
         await page.keyboard.press("b");
         // B re-renders the story; the count is written once the diff is ready, so wait for it
@@ -654,10 +1207,35 @@ describe("review page: a pull request", () => {
         expect(await page.locator("#find:focus").count()).toBe(1);
     });
 
-    it("accepts one component's undecided items after asking", async () => {
+    it("accepts one component's undecided items without asking: Undo 1 takes them back", async () => {
         await page.locator('.component[data-component="badge"] h3 button').click();
         await expect.poll(progress).toBe("1 of 6 decided");
-        expect(dialogs[0]).toBe("Accept the 1 undecided item of badge without opening them?");
+        expect(await status()).toBe("Accepted 1 item in badge.");
+        expect(dialogs).toEqual([]);
+        expect(await page.getByRole("button", { name: /^Finish/ }).textContent()).toBe("Finish #123 (1)");
+    });
+
+    it("under New, Shift+A accepts only the new items, after naming them", async () => {
+        await show("new");
+        expect(await page.locator("#accept-all").textContent()).toBe("Accept 1 new");
+        await page.evaluate(() => globalThis.document.activeElement.blur());
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("1 of 6 decided");
+        expect(dialogs).toEqual(["Accept 1 new item of compact-mantine without opening them?"]);
+        await show("accept");
+        expect(await page.locator(".tile-box").evaluateAll((b) => b.map((x) => x.dataset.file))).toEqual([
+            "badge--default.light.png",
+        ]);
+    });
+
+    it("Find story narrows Accept to the stories it shows, and the question says so", async () => {
+        await page.locator("#find").fill("slider");
+        const bar = page.locator("#accept-all");
+        await expect.poll(() => bar.textContent()).toBe("Accept 1 matching");
+        await bar.click();
+        await expect.poll(progress).toBe("1 of 6 decided");
+        expect(dialogs).toEqual(['Accept 1 undecided item of compact-mantine matching "slider" without opening them?']);
+        expect(await bar.textContent()).toBe("Accept 0 matching");
     });
 
     it("Shift+A accepts the project, and Finish states what it will do and who signs", async () => {
@@ -1309,6 +1887,102 @@ describe("review page: moving on", () => {
     });
 });
 
+describe("review page: navigation, on an iPad", () => {
+    const hash = () => new URLSearchParams(new URL(page.url()).hash.slice(1));
+    const shown = (id) => page.locator(`#${id}`).isVisible();
+    const project = () => page.locator("#pick-project").inputValue();
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held}: the header's crumbs go up to the grid and the targets, and forward into the item last opened`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            // The grid: target and project, no Grid crumb, nothing opened yet.
+            expect(await shown("crumbs")).toBe(true);
+            expect(await shown("to-grid")).toBe(false);
+            expect(await shown("to-item")).toBe(false);
+            // A pass, two items in: the Grid crumb goes up, keeping the pass.
+            await page.locator("#review-undecided").click();
+            await page.keyboard.press("j");
+            await page.keyboard.press("j");
+            await expect.poll(position).toMatch(/^3 of 6 /);
+            expect(await shown("to-grid")).toBe(true);
+            expect(await shown("to-item")).toBe(false);
+            await page.locator("#to-grid").click();
+            await page.locator(".component").first().waitFor();
+            expect(hash().has("item")).toBe(false);
+            // On the grid the last crumb is the item just left; it goes back into it, in its pass.
+            expect(await page.locator("#to-item").textContent()).toBe("#3 slider--sizes");
+            await page.locator("#to-item").click();
+            await expect.poll(position).toMatch(/^3 of 6 /);
+            expect(hash().get("pass")).toBe("undecided");
+            // Escape goes up one level at a time: the grid, then the targets; an open More closes first.
+            await page.keyboard.press("Escape");
+            await page.locator(".component").first().waitFor();
+            await page.locator(".gridbar details.menu > summary").click();
+            await page.keyboard.press("Escape");
+            expect(await page.locator(".gridbar details.menu").evaluate((d) => d.open)).toBe(false);
+            expect(await page.locator(".component").count()).toBeGreaterThan(0);
+            await page.keyboard.press("Escape");
+            await page.locator(".card").first().waitFor();
+            expect(await shown("crumbs")).toBe(false);
+            expect([...hash().keys()]).toEqual(["token"]);
+            // Back returns to the grid.
+            await page.goBack();
+            await page.locator(".component").first().waitFor();
+            expect(hash().get("project")).toBe("compact-mantine");
+            // Every crumb is inside the window and tall enough for a finger.
+            const bad = await page.evaluate(() =>
+                [...globalThis.document.querySelectorAll("#crumbs > *")]
+                    .filter((e) => e.getClientRects().length > 0)
+                    .map((e) => [e.id || e.className, e.getBoundingClientRect()])
+                    .filter(
+                        ([name, r]) =>
+                            r.right > globalThis.innerWidth + 0.5 ||
+                            r.height < 44 ||
+                            (/-project$/.test(name) && r.width < 44),
+                    )
+                    .map(([name]) => name),
+            );
+            expect(bad).toEqual([]);
+        });
+    }
+
+    it("steps to the next and previous project with undecided items with ] and [, skipping the rest", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.locator(".component").first().waitFor();
+        expect(await project()).toBe("compact-mantine");
+        // From the grid, the next project's grid; it wraps.
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("graphty-element");
+        expect(hash().has("item")).toBe(false);
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("compact-mantine");
+        await page.locator("#prev-project").click();
+        await expect.poll(project).toBe("graphty-element");
+        await page.keyboard.press("[");
+        await expect.poll(project).toBe("compact-mantine");
+        await page.locator("#review-undecided").click();
+        await expect.poll(position).toMatch(/^1 of 6 /);
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("graphty-element");
+        await expect.poll(position).toMatch(/^1 of 1 /);
+        // Decided, graphty-element is skipped: nothing else has undecided items from compact-mantine.
+        await ready();
+        await page.keyboard.press("a");
+        await page.locator("#endcard").waitFor();
+        await page.keyboard.press("]");
+        await expect.poll(project).toBe("compact-mantine");
+        await expect.poll(position).toMatch(/^1 of 6 /);
+        expect(await page.locator("#next-project").getAttribute("aria-disabled")).toBe("true");
+        await page.keyboard.press("]");
+        await expect.poll(status).toBe("No other project of #123 has undecided items.");
+        expect(await project()).toBe("compact-mantine");
+    });
+});
+
 describe("review page: links and the frozen pass", () => {
     beforeEach(async () => {
         await open((r) => ({ gh: onePr()(r) }));
@@ -1360,11 +2034,9 @@ describe("review page: links and the frozen pass", () => {
         boxed.hash = String(p);
         await visit(boxed.href);
         await expect.poll(position).toMatch(/^2 of 6 /);
-        const box = page.getByRole("button", { name: "Outline", exact: true });
+        const box = page.locator("#opt-showBox");
         await expect.poll(() => box.getAttribute("aria-pressed")).toBe("false");
-        expect(await page.getByRole("button", { name: "Blink", exact: true }).getAttribute("aria-pressed")).toBe(
-            "true",
-        );
+        expect(await page.locator("#opt-blink").getAttribute("aria-pressed")).toBe("true");
         // The targets screen.
         await page.locator("#home").click();
         await expect.poll(() => [...hash().keys()]).toEqual(["token"]);
@@ -1419,6 +2091,8 @@ describe("review page: links and the frozen pass", () => {
 
     it("copies the link to the screen", async () => {
         await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+        // The header keeps Copy link from 1050 px; narrower, it is in the Options and More menus.
+        await page.setViewportSize({ width: 1280, height: 800 });
         await openStory(2);
         await page.locator("#copy-link").click();
         await expect.poll(status).toContain("Link copied");
@@ -1792,7 +2466,7 @@ describe("review page: narrow windows, touch and wording", () => {
     const outside = () =>
         page.evaluate(() => {
             const { document, innerWidth } = globalThis;
-            return [...document.querySelectorAll("header > *, .decisionbar > *, .decisionbar input")]
+            return [...document.querySelectorAll("header > *, .decisionbar > *, #note, .viewbar > *")]
                 .filter((e) => e.getClientRects().length > 0)
                 .map((e) => [e.id || e.className || e.tagName, e.getBoundingClientRect()])
                 .filter(([, r]) => r.left < 0 || r.right > innerWidth + 0.5)
@@ -1820,9 +2494,14 @@ describe("review page: narrow windows, touch and wording", () => {
         // A wide desktop, an iPad on its side and upright, a zoomed page and iPad Split View.
         for (const width of [1280, 1180, 1024, 820, 600, 375, 320]) {
             await page.setViewportSize({ width, height: 900 });
+            // Crossing 1100 px moves the note box between the decision row and the item row.
+            await expect
+                .poll(async () => {
+                    const hint = await fits("#note");
+                    return hint.need <= hint.room;
+                }, `the note's hint at ${width} px`)
+                .toBe(true);
             expect({ width, outside: await outside() }).toEqual({ width, outside: [] });
-            const hint = await fits("#note");
-            expect(hint.need, `the note's hint at ${width} px`).toBeLessThanOrEqual(hint.room);
         }
     });
 
@@ -1835,6 +2514,46 @@ describe("review page: narrow windows, touch and wording", () => {
         const shown = await fits("#pick-project", name);
         expect(shown.need + 24).toBeLessThanOrEqual(shown.room);
     });
+
+    // Text cut short in a label: the menus' chosen names (their arrow takes about 24 px) and the
+    // position, each measured in its own font.
+    const cut = (selectors) =>
+        page.evaluate((sels) => {
+            const { document, getComputedStyle } = globalThis;
+            const ctx = document.createElement("canvas").getContext("2d");
+            return sels.flatMap((sel) => {
+                const e = document.querySelector(sel);
+                const css = getComputedStyle(e);
+                ctx.font = `${css.fontStyle} ${css.fontWeight} ${css.fontSize} ${css.fontFamily}`;
+                const text = e.tagName === "SELECT" ? e.selectedOptions[0].textContent : e.textContent;
+                const need = Math.ceil(ctx.measureText(text).width) + (e.tagName === "SELECT" ? 24 : 0);
+                const room = e.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+                return need > room ? [`${sel} "${text}" needs ${need}, has ${room}`] : [];
+            });
+        }, selectors);
+
+    for (const [held, viewport] of [
+        ["upright", { width: 1024, height: 1366 }],
+        ["sideways", { width: 1366, height: 1024 }],
+    ]) {
+        it(`held ${held} with hundreds of items: whole menu names, a whole position, and a tile's Undo a finger can press`, async () => {
+            await open((r) => ({ gh: withMoved(r, MANY) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            expect(await page.locator("#pick-project option:checked").textContent()).toBe("compact-mantine (186)");
+            expect(await cut(["#pick-target", "#pick-project"])).toEqual([]);
+            await page.locator("#review-undecided").click();
+            await page.keyboard.press("j");
+            await expect.poll(position).toMatch(/^2 of \d{3} -- \d{3} left$/);
+            expect(await cut(["#pick-target", "#pick-project", "#position"])).toEqual([]);
+            // Back on the grid under All, a decided tile's Undo is as tall as any other control.
+            await page.keyboard.press("Escape");
+            await page.getByRole("button", { name: /^All/ }).click();
+            await page.locator('.component[data-component="comp00"] h3 .accept').click();
+            await expect.poll(status).toBe("Accepted 6 items in comp00.");
+            const undo = page.locator('.component[data-component="comp00"] .decision button').first();
+            expect((await undo.boundingBox()).height).toBeGreaterThanOrEqual(44);
+        });
+    }
 
     it("makes every control at least 44 px tall on a touch screen", async () => {
         await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });
@@ -2015,9 +2734,20 @@ describe("review page: a local preview", () => {
     });
 });
 
+// An option in the story's Options menu, the menu opened first when it is closed.
+async function menuOption(name) {
+    if (!(await page.locator("#options").evaluate((d) => d.open))) {
+        await page.locator("#options > summary").click();
+    }
+    return page.getByRole("button", { name, exact: true });
+}
+
 // From a story view, back to the grid and into another story.
 async function openStoryFromGrid(number) {
-    await page.keyboard.press("Escape");
+    // Escape goes up one level: from a story to the grid, but from the grid to the targets.
+    if ((await page.locator(".decisionbar").count()) > 0) {
+        await page.keyboard.press("Escape");
+    }
     await page.locator(".component").first().waitFor();
     await openStory(number);
 }

@@ -23,6 +23,9 @@ const statusMore = document.getElementById("status-more");
 const pickTarget = document.getElementById("pick-target");
 const pickProject = document.getElementById("pick-project");
 const finishSlot = document.getElementById("finish-slot");
+const crumbs = document.getElementById("crumbs");
+const toGridCrumb = document.getElementById("to-grid");
+const toItemCrumb = document.getElementById("to-item");
 
 const REVIEWABLE = ["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"];
 const ACCEPTABLE = ["changed", "moved", "new", "unseeded", "removed"];
@@ -57,7 +60,7 @@ const SLOW_MS = 300; // a wait longer than this says what it waits for
 // The grid's decision filters, and how a decision reads on a tile.
 const DECISIONS = { accept: "Accepted", reject: "Rejected", exclude: "Excluded" };
 const DONE = { accept: "accepted", reject: "rejected", exclude: "excluded" };
-// The reviewer's own display choices (the changed-area outline, blinking the overlay, Spotlight
+// The reviewer's own display choices (the changed-area outline, the baseline pane, blinking the overlay, Spotlight
 // flash, whether single-letter keys work, the failed-captures list), kept in this browser.
 const OPTIONS_KEY = "visual-review:options";
 const saved = loadOptions();
@@ -82,6 +85,8 @@ const state = {
     zoom: "fit",
     box: 0, // which changed area Next change is on
     showBox: saved.showBox ?? true, // outline the changed area (B)
+    baselinePane: saved.baselinePane ?? true, // show the baseline beside the new image (P)
+    focus: saved.focus ?? false, // open each item centered on where to look (O)
     blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
     spotFlash: saved.spotFlash ?? false, // Spotlight flashes baseline and new (F in Spotlight)
     shortcuts: saved.shortcuts ?? true, // single-letter keys on
@@ -110,6 +115,10 @@ const thumbs = new Map();
 const THUMBS_KEPT = 400;
 const diffs = new Map();
 const DIFFS_KEPT = 4;
+// Each item's focus point, as the box [x, y, width, height] in image pixels to center on: a few
+// numbers each, kept for the items of a long session.
+const focusBoxes = new Map();
+const FOCUS_KEPT = 2000;
 let stageRender = 0; // the newest renderStage: an older one finishing late writes nothing
 let lastStageAt = 0; // when the last renderStage began
 let lastStageFile = null; // and for which item
@@ -122,6 +131,55 @@ let flashTimer = null;
 let factor = 1; // CSS pixels per image pixel of the pictures on the stage
 let shownBoxes = []; // the changed areas of the item on the stage
 let stageKey = null; // "file|zoom" of what is on the stage, to keep its scroll across view changes
+let optionsOpen = false; // the story's Options menu stays open across redraws of the same item
+// A wide window (an iPad on its side, a desktop) has room for the note box at the end of the
+// decision row; a narrower one puts it at the end of the item row. Turning the iPad moves it.
+const WIDE = matchMedia("(min-width: 1100px)");
+WIDE.addEventListener("change", () => {
+    if (state.screen === "story") {
+        // The note box moves rows; a reason being typed keeps the focus.
+        showStory({ focusNote: document.activeElement?.id === "note" });
+    }
+});
+
+// How often each control and key is pressed, in this browser only (nothing is sent anywhere):
+// the Keys overlay lists the most used, so the bars can be laid out from real use.
+const USAGE_KEY = "visual-review:usage";
+function usage() {
+    try {
+        return JSON.parse(localStorage.getItem(USAGE_KEY) ?? "{}") ?? {};
+    } catch {
+        return {};
+    }
+}
+function count(name) {
+    try {
+        const all = usage();
+        all[name] = (all[name] ?? 0) + 1;
+        localStorage.setItem(USAGE_KEY, JSON.stringify(all));
+    } catch {
+        // Not counted; nothing else depends on it.
+    }
+}
+document.addEventListener(
+    "click",
+    (e) => {
+        const b = e.target.closest?.("button, summary");
+        if (b && b.isConnected) {
+            const words = [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent);
+            count(b.dataset.count ?? (b.id || words.join("").trim() || "button"));
+        }
+    },
+    true,
+);
+// A tap outside an open menu closes it, as a menu does.
+document.addEventListener("pointerdown", (e) => {
+    for (const m of document.querySelectorAll("details.menu[open]")) {
+        if (!m.contains(e.target)) {
+            m.removeAttribute("open");
+        }
+    }
+});
 // At fit, the stage refits when the window (or an iPad's orientation) changes its size.
 const refit = new ResizeObserver(() => {
     const stage = document.getElementById("stage");
@@ -651,6 +709,8 @@ function saveOptions(extra = {}) {
             JSON.stringify({
                 ...loadOptions(),
                 showBox: state.showBox,
+                baselinePane: state.baselinePane,
+                focus: state.focus,
                 blink: state.blink,
                 spotFlash: state.spotFlash,
                 shortcuts: state.shortcuts,
@@ -664,6 +724,9 @@ function saveOptions(extra = {}) {
 
 function toggleOption(key) {
     state[key] = !state[key];
+    if (key === "focus") {
+        stageKey = null; // reframe the item on screen, not keep its scroll
+    }
     state.motion = true;
     saveOptions();
     showStory();
@@ -695,14 +758,27 @@ function counted(item, before, after, unpublished) {
 
 // ---------------------------------------------------------------- header
 
-// The target and project pickers (on the grid and story screens) and Finish.
+// The breadcrumb (on the grid and story screens: Visual review / target / project / Grid, or on the
+// grid the item last opened) and Finish.
 function drawHeader() {
     const onTargets = state.screen === "targets" || state.target === null;
-    pickTarget.parentElement.hidden = onTargets;
-    pickProject.parentElement.hidden = onTargets;
+    crumbs.hidden = onTargets;
     finishSlot.replaceChildren();
     if (onTargets) {
         return;
+    }
+    toGridCrumb.hidden = state.screen !== "story";
+    const last = state.screen === "grid" && state.data?.items.find((i) => i.file === state.lastFile);
+    toItemCrumb.hidden = !last;
+    if (last) {
+        toItemCrumb.textContent = `#${numberOf(last)} ${itemName(last)}`;
+        toItemCrumb.title = `Back to #${numberOf(last)} ${itemName(last)}`;
+    }
+    for (const [button, step] of [
+        [document.getElementById("prev-project"), -1],
+        [document.getElementById("next-project"), 1],
+    ]) {
+        button.setAttribute("aria-disabled", String(!projectAt(step)));
     }
     const targets = state.list?.targets ?? [state.target];
     const listed = targets.some((t) => t.id === state.target.id) ? targets : [state.target, ...targets];
@@ -778,6 +854,10 @@ statusMore.addEventListener("click", () => {
 });
 pickTarget.addEventListener("change", () => openTarget(pickTarget.value, false));
 pickProject.addEventListener("change", () => openProject(state.target.id, pickProject.value));
+toGridCrumb.addEventListener("click", () => toGrid());
+toItemCrumb.addEventListener("click", () => backToItem());
+document.getElementById("prev-project").addEventListener("click", () => stepProject(-1));
+document.getElementById("next-project").addEventListener("click", () => stepProject(1));
 
 // ---------------------------------------------------------------- screen: targets
 
@@ -1282,6 +1362,43 @@ function nextTarget(id) {
     return [...list.slice(at + 1), ...list.slice(0, Math.max(at, 0))].find((t) => t.id !== id && undecidedOf(t) > 0);
 }
 
+// The project `step` places on (1 the next, -1 the previous, wrapping) among this target's projects
+// with undecided items, skipping the others; null when no other has any.
+function projectAt(step) {
+    const list = state.target?.projects ?? [];
+    const at = list.findIndex((p) => p.project === state.project);
+    for (let n = 1; n < list.length; n++) {
+        const p = list[(((at + step * n) % list.length) + list.length) % list.length];
+        if (p.undecided > 0 && !p.downloading) {
+            return p;
+        }
+    }
+    return null;
+}
+
+// [ and ] (and the header's < and >): the previous or next project with undecided items, on the
+// same screen: its grid from the grid, its first undecided item from a story.
+function stepProject(step) {
+    const p = projectAt(step);
+    if (!p) {
+        say(`No other project of ${labelOf(state.target)} has undecided items.`);
+        return;
+    }
+    openProject(state.target.id, p.project, state.screen === "story");
+}
+
+// The grid's last crumb: back into the item last opened, in its pass, at its place.
+function backToItem() {
+    const at = state.sequence.indexOf(state.lastFile);
+    if (at < 0) {
+        openItem(state.lastFile);
+        return;
+    }
+    state.index = at;
+    say("");
+    enterStory();
+}
+
 // A target from the pickers or an offer: its first project with something undecided (its grid,
 // or with `story`, its first undecided item).
 async function openTarget(id, story) {
@@ -1584,11 +1701,33 @@ function errorRow(item) {
     );
 }
 
-// The items of `component` Accept would take without opening them.
+// The items of `component` (or the project) Accept would take without opening them: the undecided
+// ones the grid's filter and Find story show, never one hidden from the reviewer.
 const undecided = (component) =>
-    state.data.items.filter(
+    visibleItems().filter(
         (i) => ACCEPTABLE.includes(i.status) && !decisionOf(i) && (!component || componentOf(i.id) === component),
     );
+
+// Whether the grid shows less than everything undecided: a status or decision filter, or Find story.
+const narrowed = () => !["undecided", "all"].includes(state.filter) || findText(state.text) !== "";
+
+// The grid bar's Accept, named for what the grid shows: "Accept 131 removed", "Accept 12 matching".
+function acceptShownButton() {
+    const n = undecided(null).length;
+    const shown = findText(state.text) !== "" ? "matching" : (STATUS_FILTERS[state.filter]?.toLowerCase() ?? "shown");
+    return el(
+        "button",
+        {
+            type: "button",
+            class: "accept",
+            id: "accept-all",
+            "aria-keyshortcuts": "Shift+A",
+            "aria-disabled": String(n === 0),
+            onclick: () => acceptAll(null),
+        },
+        narrowed() ? `Accept ${n} ${shown}` : `Accept all undecided (${n})`,
+    );
+}
 
 // The files whose decisions a bulk Undo in `component` (or the whole project) clears: every
 // decision not yet posted by Finish.
@@ -1597,21 +1736,113 @@ const undoableIn = (component) =>
         .filter((i) => decisionOf(i) && !decisionOf(i).posted && (!component || componentOf(i.id) === component))
         .map((i) => i.file);
 
+// The project whose grid is on screen, so a redraw of the same grid keeps its place.
+let gridShown = null;
+
 function showGrid() {
     stopFlash();
     nearScreen.disconnect();
     thumbQueue.length = 0;
+    const here = `${state.target.id}/${state.project}`;
+    // A redraw of the grid already on screen (an Undo, a filter) keeps its scroll. The focus leaves
+    // the grid first: a focused button the redraw removes takes the scroll to the top.
+    const keep = state.screen === "grid" && gridShown === here ? app.scrollTop : null;
+    if (keep !== null && app.contains(document.activeElement)) {
+        app.focus({ preventScroll: true });
+    }
+    gridShown = here;
     state.screen = "grid";
     state.ended = false;
     state.pending = null;
     app.classList.remove("story-screen");
     drawHeader();
-    const all = reviewable();
+    setBar(gridBar());
     const items = visibleItems();
+    const errors = [];
+    const groups = new Map(); // component -> story id -> [tile]
+    for (const item of items) {
+        if (item.status === "failed") {
+            errors.push(errorRow(item));
+            continue;
+        }
+        const c = componentOf(item.id);
+        if (!groups.has(c)) {
+            groups.set(c, new Map());
+        }
+        const stories = groups.get(c);
+        if (!stories.has(item.id)) {
+            stories.set(item.id, []);
+        }
+        stories.get(item.id).push(tile(item));
+    }
+    const sections = [...groups].map(([component, stories]) =>
+        el(
+            "section",
+            { class: "component", "data-component": component },
+            groupHead(component),
+            el(
+                "div",
+                { class: "stories" },
+                [...stories].map(([id, tiles]) =>
+                    el(
+                        "div",
+                        { class: "story", "data-story": id },
+                        el("div", { class: "story-name" }, id.slice(component.length + 2) || id),
+                        el("div", { class: "modes" }, tiles),
+                    ),
+                ),
+            ),
+        ),
+    );
+    let empty = "No stories match this filter.";
+    if (state.filter === "undecided") {
+        empty = isLocal() ? "Nothing here." : `Everything is decided. Finish ${labelOf(state.target)} when ready.`;
+    }
+    render(
+        isLocal()
+            ? el(
+                  "p",
+                  { class: "badge warn" },
+                  "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
+              )
+            : null,
+        staleBanner(),
+        errors.length > 0
+            ? el(
+                  "details",
+                  {
+                      class: "errors",
+                      open: loadOptions().showFailed === true,
+                      ontoggle: (e) => saveOptions({ showFailed: e.target.open }),
+                  },
+                  el("summary", {}, `${plural(errors.length, "failed capture")}: only Exclude applies`),
+                  el(
+                      "p",
+                      { class: "meta" },
+                      "An error is never accepted. Fix the story, re-run the visual job for a one-off timeout, " +
+                          "or exclude the story with a reason.",
+                  ),
+                  el("ol", { class: "error-list" }, errors),
+              )
+            : null,
+        ...(items.length === 0 ? [el("p", { class: "empty" }, empty)] : sections),
+    );
+    applyFind();
+    remember();
+    if (keep !== null) {
+        app.scrollTop = keep;
+        return;
+    }
+    // Back from a story: show where it is in the grid.
+    app.querySelector(".current")?.scrollIntoView({ block: "center" });
+}
+
+// The grid's bar: the counts, the filters, Find story and Accept all undecided.
+function gridBar() {
+    const all = reviewable();
     const decided = all.filter(decisionOf).length;
     const open = all.length - decided;
     const acceptable = state.data.acceptable && !isLocal();
-    const takeable = undecided(null).length;
     const counts = {};
     for (const i of all) {
         counts[i.status] = (counts[i.status] ?? 0) + 1;
@@ -1665,6 +1896,7 @@ function showGrid() {
             findTimer = setTimeout(() => {
                 state.text = e.target.value;
                 applyFind();
+                refreshAccepts();
                 remember();
             }, 200);
         },
@@ -1677,172 +1909,79 @@ function showGrid() {
         },
     });
     const undoAll = undoableIn(null);
-    setBar(
+    return el(
+        "div",
+        { class: "gridbar" },
         el(
             "div",
-            { class: "gridbar" },
+            { class: "row" },
+            el("strong", { id: "progress" }, `${decided} of ${all.length} decided`),
             el(
-                "div",
-                { class: "row" },
-                el("strong", { id: "progress" }, `${decided} of ${all.length} decided`),
-                el(
-                    "button",
-                    {
-                        type: "button",
-                        class: "primary",
-                        id: "review-undecided",
-                        "aria-disabled": String(open === 0),
-                        onclick: () => startPass("undecided"),
-                    },
-                    `Review ${open} undecided`,
-                ),
-                el(
-                    "span",
-                    { role: "group", "aria-label": "Show" },
-                    filterButton("undecided", `Needs a decision (${open})`),
-                    filterButton("all", `All (${all.length})`),
-                    more,
-                ),
+                "button",
+                {
+                    type: "button",
+                    class: "primary",
+                    id: "review-undecided",
+                    "aria-disabled": String(open === 0),
+                    onclick: () => startPass("undecided"),
+                },
+                `Review ${open} undecided`,
             ),
             el(
-                "div",
-                { class: "row" },
-                el("label", { for: "find" }, "Find story", find),
-                acceptable
-                    ? el(
-                          "button",
-                          {
-                              type: "button",
-                              class: "accept",
-                              id: "accept-all",
-                              "aria-keyshortcuts": "Shift+A",
-                              "aria-disabled": String(takeable === 0),
-                              onclick: () => acceptAll(null),
-                          },
-                          `Accept all undecided (${takeable})`,
-                      )
-                    : null,
+                "span",
+                { role: "group", "aria-label": "Show" },
+                filterButton("undecided", `Needs a decision (${open})`),
+                filterButton("all", `All (${all.length})`),
+                more,
+            ),
+        ),
+        el(
+            "div",
+            { class: "row" },
+            el("label", { for: "find" }, "Find story", find),
+            acceptable ? acceptShownButton() : null,
+            el(
+                "details",
+                { class: "menu" },
+                el("summary", {}, "More"),
                 el(
-                    "details",
-                    { class: "menu" },
-                    el("summary", {}, "More"),
-                    el(
-                        "div",
-                        {},
-                        isLocal()
-                            ? null
-                            : el(
-                                  "button",
-                                  {
-                                      type: "button",
-                                      class: "undo-all",
-                                      "aria-disabled": String(undoAll.length === 0),
-                                      onclick: () => bulkUndo(null),
-                                  },
-                                  "Undo all decisions...",
-                              ),
-                        el("button", { type: "button", onclick: copyLink }, "Copy link to this grid"),
-                    ),
+                    "div",
+                    {},
+                    isLocal()
+                        ? null
+                        : el(
+                              "button",
+                              {
+                                  type: "button",
+                                  class: "undo-all",
+                                  "aria-disabled": String(undoAll.length === 0),
+                                  onclick: () => bulkUndo(null),
+                              },
+                              "Undo all decisions...",
+                          ),
+                    el("button", { type: "button", onclick: copyLink }, "Copy link to this grid"),
                 ),
             ),
         ),
     );
-    const errors = [];
-    const groups = new Map(); // component -> story id -> [tile]
-    for (const item of items) {
-        if (item.status === "failed") {
-            errors.push(errorRow(item));
-            continue;
-        }
-        const c = componentOf(item.id);
-        if (!groups.has(c)) {
-            groups.set(c, new Map());
-        }
-        const stories = groups.get(c);
-        if (!stories.has(item.id)) {
-            stories.set(item.id, []);
-        }
-        stories.get(item.id).push(tile(item));
-    }
-    const sections = [...groups].map(([component, stories]) => {
-        const n = undecided(component).length;
-        const k = undoableIn(component).length;
-        return el(
-            "section",
-            { class: "component", "data-component": component },
-            el(
-                "h3",
-                {},
-                component,
-                acceptable && n > 0
-                    ? el(
-                          "button",
-                          { type: "button", class: "accept", onclick: () => acceptAll(component) },
-                          `Accept ${n}`,
-                      )
-                    : null,
-                !isLocal() && k > 0
-                    ? el(
-                          "button",
-                          { type: "button", class: "undo-all", onclick: () => bulkUndo(component) },
-                          `Undo ${k}`,
-                      )
-                    : null,
-            ),
-            el(
-                "div",
-                { class: "stories" },
-                [...stories].map(([id, tiles]) =>
-                    el(
-                        "div",
-                        { class: "story", "data-story": id },
-                        el("div", { class: "story-name" }, id.slice(component.length + 2) || id),
-                        el("div", { class: "modes" }, tiles),
-                    ),
-                ),
-            ),
-        );
-    });
-    const empty =
-        state.filter === "undecided"
-            ? isLocal()
-                ? "Nothing here."
-                : `Everything is decided. Finish ${labelOf(state.target)} when ready.`
-            : "No stories match this filter.";
-    render(
-        isLocal()
-            ? el(
-                  "p",
-                  { class: "badge warn" },
-                  "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
-              )
+}
+
+// A component's heading, with its Accept N and Undo N.
+function groupHead(component) {
+    const acceptable = state.data.acceptable && !isLocal();
+    const n = undecided(component).length;
+    const k = undoableIn(component).length;
+    return el(
+        "h3",
+        {},
+        component,
+        acceptable && n > 0
+            ? el("button", { type: "button", class: "accept", onclick: () => acceptAll(component) }, `Accept ${n}`)
             : null,
-        staleBanner(),
-        errors.length > 0
-            ? el(
-                  "details",
-                  {
-                      class: "errors",
-                      open: loadOptions().showFailed === true,
-                      ontoggle: (e) => saveOptions({ showFailed: e.target.open }),
-                  },
-                  el("summary", {}, `${plural(errors.length, "failed capture")}: only Exclude applies`),
-                  el(
-                      "p",
-                      { class: "meta" },
-                      "An error is never accepted. Fix the story, re-run the visual job for a one-off timeout, " +
-                          "or exclude the story with a reason.",
-                  ),
-                  el("ol", { class: "error-list" }, errors),
-              )
+        !isLocal() && k > 0
+            ? el("button", { type: "button", class: "undo-all", onclick: () => bulkUndo(component) }, `Undo ${k}`)
             : null,
-        ...(items.length === 0 ? [el("p", { class: "empty" }, empty)] : sections),
     );
-    applyFind();
-    remember();
-    // Back from a story: show where it is in the grid.
-    const here = app.querySelector(".current");
-    here?.scrollIntoView({ block: "center" });
 }
 
 // Find story narrows the grid by hiding tiles (not rebuilding them), so typing stays quick.
@@ -1856,6 +1995,14 @@ function applyFind() {
     }
     for (const c of app.querySelectorAll(".component")) {
         c.hidden = c.querySelector(".story:not([hidden])") === null;
+    }
+}
+
+// Find story changes what Accept takes: its buttons are drawn again (never the field being typed in).
+function refreshAccepts() {
+    document.getElementById("accept-all")?.replaceWith(acceptShownButton());
+    for (const c of app.querySelectorAll(".component")) {
+        c.querySelector("h3").replaceWith(groupHead(c.dataset.component));
     }
 }
 
@@ -1997,6 +2144,7 @@ function showStory({ focusNote = false } = {}) {
         state.pending = null;
         stageShown = null;
         appearedAt = performance.now();
+        optionsOpen = false;
     }
     state.lastFile = item.file;
     const d = decisionOf(item);
@@ -2032,8 +2180,7 @@ function showStory({ focusNote = false } = {}) {
         el(
             "div",
             { class: "story-view" },
-            itemLine(item, d),
-            viewBar(item, view, note),
+            el("div", { class: "story-head" }, itemLine(item, d), viewBar(item, view, note)),
             state.ended
                 ? endCard()
                 : el("div", { id: "stage", class: `stage ${view} zoom-${state.zoom}`, "data-file": item.file }),
@@ -2054,8 +2201,10 @@ function showStory({ focusNote = false } = {}) {
     remember();
 }
 
-// The decision bar: Grid, Previous, the count, Next, then Accept, Reject, Exclude, Undo and the
-// note box, each always present in the same place.
+// The decision bar, in order of reach: Previous, the count and Next at the left end; Undo and
+// Exclude, the least used, in the middle; Reject, then Accept, the widest, at the right end, with
+// a gap between them. Each always present in the same place. In a wide window the note box ends
+// the row; narrower, it sits in the item row (noteBox).
 function decisionBar(item, items, d) {
     const can = available(item, d);
     const left = items.filter((i) => !decisionOf(i)).length;
@@ -2075,16 +2224,9 @@ function decisionBar(item, items, d) {
             name,
             kbd(key),
         );
-    const draft = drafts.get(draftKey(item)) ?? "";
     return el(
         "div",
         { class: "decisionbar", role: "toolbar", "aria-label": "Decide" },
-        el(
-            "button",
-            { type: "button", id: "to-grid", "aria-keyshortcuts": "Escape", onclick: () => toGrid() },
-            "Grid",
-            kbd("Esc"),
-        ),
         el(
             "button",
             { type: "button", id: "prev", "aria-keyshortcuts": "K", onclick: () => move(-1) },
@@ -2102,6 +2244,17 @@ function decisionBar(item, items, d) {
             "Next",
             kbd("J"),
         ),
+        button("undo", "Undo", "U", can.undo, { onclick: () => decide(null) }),
+        button("exclude", "Exclude", "E", can.exclude, {
+            class: state.pending === "exclude" ? "waiting" : null,
+            "aria-pressed": String(d?.decision === "exclude"),
+            onclick: () => decide("exclude"),
+        }),
+        button("reject", "Reject", "R", can.reject, {
+            class: `reject ${state.pending === "reject" ? "waiting" : ""}`,
+            "aria-pressed": String(d?.decision === "reject"),
+            onclick: () => decide("reject"),
+        }),
         button(
             "accept",
             "Accept",
@@ -2114,50 +2267,44 @@ function decisionBar(item, items, d) {
             },
             waitingImages ? spinner() : null,
         ),
-        button("reject", "Reject", "R", can.reject, {
-            class: `reject ${state.pending === "reject" ? "waiting" : ""}`,
-            "aria-pressed": String(d?.decision === "reject"),
-            onclick: () => decide("reject"),
-        }),
-        button("exclude", "Exclude", "E", can.exclude, {
-            class: state.pending === "exclude" ? "waiting" : null,
-            "aria-pressed": String(d?.decision === "exclude"),
-            onclick: () => decide("exclude"),
-        }),
-        button("undo", "Undo", "U", can.undo, { onclick: () => decide(null) }),
-        el(
-            "span",
-            { class: "notebox" },
-            el("label", { for: "note" }, "Note"),
-            el("input", {
-                id: "note",
-                type: "text",
-                maxlength: "2000",
-                autocomplete: "off",
-                readonly: Boolean(d) || isLocal() || state.ended,
-                placeholder: d
-                    ? ""
-                    : state.pending
-                      ? `Reason to ${state.pending}, then Enter`
-                      : "Needed to Reject or Exclude",
-                value: d ? (d.reason ?? "") : draft,
-                oninput: (e) => drafts.set(draftKey(item), e.target.value),
-                onkeydown: (e) => {
-                    if (e.key === "Enter" && !e.repeat) {
-                        e.preventDefault();
-                        if (state.pending) {
-                            decide(state.pending);
-                        } else {
-                            e.target.blur();
-                        }
-                    }
-                },
-            }),
-        ),
+        WIDE.matches ? noteBox(item, d) : null,
     );
 }
 
-// Item number, name and badges; then one explanation. Not a live region: the status row speaks.
+// The note box: the reason a Reject or Exclude needs, or a note typed before an Accept. One box,
+// at the end of the decision row in a wide window and at the end of the item row otherwise, so it
+// never takes a row of its own; a reject waiting for its reason moves nothing.
+function noteBox(item, d) {
+    const draft = drafts.get(draftKey(item)) ?? "";
+    return el(
+        "span",
+        { class: "notebox" },
+        el("label", { for: "note" }, "Note"),
+        el("input", {
+            id: "note",
+            type: "text",
+            maxlength: "2000",
+            autocomplete: "off",
+            readonly: Boolean(d) || isLocal() || state.ended,
+            placeholder: notePlaceholder(d),
+            value: d ? (d.reason ?? "") : draft,
+            oninput: (e) => drafts.set(draftKey(item), e.target.value),
+            onkeydown: (e) => {
+                if (e.key === "Enter" && !e.repeat) {
+                    e.preventDefault();
+                    if (state.pending) {
+                        decide(state.pending);
+                    } else {
+                        e.target.blur();
+                    }
+                }
+            },
+        }),
+    );
+}
+
+// Item number, name and badges, then one explanation, on one row cut short; a tap shows it all.
+// Not a live region: the status row speaks.
 function itemLine(item, d) {
     const sizeChanged =
         item.size &&
@@ -2165,7 +2312,14 @@ function itemLine(item, d) {
         (item.size[0] !== item.baselineSize[0] || item.size[1] !== item.baselineSize[1]);
     return el(
         "div",
-        { class: "itemline", onclick: (e) => e.currentTarget.classList.toggle("open") },
+        {
+            class: "itemline",
+            onclick: (e) => {
+                if (!e.target.closest(".notebox")) {
+                    e.currentTarget.classList.toggle("open");
+                }
+            },
+        },
         el(
             "h2",
             {},
@@ -2197,19 +2351,25 @@ function itemLine(item, d) {
                 : null,
         ),
         el("p", { id: "explain" }, explanation(item, d)),
+        WIDE.matches ? null : noteBox(item, d),
     );
 }
 
+// The view bar: the four views and the five zoom steps, used on most items, stay on the bar; the
+// options set once and left (Outline, the view's own Blink or Spotlight flash, Baseline, Focus),
+// Next change and the details sit in one Options menu at its end, each with its key.
 function viewBar(item, view, note) {
     const two = Boolean(item.baseline && item.capture);
-    const viewButton = (v, label, key) =>
+    const viewButton = (v, label, key, name = null) =>
         el(
             "button",
             {
                 type: "button",
+                "aria-label": name,
                 "aria-pressed": String(view === v),
                 "aria-disabled": String(Boolean(note) && v !== "side"),
                 "aria-keyshortcuts": key,
+                "data-count": `view-${v}`,
                 onclick: () => {
                     if (note && v !== "side") {
                         say(note);
@@ -2242,6 +2402,7 @@ function viewBar(item, view, note) {
             {
                 type: "button",
                 "aria-pressed": String(state.zoom === z),
+                "data-count": `zoom-${z}`,
                 onclick: () => {
                     state.zoom = z;
                     showStory();
@@ -2260,46 +2421,52 @@ function viewBar(item, view, note) {
         el(
             "span",
             { role: "group", "aria-label": "View" },
-            viewButton("side", "Side by side", null),
+            viewButton("side", "Side", null, "Side by side"),
             viewButton("flash", "Flash", "F"),
             viewButton("highlight", "Highlight", "H"),
             viewButton("spotlight", "Spotlight", "S"),
         ),
-        // One slot of fixed width for the view's own option, so no view moves or wraps the bar.
-        el(
-            "span",
-            { class: "view-option" },
-            view === "highlight" ? option("blink", "Blink", "L") : null,
-            view === "spotlight" ? option("spotFlash", "Spotlight flash", "F") : null,
-        ),
-        el("span", { class: "row-break", "aria-hidden": "true" }),
-        option("showBox", "Outline", "B"),
-        el(
-            "button",
-            {
-                type: "button",
-                id: "next-box",
-                "aria-disabled": String(!two),
-                "aria-keyshortcuts": "N",
-                onclick: nextBox,
-            },
-            "Next change",
-            kbd("N"),
-        ),
-        el("span", { id: "box-count", class: "meta" }),
         el("span", { role: "group", "aria-label": "Zoom" }, ZOOMS.map(zoomButton)),
         kbd("Z"),
         el(
             "details",
-            { class: "details-pop" },
-            el("summary", {}, "Details"),
+            {
+                class: "menu",
+                id: "options",
+                open: optionsOpen,
+                ontoggle: (e) => (optionsOpen = e.currentTarget.open),
+            },
+            el("summary", { "data-count": "options" }, "Options"),
             el(
                 "div",
                 {},
-                details.map((t) => el("p", {}, t)),
-                item.console.length > 0 && item.status !== "failed"
-                    ? el("pre", { class: "console" }, item.console.join("\n"))
-                    : null,
+                option("showBox", "Outline", "B"),
+                view === "highlight" ? option("blink", "Blink", "L") : null,
+                view === "spotlight" ? option("spotFlash", "Spotlight flash", "F") : null,
+                option("baselinePane", "Baseline", "P"),
+                option("focus", "Focus", "O"),
+                el(
+                    "button",
+                    {
+                        type: "button",
+                        id: "next-box",
+                        "aria-disabled": String(!two),
+                        "aria-keyshortcuts": "N",
+                        onclick: nextBox,
+                    },
+                    "Next change",
+                    el("span", { id: "box-count", class: "meta" }),
+                    kbd("N"),
+                ),
+                el("button", { type: "button", id: "copy-story-link", onclick: copyLink }, "Copy link"),
+                el(
+                    "div",
+                    { class: "details" },
+                    details.map((t) => el("p", {}, t)),
+                    item.console.length > 0 && item.status !== "failed"
+                        ? el("pre", { class: "console" }, item.console.join("\n"))
+                        : null,
+                ),
             ),
         ),
     );
@@ -2354,12 +2521,32 @@ const paneError = (message) =>
         el("button", { type: "button", onclick: () => showStory() }, "Retry"),
     );
 
-// Two panes, always: the baseline on the left and the new image (or the view's picture) on the
-// right, both drawn at once with what they are waiting for, so nothing moves when the images
-// arrive. A missing image leaves its pane empty, the same size, so the other one never moves.
+// Two panes: the baseline on the left and the new image (or the view's picture) on the right,
+// both drawn at once with what they are waiting for, so nothing moves when the images arrive. A
+// missing image leaves its pane empty, the same size, so the other one never moves. With the
+// Baseline pane off (P) only one pane is drawn, as wide as the two: the right one, or the
+// baseline when there is no capture (a removed story).
+function notePlaceholder(decided) {
+    if (decided) {
+        return "";
+    }
+    return state.pending ? `Reason to ${state.pending}, then Enter` : "Needed to Reject or Exclude";
+}
+
+// Which single pane to draw when the baseline is hidden: the capture (or a failed item's error),
+// else the baseline of a removed story. Null draws both.
+function onlyPane(item) {
+    if (state.baselinePane) {
+        return null;
+    }
+    return item.capture || item.status === "failed" ? "right" : "left";
+}
+
 async function renderStage(item, view, keep) {
     const seq = ++stageRender;
     const stage = document.getElementById("stage");
+    const only = onlyPane(item);
+    const panes = (l, r) => ({ right: [r], left: [l] })[only] ?? [l, r];
     const baseName = item.from ? `Baseline of ${item.from}` : "Baseline";
     const imgOf = async (kind) => {
         const img = await loaded(
@@ -2382,7 +2569,7 @@ async function renderStage(item, view, keep) {
     const left = item.baseline ? pane(baseName, paneWait("baseline")) : pane("No baseline", null, true);
     const right = item.capture ? pane("New", paneWait("new image")) : emptyRight();
     if (!keep) {
-        stage.replaceChildren(left, right);
+        stage.replaceChildren(...panes(left, right));
     }
     // Skimming (J held): the item before was left before its images even showed, so this one waits
     // SKIM_MS before fetching; passed in that time, it fetches nothing, and the item stopped on is
@@ -2408,6 +2595,11 @@ async function renderStage(item, view, keep) {
                     if (seq === stageRender) {
                         frame.replaceChildren(el("div", { class: "sheet" }, img));
                         fit(stage);
+                        // Known ahead (shown() works out the next item's), so it appears framed.
+                        const at = focusBoxes.get(focusKey(item));
+                        if (state.focus && at && !keep) {
+                            center(stage, at);
+                        }
                     }
                 } catch (err) {
                     if (seq === stageRender) {
@@ -2416,12 +2608,15 @@ async function renderStage(item, view, keep) {
                     throw err;
                 }
             };
-            await Promise.all([item.baseline && fill("baseline", left), item.capture && fill("capture", right)]);
+            await Promise.all([
+                item.baseline && only !== "right" && fill("baseline", left),
+                item.capture && fill("capture", right),
+            ]);
             if (seq !== stageRender) {
                 return;
             }
             if (keep) {
-                stage.replaceChildren(left, right);
+                stage.replaceChildren(...panes(left, right));
             }
         } else {
             diff = await diffOf(item);
@@ -2452,7 +2647,7 @@ async function renderStage(item, view, keep) {
                 el("div", { class: "sheet" }, leftPics),
             );
             const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics));
-            stage.replaceChildren(l, r);
+            stage.replaceChildren(...panes(l, r));
             if (flashing) {
                 const [base, next] = rightPics;
                 next.style.visibility = "hidden";
@@ -2484,9 +2679,11 @@ async function renderStage(item, view, keep) {
     } catch (err) {
         if (seq === stageRender) {
             if (view !== "side") {
-                stage.replaceChildren(pane(baseName, paneError(err.message)), pane("New", paneError(err.message)));
+                stage.replaceChildren(
+                    ...panes(pane(baseName, paneError(err.message)), pane("New", paneError(err.message))),
+                );
             } else if (keep) {
-                stage.replaceChildren(left, right);
+                stage.replaceChildren(...panes(left, right));
             }
         }
         return;
@@ -2531,6 +2728,12 @@ async function renderStage(item, view, keep) {
         showBox(stage, diff.boxes, false, !keep);
     } else {
         shownBoxes = [];
+        if (state.focus && !keep) {
+            const at = await focusBox(item).catch(() => null);
+            if (at && seq === stageRender) {
+                center(stage, at);
+            }
+        }
     }
 }
 
@@ -2548,12 +2751,17 @@ function shown(stage, item) {
     }
     if (first) {
         appearedAt = performance.now();
-        for (const next of passItems().slice(state.index + 1, state.index + 3)) {
+        const after = passItems().slice(state.index + 1, state.index + 3);
+        for (const next of after) {
             for (const kind of ["baseline", "capture"]) {
                 if (next[kind]) {
                     image(kind, next.file, next[kind]).catch(() => {});
                 }
             }
+        }
+        // The next item's focus point, so after Accept it opens already framed.
+        if (state.focus && after[0]) {
+            focusBox(after[0]).catch(() => {});
         }
     }
     setTimeout(
@@ -2600,6 +2808,10 @@ function showBox(stage, boxes, jump, reset = true) {
         if (!jump && !reset) {
             continue;
         }
+        if (state.focus) {
+            centerFrame(frame, sheet, [x, y, w, h]);
+            continue;
+        }
         if (!jump) {
             frame.scrollLeft = 0;
             frame.scrollTop = 0;
@@ -2618,6 +2830,74 @@ function showBox(stage, boxes, jump, reset = true) {
         frame.scrollLeft = reveal(ox + left, ox + right, frame.scrollLeft, frame.clientWidth);
         frame.scrollTop = reveal(oy + top, oy + bottom, frame.scrollTop, frame.clientHeight);
     }
+}
+
+// Scrolls a pane so the middle of a box (image pixels) is in the middle of the pane, as near as
+// the image's edges allow. At Fit nothing scrolls.
+function centerFrame(frame, sheet, [x, y, w, h]) {
+    frame.scrollLeft = sheet.offsetLeft + (x + w / 2) * factor - frame.clientWidth / 2;
+    frame.scrollTop = sheet.offsetTop + (y + h / 2) * factor - frame.clientHeight / 2;
+}
+
+function center(stage, box) {
+    for (const frame of stage.querySelectorAll(".frame")) {
+        const sheet = frame.querySelector(".sheet");
+        if (sheet) {
+            centerFrame(frame, sheet, box);
+        }
+    }
+}
+
+const focusKey = (item) => `${state.target.id}/${state.project}/${item.file}/${item.baseline}/${item.capture}`;
+
+// Where the reviewer should look first: the largest changed area of a changed item, or the
+// content of an item with one image (new, no baseline yet, removed). None for a failed or
+// unstable item.
+async function focusBox(item) {
+    if (onlyExclude(item)) {
+        return null;
+    }
+    const key = focusKey(item);
+    if (!focusBoxes.has(key)) {
+        let box;
+        if (item.baseline && item.capture) {
+            box = (await diffOf(item)).boxes[0] ?? null;
+        } else {
+            const kind = item.capture ? "capture" : "baseline";
+            box = contentBox(await loaded(await image(kind, item.file, item[kind]), `${kind} of ${item.file}`));
+        }
+        focusBoxes.set(key, box);
+        if (focusBoxes.size > FOCUS_KEPT) {
+            focusBoxes.delete(focusBoxes.keys().next().value);
+        }
+    }
+    return focusBoxes.get(key);
+}
+
+// The box around every pixel that differs from the image's top-left pixel (the story's
+// background), or the whole image when nothing does.
+function contentBox(img) {
+    const [w, h] = [img.naturalWidth, img.naturalHeight];
+    const ctx = new OffscreenCanvas(w, h).getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const px = ctx.getImageData(0, 0, w, h).data;
+    const TOLERANCE = 16; // per channel: compression noise and anti-aliased edges of the background
+    let [x0, y0, x1, y1] = [w, h, -1, -1];
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            for (let c = 0; c < 4; c++) {
+                if (Math.abs(px[i + c] - px[c]) > TOLERANCE) {
+                    x0 = Math.min(x0, x);
+                    x1 = Math.max(x1, x);
+                    y0 = Math.min(y0, y);
+                    y1 = Math.max(y1, y);
+                    break;
+                }
+            }
+        }
+    }
+    return x1 < 0 ? [0, 0, w, h] : [x0, y0, x1 - x0 + 1, y1 - y0 + 1];
 }
 
 async function nextBox() {
@@ -3151,6 +3431,9 @@ async function bulkUndo(component) {
     }
 }
 
+// Accept all undecided (Shift+A) asks first; a component's Accept N does not: Undo N takes it back.
+// Both take only what the grid's filter and Find story show, and name those files to the server.
+// Neither reloads the project: the server names the files it accepted, and the page marks them.
 async function acceptAll(component) {
     if (!state.data.acceptable || isLocal()) {
         say(isLocal() ? "Local preview: look only. Nothing is decided on it." : notSeeded());
@@ -3160,27 +3443,26 @@ async function acceptAll(component) {
     const n = items.length;
     const where = component ?? state.project;
     if (n === 0) {
-        say(`Nothing undecided to accept in ${where}.`);
+        say(`Nothing undecided to accept in ${where}${narrowed() ? " that the grid shows" : ""}.`);
         return;
     }
-    // Accepting a removal deletes its baseline, so the question says how many it holds.
-    const removals = items.filter((i) => i.status === "removed").length;
-    const deletes =
-        removals === 0
-            ? ""
-            : ` This includes ${plural(removals, "removal")}: accepting deletes ${removals === 1 ? "its baseline" : "their baselines"}.`;
-    const stuck = state.data.items.filter(
-        (i) => onlyExclude(i) && !decisionOf(i) && (!component || componentOf(i.id) === component),
-    );
-    const left =
-        stuck.length === 0
-            ? ""
-            : ` ${stuck.length} more (${[...new Set(stuck.map((i) => i.status))].sort().join(", ")}) can only be excluded and stay undecided.`;
-    const question = component
-        ? `Accept the ${n} undecided ${n === 1 ? "item" : "items"} of ${component} without opening them?`
-        : `Accept ${n} undecided ${n === 1 ? "item" : "items"} of ${where} without opening them?`;
-    if (!(await ask(`${question}${deletes}${left}`, `Accept ${n}`))) {
-        return;
+    if (!component) {
+        // Accepting a removal deletes its baseline, so the question says how many it holds.
+        const removals = items.filter((i) => i.status === "removed").length;
+        const theirs = removals === 1 ? "its baseline" : "their baselines";
+        const deletes =
+            removals === 0 ? "" : ` This includes ${plural(removals, "removal")}: accepting deletes ${theirs}.`;
+        const stuck = state.data.items.filter((i) => onlyExclude(i) && !decisionOf(i));
+        const left =
+            stuck.length === 0 || narrowed()
+                ? ""
+                : ` ${stuck.length} more (${[...new Set(stuck.map((i) => i.status))].sort().join(", ")}) can only be excluded and stay undecided.`;
+        const what = STATUS_FILTERS[state.filter]?.toLowerCase() ?? "undecided";
+        const find = findText(state.text) === "" ? "" : ` matching "${state.text.trim()}"`;
+        const question = `Accept ${n} ${what} ${n === 1 ? "item" : "items"} of ${where}${find} without opening them?`;
+        if (!(await ask(`${question}${deletes}${left}`, `Accept ${n}`))) {
+            return;
+        }
     }
     let answer;
     try {
@@ -3190,14 +3472,86 @@ async function acceptAll(component) {
             runId: state.data.target.runId,
             runAttempt: state.data.target.runAttempt,
             ...(component ? { component } : {}),
+            files: items.map((i) => i.file),
         });
-        await reload();
     } catch (err) {
         say(err.message, true);
         return;
     }
-    (state.screen === "story" ? showStory : showGrid)();
+    for (const file of answer.files) {
+        state.data.decisions[file] = { decision: "accept", reason: null, bulk: true };
+    }
+    const p = state.target.projects.find((x) => x.project === state.project);
+    if (p) {
+        p.decided += answer.files.length;
+        p.undecided -= answer.files.length;
+    }
+    state.target.unpublished = answer.unpublished;
+    if (state.screen === "story") {
+        showStory();
+    } else if (component && state.screen === "grid") {
+        acceptedInGrid(component, answer.files);
+    } else {
+        showGrid();
+    }
     say(`Accepted ${plural(answer.accepted, "item")} in ${where}.`);
+}
+
+// After a component's Accept N: its accepted tiles show their decision, or leave a filter that no
+// longer shows them, and the rest of the grid stays as it is, scrolled where it was. The focus goes
+// to the next component's Accept, which a filter that drops this component brings to the same spot.
+function acceptedInGrid(component, files) {
+    const shown = new Set(visibleItems().map((i) => i.file));
+    const boxes = files.map((f) => app.querySelector(`.tile-box[data-file="${CSS.escape(f)}"]`));
+    const section = app.querySelector(`.component[data-component="${CSS.escape(component)}"]`);
+    // A filter that now shows a tile the grid lacks (Accepted): draw the grid again.
+    if (!section || files.some((f, n) => shown.has(f) && !boxes[n])) {
+        showGrid();
+        return;
+    }
+    // Focus first: a focused button removed from the grid takes its scroll to the top.
+    const later = [...app.querySelectorAll(".component")];
+    const next = later
+        .slice(later.indexOf(section) + 1)
+        .map((c) => (c.hidden ? null : c.querySelector("h3 .accept")))
+        .find(Boolean);
+    (next ?? app).focus({ preventScroll: true });
+    // Where the grid is scrolled, or the component's own start when that is above the screen.
+    // Restored by hand: scroll anchoring would hold the next component where it was instead.
+    const top = Math.min(
+        app.scrollTop,
+        app.scrollTop + section.getBoundingClientRect().top - app.getBoundingClientRect().top,
+    );
+    const byFile = new Map(state.data.items.map((i) => [i.file, i]));
+    for (const [n, file] of files.entries()) {
+        const box = boxes[n];
+        if (!box) {
+            continue;
+        }
+        if (shown.has(file)) {
+            box.querySelector(".tile").classList.add("decided", "accept");
+            box.append(decisionLine(byFile.get(file)));
+        } else {
+            box.remove();
+        }
+    }
+    for (const story of section.querySelectorAll(".story")) {
+        if (!story.querySelector(".tile-box")) {
+            story.remove();
+        }
+    }
+    if (section.querySelector(".tile-box")) {
+        section.querySelector("h3").replaceWith(groupHead(component));
+    } else {
+        section.remove();
+    }
+    if (shown.size === 0) {
+        showGrid();
+        return;
+    }
+    app.scrollTop = top;
+    setBar(gridBar());
+    drawHeader();
 }
 
 // When the default branch has newer baselines for this project than the capture was compared with:
@@ -3866,7 +4220,7 @@ function updateOutcome(job, t, dismiss) {
 // ---------------------------------------------------------------- the address
 
 // Every screen is in the address, after the session token, so a copied link opens it again:
-// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&pass=undecided&view=side&zoom=fit&box=on&blink=off&flash=off
+// #token=...&target=123&project=p&filter=undecided&q=text&item=file.png&pass=undecided&view=side&zoom=fit&box=on&baseline=on&focus=off&blink=off&flash=off
 // Only the fragment holds it: a browser never sends a fragment to a server or in a Referer.
 function hashFor() {
     const p = new URLSearchParams({ token });
@@ -3884,6 +4238,8 @@ function hashFor() {
         p.set("view", state.held ?? state.view);
         p.set("zoom", String(state.zoom));
         p.set("box", state.showBox ? "on" : "off");
+        p.set("baseline", state.baselinePane ? "on" : "off");
+        p.set("focus", state.focus ? "on" : "off");
         p.set("blink", state.blink ? "on" : "off");
         p.set("flash", state.spotFlash ? "on" : "off");
     }
@@ -3993,9 +4349,15 @@ async function route() {
         state.view = VIEWS.includes(p.get("view")) ? p.get("view") : "side";
         const zoom = p.get("zoom") === "fit" ? "fit" : Number(p.get("zoom"));
         state.zoom = ZOOMS.includes(zoom) ? zoom : "fit";
-        // A link's box, blink and flash apply to this page; the browser's remembered choice is unchanged.
+        if (["on", "off"].includes(p.get("focus"))) {
+            state.focus = p.get("focus") === "on";
+        }
+        // A link's box, baseline, focus, blink and flash apply to this page; the browser's remembered choice is unchanged.
         if (["on", "off"].includes(p.get("box"))) {
             state.showBox = p.get("box") === "on";
+        }
+        if (["on", "off"].includes(p.get("baseline"))) {
+            state.baselinePane = p.get("baseline") === "on";
         }
         if (["on", "off"].includes(p.get("blink"))) {
             state.blink = p.get("blink") === "on";
@@ -4058,7 +4420,7 @@ const SHORTCUTS_OFF = "Single-key shortcuts are off: letters do nothing until yo
 const KEYS = [
     ["J / K", "Next / previous item of the pass; J on the last item shows what is next"],
     ["A", "Accept, once the images are shown"],
-    ["(type), Esc, A", "Accept with a note: type it, leave the note box, accept"],
+    ["(type), Esc, A", "Accept with a note: type it in the note box, leave the box, accept"],
     ["R", "Reject; with an empty note, type the reason, then Enter"],
     ["E", "Exclude; with an empty note, type the reason, then Enter, then confirm"],
     ["U", "Undo the item's decision; you stay on the item"],
@@ -4068,17 +4430,42 @@ const KEYS = [
     ["H", "Highlight the changed pixels in red, or back to side by side"],
     ["L", "In Highlight: Blink on or off"],
     ["S", "Spotlight, or back to side by side (on an iPad held upright, the way to see a change large)"],
-    ["B", "Outline the changed area, or not"],
-    ["N", "Next change"],
+    ["B", "Outline the changed area, or not (in Options)"],
+    ["P", "Baseline: show the baseline beside the new image, or the new image alone at twice the width (in Options)"],
+    [
+        "O",
+        "Focus: open each item centered on where to look (its largest change, or a new or removed image's content) at the zoom chosen (in Options)",
+    ],
+    ["N", "Next change (in Options)"],
     ["Z", "Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again (from Fit, 2x is two presses, or one tap on 2x)"],
     ["Shift+A", "Grid: accept every undecided item (asks first)"],
     ["/", "Grid: Find story"],
     ["?", "Show or hide this list"],
-    ["Esc", "Story: back to the grid; in the note box, first leaves the box (its text stays)"],
+    ["[ / ]", "Previous / next project with undecided items: its grid, or from a story its first undecided item"],
+    [
+        "Esc",
+        "Up one level: story to grid, grid to targets; first closes an open menu, and in the note box first leaves the box (its text stays)",
+    ],
     ["Enter (end card)", "Take the first offer: the next project, the undecided items left here, or Finish"],
 ];
 
-// The key overlay: every key, the last messages in full, and the single-key shortcuts switch.
+// The ten controls and keys pressed most in this browser: a button by its id or label, a key as
+// "key-J". Kept only here, never sent anywhere.
+function mostUsed() {
+    const top = Object.entries(usage())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+    return top.length === 0
+        ? el("p", { class: "meta" }, "Nothing counted yet.")
+        : el(
+              "ol",
+              { class: "usage" },
+              top.map(([name, n]) => el("li", {}, `${name}: ${n}`)),
+          );
+}
+
+// The key overlay: every key, the most used controls, the last messages in full, and the
+// single-key shortcuts switch.
 function toggleKeys() {
     const open = document.querySelector("dialog.keys");
     if (open) {
@@ -4112,6 +4499,8 @@ function toggleKeys() {
             {},
             KEYS.map(([k, what]) => el("tr", {}, el("td", {}, k), el("td", {}, what))),
         ),
+        el("h3", {}, "Most used in this browser"),
+        mostUsed(),
         el("h3", {}, "Recent messages"),
         el(
             "ol",
@@ -4165,9 +4554,14 @@ document.addEventListener("keydown", (e) => {
             }
             return;
         }
-        app.querySelector("details.menu[open]")?.removeAttribute("open");
-        if (state.screen === "story") {
+        // The grid's More menu is in the bar, outside app: any open menu closes before a level is left.
+        const menu = document.querySelector("details.menu[open]");
+        if (menu) {
+            menu.removeAttribute("open");
+        } else if (state.screen === "story") {
             toGrid();
+        } else {
+            showTargets();
         }
         return;
     }
@@ -4175,8 +4569,13 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (!state.shortcuts && /^[a-z/]$/.test(key)) {
+    if (!state.shortcuts && /^[a-z/[\]]$/.test(key)) {
         say(SHORTCUTS_OFF);
+        return;
+    }
+    if (key === "[" || key === "]") {
+        e.preventDefault();
+        stepProject(key === "]" ? 1 : -1);
         return;
     }
     if (state.screen === "grid") {
@@ -4222,6 +4621,8 @@ document.addEventListener("keydown", (e) => {
         h: () => toggleView("highlight"),
         s: () => toggleView("spotlight"),
         b: () => toggleOption("showBox"),
+        p: () => toggleOption("baselinePane"),
+        o: () => toggleOption("focus"),
         l: () => {
             if (state.view !== "highlight") {
                 say("Blink works in Highlight (H).");
@@ -4250,6 +4651,7 @@ document.addEventListener("keydown", (e) => {
     }
     if (action) {
         e.preventDefault();
+        count(`key-${key.toUpperCase()}`);
         action();
     }
 });

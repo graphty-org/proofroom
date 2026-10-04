@@ -226,11 +226,11 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 
 The address always names the screen you are on, after the token: the targets list; a pull
 request (or the default branch's seed) and project with the grid's filter and Find text; or one
-story with its pass, view, zoom, outline, blink and Spotlight flash, for example
-`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&pass=undecided&view=flash&zoom=2&box=on&blink=off&flash=off`.
-A link's `box`, `blink` and `flash` apply to the page it opens; the choice this browser remembers
-for B, L and F in Spotlight is left as it was. Flash, Blink and Spotlight flash open stopped from
-a link; the first press of F, L or the button starts them.
+story with its pass, view, zoom, outline, baseline pane, blink and Spotlight flash, for example
+`#token=...&target=123&project=web&filter=undecided&item=button--primary.dark.png&pass=undecided&view=flash&zoom=2&box=on&baseline=on&blink=off&flash=off`.
+A link's `box`, `baseline`, `blink` and `flash` apply to the page it opens; the choice this
+browser remembers for B, P, L and F in Spotlight is left as it was. Flash, Blink and Spotlight
+flash open stopped from a link; the first press of F, L or the button starts them.
 Opening that address, in another tab or on another device, opens the same screen. **Copy link**
 at the top right copies it. The link carries your session token, so it works on your iPad the way
 the printed URL does; keep it to yourself as you would that URL. All of it sits after `#`, which a
@@ -252,15 +252,22 @@ starts the same server from your own shell.
 
 ## The screens
 
-Every screen has the same frame. The header holds **Visual review** (the targets list), the
-**Target** and **Project** menus (on the grid and story screens: jump to any pull request or
-project, each with its count of undecided items), **Finish** with the number of decisions it
+Every screen has the same frame. The header holds a breadcrumb: **Visual review** (the targets
+list), then on the grid and story screens the **Target** and **Project** menus (jump to any pull
+request or project, each with its count of undecided items), with **<** and **>** around the
+project menu (`[` and `]`: the previous or next project of the target with undecided items,
+skipping the rest; its grid from the grid, its first undecided item from a story), and last
+**Grid** on the story screen or, on the grid, the item last opened ("#3 slider--sizes"), which goes
+back into it in its pass at its place. Escape goes up one level (story to grid, grid to targets),
+and the browser's Back and Forward move between the screens. Then **Finish** with the number of decisions it
 would publish ("Finish #201 (12)"; at 0 it is unavailable and says "Nothing new to finish",
-shortened to "Nothing new" on an iPad; whether a passkey must approve it is said in Finish's
-sheet), **Keys** and **Copy link**. Finish never shrinks: on a narrow window the
-menus give up their width first. Under the header is the screen's own bar, then the status row: the one
-place the page writes messages, one line tall on a wide screen and two on an iPad, so a message
-never moves anything; a longer one shows **More**, which opens the row to its full length.
+shortened to "Nothing new" on an iPad and left to Finish itself to say below 900 px; whether a
+passkey must approve it is said in Finish's sheet), **Keys** and **Copy link**. The header is one
+row from 700 px wide: Finish never shrinks, the menus give up their width first, and below 900 px
+Keys shows only its key and Copy link moves into the story's **Options** menu and the grid's
+**More** menu. Under the header is the screen's own bar, then the status row: the one place the
+page writes messages, one line tall (two below 600 px), so a message never moves anything; a
+longer one shows **More**, which opens the row to its full length.
 Errors are shown there in red. **Keys** (or `?`) lists every key, the last
 20 messages in full, and a switch that turns the single-letter keys off.
 
@@ -316,7 +323,9 @@ downloading captures nobody has opened yet) is said in the status row and never 
    way in, which opens the first undecided item and walks every undecided item; **Needs a
    decision** and **All**, each counted, and **More filters** (each status, and what you
    **Accepted**, **Rejected** and **Excluded**, each counted); **Find story**; **Accept all
-   undecided (N)**; and **More**, with **Undo all decisions...** and **Copy link to this grid**.
+   undecided (N)**, which under a filter or Find story takes only what the grid shows and says so
+   ("Accept 131 removed", "Accept 12 matching"; a component's Accept N counts only its shown
+   items too); and **More**, with **Undo all decisions...** and **Copy link to this grid**.
    Failed captures come first as one line, "6 failed captures: only Exclude applies"; opened (the
    page remembers), it lists each with its reason and, under "console and stack", the story's
    console output and the thrown error's stack (a play function's failed `expect` included). An
@@ -327,8 +336,9 @@ downloading captures nobody has opened yet) is said in the status row and never 
    stays the same however the grid is filtered or decided (its place under All), and the story
    screen shows it too. Tiles show small copies the server makes once, loaded as they come near
    the screen; one that fails reads "Failed -- tap to retry". A component's **Accept N** accepts
-   its undecided items without opening them, and **Undo N** clears its decisions; both ask first,
-   naming the count. Under every decided tile its decision is spelled out: "Accepted",
+   its undecided items without opening them, at once and in place: the grid stays where it is,
+   the next component takes the accepted one's place, and the focus moves to its Accept N, so
+   Enter (or a tap) takes that one too. **Undo N** clears a component's decisions, after asking. Under every decided tile its decision is spelled out: "Accepted",
    "Accepted (not opened)" for one Accept all took, or "Rejected" or "Excluded" with the reason,
    with an **Undo** that clears it without opening the story. A reject an earlier Finish already
    posted says "Posted by an earlier Finish: it stays.", and an accept or exclusion it pushed says
@@ -337,28 +347,33 @@ downloading captures nobody has opened yet) is said in the status row and never 
    match, or the item with that number. Coming back from a story, its tile is outlined and
    scrolled into view.
 3. **Story.** One item, on one screen that never scrolls (only the panes do). From the top:
-    - **The decision bar**: **Grid** (Escape), **Prev** (K), "12 of 230 -- 18 left" (in this
-      pass), **Next** (J), **Accept** (A), **Reject** (R), **Exclude** (E), **Undo** (U) and the
-      **Note** box ("Needed to Reject or Exclude"; a note typed before Accept is published with
-      it). Below 1280 px it is two rows, the decisions, then the movement and the note; on an
-      iPad held upright and below 900 px (Split View, a zoomed page) three, the note on a row of
-      its own, and the bar never runs past the window's edge. While the images load, Accept shows a
-      small spinner at its left edge; its label and key stay whole. Every button is always there, in the same place on every item, at every zoom; one
-      that does not apply is shown unavailable, the line under it says why, and pressing it says
-      why in the status row. Each button shows its key.
-    - **The item line**: the item's number, name, status and badges (**moved from ...**, its
-      decision, **size changed**, **flaky**, **re-review** when an accept you made was replaced by
-      the default branch's newer baseline), then one explanation: what changed ("880 pixels
-      changed, in a 40 x 40 area at (160, 80). Threshold 0.063."), what a decision will do
-      ("Removed from the Storybook: Accept deletes its baseline."), or why one does not apply.
-      Tap it to read all of a long line.
-    - **The view bar**: **Side by side**, **Flash** (F), **Highlight** (H), **Spotlight** (S);
-      **Blink** (L) while Highlight is on and **Spotlight flash** (F) while Spotlight is on;
-      **Outline** (B); **Next change** (N) with "1 of 3"; the zoom, **Fit**, **1x**, **2x**,
-      **4x**, **8x** (Z cycles it); and **Details** (the threshold, the anti-aliasing setting, the
-      capture's scale, and any console output). Below 1280 pixels wide (an iPad either way up) it
-      is always two rows, the views on the first, so the zoom is always on screen and the panes
-      start at the same height on every item and in every view.
+    - **The decision bar**, one row, laid out by reach: **Prev** (K), "12 of 230 -- 18 left" (in
+      this pass) and **Next** (J) at the left end; **Undo** (U) and **Exclude** (E), the least
+      used, in the middle; then **Reject** (R) and **Accept** (A), the widest, at the right end,
+      with a gap before Reject so a slip lands on nothing. From 1100 px wide (an iPad on its side)
+      the **Note** box ends the row ("Needed to Reject or Exclude"; a note typed before Accept is
+      published with it); narrower, it ends the item line instead, so it never takes a row of its
+      own, and a reject waiting for its reason moves nothing. Below 600 px (Split View, a zoomed
+      page) the bar is two rows and never runs past the window's edge. While the images load,
+      Accept shows a small spinner at its left edge; its label and key stay whole. Every button is
+      always there, in the same place on every item, at every zoom; one that does not apply is
+      shown unavailable, the item line says why, and pressing it says why in the status row. Each
+      button shows its key.
+    - **The item line**, one row: the item's number, name, status and badges (**moved from
+      ...**, its decision, **size changed**, **flaky**, **re-review** when an accept you made was
+      replaced by the default branch's newer baseline), then one explanation, cut short: what
+      changed ("880 pixels changed, in a 40 x 40 area at (160, 80). Threshold 0.063."), what a
+      decision will do ("Removed from the Storybook: Accept deletes its baseline."), or why one
+      does not apply. Tap it to read all of it.
+    - **The view bar**, one row (from 1100 px it shares the item line's row): **Side** (side by
+      side), **Flash** (F), **Highlight** (H), **Spotlight** (S); the zoom, **Fit**, **1x**,
+      **2x**, **4x**, **8x** (Z cycles it); and **Options**, a menu of what is set once and left:
+      **Outline** (B); **Blink** (L) while Highlight is on, or **Spotlight flash** (F) while
+      Spotlight is on; **Baseline** (P); **Focus** (O); **Next change** (N) with "1 of 3"; **Copy
+      link**; and the details (the threshold, the anti-aliasing setting, the capture's scale, and
+      any console output). The menu stays open while you pick options on one item; Escape or a
+      tap outside closes it. The panes start at the same height on every item and in every view:
+      on an iPad the controls above them take about 216 px upright and 172 px on its side.
     - **The two panes**, the baseline on the left and the new capture on the right, filling the
       rest of the window. Both are drawn at once with "Loading baseline..." and "Loading new
       image..." in them, so nothing moves when the images arrive; Accept shows a spinner until
@@ -370,6 +385,15 @@ downloading captures nobody has opened yet) is said in the status row and never 
     scrolls. With no baseline (a new story, or "no baseline yet") the left pane stays as an empty
     frame labeled "No baseline", so the new image sits exactly where it would beside one; a
     removed story leaves the right pane empty the same way, and a failed one shows its log there.
+    **Baseline** (P) hides the left pane, remembered in this browser: one pane as wide as the two
+    shows the new image (or the view's picture; Flash still alternates baseline and new in it),
+    so at Fit it is drawn up to twice as large; a removed story shows its baseline there instead.
+    **Focus** (O), remembered in this browser, opens every item zoomed in with its panes scrolled
+    so the place to look is in the middle: the largest changed area of a changed story, or the
+    content (everything that is not the story's background) of a new or removed one. The zoom you
+    chose stays from item to item, and the next item's place is worked out while you look at this
+    one, so after Accept it appears already framed. Next change still steps through the other
+    areas, centering each. At Fit the whole image shows, so nothing scrolls.
     **1x** is one CSS pixel of the page for each CSS pixel the story was drawn at (a capture holds
     two image pixels per CSS pixel). **2x**, **4x** and **8x** enlarge it; from 4x pixels are
     drawn as hard squares. Zoomed, the images grow past their panes, which scroll: scrolling one
@@ -423,33 +447,37 @@ Seed them from the default branch (below), or accept them on the pull request.
 Keys work on the screen named, never while a question, Finish's sheet or the key list is open,
 and never in a text box except where listed. **Keys** (or `?`) shows this list, and can turn the
 single-letter keys off. The list opens with focus on itself, so a key pressed as it opens changes
-nothing. Turning the letters off says so in the status row, and so does every letter typed while
+nothing. It also lists the ten controls and keys pressed most in this browser ("accept: 412",
+"key-J: 380"): the page counts each press in the browser's local storage and sends the counts
+nowhere, so the bars can be laid out from real use. Turning the letters off says so in the status row, and so does every letter typed while
 they are off (the switch is remembered in this browser). On a touch screen every control is at
 least 44 px tall.
 
-| Key              | Action                                                                                        |
-| ---------------- | --------------------------------------------------------------------------------------------- |
-| J / K            | Next / previous item of this pass; J on the last item shows what is next                      |
-| A                | Accept, once the images are shown                                                             |
-| (type), Esc, A   | Accept with a note: type it in the note box, leave the box, accept                            |
-| R                | Reject; with an empty note box, type the reason, then Enter                                   |
-| E                | Exclude; with an empty note box, type the reason, then Enter, then confirm                    |
-| U                | Undo the item's decision; you stay on the item                                                |
-| Enter (note box) | Send the Reject or Exclude waiting for its reason; otherwise just leave the box               |
-| F                | Flash between baseline and new; F again returns to side by side                               |
-| F                | In Spotlight: flash the spotlighted baseline and new, or stop flashing                        |
-| Space (hold)     | Flash while held                                                                              |
-| H                | Highlight changed pixels; H again returns to side by side                                     |
-| L                | In Highlight: blink the red changed pixels, or hold them on                                   |
-| S                | Spotlight the changes; S again returns to side by side                                        |
-| B                | Outline the changed area, or stop outlining it                                                |
-| N                | Next change                                                                                   |
-| Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                |
-| Shift+A          | Grid: accept every undecided item of this project without opening it (asks first)             |
-| /                | Grid: Find story                                                                              |
-| Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish              |
-| ?                | Show or hide the key list                                                                     |
-| Escape           | Story: back to the grid; in the note box, first leaves the box (its text stays with the item) |
+| Key              | Action                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| J / K            | Next / previous item of this pass; J on the last item shows what is next                                     |
+| A                | Accept, once the images are shown                                                                            |
+| (type), Esc, A   | Accept with a note: type it in the note box, leave the box, accept                                           |
+| R                | Reject; with an empty note box, type the reason, then Enter                                                  |
+| E                | Exclude; with an empty note box, type the reason, then Enter, then confirm                                   |
+| U                | Undo the item's decision; you stay on the item                                                               |
+| Enter (note box) | Send the Reject or Exclude waiting for its reason; otherwise just leave the box                              |
+| F                | Flash between baseline and new; F again returns to side by side                                              |
+| F                | In Spotlight: flash the spotlighted baseline and new, or stop flashing                                       |
+| Space (hold)     | Flash while held                                                                                             |
+| H                | Highlight changed pixels; H again returns to side by side                                                    |
+| L                | In Highlight: blink the red changed pixels, or hold them on                                                  |
+| S                | Spotlight the changes; S again returns to side by side                                                       |
+| B                | Outline the changed area, or stop outlining it                                                               |
+| P                | Show the baseline pane, or hide it so the new image takes both panes' width                                  |
+| N                | Next change                                                                                                  |
+| Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                               |
+| Shift+A          | Grid: accept every undecided item the grid shows without opening it (asks first)                             |
+| /                | Grid: Find story                                                                                             |
+| Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish                             |
+| ?                | Show or hide the key list                                                                                    |
+| [ / ]            | Grid and story: previous / next project with undecided items                                                 |
+| Escape           | Up one level: story to grid, grid to targets; first closes an open menu, and in the note box first leaves it |
 
 No key reverses a decision. A, R and E on an item that is already decided say "Already accepted.
 Undo it to change it."; press U (or Undo) first. A held A, R, E or U decides once, and an A, R or

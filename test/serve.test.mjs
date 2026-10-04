@@ -673,9 +673,41 @@ describe("serve: review extras", () => {
             project: "compact-mantine",
             component: "badge",
         });
-        expect(one.body).toEqual({ accepted: 1, unpublished: 1 });
+        expect(one.body).toEqual({ accepted: 1, files: ["badge--default.light.png"], unpublished: 1 });
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         expect(Object.keys(body.decisions)).toEqual(["badge--default.light.png"]);
+    });
+
+    it("accepts only the named files: what the page's filter shows, each stored as Accept all stores it", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const body = { id: "123", project: "compact-mantine" };
+        // A list of anything but file names is refused, and nothing is decided.
+        for (const files of ["card--legacy.png", [1], [null]]) {
+            expect((await s.api("POST", "/api/accept-all", { ...body, files })).status).toBe(400);
+        }
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({});
+        // A file the capture lacks, and one that can only be excluded (failed), are left alone.
+        const some = await s.api("POST", "/api/accept-all", {
+            ...body,
+            files: ["card--legacy.png", "badge--default.light.png", "menu--open.png", "nope.png"],
+        });
+        expect(some.body).toEqual({
+            accepted: 2,
+            files: ["badge--default.light.png", "card--legacy.png"],
+            unpublished: 2,
+        });
+        // With a component as well, both narrow it.
+        const none = await s.api("POST", "/api/accept-all", {
+            ...body,
+            component: "badge",
+            files: ["slider--sizes.png"],
+        });
+        expect(none.body).toMatchObject({ accepted: 0, files: [] });
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
+            "badge--default.light.png": { decision: "accept", reason: null, bulk: true },
+            "card--legacy.png": { decision: "accept", reason: null, bulk: true },
+        });
     });
 
     it("posts one commit status when Finish completes, none per decision", async () => {
@@ -740,7 +772,8 @@ describe("serve: review extras", () => {
         });
         expect(one.status).toBe(200);
         const all = await s.api("POST", "/api/accept-all", { id: "123", project: "compact-mantine" });
-        expect(all.body).toEqual({ accepted: 3, unpublished: 4 });
+        expect(all.body).toMatchObject({ accepted: 3, unpublished: 4 });
+        expect(all.body.files).toHaveLength(3);
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         expect(body.decisions["badge--default.light.png"]).toMatchObject({ decision: "accept" });
         const target = (await s.api("GET", "/api/target/123")).body.projects[0];
