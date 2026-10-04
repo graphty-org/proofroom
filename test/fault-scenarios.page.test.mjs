@@ -199,8 +199,8 @@ describe("review page: stale caches", () => {
         // The failure reads as text with a Retry, and Accept waits for both images.
         await expect.poll(() => page.locator("#stage p.error").textContent()).toMatch(/\S.*Retry$/);
         expect(await page.locator("#accept").getAttribute("class")).toContain("loading");
-        await page.keyboard.press("j");
         await page.keyboard.press("k");
+        await page.keyboard.press("j");
         await expect.poll(() => page.locator('#stage img[alt^="baseline of"]').count(), { timeout: 3000 }).toBe(1);
     });
 
@@ -248,7 +248,7 @@ describe("review page: stale caches", () => {
         // Each step waits for the page to show item n with its box count, checked every frame:
         // expect.poll's 50 ms interval alone would make the 59 steps take about 3 s.
         for (let n = 2; n <= items.length; n++) {
-            await page.keyboard.press("j");
+            await page.keyboard.press("k");
             await page.waitForFunction((n) => {
                 const { document } = globalThis;
                 return (
@@ -322,7 +322,8 @@ describe("review page: decisions", () => {
         expect(await decisions()).toEqual({});
     });
 
-    // Moving to another item forgets an abandoned Exclude, and Enter alone decides nothing.
+    // The reason box holds the keys while it is open, and a cancelled Exclude is gone: nothing
+    // typed after it decides anything.
     it("Enter in the reason box can run an earlier, abandoned Exclude", async () => {
         const r = makeRepo();
         await open(r, world(r));
@@ -330,13 +331,17 @@ describe("review page: decisions", () => {
         await openStory(2);
         await ready();
         await page.keyboard.press("e");
+        await page.locator("#reason:focus").waitFor();
+        await page.keyboard.press("k");
+        expect(await page.locator("#position").textContent()).toMatch(/^2 of /);
+        await page.keyboard.press("Escape");
         await expect
             .poll(() => page.locator("#status").textContent())
-            .toBe("Type the reason, then press Enter to exclude.");
+            .toBe("Exclude cancelled: #2 is still undecided.");
         await page.getByRole("button", { name: "Next", exact: true }).click();
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
-        await page.locator("#note").fill("too tall");
-        await page.locator("#note").press("Enter");
+        await page.keyboard.type("too tall");
+        await page.keyboard.press("Enter");
         await sleep(300);
         expect(dialogs.filter((d) => d.startsWith("Exclude"))).toEqual([]);
         expect(await decisions()).toEqual({});
@@ -370,8 +375,8 @@ describe("review page: rendering and routing", () => {
         await review();
         await openStory(2);
         await expect.poll(boxCount).toBe("No changed area at this threshold");
-        await page.keyboard.press("j");
         await page.keyboard.press("k");
+        await page.keyboard.press("j");
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^2 of /);
         // Item 3's two images arrive one after the other, a second each.
         await sleep(3500);
