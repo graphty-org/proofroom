@@ -136,6 +136,7 @@ Every command has `--help`; `visual-review --help` lists them.
 | `workDir`       | `.visual-review`    | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                      |
 | `commitPrefix`  | `test`              | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
 | `issueLabels`   | `["bug"]`           | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
+| `fontconfig`    | none (host fonts)   | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
 | `projects`      | (required)          | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:
@@ -154,6 +155,31 @@ there is no setting that turns the gate off, and a config that sets `gate` is re
 request gate reads the config as it is on the base branch, so a pull request cannot move
 `baselines` out from under it or drop a project from the gate; a project that a pull request adds
 to its own config is gated too.
+
+### Pinned fonts
+
+Chromium finds fonts through the host's fontconfig, so a capture made on a laptop and one made in
+CI draw text with whatever fonts each machine has installed, and a runner image update can change
+CI's own captures. `fontconfig` names a `fonts.conf` committed to your repository; capture starts
+every browser with `FONTCONFIG_FILE` pointing at it and a font cache of its own, so no host font
+or host font setting is consulted. Write the file with relative paths, so it works from any
+checkout:
+
+```xml
+<fontconfig>
+    <dir prefix="relative">fonts</dir>
+    <include ignore_missing="no" prefix="relative">conf.d</include>
+    <cachedir prefix="xdg">fontconfig</cachedir>
+</fontconfig>
+```
+
+Commit the font files with Git LFS. The workflows fetch everything in the `fonts.conf`'s
+directory along with the baselines, and capture refuses to start while any file there is still an
+LFS pointer (run `git lfs pull --include "<that directory>/**"`); it never falls back to the host's
+fonts. Each results.json records the SHA-256 of the directory as `environment.fonts`, and
+`environment.emojiFont` says whether the pinned set draws emoji. To keep your existing baselines,
+snapshot the fonts and `/etc/fonts/conf.d` your CI runner has today; switching to a different set
+changes every capture with text, which is one re-baseline.
 
 ## The GitHub Actions workflows
 

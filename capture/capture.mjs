@@ -34,10 +34,12 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { dirname, extname, join, normalize, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, extname, join, normalize, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
@@ -474,17 +476,51 @@ async function provenance() {
 }
 
 /**
- * Whether any font on this machine draws emoji, asked of fontconfig with one common emoji
- * (U+1F680). Without one, every emoji in a story renders as an empty box, so capture warns.
- * ponytail: one code point, a machine-level check; the pinned fonts of milestone 2 replace it.
+ * Whether any font draws emoji, asked of fontconfig with one common emoji (U+1F680): the pinned
+ * fonts when `env` names a FONTCONFIG_FILE, else the machine's. Without one, every emoji in a story
+ * renders as an empty box, so capture warns.
+ * @param {NodeJS.ProcessEnv} [env] the environment fc-list runs in
  * @returns {boolean | null} null when fc-list is not installed
  */
-export function hasEmojiFont() {
+export function hasEmojiFont(env = process.env) {
     try {
-        return execFileSync("fc-list", [":charset=1f680", "family"], { encoding: "utf8" }).trim() !== "";
+        return execFileSync("fc-list", [":charset=1f680", "family"], { encoding: "utf8", env }).trim() !== "";
     } catch {
         return null;
     }
+}
+
+const LFS_POINTER = "version https://git-lfs.github.com/spec/v1";
+
+/**
+ * Checks a pinned font configuration and fingerprints it: the SHA-256 over every file under the
+ * fonts.conf's directory (path and content), recorded in results.json as `environment.fonts`.
+ * A file that is still a Git LFS pointer is refused, never skipped: Chromium would silently fall
+ * back to some other font and every capture would differ from its baseline.
+ * @param {string} fontconfig the fonts.conf's absolute path
+ * @returns {Promise<string>} the fingerprint
+ */
+export async function pinnedFonts(fontconfig) {
+    const dir = dirname(fontconfig);
+    await stat(fontconfig).catch(() => {
+        throw new Error(`the config's fontconfig file ${fontconfig} does not exist`);
+    });
+    const files = (await readdir(dir, { recursive: true, withFileTypes: true }))
+        .filter((e) => e.isFile())
+        .map((e) => join(e.parentPath, e.name))
+        .sort();
+    const hash = createHash("sha256");
+    for (const file of files) {
+        const bytes = await readFile(file);
+        const name = relative(dir, file).split(sep).join("/");
+        if (bytes.subarray(0, LFS_POINTER.length).toString() === LFS_POINTER) {
+            throw new Error(
+                `${name} in ${dir} is a Git LFS pointer, not a font: run \`git lfs pull --include "${relative(process.cwd(), dir) || "."}/**"\``,
+            );
+        }
+        hash.update(`${name}\0${sha256(bytes)}\n`);
+    }
+    return hash.digest("hex");
 }
 
 async function cpuModel() {
@@ -529,7 +565,9 @@ async function loadReference(dir) {
  * Captures one project.
  * @param {{ project: string, storybook: string, baselines: string, out: string, workers: number,
  *     waitFor?: object | null, reference?: string | null, stories?: string[] | null,
- *     log?: (line: string) => void }} options `waitFor` is the project's config entry (see
+ *     fontconfig?: string | null, log?: (line: string) => void }} options `fontconfig` is the
+ *     absolute path of the fonts.conf every browser draws with (the config's `fontconfig`), null for
+ *     the host's fonts; `waitFor` is the project's config entry (see
  *     shootOnce); `reference` is the default branch's capture (see above); `stories` keeps only
  *     the story ids starting with one of these prefixes, for a quick local preview, and then no
  *     baseline is reported removed
@@ -544,9 +582,16 @@ export async function capture({
     waitFor = null,
     reference = null,
     stories = null,
+    fontconfig = null,
     log = console.log,
 }) {
     const started = Date.now();
+    // Pinned fonts: only the committed directory, and a font cache of this run's own (only for the
+    // browsers: Playwright finds its Chromium under XDG_CACHE_HOME).
+    const fonts = fontconfig ? await pinnedFonts(fontconfig) : null;
+    const fontEnv = fontconfig
+        ? { FONTCONFIG_FILE: fontconfig, XDG_CACHE_HOME: await mkdtemp(join(tmpdir(), "visual-review-fonts-")) }
+        : {};
     await mkdir(join(out, "baselines"), { recursive: true });
     await mkdir(join(out, "second"), { recursive: true });
     const allIds = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
@@ -558,7 +603,7 @@ export async function capture({
     // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.
     const browsers = await Promise.all(
         Array.from({ length: Math.max(1, workers) }, () =>
-            chromium.launch({ args: CHROMIUM_ARGS, env: { ...process.env, TZ: "UTC" } }),
+            chromium.launch({ args: CHROMIUM_ARGS, env: { ...process.env, ...fontEnv, TZ: "UTC" } }),
         ),
     );
     const [browser] = browsers;
@@ -631,11 +676,12 @@ export async function capture({
             ? []
             : [...existing].filter((f) => !planned.has(f) && !renamed.has(f) && BASELINE_NAME.test(f));
 
-        const emojiFont = hasEmojiFont();
+        const emojiFont = hasEmojiFont({ ...process.env, ...fontEnv });
         if (emojiFont === false) {
             log(
-                "warning: no font on this machine draws emoji (fc-list :charset=1f680 found none), so " +
-                    "every emoji in a story is captured as an empty box; install fonts-noto-color-emoji",
+                `warning: no font ${fontconfig ? `in ${fontconfig}` : "on this machine"} draws emoji (fc-list ` +
+                    ":charset=1f680 found none), so every emoji in a story is captured as an empty box; " +
+                    "add one, such as Noto Color Emoji",
             );
         }
         const results = {
@@ -655,6 +701,7 @@ export async function capture({
                 gpu,
                 cpu: await cpuModel(),
                 emojiFont,
+                fonts,
                 tool: toolVersion(),
             },
             items,
@@ -758,6 +805,9 @@ export async function capture({
     } finally {
         await Promise.all(browsers.map((b) => b.close()));
         server.close();
+        if (fontEnv.XDG_CACHE_HOME) {
+            await rm(fontEnv.XDG_CACHE_HOME, { recursive: true, force: true });
+        }
     }
 }
 

@@ -154,6 +154,7 @@ async function capture(args) {
         waitFor: project.waitFor,
         reference: values.reference ? resolve(values.reference) : null,
         stories: values.stories ? values.stories.split(",").filter(Boolean) : null,
+        fontconfig: config.fontconfig ? join(root, config.fontconfig) : null,
     });
     return 0;
 }
