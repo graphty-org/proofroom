@@ -711,10 +711,14 @@ describe("passkey approvals", () => {
 
             it("fails a record for a pull request outside the batch, and one with no approval", () => {
                 const outside = run(batch(), "--queue-event", event(7));
-                expect(outside.stdout).toContain("visual-baselines/reviews/r8.json: the record is for pull request #8, not #7");
+                expect(outside.stdout).toContain(
+                    "visual-baselines/reviews/r8.json: the record is for pull request #8, not #7",
+                );
                 expect(outside.status).toBe(1);
                 const unsigned = run(batch(false), "--queue-event", event(7, 8));
-                expect(unsigned.stdout).toContain("visual-baselines/reviews/r8.json: the record has no passkey approval");
+                expect(unsigned.stdout).toContain(
+                    "visual-baselines/reviews/r8.json: the record has no passkey approval",
+                );
                 expect(unsigned.status).toBe(1);
             });
 
@@ -744,7 +748,9 @@ describe("passkey approvals", () => {
 
             it("reads the pull requests from the last yaml block of the queue draft's body only", () => {
                 const body = (yaml) => ({ pull_request: { body: `text\n\`\`\`yaml\n${yaml}\`\`\`\n` } });
-                expect(queuePullRequests(body("pull_requests:\n  - number: 988\n    scopes: []\nscopes: []\n"))).toEqual([988]);
+                expect(
+                    queuePullRequests(body("pull_requests:\n  - number: 988\n    scopes: []\nscopes: []\n")),
+                ).toEqual([988]);
                 expect(
                     queuePullRequests({
                         pull_request: {
@@ -752,7 +758,9 @@ describe("passkey approvals", () => {
                         },
                     }),
                 ).toEqual([2, 3]);
-                expect(queuePullRequests(body("previous_failed_batches:\n  - number: 5\npull_requests: []\n"))).toEqual([]);
+                expect(queuePullRequests(body("previous_failed_batches:\n  - number: 5\npull_requests: []\n"))).toEqual(
+                    [],
+                );
                 expect(queuePullRequests(null)).toEqual([]);
             });
         });
