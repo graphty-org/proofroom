@@ -1,3 +1,14 @@
+## 0.2.7 (2026-10-04)
+
+### 🩹 Fixes
+
+- **visual-review:** with Focus on, show an image only once its focus point is known ([96302a86b](https://github.com/graphty-org/graphty-monorepo/commit/96302a86b))
+- **visual-review:** label a loading Flash, Highlight or Spotlight as that view ([74af30a73](https://github.com/graphty-org/graphty-monorepo/commit/74af30a73))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.6 (2026-10-04)
 
 ### 🚀 Features
