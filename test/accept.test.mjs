@@ -491,7 +491,9 @@ describe("finish: rejects", () => {
         const quiet = await u.run([accept("badge--default.light.png")]);
         expect(quiet.acceptNotes).toBe(0);
         expect(u.calls.some((c) => c.args.join(" ").includes("/comments"))).toBe(false);
-    });
+        // Three full Finishes (about 30 git and git-lfs processes each): 3.1 s on a CI runner
+        // beside the page tests' browsers, past the 5 s default once.
+    }, 15_000);
 
     it("keeps the accepts when a comment holding only accept notes fails, and says so", async () => {
         const s = setup();
