@@ -1354,6 +1354,11 @@ function downloadText(t) {
     return `Downloading: ${d.done} of ${plural(d.total, "artifact")}${bytes}${s}`;
 }
 
+// What a local preview is, for its badge and Finish's sheet.
+const PREVIEW_NOTE =
+    "Captured on this computer from the pull request's head, before CI. Decide and Finish on it as on CI's " +
+    "capture: CI checks it, and anything CI draws differently comes back to you.";
+
 function projectRow(t, p) {
     const results = Object.entries(p.counts)
         .filter(([s]) => REVIEWABLE.includes(s))
@@ -1370,6 +1375,7 @@ function projectRow(t, p) {
             p.acceptable || t.local || p.downloading || p.problem
                 ? null
                 : el("span", { class: "badge" }, "Reject only here: accept on a pull request"),
+            p.preview ? [" ", el("span", { class: "badge", title: PREVIEW_NOTE }, "local preview, CI pending")] : null,
         ),
         el(
             "td",
@@ -3694,6 +3700,12 @@ function sheet(t, f, prepared, notice) {
     }
     if (f.unloaded.length > 0) {
         lines.push(`Not loaded, so not reviewed: ${f.unloaded.join(", ")}.`);
+    }
+    if (f.previews?.length > 0) {
+        lines.push(
+            `${plural(f.previews.length, "project")} from a local capture (${f.previews.join(", ")}): ` +
+                "CI will check them, and anything CI draws differently comes back to you.",
+        );
     }
     return [
         el("h2", { id: "sheet-title" }, `Finish ${label}, every project:`),

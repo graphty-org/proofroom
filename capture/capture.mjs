@@ -38,7 +38,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, extname, join, normalize, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -447,19 +447,31 @@ const clip = (lines) => lines.slice(0, MAX_CONSOLE).map((l) => l.slice(0, MAX_LI
 const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 30 }).trim();
 
 /**
- * Where this run came from: GitHub Actions' environment in CI, the working tree locally.
+ * Where this run came from: GitHub Actions' environment in CI, the working tree locally. A local
+ * preview of a pull request (tools/visual-preview.sh) sets VISUAL_REVIEW_PREVIEW_PR and
+ * VISUAL_REVIEW_PREVIEW_HEAD while it captures the pull request's merge tree: the capture then names
+ * the pull request and its head, and `local.preview` says which merge commit was built, where, and
+ * with which build of this tool, so the review page can offer it for decisions before CI's lands.
  * @returns {Promise<object>} the commit, pull request and run fields of results.json, and `local`
  */
 async function provenance() {
     if (process.env.GITHUB_ACTIONS !== "true") {
         const diff = execFileSync("git", ["diff", "HEAD", "--binary"], { maxBuffer: 1 << 30 });
+        const commit = git("rev-parse", "HEAD");
+        const pr = Number(process.env.VISUAL_REVIEW_PREVIEW_PR) || null;
+        const head = process.env.VISUAL_REVIEW_PREVIEW_HEAD ?? "";
+        const preview = pr !== null && /^[0-9a-f]{40}$/.test(head);
         return {
-            commit: git("rev-parse", "HEAD"),
-            headSha: null,
-            pr: null,
+            commit,
+            headSha: preview ? head : null,
+            pr: preview ? pr : null,
             runId: null,
             runAttempt: null,
-            local: { describe: git("describe", "--always", "--dirty"), diff: sha256(diff) },
+            local: {
+                describe: git("describe", "--always", "--dirty"),
+                diff: sha256(diff),
+                ...(preview && { preview: { merge: commit, host: hostname(), tool: toolVersion() } }),
+            },
         };
     }
     const event = process.env.GITHUB_EVENT_PATH

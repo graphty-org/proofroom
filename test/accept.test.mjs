@@ -386,9 +386,18 @@ describe("finish: refusals", () => {
 describe("finish: git", () => {
     it("generates commit messages that pass the repository's commitlint", () => {
         const commitlint = join(ROOT, "node_modules/.bin/commitlint");
-        for (const pr of [123, null]) {
+        const local = [
+            { project: "compact-mantine", merge: "3".repeat(40) },
+            { project: "graphty-element", merge: "3".repeat(40) },
+        ];
+        for (const [pr, previews] of [
+            [123, []],
+            [null, []],
+            [123, local],
+        ]) {
             const msg = commitMessage({
                 pr,
+                local: previews,
                 counts: { accept: 2, exclude: 1, remove: 1 },
                 runId: 1000,
                 runAttempt: 2,
