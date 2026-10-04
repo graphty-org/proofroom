@@ -245,11 +245,20 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 - `--master-run <run id>` also lists the default branch at that run, for seeding.
 - `--results <dir>` serves local captures offline (a directory of `<project>/results.json`), for
   looking at a story before a pull request exists. It is listed as "Local preview" and is look
-  only: no Accept, Reject or Exclude, and no Finish. Only CI captures of a pushed commit are
-  decided.
-  A change to this rule is designed and not yet built: a local capture of a pull request's merge
-  tree, made with the repository's pinned fonts, becomes reviewable and finishable, and the gate
-  still passes it only when CI's own capture matches ([local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md)).
+  only: no Accept, Reject or Exclude, and no Finish.
+- `--previews <dir>` is where local previews of pull requests are, as `<dir>/<pr>/<project>/`
+  (default: the config's `workDir` plus `/local`, in the repository's main checkout, so a server
+  run from any worktree finds them). A local preview is a capture of the pull request's merge tree
+  (`refs/pull/<n>/merge`) made with `VISUAL_REVIEW_PREVIEW_PR=<n>` and
+  `VISUAL_REVIEW_PREVIEW_HEAD=<head sha>` set, ideally with the config's `fontconfig` so its bytes
+  match CI's. While CI has not captured a project of that head, a complete preview of it is listed
+  in its place as "local preview, CI pending", and Accept, Reject, Exclude and Finish work on it as
+  on CI's capture. Finish's record then names no CI run (`subject.runId` is null) and lists the
+  previewed projects in `subject.local`. The gate does not change: CI captures the Finish commit
+  and compares it with the images you accepted, so the pull request passes with nothing left to
+  decide when CI draws the same bytes, and any image CI draws differently comes back to you
+  undecided. Decisions are kept by image hash, so when CI's capture of the same head lands every
+  identical image keeps its decision. See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
 
 ### Links to a screen
 
@@ -792,11 +801,9 @@ npx visual-review capture --project web --out .visual-review/preview/web --stori
 `--stories` captures only the story ids that start with one of the given prefixes, in seconds
 rather than minutes, and then reports no baseline as removed. Start the server with
 `--results .visual-review/preview` to see the capture beside its baseline. Capture and look again
-after each change. A local preview is look only: its fonts and graphics stack are not CI's, so
-only a CI capture of a pushed commit becomes a baseline. Push, let CI capture, and accept it on
-the pull request.
-This rule is being replaced for pull requests: see [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md), which lets the owner
-accept and Finish on a local capture of the pull request while CI's capture stays the judge.
+after each change. Such an ad hoc capture is look only. To approve before CI has captured, push,
+capture the pull request's merge tree as a local preview (`serve --previews` above), and accept it
+on the pull request; CI's capture stays the judge.
 
 ## How captures and baselines move
 
@@ -1024,6 +1031,6 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   pushes, and CI captures again; review what still differs. It refuses, changing nothing, when
   anything outside the baselines directory conflicts too.
 - **Captures differ from what you see locally.** Only CI's captures are compared: fonts and the
-  graphics stack differ from machine to machine. Look locally with `capture --stories` and
-  `serve --results`, but let CI's capture become the baseline.
-  With pinned fonts this changes; see [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
+  graphics stack differ from machine to machine unless the config's `fontconfig` pins the fonts.
+  A local preview you accepted that CI draws differently comes back to you undecided on CI's
+  capture: accept it there. See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
