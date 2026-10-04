@@ -35,9 +35,10 @@ jobs:
             - name: List the projects
               id: plan
               run: |
-                  echo "projects=$(jq -c '(.baselines // "visual-baselines") as $b
+                  echo "projects=$(jq -c '(.baselines // "visual-baselines") as $b | (.fontconfig // null) as $f
                       | [.projects | to_entries[] | {project: .key, storybook: .value.storybook,
-                         build: .value.build, baselines: $b}]' visual-review.config.json)" >> "$GITHUB_OUTPUT"
+                         build: .value.build, baselines: $b,
+                         fonts: (if $f then ($f | sub("[^/]*$"; "")) + "**" else "\($b)/\(.key)/**" end)}]' visual-review.config.json)" >> "$GITHUB_OUTPUT"
 
     # continue-on-error: a crash of the tool itself must not fail the run; the gate below judges.
     visual:
@@ -63,11 +64,11 @@ jobs:
               uses: actions/cache@v4
               with:
                   path: .git/lfs/objects
-                  key: lfs-${{ matrix.project }}-${{ hashFiles(format('{0}/{1}/**/*.png', matrix.baselines, matrix.project)) }}
+                  key: lfs-${{ matrix.project }}-${{ hashFiles(format('{0}/{1}/**/*.png', matrix.baselines, matrix.project), matrix.fonts) }}
                   restore-keys: lfs-${{ matrix.project }}-
 
-            - name: Fetch this project's baseline images from Git LFS
-              run: git lfs pull --include "${{ matrix.baselines }}/${{ matrix.project }}/**"
+            - name: Fetch this project's baseline images and the pinned fonts from Git LFS
+              run: git lfs pull --include "${{ matrix.baselines }}/${{ matrix.project }}/**,${{ matrix.fonts }}"
 
             # __SETUP__
 

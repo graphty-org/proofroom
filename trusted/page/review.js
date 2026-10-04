@@ -93,7 +93,6 @@ const state = {
     // Flash, Blink and Spotlight flash run; a page load or a deep link opens them stopped.
     motion: true,
     held: null, // the view to return to when Space is released
-    pending: null, // "reject" or "exclude" waiting for its reason in the note box
     screen: "targets",
     job: null, // the newest Finish, from GET /api/finish-status
     plan: null, // what the running Finish was started to do, for its step list
@@ -103,7 +102,7 @@ const VIEWS = ["side", "flash", "highlight", "spotlight"];
 const FILTERS = ["undecided", "all", ...REVIEWABLE, ...Object.keys(DECISIONS)];
 let routes = 0; // how many routes are running: the page follows the address (a link, Back, Forward)
 let nav = 0; // bumped by each screen change that waits on the server: a superseded one stops there
-// Text typed in the note box, kept with the item it was typed on until its decision is saved.
+// A reason typed in the reason box, kept with the item it was typed on until its decision is saved.
 const drafts = new Map();
 // The last messages, in full, for the key overlay.
 const messages = [];
@@ -132,15 +131,6 @@ let factor = 1; // CSS pixels per image pixel of the pictures on the stage
 let shownBoxes = []; // the changed areas of the item on the stage
 let stageKey = null; // "file|zoom" of what is on the stage, to keep its scroll across view changes
 let optionsOpen = false; // the story's Options menu stays open across redraws of the same item
-// A wide window (an iPad on its side, a desktop) has room for the note box at the end of the
-// decision row; a narrower one puts it at the end of the item row. Turning the iPad moves it.
-const WIDE = matchMedia("(min-width: 1100px)");
-WIDE.addEventListener("change", () => {
-    if (state.screen === "story") {
-        // The note box moves rows; a reason being typed keeps the focus.
-        showStory({ focusNote: document.activeElement?.id === "note" });
-    }
-});
 
 // How often each control and key is pressed, in this browser only (nothing is sent anywhere):
 // the Keys overlay lists the most used, so the bars can be laid out from real use.
@@ -461,7 +451,7 @@ function sayBackground(text, extra = "") {
 // `unavailable` makes `yes` say why instead (inside the dialog, which a screen reader hears), and
 // `why` names the element of `message` explaining it; `focusYes` focuses `yes` (a retry).
 function ask(message, yes, { onYes = () => {}, label = null, unavailable = null, why = null, focusYes = false } = {}) {
-    // Focus on the box, not a button: the Enter that asked (in the note box) must not answer it.
+    // Focus on the box, not a button: the Enter that asked (in the reason box) must not answer it.
     const text = el("div", { class: "ask-text", id: "ask-text" }, message);
     const dialog = el("dialog", {
         class: "ask",
@@ -508,6 +498,65 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null,
         dialog.addEventListener("close", () => {
             dialog.remove();
             resolve(dialog.returnValue === "yes");
+        }),
+    );
+}
+
+// The reason a Reject or Exclude needs, asked in a box with the cursor already in its field, so a
+// hardware keyboard types straight into it. Resolves the reason, or null for Cancel or Escape. What
+// is typed stays with the item (drafts) until its decision is saved, cancelled or not.
+function askReason(item, decision) {
+    const key = draftKey(item);
+    const verb = decision === "reject" ? "Reject" : "Exclude";
+    const field = el("input", {
+        id: "reason",
+        type: "text",
+        maxlength: "2000",
+        autocomplete: "off",
+        autofocus: true,
+        "aria-labelledby": "reason-label",
+        value: drafts.get(key) ?? "",
+        oninput: (e) => drafts.set(key, e.target.value),
+    });
+    const alert = el("p", { class: "error", role: "alert" });
+    const dialog = el("dialog", { class: "reason", "aria-labelledby": "reason-label" });
+    const send = () => {
+        if (field.value.trim() === "") {
+            alert.textContent = `${verb} needs a reason.`;
+            field.focus();
+            return;
+        }
+        dialog.close("yes");
+    };
+    field.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.repeat) {
+            e.preventDefault();
+            send();
+        }
+    });
+    dialog.append(
+        el(
+            "label",
+            { id: "reason-label", for: "reason" },
+            `Reason to ${decision} #${numberOf(item)}`,
+            decision === "exclude" ? ": Exclude stops capturing every mode of this story." : "",
+        ),
+        field,
+        alert,
+        el(
+            "p",
+            { class: "actions" },
+            el("button", { type: "button", onclick: () => dialog.close("no") }, "Cancel"),
+            el("button", { type: "button", class: "primary", id: "reason-yes", onclick: send }, verb),
+        ),
+    );
+    document.body.append(dialog);
+    dialog.showModal();
+    field.focus();
+    return new Promise((resolve) =>
+        dialog.addEventListener("close", () => {
+            dialog.remove();
+            resolve(dialog.returnValue === "yes" ? field.value.trim() : null);
         }),
     );
 }
@@ -1243,7 +1292,7 @@ function targetCard(t) {
         el(
             "p",
             { class: "badges" },
-            t.mergeMasterFirst ? el("span", { class: "badge warn" }, "merge master first") : null,
+            t.mergeMasterFirst ? el("span", { class: "badge" }, `behind ${branchName(t)}`) : null,
             t.mergeMasterFirst === true && t.pr !== null && !t.local && !busy
                 ? el(
                       "button",
@@ -1753,7 +1802,6 @@ function showGrid() {
     gridShown = here;
     state.screen = "grid";
     state.ended = false;
-    state.pending = null;
     app.classList.remove("story-screen");
     drawHeader();
     setBar(gridBar());
@@ -2079,9 +2127,6 @@ function explanation(item, d) {
     if (state.ended) {
         return "End of this pass: choose what is next.";
     }
-    if (state.pending === "exclude") {
-        return "Exclude stops capturing every mode of this story.";
-    }
     if (d?.posted) {
         return postedText(d);
     }
@@ -2128,7 +2173,7 @@ function barFocus() {
     return a && a.tagName === "BUTTON" && bar.contains(a) && a.id ? a.id : null;
 }
 
-function showStory({ focusNote = false } = {}) {
+function showStory() {
     stopFlash();
     const items = passItems();
     if (items.length === 0) {
@@ -2140,8 +2185,6 @@ function showStory({ focusNote = false } = {}) {
     state.index = Math.max(0, Math.min(state.index, items.length - 1));
     const item = items[state.index];
     if (item.file !== state.lastFile) {
-        // An Exclude (or reject) left waiting for a reason on another item is abandoned.
-        state.pending = null;
         stageShown = null;
         appearedAt = performance.now();
         optionsOpen = false;
@@ -2189,11 +2232,8 @@ function showStory({ focusNote = false } = {}) {
     if (!state.ended) {
         renderStage(item, view, keep);
     }
-    // Focus goes back where it was: on the same bar button if one had it, never into the note box
-    // unless a reject or exclude is waiting for its reason.
-    if (focusNote) {
-        document.getElementById("note").focus();
-    } else if (focusId && document.getElementById(focusId)) {
+    // Focus goes back where it was: on the same bar button if one had it.
+    if (focusId && document.getElementById(focusId)) {
         document.getElementById(focusId).focus({ preventScroll: true });
     } else if (!state.ended) {
         app.focus({ preventScroll: true });
@@ -2203,8 +2243,8 @@ function showStory({ focusNote = false } = {}) {
 
 // The decision bar, in order of reach: Previous, the count and Next at the left end; Undo and
 // Exclude, the least used, in the middle; Reject, then Accept, the widest, at the right end, with
-// a gap between them. Each always present in the same place. In a wide window the note box ends
-// the row; narrower, it sits in the item row (noteBox).
+// a gap between them. Each always present in the same place. Reject and Exclude ask their reason
+// in a box of their own (askReason), so the screen holds no text field.
 function decisionBar(item, items, d) {
     const can = available(item, d);
     const left = items.filter((i) => !decisionOf(i)).length;
@@ -2229,9 +2269,9 @@ function decisionBar(item, items, d) {
         { class: "decisionbar", role: "toolbar", "aria-label": "Decide" },
         el(
             "button",
-            { type: "button", id: "prev", "aria-keyshortcuts": "K", onclick: () => move(-1) },
+            { type: "button", id: "prev", "aria-keyshortcuts": "J", onclick: () => move(-1) },
             "Prev",
-            kbd("K"),
+            kbd("J"),
         ),
         el(
             "span",
@@ -2240,18 +2280,17 @@ function decisionBar(item, items, d) {
         ),
         el(
             "button",
-            { type: "button", id: "next", "aria-keyshortcuts": "J", onclick: () => move(1) },
+            { type: "button", id: "next", "aria-keyshortcuts": "K", onclick: () => move(1) },
             "Next",
-            kbd("J"),
+            kbd("K"),
         ),
         button("undo", "Undo", "U", can.undo, { onclick: () => decide(null) }),
         button("exclude", "Exclude", "E", can.exclude, {
-            class: state.pending === "exclude" ? "waiting" : null,
             "aria-pressed": String(d?.decision === "exclude"),
             onclick: () => decide("exclude"),
         }),
         button("reject", "Reject", "R", can.reject, {
-            class: `reject ${state.pending === "reject" ? "waiting" : ""}`,
+            class: "reject",
             "aria-pressed": String(d?.decision === "reject"),
             onclick: () => decide("reject"),
         }),
@@ -2267,39 +2306,6 @@ function decisionBar(item, items, d) {
             },
             waitingImages ? spinner() : null,
         ),
-        WIDE.matches ? noteBox(item, d) : null,
-    );
-}
-
-// The note box: the reason a Reject or Exclude needs, or a note typed before an Accept. One box,
-// at the end of the decision row in a wide window and at the end of the item row otherwise, so it
-// never takes a row of its own; a reject waiting for its reason moves nothing.
-function noteBox(item, d) {
-    const draft = drafts.get(draftKey(item)) ?? "";
-    return el(
-        "span",
-        { class: "notebox" },
-        el("label", { for: "note" }, "Note"),
-        el("input", {
-            id: "note",
-            type: "text",
-            maxlength: "2000",
-            autocomplete: "off",
-            readonly: Boolean(d) || isLocal() || state.ended,
-            placeholder: notePlaceholder(d),
-            value: d ? (d.reason ?? "") : draft,
-            oninput: (e) => drafts.set(draftKey(item), e.target.value),
-            onkeydown: (e) => {
-                if (e.key === "Enter" && !e.repeat) {
-                    e.preventDefault();
-                    if (state.pending) {
-                        decide(state.pending);
-                    } else {
-                        e.target.blur();
-                    }
-                }
-            },
-        }),
     );
 }
 
@@ -2314,11 +2320,7 @@ function itemLine(item, d) {
         "div",
         {
             class: "itemline",
-            onclick: (e) => {
-                if (!e.target.closest(".notebox")) {
-                    e.currentTarget.classList.toggle("open");
-                }
-            },
+            onclick: (e) => e.currentTarget.classList.toggle("open"),
         },
         el(
             "h2",
@@ -2351,7 +2353,6 @@ function itemLine(item, d) {
                 : null,
         ),
         el("p", { id: "explain" }, explanation(item, d)),
-        WIDE.matches ? null : noteBox(item, d),
     );
 }
 
@@ -2526,13 +2527,6 @@ const paneError = (message) =>
 // missing image leaves its pane empty, the same size, so the other one never moves. With the
 // Baseline pane off (P) only one pane is drawn, as wide as the two: the right one, or the
 // baseline when there is no capture (a removed story).
-function notePlaceholder(decided) {
-    if (decided) {
-        return "";
-    }
-    return state.pending ? `Reason to ${state.pending}, then Enter` : "Needed to Reject or Exclude";
-}
-
 // Which single pane to draw when the baseline is hidden: the capture (or a failed item's error),
 // else the baseline of a removed story. Null draws both.
 function onlyPane(item) {
@@ -2566,12 +2560,25 @@ async function renderStage(item, view, keep) {
                   true,
               )
             : pane("No capture", null, true);
-    const left = item.baseline ? pane(baseName, paneWait("baseline")) : pane("No baseline", null, true);
-    const right = item.capture ? pane("New", paneWait("new image")) : emptyRight();
+    // Each pane's label for this view, on its wait as on its pictures: a view whose pictures are
+    // still being made never shows another view's label first.
+    const marked = view === "highlight";
+    const flashing = view === "flash" || (view === "spotlight" && state.spotFlash);
+    const leftLabel = marked ? `${baseName}, changed pixels in red` : baseName;
+    let rightLabel = "New";
+    if (flashing) {
+        rightLabel = `${view === "flash" ? "Flash" : "Spotlight"}: baseline${state.motion ? "" : " (stopped: press F)"}`;
+    } else if (marked) {
+        rightLabel = "New, changed pixels in red";
+    } else if (view === "spotlight") {
+        rightLabel = "Spotlight: the new image, dimmed except around each change";
+    }
+    const left = item.baseline ? pane(leftLabel, paneWait("baseline")) : pane("No baseline", null, true);
+    const right = item.capture ? pane(rightLabel, paneWait("new image")) : emptyRight();
     if (!keep) {
         stage.replaceChildren(...panes(left, right));
     }
-    // Skimming (J held): the item before was left before its images even showed, so this one waits
+    // Skimming (K held): the item before was left before its images even showed, so this one waits
     // SKIM_MS before fetching; passed in that time, it fetches nothing, and the item stopped on is
     // not queued behind every item skipped.
     const now = performance.now();
@@ -2592,12 +2599,14 @@ async function renderStage(item, view, keep) {
                 const frame = figure.querySelector(".frame");
                 try {
                     const img = await imgOf(kind);
+                    // With Focus on, an image is put in its pane only once its focus point is known,
+                    // so it appears framed, never at the top left and then jumping. shown() works it
+                    // out for the next item ahead, so after a decision this rarely waits.
+                    const at = state.focus && !keep ? await focusBox(item).catch(() => null) : null;
                     if (seq === stageRender) {
                         frame.replaceChildren(el("div", { class: "sheet" }, img));
                         fit(stage);
-                        // Known ahead (shown() works out the next item's), so it appears framed.
-                        const at = focusBoxes.get(focusKey(item));
-                        if (state.focus && at && !keep) {
+                        if (at) {
                             center(stage, at);
                         }
                     }
@@ -2620,32 +2629,23 @@ async function renderStage(item, view, keep) {
             }
         } else {
             diff = await diffOf(item);
-            const marked = view === "highlight";
             const leftPics = [await imgOf("baseline"), ...(marked ? [overlay(diff)] : [])];
-            let rightLabel;
             let rightPics;
-            const flashing = view === "flash" || (view === "spotlight" && state.spotFlash);
             if (flashing) {
                 // The two images one after the other in the same place: themselves, or both spotlighted.
-                const flash = view === "flash";
-                rightPics = flash
-                    ? [await imgOf("baseline"), await imgOf("capture")]
-                    : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
-                rightLabel = `${flash ? "Flash" : "Spotlight"}: baseline${state.motion ? "" : " (stopped: press F)"}`;
+                rightPics =
+                    view === "flash"
+                        ? [await imgOf("baseline"), await imgOf("capture")]
+                        : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
             } else if (marked) {
                 rightPics = [await imgOf("capture"), overlay(diff)];
-                rightLabel = "New, changed pixels in red";
             } else {
                 rightPics = [spotlight(diff)];
-                rightLabel = "Spotlight: the new image, dimmed except around each change";
             }
             if (seq !== stageRender) {
                 return;
             }
-            const l = pane(
-                marked ? `${baseName}, changed pixels in red` : baseName,
-                el("div", { class: "sheet" }, leftPics),
-            );
+            const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics));
             const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics));
             stage.replaceChildren(...panes(l, r));
             if (flashing) {
@@ -2680,7 +2680,7 @@ async function renderStage(item, view, keep) {
         if (seq === stageRender) {
             if (view !== "side") {
                 stage.replaceChildren(
-                    ...panes(pane(baseName, paneError(err.message)), pane("New", paneError(err.message))),
+                    ...panes(pane(leftLabel, paneError(err.message)), pane(rightLabel, paneError(err.message))),
                 );
             } else if (keep) {
                 stage.replaceChildren(...panes(left, right));
@@ -3048,7 +3048,6 @@ async function fillEnd(card, seq) {
 
 function showEnd(message) {
     state.ended = true;
-    state.pending = null;
     showStory();
     say(message);
 }
@@ -3248,7 +3247,7 @@ async function decide(decision) {
         return;
     }
     const before = decisionOf(item);
-    const draft = (drafts.get(draftKey(item)) ?? "").trim();
+    let reason = null;
     if (decision === null) {
         if (!before) {
             say("Nothing to undo.");
@@ -3265,11 +3264,7 @@ async function decide(decision) {
             return;
         }
         if (before) {
-            say(
-                decision === "accept" && before.decision === "accept" && before.wasBulk && draft !== ""
-                    ? "Accepted without opening. Undo it to add a note."
-                    : `Already ${DONE[before.decision]}. Undo it to change it.`,
-            );
+            say(`Already ${DONE[before.decision]}. Undo it to change it.`);
             return;
         }
         if (onlyExclude(item) && decision !== "exclude") {
@@ -3288,11 +3283,12 @@ async function decide(decision) {
             say("Ignored: this image appeared less than a quarter second ago.");
             return;
         }
-        if ((decision === "reject" || decision === "exclude") && draft === "") {
-            state.pending = decision;
-            showStory({ focusNote: true });
-            say(`Type the reason, then press Enter to ${decision}.`);
-            return;
+        if (decision === "reject" || decision === "exclude") {
+            reason = await askReason(item, decision);
+            if (reason === null) {
+                say(`${decision === "reject" ? "Reject" : "Exclude"} cancelled: ${n} is still undecided.`);
+                return;
+            }
         }
         if (
             decision === "exclude" &&
@@ -3306,7 +3302,6 @@ async function decide(decision) {
             return;
         }
     }
-    const reason = decision === null || draft === "" ? null : draft;
     const slow = setTimeout(() => sayBusy("Saving the last decision..."), SLOW_MS);
     let answer;
     saving = api("/api/decide", {
@@ -3333,7 +3328,7 @@ async function decide(decision) {
     }
     if (decision === null) {
         delete state.data.decisions[item.file];
-        // The note comes back as the item's draft, so an Undo to fix a typo does not lose it.
+        // The reason comes back as the item's draft, so an Undo to fix a typo does not lose it.
         if (before.reason) {
             drafts.set(draftKey(item), before.reason);
         }
@@ -3341,7 +3336,6 @@ async function decide(decision) {
         state.data.decisions[item.file] = { decision, reason };
         drafts.delete(draftKey(item));
     }
-    state.pending = null;
     counted(item, before, decision, answer.unpublished);
     if (decision === null) {
         // Undo stays on the item, undecided again.
@@ -3563,14 +3557,17 @@ function staleBanner() {
         return null;
     }
     const master = branchName(t);
+    const what = plural(newer.length, `newer ${state.project} baseline`);
     return el(
         "section",
         { class: "card stale", id: "stale" },
         el(
             "p",
             { class: "warning" },
-            `${master} has ${plural(newer.length, `newer ${state.project} baseline`)} since this capture; ` +
-                "this review is out of date. Finish refuses it until the branch has them.",
+            `${master} has ${what} since this capture. ` +
+                "Finish still records your decisions against this capture. When the pull request merges, CI " +
+                "compares it with these baselines again, and any image they change comes back to you. Update " +
+                `only when the pull request conflicts with ${master}.`,
         ),
         el(
             "details",
@@ -4061,15 +4058,6 @@ function finishOutcome() {
     if (isUpdate(job)) {
         return updateOutcome(job, t, dismiss);
     }
-    // Finish refuses a capture older than the default branch's baselines: offer the update.
-    const stale =
-        t && /has newer .* baselines/.test(job.error ?? "")
-            ? el(
-                  "button",
-                  { type: "button", class: "primary", onclick: () => updateTarget(t) },
-                  `Update from ${branchName(t)}`,
-              )
-            : null;
     if (job.interrupted || job.error !== null) {
         return el(
             "section",
@@ -4083,7 +4071,7 @@ function finishOutcome() {
             ),
             el("pre", { class: "error" }, job.error),
             warnings,
-            el("p", { class: "offers" }, stale, dismiss),
+            el("p", { class: "offers" }, dismiss),
         );
     }
     const out = job.result;
@@ -4418,13 +4406,11 @@ function toggleView(view) {
 const SHORTCUTS_OFF = "Single-key shortcuts are off: letters do nothing until you turn them on again in Keys (?).";
 
 const KEYS = [
-    ["J / K", "Next / previous item of the pass; J on the last item shows what is next"],
+    ["J / K", "Previous / next item of the pass; K on the last item shows what is next"],
     ["A", "Accept, once the images are shown"],
-    ["(type), Esc, A", "Accept with a note: type it in the note box, leave the box, accept"],
-    ["R", "Reject; with an empty note, type the reason, then Enter"],
-    ["E", "Exclude; with an empty note, type the reason, then Enter, then confirm"],
+    ["R", "Reject: a box asks the reason, ready to type; Enter rejects, Esc cancels"],
+    ["E", "Exclude: a box asks the reason, ready to type; Enter, then confirm; Esc cancels"],
     ["U", "Undo the item's decision; you stay on the item"],
-    ["Enter (note box)", "Send the Reject or Exclude waiting for its reason"],
     ["F", "Flash, or back to side by side; in Spotlight, Spotlight flash on or off"],
     ["Space (hold)", "Flash while held"],
     ["H", "Highlight the changed pixels in red, or back to side by side"],
@@ -4442,10 +4428,7 @@ const KEYS = [
     ["/", "Grid: Find story"],
     ["?", "Show or hide this list"],
     ["[ / ]", "Previous / next project with undecided items: its grid, or from a story its first undecided item"],
-    [
-        "Esc",
-        "Up one level: story to grid, grid to targets; first closes an open menu, and in the note box first leaves the box (its text stays)",
-    ],
+    ["Esc", "Up one level: story to grid, grid to targets; first closes an open menu or box"],
     ["Enter (end card)", "Take the first offer: the next project, the undecided items left here, or Finish"],
 ];
 
@@ -4545,13 +4528,7 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
         e.preventDefault();
         if (inInput) {
-            // Leaves the box; its text stays with its item. A reject waiting for its reason is dropped.
             e.target.blur();
-            if (state.pending) {
-                state.pending = null;
-                showStory();
-                say("");
-            }
             return;
         }
         // The grid's More menu is in the bar, outside app: any open menu closes before a level is left.
@@ -4605,8 +4582,8 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     const keys = {
-        j: () => move(1),
-        k: () => move(-1),
+        j: () => move(-1),
+        k: () => move(1),
         a: () => decide("accept"),
         r: () => decide("reject"),
         e: () => decide("exclude"),

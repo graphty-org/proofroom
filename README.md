@@ -136,6 +136,7 @@ Every command has `--help`; `visual-review --help` lists them.
 | `workDir`       | `.visual-review`    | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                      |
 | `commitPrefix`  | `test`              | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
 | `issueLabels`   | `["bug"]`           | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
+| `fontconfig`    | none (host fonts)   | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
 | `projects`      | (required)          | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:
@@ -154,6 +155,31 @@ there is no setting that turns the gate off, and a config that sets `gate` is re
 request gate reads the config as it is on the base branch, so a pull request cannot move
 `baselines` out from under it or drop a project from the gate; a project that a pull request adds
 to its own config is gated too.
+
+### Pinned fonts
+
+Chromium finds fonts through the host's fontconfig, so a capture made on a laptop and one made in
+CI draw text with whatever fonts each machine has installed, and a runner image update can change
+CI's own captures. `fontconfig` names a `fonts.conf` committed to your repository; capture starts
+every browser with `FONTCONFIG_FILE` pointing at it and a font cache of its own, so no host font
+or host font setting is consulted. Write the file with relative paths, so it works from any
+checkout:
+
+```xml
+<fontconfig>
+    <dir prefix="relative">fonts</dir>
+    <include ignore_missing="no" prefix="relative">conf.d</include>
+    <cachedir prefix="xdg">fontconfig</cachedir>
+</fontconfig>
+```
+
+Commit the font files with Git LFS. The workflows fetch everything in the `fonts.conf`'s
+directory along with the baselines, and capture refuses to start while any file there is still an
+LFS pointer (run `git lfs pull --include "<that directory>/**"`); it never falls back to the host's
+fonts. Each results.json records the SHA-256 of the directory as `environment.fonts`, and
+`environment.emojiFont` says whether the pinned set draws emoji. To keep your existing baselines,
+snapshot the fonts and `/etc/fonts/conf.d` your CI runner has today; switching to a different set
+changes every capture with text, which is one re-baseline.
 
 ## The GitHub Actions workflows
 
@@ -221,6 +247,9 @@ token is kept in the work directory, so the URL stays valid across restarts; del
   looking at a story before a pull request exists. It is listed as "Local preview" and is look
   only: no Accept, Reject or Exclude, and no Finish. Only CI captures of a pushed commit are
   decided.
+  A change to this rule is designed and not yet built: a local capture of a pull request's merge
+  tree, made with the repository's pinned fonts, becomes reviewable and finishable, and the gate
+  still passes it only when CI's own capture matches ([local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md)).
 
 ### Links to a screen
 
@@ -300,9 +329,10 @@ downloading captures nobody has opened yet) is said in the status row and never 
    run, which no longer shows them."), and a table per project: **Project**,
    **Results** (count per status), **Decided** ("12 of 40") and **Review**. Projects with nothing
    to review are one line ("3 projects unchanged: ..."). Badges:
-    - **merge master first**: the default branch has newer baselines for this project than the
-      pull request. **Update from master** beside it merges the default branch into the pull
-      request's branch for you ([Updating from the default branch](#updating-from-the-default-branch)).
+    - **behind master**: the default branch has newer baselines for this project than the
+      capture was compared with. You can still review and Finish; the merge queue compares again
+      before it merges. **Update from master** beside it is for a pull request that conflicts with
+      the default branch ([Updating from the default branch](#updating-from-the-default-branch)).
     - **Downloading...**: the captures are still downloading from GitHub. The card says how many
       artifacts and bytes have landed and for how long ("Downloading: 2 of 5 artifacts, 41 MB of
       120 MB, 14 s"), and each row fills in by itself as its own download lands. Pressing it
@@ -318,8 +348,8 @@ downloading captures nobody has opened yet) is said in the status row and never 
       a pull request.
 2. **Grid.** When the default branch has newer baselines for the project than the capture was
    compared with, the grid starts with "master has 3 newer compact-mantine baselines since this
-   capture; this review is out of date", the changed files under **Changed on master**, and
-   **Update from master and recapture**. A bar that stays at the top: "18 of 170 decided"; **Review 152 undecided**, the main
+   capture", what that means for Finish, the changed files under **Changed on master**, and
+   **Update from master and recapture** for a pull request that conflicts with master. A bar that stays at the top: "18 of 170 decided"; **Review 152 undecided**, the main
    way in, which opens the first undecided item and walks every undecided item; **Needs a
    decision** and **All**, each counted, and **More filters** (each status, and what you
    **Accepted**, **Rejected** and **Excluded**, each counted); **Find story**; **Accept all
@@ -347,13 +377,12 @@ downloading captures nobody has opened yet) is said in the status row and never 
    match, or the item with that number. Coming back from a story, its tile is outlined and
    scrolled into view.
 3. **Story.** One item, on one screen that never scrolls (only the panes do). From the top:
-    - **The decision bar**, one row, laid out by reach: **Prev** (K), "12 of 230 -- 18 left" (in
-      this pass) and **Next** (J) at the left end; **Undo** (U) and **Exclude** (E), the least
+    - **The decision bar**, one row, laid out by reach: **Prev** (J), "12 of 230 -- 18 left" (in
+      this pass) and **Next** (K) at the left end; **Undo** (U) and **Exclude** (E), the least
       used, in the middle; then **Reject** (R) and **Accept** (A), the widest, at the right end,
-      with a gap before Reject so a slip lands on nothing. From 1100 px wide (an iPad on its side)
-      the **Note** box ends the row ("Needed to Reject or Exclude"; a note typed before Accept is
-      published with it); narrower, it ends the item line instead, so it never takes a row of its
-      own, and a reject waiting for its reason moves nothing. Below 600 px (Split View, a zoomed
+      with a gap before Reject so a slip lands on nothing. The screen has no text field: Reject and
+      Exclude open a small box that asks the reason with the cursor already in it, so a keyboard
+      types straight into it (Enter sends, Escape cancels and leaves the item undecided). Below 600 px (Split View, a zoomed
       page) the bar is two rows and never runs past the window's edge. While the images load,
       Accept shows a small spinner at its left edge; its label and key stay whole. Every button is
       always there, in the same place on every item, at every zoom; one that does not apply is
@@ -413,7 +442,7 @@ downloading captures nobody has opened yet) is said in the status row and never 
     (remembered in this browser). Flash, Highlight and Spotlight need two images; on a new or
     removed story pressing them says so.
 
-    **Next** and **Prev** (J and K) walk one pass: the items the grid showed when you opened
+    **Prev** and **Next** (J and K) walk one pass: the items the grid showed when you opened
     the story (or every undecided item, from **Review N undecided**), in the grid's order, frozen
     until you go back to the grid. Deciding an item never drops it from the pass: the decision
     moves on to the next item, and **Prev** comes back to the one just decided, showing its
@@ -448,55 +477,53 @@ Keys work on the screen named, never while a question, Finish's sheet or the key
 and never in a text box except where listed. **Keys** (or `?`) shows this list, and can turn the
 single-letter keys off. The list opens with focus on itself, so a key pressed as it opens changes
 nothing. It also lists the ten controls and keys pressed most in this browser ("accept: 412",
-"key-J: 380"): the page counts each press in the browser's local storage and sends the counts
+"key-K: 380"): the page counts each press in the browser's local storage and sends the counts
 nowhere, so the bars can be laid out from real use. Turning the letters off says so in the status row, and so does every letter typed while
 they are off (the switch is remembered in this browser). On a touch screen every control is at
 least 44 px tall.
 
-| Key              | Action                                                                                                       |
-| ---------------- | ------------------------------------------------------------------------------------------------------------ |
-| J / K            | Next / previous item of this pass; J on the last item shows what is next                                     |
-| A                | Accept, once the images are shown                                                                            |
-| (type), Esc, A   | Accept with a note: type it in the note box, leave the box, accept                                           |
-| R                | Reject; with an empty note box, type the reason, then Enter                                                  |
-| E                | Exclude; with an empty note box, type the reason, then Enter, then confirm                                   |
-| U                | Undo the item's decision; you stay on the item                                                               |
-| Enter (note box) | Send the Reject or Exclude waiting for its reason; otherwise just leave the box                              |
-| F                | Flash between baseline and new; F again returns to side by side                                              |
-| F                | In Spotlight: flash the spotlighted baseline and new, or stop flashing                                       |
-| Space (hold)     | Flash while held                                                                                             |
-| H                | Highlight changed pixels; H again returns to side by side                                                    |
-| L                | In Highlight: blink the red changed pixels, or hold them on                                                  |
-| S                | Spotlight the changes; S again returns to side by side                                                       |
-| B                | Outline the changed area, or stop outlining it                                                               |
-| P                | Show the baseline pane, or hide it so the new image takes both panes' width                                  |
-| N                | Next change                                                                                                  |
-| Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                                               |
-| Shift+A          | Grid: accept every undecided item the grid shows without opening it (asks first)                             |
-| /                | Grid: Find story                                                                                             |
-| Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish                             |
-| ?                | Show or hide the key list                                                                                    |
-| [ / ]            | Grid and story: previous / next project with undecided items                                                 |
-| Escape           | Up one level: story to grid, grid to targets; first closes an open menu, and in the note box first leaves it |
+| Key              | Action                                                                             |
+| ---------------- | ---------------------------------------------------------------------------------- |
+| J / K            | Previous / next item of this pass; K on the last item shows what is next           |
+| A                | Accept, once the images are shown                                                  |
+| R                | Reject: a box asks the reason, ready to type; Enter rejects, Escape cancels        |
+| E                | Exclude: a box asks the reason, ready to type; Enter, then confirm; Escape cancels |
+| U                | Undo the item's decision; you stay on the item                                     |
+| F                | Flash between baseline and new; F again returns to side by side                    |
+| F                | In Spotlight: flash the spotlighted baseline and new, or stop flashing             |
+| Space (hold)     | Flash while held                                                                   |
+| H                | Highlight changed pixels; H again returns to side by side                          |
+| L                | In Highlight: blink the red changed pixels, or hold them on                        |
+| S                | Spotlight the changes; S again returns to side by side                             |
+| B                | Outline the changed area, or stop outlining it                                     |
+| P                | Show the baseline pane, or hide it so the new image takes both panes' width        |
+| N                | Next change                                                                        |
+| Z                | Next zoom: Fit, 1x, 2x, 4x, 8x, then Fit again                                     |
+| Shift+A          | Grid: accept every undecided item the grid shows without opening it (asks first)   |
+| /                | Grid: Find story                                                                   |
+| Enter (end card) | Take the first offer: the next project, the undecided items left here, or Finish   |
+| ?                | Show or hide the key list                                                          |
+| [ / ]            | Grid and story: previous / next project with undecided items                       |
+| Escape           | Up one level: story to grid, grid to targets; first closes an open menu or box     |
 
 No key reverses a decision. A, R and E on an item that is already decided say "Already accepted.
 Undo it to change it."; press U (or Undo) first. A held A, R, E or U decides once, and an A, R or
 E that comes within a quarter second of an item's images appearing is ignored and says so, so the
 second tap of a double tap never decides the next item unseen. While a decision is being saved
 the page says "Saving the last decision..." and waits for it before moving on; a save that fails
-leaves the item undecided, with its note.
+leaves the item undecided, with its reason.
 
-Text typed in the note box belongs to the item on screen: it stays with that item while you move
-away and back, and it is cleared when that item's decision is saved. Undo puts a decision's note
-back in the box, so undoing to fix a typo does not lose it. After any decision, focus
-leaves the note box, so the next A accepts instead of typing an "a".
+A reason typed in the reason box belongs to the item it was typed on: cancelled, it is there again
+the next time you press Reject or Exclude on that item, and it is cleared when that item's decision
+is saved. Undo puts a decision's reason back, so undoing to fix a typo does not lose it. The box
+closes with the decision, so the next A accepts instead of typing an "a".
 
 ## What each decision does
 
 - **Accept**: the new screenshot becomes the baseline (or, for `removed`, the baseline is
   deleted). Allowed on `changed`, `moved`, `new`, `no baseline yet` and `removed`. For a renamed
   story the baseline is written under the new id and the old id's baseline is deleted, in the
-  same commit. A note typed with it is optional; Finish publishes it.
+  same commit.
 - **Reject**: the difference is a regression. It always needs a reason, which is posted to the pull
   request as a comment with a machine-readable block an agent can read. The pull request stays
   blocked until its code changes so the capture matches the baseline again.
@@ -594,9 +621,6 @@ message:
 
 - **capture is stale, wait for CI**: someone pushed to the branch after the capture. Wait for the
   new CI run, then decide again what still differs.
-- **merge master first**: the capture is older than the default branch's baselines. The message
-  names the fix, and the result offers **Update from master**
-  ([Updating from the default branch](#updating-from-the-default-branch)).
 - **failed to write commit object** or a signing error: unlock or plug in the signing key, then
   Finish again.
 - **the accepts were pushed ..., but the comment with the rejects failed**: the accepts are done
@@ -683,14 +707,18 @@ holds public keys only: `{ "version": 1, "keys": [{ "id", "publicKey", "rpId", "
 
 A capture compares a pull request's stories with the baselines on its own branch. When the
 default branch accepts newer baselines for the same project afterwards (another pull request's
-Finish merged), the capture is out of date, and Finish refuses it: committing decisions made
-against old baselines could overwrite the newer ones. A pull request whose branch and the default
-branch changed the same baseline PNGs cannot merge at all. Both are fixed the same way, from the
-page or a terminal:
+Finish merged), Finish still works: each record item ties a file to the exact bytes you saw and
+the ones you approved, so a decision cannot overwrite a newer baseline unseen. Before it merges,
+the merge queue brings the pull request up to date with the default branch and CI captures and
+gates the merged tree: every capture must match an image you approved or the default branch's
+baseline, and an image the default branch's changes altered comes back to you for review.
 
-- **On the page:** **Update from master** on the targets screen (beside "merge master first"), at
-  the top of the project's grid, or in a Finish that refused. It asks first, then runs on the
-  server like Finish, with its steps in the box.
+A pull request whose branch and the default branch changed the same baseline files cannot merge
+at all, and the merge queue cannot update it. Fix that from the page or a terminal:
+
+- **On the page:** **Update from master** on the targets screen (beside "behind master") or at
+  the top of the project's grid. It asks first, then runs on the server like Finish, with its
+  steps in the box.
 - **In a terminal:** `npx visual-review update <pull request number>`.
 
 Either way it fetches the default branch and the pull request's branch, merges the default
@@ -767,6 +795,8 @@ rather than minutes, and then reports no baseline as removed. Start the server w
 after each change. A local preview is look only: its fonts and graphics stack are not CI's, so
 only a CI capture of a pushed commit becomes a baseline. Push, let CI capture, and accept it on
 the pull request.
+This rule is being replaced for pull requests: see [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md), which lets the owner
+accept and Finish on a local capture of the pull request while CI's capture stays the judge.
 
 ## How captures and baselines move
 
@@ -953,9 +983,6 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   once a run on the default branch has finished.
 - **Finish says "capture is stale, wait for CI".** Someone pushed to the branch after the capture.
   Wait for the new run, then decide again what still differs.
-- **"merge master first".** The default branch has newer baselines for that project than the
-  pull request. Press **Update from master**, or run `visual-review update <pr>`, and wait for CI
-  ([Updating from the default branch](#updating-from-the-default-branch)).
 - **Finish fails with "failed to write commit object"** or another signing error: unlock or plug
   in your signing key, then press Finish again. Your decisions are kept.
 - **"the accepts were pushed ..., but the comment with the rejects failed".** The accepts are
@@ -999,3 +1026,4 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
 - **Captures differ from what you see locally.** Only CI's captures are compared: fonts and the
   graphics stack differ from machine to machine. Look locally with `capture --stories` and
   `serve --results`, but let CI's capture become the baseline.
+  With pinned fonts this changes; see [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
