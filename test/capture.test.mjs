@@ -1,10 +1,20 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { fileName, hasBaselines, loadSettings, serve, storyIds, storySettings, storyUrl } from "../capture/capture.mjs";
+import {
+    fileName,
+    hasBaselines,
+    hasEmojiFont,
+    loadSettings,
+    pinnedFonts,
+    serve,
+    storyIds,
+    storySettings,
+    storyUrl,
+} from "../capture/capture.mjs";
 
 describe("storyUrl", () => {
     it("opens the story alone with the chromatic flag", () => {
@@ -152,5 +162,38 @@ describe("serve", () => {
     it("answers 404 for a missing file and does not climb out of the directory", async () => {
         expect((await fetch(`${base}missing.js`)).status).toBe(404);
         expect((await fetch(`${base}..%2F..%2Fetc%2Fpasswd`)).status).toBe(404);
+    });
+});
+
+describe("pinnedFonts", () => {
+    let dir;
+    beforeEach(async () => {
+        dir = await mkdtemp(join(tmpdir(), "vr-fonts-"));
+        await mkdir(join(dir, "fonts"));
+        await writeFile(
+            join(dir, "fonts.conf"),
+            '<?xml version="1.0"?><fontconfig><dir prefix="relative">fonts</dir></fontconfig>',
+        );
+        await writeFile(join(dir, "fonts", "a.ttf"), "not really a font");
+    });
+    afterEach(() => rm(dir, { recursive: true, force: true }));
+
+    it("fingerprints every file beside the fonts.conf, and the fingerprint follows their content", async () => {
+        const first = await pinnedFonts(join(dir, "fonts.conf"));
+        expect(first).toMatch(/^[0-9a-f]{64}$/);
+        expect(await pinnedFonts(join(dir, "fonts.conf"))).toBe(first);
+        await writeFile(join(dir, "fonts", "a.ttf"), "another font");
+        expect(await pinnedFonts(join(dir, "fonts.conf"))).not.toBe(first);
+    });
+
+    it("refuses a font that is still a Git LFS pointer, and a missing fonts.conf", async () => {
+        await writeFile(join(dir, "fonts", "b.ttf"), "version https://git-lfs.github.com/spec/v1\noid sha256:00\n");
+        await expect(pinnedFonts(join(dir, "fonts.conf"))).rejects.toThrow(/fonts\/b\.ttf .* Git LFS pointer.*git lfs pull/);
+        await expect(pinnedFonts(join(dir, "missing.conf"))).rejects.toThrow(/does not exist/);
+    });
+
+    it("asks the pinned configuration, not the machine, whether a font draws emoji", () => {
+        // This directory has no font at all, so whatever the machine has, the answer is no.
+        expect(hasEmojiFont({ ...process.env, FONTCONFIG_FILE: join(dir, "fonts.conf") })).toBe(false);
     });
 });
