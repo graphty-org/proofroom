@@ -2566,8 +2566,21 @@ async function renderStage(item, view, keep) {
                   true,
               )
             : pane("No capture", null, true);
-    const left = item.baseline ? pane(baseName, paneWait("baseline")) : pane("No baseline", null, true);
-    const right = item.capture ? pane("New", paneWait("new image")) : emptyRight();
+    // Each pane's label for this view, on its wait as on its pictures: a view whose pictures are
+    // still being made never shows another view's label first.
+    const marked = view === "highlight";
+    const flashing = view === "flash" || (view === "spotlight" && state.spotFlash);
+    const leftLabel = marked ? `${baseName}, changed pixels in red` : baseName;
+    let rightLabel = "New";
+    if (flashing) {
+        rightLabel = `${view === "flash" ? "Flash" : "Spotlight"}: baseline${state.motion ? "" : " (stopped: press F)"}`;
+    } else if (marked) {
+        rightLabel = "New, changed pixels in red";
+    } else if (view === "spotlight") {
+        rightLabel = "Spotlight: the new image, dimmed except around each change";
+    }
+    const left = item.baseline ? pane(leftLabel, paneWait("baseline")) : pane("No baseline", null, true);
+    const right = item.capture ? pane(rightLabel, paneWait("new image")) : emptyRight();
     if (!keep) {
         stage.replaceChildren(...panes(left, right));
     }
@@ -2620,32 +2633,23 @@ async function renderStage(item, view, keep) {
             }
         } else {
             diff = await diffOf(item);
-            const marked = view === "highlight";
             const leftPics = [await imgOf("baseline"), ...(marked ? [overlay(diff)] : [])];
-            let rightLabel;
             let rightPics;
-            const flashing = view === "flash" || (view === "spotlight" && state.spotFlash);
             if (flashing) {
                 // The two images one after the other in the same place: themselves, or both spotlighted.
-                const flash = view === "flash";
-                rightPics = flash
-                    ? [await imgOf("baseline"), await imgOf("capture")]
-                    : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
-                rightLabel = `${flash ? "Flash" : "Spotlight"}: baseline${state.motion ? "" : " (stopped: press F)"}`;
+                rightPics =
+                    view === "flash"
+                        ? [await imgOf("baseline"), await imgOf("capture")]
+                        : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
             } else if (marked) {
                 rightPics = [await imgOf("capture"), overlay(diff)];
-                rightLabel = "New, changed pixels in red";
             } else {
                 rightPics = [spotlight(diff)];
-                rightLabel = "Spotlight: the new image, dimmed except around each change";
             }
             if (seq !== stageRender) {
                 return;
             }
-            const l = pane(
-                marked ? `${baseName}, changed pixels in red` : baseName,
-                el("div", { class: "sheet" }, leftPics),
-            );
+            const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics));
             const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics));
             stage.replaceChildren(...panes(l, r));
             if (flashing) {
@@ -2680,7 +2684,7 @@ async function renderStage(item, view, keep) {
         if (seq === stageRender) {
             if (view !== "side") {
                 stage.replaceChildren(
-                    ...panes(pane(baseName, paneError(err.message)), pane("New", paneError(err.message))),
+                    ...panes(pane(leftLabel, paneError(err.message)), pane(rightLabel, paneError(err.message))),
                 );
             } else if (keep) {
                 stage.replaceChildren(...panes(left, right));

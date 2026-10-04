@@ -428,6 +428,29 @@ describe("review page: the Baseline pane, on an iPad", () => {
         await expect.poll(labels).toEqual(["Baseline"]);
         await page.locator("#stage img").waitFor();
     });
+
+    it("labels a Flash still loading as Flash, never as the side-by-side view's New", async () => {
+        // The new image is slow, and F is pressed before it arrives: the pane waits under the
+        // Flash's own label.
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.route("**/api/img/123/compact-mantine/capture/button--primary.dark.png", async (route) => {
+            await held;
+            await route.continue();
+        });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await (await menuOption("Baseline")).click();
+        await expect.poll(labels).toEqual(["New"]);
+        await page.keyboard.press("f");
+        await expect.poll(stageClass).toContain("flash");
+        await expect.poll(labels).toEqual(["Flash: baseline"]);
+        expect(await page.locator("#stage .wait").count()).toBe(1);
+        release();
+        await page.locator("#stage img").first().waitFor();
+        expect(await labels()).toEqual(["Flash: baseline"]);
+    });
 });
 
 describe("review page: the Focus point, on an iPad", () => {
