@@ -136,7 +136,7 @@ Every command has `--help`; `visual-review --help` lists them.
 | `workDir`       | `.visual-review`    | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                      |
 | `commitPrefix`  | `test`              | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
 | `issueLabels`   | `["bug"]`           | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
-| `fontconfig`    | none (host fonts)   | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")             |
+| `fontconfig`    | none (host fonts)   | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
 | `projects`      | (required)          | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:

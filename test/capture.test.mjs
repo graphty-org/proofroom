@@ -188,7 +188,9 @@ describe("pinnedFonts", () => {
 
     it("refuses a font that is still a Git LFS pointer, and a missing fonts.conf", async () => {
         await writeFile(join(dir, "fonts", "b.ttf"), "version https://git-lfs.github.com/spec/v1\noid sha256:00\n");
-        await expect(pinnedFonts(join(dir, "fonts.conf"))).rejects.toThrow(/fonts\/b\.ttf .* Git LFS pointer.*git lfs pull/);
+        await expect(pinnedFonts(join(dir, "fonts.conf"))).rejects.toThrow(
+            /fonts\/b\.ttf .* Git LFS pointer.*git lfs pull/,
+        );
         await expect(pinnedFonts(join(dir, "missing.conf"))).rejects.toThrow(/does not exist/);
     });
 

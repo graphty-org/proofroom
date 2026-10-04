@@ -64,7 +64,7 @@ export function normalizeConfig(input) {
     // the same committed fonts instead of whatever the host has installed. Null: host fonts.
     if (raw.fontconfig !== undefined && raw.fontconfig !== null) {
         if (typeof raw.fontconfig !== "string" || !REPO_PATH.test(raw.fontconfig)) {
-            fail("fontconfig must be a fonts.conf inside the repository, relative and without \"..\"");
+            fail('fontconfig must be a fonts.conf inside the repository, relative and without ".."');
         }
         out.fontconfig = raw.fontconfig;
     }
