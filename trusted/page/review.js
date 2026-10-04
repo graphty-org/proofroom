@@ -1292,7 +1292,7 @@ function targetCard(t) {
         el(
             "p",
             { class: "badges" },
-            t.mergeMasterFirst ? el("span", { class: "badge warn" }, "merge master first") : null,
+            t.mergeMasterFirst ? el("span", { class: "badge" }, `behind ${branchName(t)}`) : null,
             t.mergeMasterFirst === true && t.pr !== null && !t.local && !busy
                 ? el(
                       "button",
@@ -3563,8 +3563,10 @@ function staleBanner() {
         el(
             "p",
             { class: "warning" },
-            `${master} has ${plural(newer.length, `newer ${state.project} baseline`)} since this capture; ` +
-                "this review is out of date. Finish refuses it until the branch has them.",
+            `${master} has ${plural(newer.length, `newer ${state.project} baseline`)} since this capture. ` +
+                "Finish still records your decisions against this capture. When the pull request merges, CI " +
+                "compares it with these baselines again, and any image they change comes back to you. Update " +
+                `only when the pull request conflicts with ${master}.`,
         ),
         el(
             "details",
@@ -4055,15 +4057,6 @@ function finishOutcome() {
     if (isUpdate(job)) {
         return updateOutcome(job, t, dismiss);
     }
-    // Finish refuses a capture older than the default branch's baselines: offer the update.
-    const stale =
-        t && /has newer .* baselines/.test(job.error ?? "")
-            ? el(
-                  "button",
-                  { type: "button", class: "primary", onclick: () => updateTarget(t) },
-                  `Update from ${branchName(t)}`,
-              )
-            : null;
     if (job.interrupted || job.error !== null) {
         return el(
             "section",
@@ -4077,7 +4070,7 @@ function finishOutcome() {
             ),
             el("pre", { class: "error" }, job.error),
             warnings,
-            el("p", { class: "offers" }, stale, dismiss),
+            el("p", { class: "offers" }, dismiss),
         );
     }
     const out = job.result;

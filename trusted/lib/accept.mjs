@@ -657,14 +657,10 @@ async function commitAccepts({
             throw new AcceptError("capture is stale, wait for CI: the branch has moved past the captured head");
         }
     }
-    for (const project of new Set(accepts.map((a) => a.project))) {
-        if (await behindMaster(repo, base, project, config, tracking)) {
-            throw new AcceptError(
-                `merge ${defaultBranch} into the branch first: ${defaultBranch} has newer ${project} baselines; ` +
-                    `press "Update from ${defaultBranch}" on the review page, or run \`visual-review update ${target.pr}\``,
-            );
-        }
-    }
+    // No refusal when the default branch has newer baselines than the capture: each record item
+    // names the bytes the owner saw (`from`) and approved (`to`), so a file the default branch
+    // changed afterwards no longer starts from its contents there, the gate finds that item moves
+    // nothing, and the merge queue's capture of the merged tree brings the image back for review.
 
     // The items come from the captured commit, as prepareRecord's did: the record built here must
     // hash to exactly what the owner approved.
@@ -847,7 +843,8 @@ export async function proposeKey({ repo, gh, entry, now = new Date(), config }) 
  * @param {string} project the project id
  * @param {{ defaultBranch: string, baselines: string }} config the settings
  * @param {string} [tracking] the fetched default branch
- * @returns {Promise<boolean>} true when the branch must merge the default branch before an accept
+ * @returns {Promise<boolean>} true when a capture of `head` was not compared with the default
+ *     branch's newest baselines for the project
  */
 export async function behindMaster(
     repo,
