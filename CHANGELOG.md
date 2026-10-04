@@ -1,3 +1,23 @@
+## 0.2.4 (2026-10-04)
+
+### 🚀 Features
+
+- **visual-review:** a compact control panel laid out by use, for an iPad ([#860](https://github.com/graphty-org/graphty-monorepo/issues/860))
+- **visual-review:** one breadcrumb to move between targets, projects, grid and item ([#859](https://github.com/graphty-org/graphty-monorepo/issues/859))
+- **visual-review:** open each item framed on where to look (Focus, O) ([#858](https://github.com/graphty-org/graphty-monorepo/issues/858))
+- **visual-review:** hide the baseline pane so the new image takes both widths ([#857](https://github.com/graphty-org/graphty-monorepo/issues/857))
+- **visual-review:** accept what the grid's filter shows ([#856](https://github.com/graphty-org/graphty-monorepo/issues/856))
+- **visual-review:** accept a component in place, keeping the grid's place ([#855](https://github.com/graphty-org/graphty-monorepo/issues/855))
+
+### 🩹 Fixes
+
+- **visual-review:** whole labels and a pressable tile Undo on an iPad with hundreds of items ([#123](https://github.com/graphty-org/graphty-monorepo/issues/123), [#855](https://github.com/graphty-org/graphty-monorepo/issues/855), [#859](https://github.com/graphty-org/graphty-monorepo/issues/859), [#860](https://github.com/graphty-org/graphty-monorepo/issues/860))
+- **visual-review:** escape closes the grid's More menu, and the crumbs hold still ([#859](https://github.com/graphty-org/graphty-monorepo/issues/859))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.3 (2026-10-03)
 
 ### 🚀 Features
