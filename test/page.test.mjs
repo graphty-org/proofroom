@@ -428,6 +428,29 @@ describe("review page: the Baseline pane, on an iPad", () => {
         await expect.poll(labels).toEqual(["Baseline"]);
         await page.locator("#stage img").waitFor();
     });
+
+    it("labels a Flash still loading as Flash, never as the side-by-side view's New", async () => {
+        // The new image is slow, and F is pressed before it arrives: the pane waits under the
+        // Flash's own label.
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.route("**/api/img/123/compact-mantine/capture/button--primary.dark.png", async (route) => {
+            await held;
+            await route.continue();
+        });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await (await menuOption("Baseline")).click();
+        await expect.poll(labels).toEqual(["New"]);
+        await page.keyboard.press("f");
+        await expect.poll(stageClass).toContain("flash");
+        await expect.poll(labels).toEqual(["Flash: baseline"]);
+        expect(await page.locator("#stage .wait").count()).toBe(1);
+        release();
+        await page.locator("#stage img").first().waitFor();
+        expect(await labels()).toEqual(["Flash: baseline"]);
+    });
 });
 
 describe("review page: the Focus point, on an iPad", () => {
@@ -522,6 +545,46 @@ describe("review page: the Focus point, on an iPad", () => {
                 ]);
         });
     }
+
+    it("opens the next item framed even when its focus point is not known yet", async () => {
+        // slider--sizes's baseline is slow, so its changed area is still unknown when its new
+        // image arrives: the new image waits for it rather than showing at the top left first.
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await page.route("**/api/img/123/compact-mantine/baseline/slider--sizes.png", async (route) => {
+            await held;
+            await route.continue();
+        });
+        await page.locator(".component").first().waitFor();
+        await openStory(2);
+        await page.locator("#stage figure:nth-child(2) img").waitFor();
+        await page.getByRole("button", { name: "4x", exact: true }).click();
+        await page.keyboard.press("o");
+        await expect.poll(() => centeredOn([180, 100])).toBe(true);
+        await ready();
+        await page.evaluate(() => {
+            const { document, requestAnimationFrame } = globalThis;
+            globalThis.firstFramed = null;
+            const tick = () => {
+                const img = document.querySelector('#stage img[alt="new image of slider--sizes"]');
+                if (!img) {
+                    requestAnimationFrame(tick);
+                    return;
+                }
+                const f = img.closest(".frame");
+                globalThis.firstFramed = f.scrollLeft > 0 || f.scrollTop > 0;
+            };
+            requestAnimationFrame(tick);
+        });
+        await page.keyboard.press("a");
+        await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#3");
+        // Give the new image time to arrive while the baseline is held.
+        await page.waitForTimeout(300);
+        release();
+        await expect.poll(() => page.evaluate(() => globalThis.firstFramed)).toBe(true);
+        await expect.poll(() => centeredOn([160, 220], 12)).toBe(true);
+    });
 
     it("centers a new image on its content, and stays off until turned on", async () => {
         // The new badge capture: the story's background with one dark box at [200, 120, 40, 30].
