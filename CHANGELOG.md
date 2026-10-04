@@ -1,3 +1,7 @@
+## 0.2.5 (2026-10-04)
+
+This was a version bump only for visual-review to align it with other projects, there were no code changes.
+
 ## 0.2.4 (2026-10-04)
 
 ### 🚀 Features
