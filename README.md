@@ -195,7 +195,10 @@ changes every capture with text, which is one re-baseline.
   `visual-review gate` at the version `init` pinned, with `npx`, so a pull request's own
   dependencies cannot change it. It passes `--pr` with the pull request's number, which the
   passkey check needs (see [Approving with a passkey](#approving-with-a-passkey)). Make it a
-  required check.
+  required check. In a Mergify merge-queue run, pass `--queue-event "$GITHUB_EVENT_PATH"` instead
+  of `--pr`: the gate reads the batch's pull requests from the queue's draft pull request and
+  accepts a review record for any of them. Every capture must still equal a baseline, so a batch
+  passes only on images already approved on its pull requests.
 
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
