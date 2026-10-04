@@ -303,9 +303,10 @@ downloading captures nobody has opened yet) is said in the status row and never 
    run, which no longer shows them."), and a table per project: **Project**,
    **Results** (count per status), **Decided** ("12 of 40") and **Review**. Projects with nothing
    to review are one line ("3 projects unchanged: ..."). Badges:
-    - **merge master first**: the default branch has newer baselines for this project than the
-      pull request. **Update from master** beside it merges the default branch into the pull
-      request's branch for you ([Updating from the default branch](#updating-from-the-default-branch)).
+    - **behind master**: the default branch has newer baselines for this project than the
+      capture was compared with. You can still review and Finish; the merge queue compares again
+      before it merges. **Update from master** beside it is for a pull request that conflicts with
+      the default branch ([Updating from the default branch](#updating-from-the-default-branch)).
     - **Downloading...**: the captures are still downloading from GitHub. The card says how many
       artifacts and bytes have landed and for how long ("Downloading: 2 of 5 artifacts, 41 MB of
       120 MB, 14 s"), and each row fills in by itself as its own download lands. Pressing it
@@ -321,8 +322,8 @@ downloading captures nobody has opened yet) is said in the status row and never 
       a pull request.
 2. **Grid.** When the default branch has newer baselines for the project than the capture was
    compared with, the grid starts with "master has 3 newer compact-mantine baselines since this
-   capture; this review is out of date", the changed files under **Changed on master**, and
-   **Update from master and recapture**. A bar that stays at the top: "18 of 170 decided"; **Review 152 undecided**, the main
+   capture", what that means for Finish, the changed files under **Changed on master**, and
+   **Update from master and recapture** for a pull request that conflicts with master. A bar that stays at the top: "18 of 170 decided"; **Review 152 undecided**, the main
    way in, which opens the first undecided item and walks every undecided item; **Needs a
    decision** and **All**, each counted, and **More filters** (each status, and what you
    **Accepted**, **Rejected** and **Excluded**, each counted); **Find story**; **Accept all
@@ -594,9 +595,6 @@ message:
 
 - **capture is stale, wait for CI**: someone pushed to the branch after the capture. Wait for the
   new CI run, then decide again what still differs.
-- **merge master first**: the capture is older than the default branch's baselines. The message
-  names the fix, and the result offers **Update from master**
-  ([Updating from the default branch](#updating-from-the-default-branch)).
 - **failed to write commit object** or a signing error: unlock or plug in the signing key, then
   Finish again.
 - **the accepts were pushed ..., but the comment with the rejects failed**: the accepts are done
@@ -683,14 +681,18 @@ holds public keys only: `{ "version": 1, "keys": [{ "id", "publicKey", "rpId", "
 
 A capture compares a pull request's stories with the baselines on its own branch. When the
 default branch accepts newer baselines for the same project afterwards (another pull request's
-Finish merged), the capture is out of date, and Finish refuses it: committing decisions made
-against old baselines could overwrite the newer ones. A pull request whose branch and the default
-branch changed the same baseline PNGs cannot merge at all. Both are fixed the same way, from the
-page or a terminal:
+Finish merged), Finish still works: each record item ties a file to the exact bytes you saw and
+the ones you approved, so a decision cannot overwrite a newer baseline unseen. Before it merges,
+the merge queue brings the pull request up to date with the default branch and CI captures and
+gates the merged tree: every capture must match an image you approved or the default branch's
+baseline, and an image the default branch's changes altered comes back to you for review.
 
-- **On the page:** **Update from master** on the targets screen (beside "merge master first"), at
-  the top of the project's grid, or in a Finish that refused. It asks first, then runs on the
-  server like Finish, with its steps in the box.
+A pull request whose branch and the default branch changed the same baseline files cannot merge
+at all, and the merge queue cannot update it. Fix that from the page or a terminal:
+
+- **On the page:** **Update from master** on the targets screen (beside "behind master") or at
+  the top of the project's grid. It asks first, then runs on the server like Finish, with its
+  steps in the box.
 - **In a terminal:** `npx visual-review update <pull request number>`.
 
 Either way it fetches the default branch and the pull request's branch, merges the default
@@ -955,9 +957,6 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   once a run on the default branch has finished.
 - **Finish says "capture is stale, wait for CI".** Someone pushed to the branch after the capture.
   Wait for the new run, then decide again what still differs.
-- **"merge master first".** The default branch has newer baselines for that project than the
-  pull request. Press **Update from master**, or run `visual-review update <pr>`, and wait for CI
-  ([Updating from the default branch](#updating-from-the-default-branch)).
 - **Finish fails with "failed to write commit object"** or another signing error: unlock or plug
   in your signing key, then press Finish again. Your decisions are kept.
 - **"the accepts were pushed ..., but the comment with the rejects failed".** The accepts are

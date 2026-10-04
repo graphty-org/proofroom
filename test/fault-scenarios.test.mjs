@@ -399,7 +399,7 @@ describe("refreshing the targets", () => {
         expect(out.graphty).toEqual({ conclusion: "success", url: "https://gh/job/g" });
     });
 
-    it("Swallowed git fetch failures make the 'merge master first' badge wrong with no log", async () => {
+    it("Swallowed git fetch failures make the 'behind master' badge wrong with no log", async () => {
         const r = makeRepo();
         const w = world(r);
         addPr124(w, OTHER, "deleted-branch");

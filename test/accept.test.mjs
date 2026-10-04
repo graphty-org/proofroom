@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { contentHash, unrecordedChanges } from "../trusted/gate.mjs";
+import { contentHash, gateProblems, unrecordedChanges } from "../trusted/gate.mjs";
 import {
     commitMessage,
     finish,
@@ -13,10 +13,11 @@ import {
     prepareRecord,
     proposeKey,
     rejectComment,
+    updateFromMaster,
 } from "../trusted/lib/accept.mjs";
 import { parsePasskeys, recordHash, verifyRecord } from "../trusted/lib/approval.mjs";
-import { isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
-import { CONFIG, copyFixture, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
+import { classify, isLfsPointer, sha256 } from "../trusted/lib/compare.mjs";
+import { CONFIG, copyFixture, FIXTURE, git, isolateGit, lfsObject, makeRepo, pushCommit, ROOT } from "./helpers.mjs";
 import { approve, makeKey, passkeysJson } from "./passkey-vectors.mjs";
 
 beforeAll(isolateGit);
@@ -360,14 +361,6 @@ describe("finish: refusals", () => {
         await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(/capture is stale, wait for CI/);
     });
 
-    it("refuses when master has a baseline commit the captured head lacks", async () => {
-        const s = setup();
-        pushCommit(s.remote, "master", "visual-baselines/compact-mantine/other.png");
-        await expect(s.run([accept("badge--default.light.png")])).rejects.toThrow(
-            'merge master into the branch first: master has newer compact-mantine baselines; press "Update from master" on the review page, or run `visual-review update 123`',
-        );
-    });
-
     it("ignores master's baseline commits for another project", async () => {
         const s = setup();
         pushCommit(s.remote, "master", "visual-baselines/graphty-element/other.png");
@@ -498,7 +491,9 @@ describe("finish: rejects", () => {
         const quiet = await u.run([accept("badge--default.light.png")]);
         expect(quiet.acceptNotes).toBe(0);
         expect(u.calls.some((c) => c.args.join(" ").includes("/comments"))).toBe(false);
-    });
+        // Three full Finishes (about 30 git and git-lfs processes each): 3.1 s on a CI runner
+        // beside the page tests' browsers, past the 5 s default once.
+    }, 15_000);
 
     it("keeps the accepts when a comment holding only accept notes fails, and says so", async () => {
         const s = setup();
@@ -635,6 +630,118 @@ describe("finish and the gate's record check", () => {
             `visual-baselines/compact-mantine/button--primary.json: ${why}`,
             `visual-baselines/compact-mantine/slider--sizes.json: ${why}`,
         ]);
+    });
+});
+
+describe("finish when master has newer baselines", () => {
+    const BUTTON = "visual-baselines/compact-mantine/button--primary.dark.png";
+    // The merge the merge queue makes before it merges: master into the pull request, in the remote.
+    const queueMerge = (s) => {
+        const merged = spawnSync("git", ["merge-tree", "--write-tree", "master", "feature"], {
+            cwd: s.remote,
+            encoding: "utf8",
+        });
+        if (merged.status !== 0) {
+            return null;
+        }
+        const tree = merged.stdout.split("\n")[0];
+        return git(
+            s.remote,
+            "-c",
+            "user.name=Q",
+            "-c",
+            "user.email=q@example.com",
+            "commit-tree",
+            tree,
+            "-p",
+            "master",
+            "-p",
+            "feature",
+            "-m",
+            "merge master",
+        );
+    };
+
+    it("records the decisions when master changed other stories, and the gate accepts them merged", async () => {
+        const s = setup();
+        const master = pushCommit(s.remote, "master", "visual-baselines/compact-mantine/card--legacy.png");
+        await s.run([accept("button--primary.dark.png")]);
+        const merged = queueMerge(s);
+        expect(merged).not.toBeNull();
+        expect(unrecordedChanges(master, merged, s.remote)).toEqual([]);
+
+        // The gate still refuses bytes the owner did not approve, in the same merged tree.
+        const forged = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+            cwd: s.remote,
+            input: "forged\n",
+            encoding: "utf8",
+        }).trim();
+        const index = { ...process.env, GIT_INDEX_FILE: join(s.dir, "forge.index") };
+        execFileSync("git", ["read-tree", merged], { cwd: s.remote, env: index });
+        execFileSync("git", ["update-index", "--cacheinfo", `100644,${forged},${BUTTON}`], {
+            cwd: s.remote,
+            env: index,
+        });
+        const tree = execFileSync("git", ["write-tree"], { cwd: s.remote, env: index, encoding: "utf8" }).trim();
+        const bad = git(
+            s.remote,
+            "-c",
+            "user.name=F",
+            "-c",
+            "user.email=f@example.com",
+            "commit-tree",
+            tree,
+            "-p",
+            master,
+            "-m",
+            "forge",
+        );
+        expect(unrecordedChanges(master, bad, s.remote)).toEqual([
+            `${BUTTON}: changed with no review record taking it from its base branch contents to these`,
+        ]);
+    });
+
+    it("records an accept of a story master also changed, and the next capture brings it back", async () => {
+        const s = setup();
+        // Another pull request's accept on master: a different image of the same story.
+        const theirs = readFileSync(join(FIXTURE, "compact-mantine/second/tooltip--hover.png"));
+        const other = mkdtempSync(join(tmpdir(), "vr-other-"));
+        git(other, "clone", "-q", "-b", "master", s.remote, ".");
+        writeFileSync(join(other, BUTTON), theirs);
+        git(other, "-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-q", "-am", "accept");
+        git(other, "push", "-q", "origin", "master");
+        await s.run([accept("button--primary.dark.png")]);
+        // Both sides changed the baseline: the queue cannot merge, so the branch is updated from
+        // master, which takes master's side and needs no record.
+        expect(queueMerge(s)).toBeNull();
+        const out = await updateFromMaster({ repo: s.repo, pr: 123, branch: "feature", config: CONFIG });
+        expect(out.taken).toEqual([BUTTON]);
+        const head = git(s.remote, "rev-parse", "feature");
+        const master = git(s.remote, "rev-parse", "master");
+        expect(unrecordedChanges(master, head, s.remote)).toEqual([]);
+        // The capture of the merged tree compares the accepted image with master's baseline: changed,
+        // so it is undecided again and the gate blocks until the owner decides it.
+        const item = classify({
+            baseline: theirs,
+            first: readFileSync(join(s.projects["compact-mantine"].dir, "button--primary.dark.png")),
+            threshold: 0.063,
+            includeAA: false,
+        });
+        expect(item.status).toBe("changed");
+        const fixture = s.projects["compact-mantine"].results;
+        const results = {
+            ...fixture,
+            expected: 1,
+            items: [{ ...fixture.items.find((i) => i.file === "button--primary.dark.png"), ...item, threshold: 0.063 }],
+        };
+        expect(
+            gateProblems({
+                config: { ...CONFIG, projects: { "compact-mantine": CONFIG.projects["compact-mantine"] } },
+                headConfig: undefined,
+                seeded: new Set(["compact-mantine"]),
+                captures: { "compact-mantine": { attempt: 1, results } },
+            }),
+        ).toEqual([expect.stringMatching(/^compact-mantine: 1 changed \(not accepted/)]);
     });
 });
 
