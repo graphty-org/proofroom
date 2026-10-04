@@ -3557,13 +3557,14 @@ function staleBanner() {
         return null;
     }
     const master = branchName(t);
+    const what = plural(newer.length, `newer ${state.project} baseline`);
     return el(
         "section",
         { class: "card stale", id: "stale" },
         el(
             "p",
             { class: "warning" },
-            `${master} has ${plural(newer.length, `newer ${state.project} baseline`)} since this capture. ` +
+            `${master} has ${what} since this capture. ` +
                 "Finish still records your decisions against this capture. When the pull request merges, CI " +
                 "compares it with these baselines again, and any image they change comes back to you. Update " +
                 `only when the pull request conflicts with ${master}.`,
