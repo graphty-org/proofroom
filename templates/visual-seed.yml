@@ -48,10 +48,11 @@ jobs:
               env:
                   WANT: ${{ inputs.projects }}
               run: |
-                  projects=$(jq -c --arg want "$WANT" '(.baselines // "visual-baselines") as $b
+                  projects=$(jq -c --arg want "$WANT" '(.baselines // "visual-baselines") as $b | (.fontconfig // null) as $f
                       | [$want | splits("[ ,]+") | select(. != "")] as $w
                       | [.projects | to_entries[] | select(.value.seedFromDefaultBranch != false)
-                         | {project: .key, storybook: .value.storybook, build: .value.build, baselines: $b}] as $all
+                         | {project: .key, storybook: .value.storybook, build: .value.build, baselines: $b,
+                         fonts: (if $f then ($f | sub("[^/]*$"; "")) + "**" else "\($b)/\(.key)/**" end)}] as $all
                       | ($w - [$all[].project]) as $unknown
                       | if ($unknown | length) > 0
                         then error("not a project seeded from the default branch: \($unknown | join(", "))")
@@ -114,11 +115,11 @@ jobs:
               uses: actions/cache@v4
               with:
                   path: .git/lfs/objects
-                  key: lfs-${{ matrix.project }}-${{ hashFiles(format('{0}/{1}/**/*.png', matrix.baselines, matrix.project)) }}
+                  key: lfs-${{ matrix.project }}-${{ hashFiles(format('{0}/{1}/**/*.png', matrix.baselines, matrix.project), matrix.fonts) }}
                   restore-keys: lfs-${{ matrix.project }}-
 
-            - name: Fetch this project's baseline images from Git LFS
-              run: git lfs pull --include "${{ matrix.baselines }}/${{ matrix.project }}/**"
+            - name: Fetch this project's baseline images and the pinned fonts from Git LFS
+              run: git lfs pull --include "${{ matrix.baselines }}/${{ matrix.project }}/**,${{ matrix.fonts }}"
 
             # __SETUP__
 

@@ -55,6 +55,7 @@ describe("normalizeConfig", () => {
             workDir: ".visual-review",
             commitPrefix: "test",
             issueLabels: ["bug"],
+            fontconfig: null,
             projects: {
                 web: {
                     storybook: "storybook-static",
@@ -74,8 +75,15 @@ describe("normalizeConfig", () => {
         expect(c.projects.g.waitFor).toEqual({ selector: "my-el", method: "ready", failOnConsole: null });
     });
 
+    it("keeps the fontconfig file capture draws with", () => {
+        const c = normalizeConfig({ fontconfig: "fonts/fonts.conf", projects: { a: { storybook: "s" } } });
+        expect(c.fontconfig).toBe("fonts/fonts.conf");
+    });
+
     it.each([
         [[], /JSON object/],
+        [{ fontconfig: "../fonts.conf", projects: { a: { storybook: "s" } } }, /fontconfig must be/],
+        [{ fontconfig: 1, projects: { a: { storybook: "s" } } }, /fontconfig must be/],
         [{}, /projects must name/],
         [{ projects: {} }, /projects must name/],
         [{ projects: { "a b": { storybook: "s" } } }, /project id/],
