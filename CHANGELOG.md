@@ -1,3 +1,13 @@
+## 0.2.8 (2026-10-04)
+
+### 🚀 Features
+
+- **visual-review:** finish without merging master first ([f4cc31c41](https://github.com/graphty-org/graphty-monorepo/commit/f4cc31c41))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.7 (2026-10-04)
 
 ### 🩹 Fixes
