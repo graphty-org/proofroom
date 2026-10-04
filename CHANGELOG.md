@@ -1,3 +1,13 @@
+## 0.2.6 (2026-10-04)
+
+### 🚀 Features
+
+- **visual-review:** ask the reject reason in its own box; J previous, K next ([#862](https://github.com/graphty-org/graphty-monorepo/issues/862), [#863](https://github.com/graphty-org/graphty-monorepo/issues/863))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.5 (2026-10-04)
 
 This was a version bump only for visual-review to align it with other projects, there were no code changes.

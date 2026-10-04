@@ -1,6 +1,6 @@
 {
     "name": "@graphty/visual-review",
-    "version": "0.2.5",
+    "version": "0.2.6",
     "description": "Self-hosted visual review of Storybook stories: capture in GitHub Actions, keep the baselines in git (Git LFS), accept or reject each change in a local page, and gate pull requests",
     "author": "Adam Powers <apowers@ato.ms>",
     "type": "module",
