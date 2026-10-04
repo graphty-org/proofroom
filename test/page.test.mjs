@@ -395,7 +395,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
         await (await menuOption("Baseline")).click();
         await expect.poll(labels).toEqual(["New"]);
         // The next item opens the same way.
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await expect.poll(() => page.locator(".itemline .number").textContent()).not.toBe("#2");
         await expect.poll(labels).toEqual(["New"]);
         // A fresh page on a link that does not say: this browser's choice holds.
@@ -696,24 +696,38 @@ describe("review page: the control panel, on an iPad", () => {
         });
     }
 
-    it("opens the note for a reject in the row it is in, moving nothing", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });
-        await page.locator(".component").first().waitFor();
-        await openStory(2);
-        await ready();
-        const before = await panel();
-        await page.keyboard.press("r");
-        await expect.poll(() => page.locator("#note:focus").count()).toBe(1);
-        expect(await page.locator("#note").getAttribute("placeholder")).toBe("Reason to reject, then Enter");
-        const after = await panel();
-        expect(after.controls).toEqual(before.controls);
-        expect(after.stageTop).toBe(before.stageTop);
-        // Upright, the note box ends the item row; on its side, the decision row.
-        expect(await page.locator(".itemline #note").count()).toBe(1);
-        await page.keyboard.press("Escape");
-        await page.setViewportSize({ width: 1180, height: 820 });
-        await expect.poll(() => page.locator(".decisionbar #note").count()).toBe(1);
-    });
+    for (const viewport of [
+        { width: 820, height: 1180 },
+        { width: 1180, height: 820 },
+    ]) {
+        it(`at ${viewport.width} x ${viewport.height}: no text field on the screen; Reject asks its reason in a box ready to type in`, async () => {
+            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await page.locator(".component").first().waitFor();
+            await openStory(2);
+            await ready();
+            expect(await page.locator("#app input, #bar input").count()).toBe(0);
+            const before = await panel();
+            await page.getByRole("button", { name: /^Reject/ }).click();
+            // The cursor is in the field: what is typed next is the reason, with no tap first.
+            await expect.poll(() => page.locator("dialog.reason[open] #reason:focus").count()).toBe(1);
+            expect(await page.locator("#reason-label").textContent()).toBe("Reason to reject #2");
+            const sent = page.waitForRequest("**/api/decide");
+            await page.keyboard.type("button is darker");
+            await page.keyboard.press("Enter");
+            const body = (await sent).postDataJSON();
+            expect(body).toMatchObject({
+                file: "button--primary.dark.png",
+                decision: "reject",
+                reason: "button is darker",
+            });
+            await expect.poll(status).toBe("Rejected #2. Now #3, 3 of 6: slider--sizes, changed.");
+            expect(await page.locator("dialog.reason").count()).toBe(0);
+            // Nothing on the screen moved for it.
+            const after = await panel();
+            expect(after.controls).toEqual(before.controls);
+            expect(after.stageTop).toBe(before.stageTop);
+        });
+    }
 
     it("keeps the rarer options in one Options menu, each with its key, and Escape closes it first", async () => {
         await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
@@ -751,13 +765,13 @@ describe("review page: the control panel, on an iPad", () => {
         await page.getByRole("button", { name: "4x", exact: true }).click();
         await page.locator("#accept").click();
         await expect.poll(position).toMatch(/^3 of /);
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await expect.poll(position).toMatch(/^4 of /);
         const counted = await page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:usage")));
-        expect(counted).toMatchObject({ "zoom-4": 1, accept: 1, "key-J": 1 });
+        expect(counted).toMatchObject({ "zoom-4": 1, accept: 1, "key-K": 1 });
         await page.keyboard.press("?");
         const list = await page.locator("dialog.keys .usage li").allTextContents();
-        expect(list).toEqual(expect.arrayContaining(["zoom-4: 1", "accept: 1", "key-J: 1"]));
+        expect(list).toEqual(expect.arrayContaining(["zoom-4: 1", "accept: 1", "key-K: 1"]));
         expect(list.length).toBeLessThanOrEqual(10);
     });
 });
@@ -1032,7 +1046,7 @@ describe("review page: a pull request", () => {
         const hash = () => new URLSearchParams(new URL(page.url()).hash.slice(1));
         expect(hash().get("flash")).toBe("on");
         // The next item opens in Spotlight, still flashing.
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await expect.poll(position).toMatch(/^3 of /);
         await expect.poll(() => canvases.count()).toBe(2);
         expect(await page.locator("#stage .flashing .label").textContent()).toMatch(/^Spotlight: (baseline|new)$/);
@@ -1153,8 +1167,10 @@ describe("review page: a pull request", () => {
         await expect.poll(focused).toBe("app");
         await page.locator("#stage").click();
         await expect.poll(focused).toBe("app");
-        // Leaving the note box hands focus back to the page.
-        await page.locator("#note").focus();
+        // Closing the reason box hands focus back to the page.
+        await ready();
+        await page.keyboard.press("r");
+        await page.locator("#reason:focus").waitFor();
         await page.keyboard.press("Escape");
         await expect.poll(focused).toBe("app");
     });
@@ -1173,23 +1189,34 @@ describe("review page: a pull request", () => {
         );
     });
 
-    it("leaves the note box with Escape, keeping its text; a second Escape goes back to the grid", async () => {
+    it("cancels the reason box with Escape, keeping its text with its item; a second Escape goes back to the grid", async () => {
         await openStory(3);
-        await page.locator("#note").click();
+        await ready();
+        await page.keyboard.press("r");
         await page.keyboard.type("half a thought");
         await page.keyboard.press("Escape");
+        await expect.poll(status).toBe("Reject cancelled: #3 is still undecided.");
+        expect(await page.locator("dialog.reason").count()).toBe(0);
         expect(await page.locator("#position").count()).toBe(1);
-        expect(await page.locator("#note").inputValue()).toBe("half a thought");
         await page.keyboard.press("Escape");
         await page.locator(".component").first().waitFor();
         await expect.poll(() => page.locator(".tile.current").getAttribute("data-file")).toBe("slider--sizes.png");
         // The text stays with its item, and only there.
         await page.locator('.tile[data-file="slider--sizes.png"]').click();
-        await expect.poll(() => page.locator("#note").inputValue()).toBe("half a thought");
-        await page.keyboard.press("k");
+        await ready();
+        await page.keyboard.press("r");
+        await expect.poll(() => page.locator("#reason").inputValue()).toBe("half a thought");
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("j");
         await expect.poll(position).toMatch(/^2 of /);
-        expect(await page.locator("#note").inputValue()).toBe("");
-        await page.getByRole("button", { name: "Next", exact: true }).focus();
+        await ready();
+        await page.keyboard.press("e");
+        await expect
+            .poll(() => page.locator("#reason-label").textContent())
+            .toBe("Reason to exclude #2: Exclude stops capturing every mode of this story.");
+        expect(await page.locator("#reason").inputValue()).toBe("");
+        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+        await expect.poll(status).toBe("Exclude cancelled: #2 is still undecided.");
         await page.keyboard.press("Escape");
         await expect
             .poll(() => page.locator(".tile.current").getAttribute("data-file"))
@@ -1201,28 +1228,31 @@ describe("review page: a pull request", () => {
         await openStoryFromGrid(2);
         await ready();
         await page.keyboard.press("r");
-        await expect.poll(status).toBe("Type the reason, then press Enter to reject.");
-        expect(await page.locator("#note").getAttribute("placeholder")).toBe("Reason to reject, then Enter");
-        expect(await page.locator("#reject").getAttribute("class")).toContain("waiting");
-        await page.locator("#note").press("Enter");
-        await expect.poll(status).toBe("Type the reason, then press Enter to reject.");
+        await page.locator("#reason:focus").waitFor();
+        await page.keyboard.press("Enter");
+        await expect
+            .poll(() => page.locator("dialog.reason [role=alert]").textContent())
+            .toBe("Reject needs a reason.");
         await page.keyboard.type("darker than before");
         await page.keyboard.press("Enter");
         await expect.poll(status).toBe("Rejected #2. Now #3, 3 of 6: slider--sizes, changed.");
         // Deciding moved on to 3; back on 2, A and R do nothing until Undo.
-        await page.keyboard.press("k");
+        await page.keyboard.press("j");
         await expect.poll(position).toMatch(/^2 of/);
         await page.keyboard.press("a");
         await expect.poll(status).toBe("Already rejected. Undo it to change it.");
         expect(await page.locator("h2").textContent()).toContain("Rejected: darker than before");
         expect(await page.locator("#reject").getAttribute("aria-pressed")).toBe("true");
-        expect(await page.locator("#note").inputValue()).toBe("darker than before");
         await page.keyboard.press("u");
         await expect.poll(status).toBe("Undid #2: undecided again.");
         await ready();
+        // Undo gives the reason back, so a typo is fixed without typing it all again.
+        await page.keyboard.press("r");
+        await expect.poll(() => page.locator("#reason").inputValue()).toBe("darker than before");
+        await page.keyboard.press("Escape");
         await page.keyboard.press("a");
         await expect.poll(status).toBe("Accepted #2. Now #3, 3 of 6: slider--sizes, changed.");
-        await page.keyboard.press("k");
+        await page.keyboard.press("j");
         await page.keyboard.press("a");
         await expect.poll(status).toBe("Already accepted. Undo it to change it.");
     });
@@ -1471,7 +1501,7 @@ describe("review page: the decision bar", () => {
     const boxes = () =>
         page.evaluate(() => {
             const doc = globalThis.document;
-            const ids = ["to-grid", "prev", "next", "accept", "reject", "exclude", "undo", "note"];
+            const ids = ["to-grid", "prev", "next", "accept", "reject", "exclude", "undo"];
             const out = Object.fromEntries(
                 ids.map((id) => {
                     const r = doc.getElementById(id).getBoundingClientRect();
@@ -1511,11 +1541,11 @@ describe("review page: the decision bar", () => {
                     await ready();
                     await page.keyboard.press("a");
                     await expect.poll(position).toMatch(/^3 of /);
-                    await page.keyboard.press("k");
+                    await page.keyboard.press("j");
                     await expect.poll(position).toMatch(/^2 of /);
                     seen.push(await boxes());
                 }
-                await page.keyboard.press("j");
+                await page.keyboard.press("k");
                 await expect.poll(position).toMatch(new RegExp(`^${Math.min(n + 2, 6)} of |End of`));
                 seen.push(await boxes());
             }
@@ -1534,52 +1564,26 @@ describe("review page: the decision bar", () => {
         }, 60000);
     }
 
-    it("never types a decision key into the note box: R, type, Enter, then A accepts the next item", async () => {
+    it("never types a decision key into the reason box: R, type, Enter, then A accepts the next item", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await expect.poll(position).toMatch(/^2 of /);
         await ready();
         await page.keyboard.press("r");
         await page.keyboard.type("too dark");
         await page.keyboard.press("Enter");
         await expect.poll(position).toMatch(/^3 of /);
-        expect(await page.locator("#note:focus").count()).toBe(0);
+        expect(await page.locator("dialog.reason").count()).toBe(0);
         await ready();
         await page.keyboard.press("a");
         await expect.poll(status).toBe("Accepted #3. Now #4, 4 of 6: badge--default (light), new.");
-        expect(await page.locator("#note").inputValue()).toBe("");
-    });
-
-    it("accepts with a note typed first, and keeps the note with its own item", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
-        await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
-        await expect.poll(position).toMatch(/^2 of /);
-        await ready();
-        await page.locator("#note").fill("intended spacing");
-        // Moving away keeps it with #2, and the next item's box is empty.
-        await page.locator("#note").press("Escape");
-        await page.keyboard.press("j");
-        await expect.poll(position).toMatch(/^3 of /);
-        expect(await page.locator("#note").inputValue()).toBe("");
-        await page.keyboard.press("k");
-        await expect.poll(() => page.locator("#note").inputValue()).toBe("intended spacing");
-        await ready();
-        await page.keyboard.press("a");
-        await expect.poll(status).toMatch(/^Accepted #2\./);
-        const { decisions } = await page.evaluate(
-            async (token) =>
-                (await fetch("/api/pr/123/compact-mantine", { headers: { "x-review-token": token } })).json(),
-            TOKEN,
-        );
-        expect(decisions["button--primary.dark.png"]).toEqual({ decision: "accept", reason: "intended spacing" });
     });
 
     it("keeps focus on a decision button it was on: Tab to Accept, Space twice", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await ready();
         await page.locator("#accept").focus();
         await page.keyboard.press(" ");
@@ -1597,7 +1601,7 @@ describe("review page: the decision bar", () => {
     it("ignores the second tap of a double tap, which lands on the next item's Accept", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await ready();
         await page.locator("#accept").click();
         await page.locator("#accept").click();
@@ -1687,7 +1691,7 @@ describe("review page: waits that say what they wait for", () => {
         expect(await box()).toBeNull();
         await page.unroute("**/api/pr/123/compact-mantine");
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await ready();
         let save;
         const saved = new Promise((resolve) => (save = resolve));
@@ -1857,12 +1861,14 @@ describe("review page: moving on", () => {
     it("offers the next project at the end of a pass, opening its first undecided item", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
+        expect(await page.locator("#prev kbd").textContent()).toBe("J");
+        expect(await page.locator("#next kbd").textContent()).toBe("K");
         for (let n = 2; n <= 6; n++) {
-            await page.keyboard.press("j");
+            await page.keyboard.press("k");
             await expect.poll(position).toMatch(new RegExp(`^${n} of `));
         }
-        // J on the last item does not wrap: it shows what is next.
-        await page.keyboard.press("j");
+        // K on the last item does not wrap: it shows what is next.
+        await page.keyboard.press("k");
         await expect
             .poll(() => page.locator("#end-heading").textContent())
             .toBe("End of compact-mantine: 0 of 6 decided, 6 undecided.");
@@ -1874,10 +1880,10 @@ describe("review page: moving on", () => {
             "Back to the grid",
         ]);
         expect(await page.evaluate(() => globalThis.document.activeElement.textContent)).toBe(offers[0]);
-        // K comes back to the last item.
-        await page.keyboard.press("k");
-        await expect.poll(position).toMatch(/^6 of /);
+        // J comes back to the last item.
         await page.keyboard.press("j");
+        await expect.poll(position).toMatch(/^6 of /);
+        await page.keyboard.press("k");
         await page.locator("#endcard .offers button").first().waitFor();
         await page.getByRole("button", { name: "Next project: graphty-element (1 undecided)" }).click();
         await expect.poll(() => page.locator("#pick-project").inputValue()).toBe("graphty-element");
@@ -1901,8 +1907,8 @@ describe("review page: moving on", () => {
         // Only the failed and unstable items are left. At the end of a pass over them the next
         // project still comes first, and the card says these can only be excluded.
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
+        await page.keyboard.press("k");
         await page.locator("#endcard .offers button").first().waitFor();
         expect((await page.locator("#endcard .offers button").allTextContents()).slice(0, 2)).toEqual([
             "Next project: graphty-element (1 undecided)",
@@ -1914,9 +1920,9 @@ describe("review page: moving on", () => {
         for (const n of [1, 5]) {
             await openStory(n);
             await ready();
-            await page.locator("#note").fill("flaky");
-            await page.keyboard.press("Escape");
             await page.keyboard.press("e");
+            await page.keyboard.type("flaky");
+            await page.keyboard.press("Enter");
             await expect.poll(status).toMatch(/^Excluded #/);
             await page.keyboard.press("Escape");
         }
@@ -1968,8 +1974,8 @@ describe("review page: navigation, on an iPad", () => {
             expect(await shown("to-item")).toBe(false);
             // A pass, two items in: the Grid crumb goes up, keeping the pass.
             await page.locator("#review-undecided").click();
-            await page.keyboard.press("j");
-            await page.keyboard.press("j");
+            await page.keyboard.press("k");
+            await page.keyboard.press("k");
             await expect.poll(position).toMatch(/^3 of 6 /);
             expect(await shown("to-grid")).toBe(true);
             expect(await shown("to-item")).toBe(false);
@@ -2109,7 +2115,7 @@ describe("review page: links and the frozen pass", () => {
 
     it("reopens the same pass at the same place after a reload", async () => {
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await expect.poll(position).toMatch(/^2 of 6 /);
         await ready();
         await page.keyboard.press("a");
@@ -2117,7 +2123,7 @@ describe("review page: links and the frozen pass", () => {
         await page.reload();
         await expect.poll(position).toBe("3 of 6 -- 5 left");
         // The decided item is still in the pass.
-        await page.keyboard.press("k");
+        await page.keyboard.press("j");
         await expect.poll(position).toMatch(/^2 of 6 /);
         expect(await page.locator("#accept").getAttribute("aria-pressed")).toBe("true");
     });
@@ -2171,6 +2177,11 @@ describe("review page: links and the frozen pass", () => {
         await keys.waitFor();
         expect(await keys.textContent()).toContain("No item 99999: items are numbered 1 to 6 in All.");
         expect(await keys.textContent()).toContain("Single-key shortcuts: on");
+        // J goes back and K goes on, as the Prev and Next buttons say.
+        expect(await keys.textContent()).toContain(
+            "J / KPrevious / next item of the pass; K on the last item shows what is next",
+        );
+        expect(await keys.textContent()).toContain("RReject: a box asks the reason, ready to type");
         await page.keyboard.press("?");
         await expect.poll(() => keys.count()).toBe(0);
         await page.locator("#keys-button").click();
@@ -2196,7 +2207,7 @@ describe("review page: links and the frozen pass", () => {
         await page.keyboard.press("u");
         await expect.poll(status).toBe("Undid #3: undecided again.");
         expect(await position()).toMatch(/^3 of 6 /);
-        await page.keyboard.press("k");
+        await page.keyboard.press("j");
         await expect.poll(position).toMatch(/^2 of 6 /);
         await page.getByRole("button", { name: "Undo", exact: true }).click();
         await expect.poll(status).toBe("Undid #2: undecided again.");
@@ -2213,13 +2224,11 @@ describe("review page: links and the frozen pass", () => {
 });
 
 describe("review page: Finish", () => {
-    it("states the accept notes and rejects it will publish, and refuses when they changed since", async () => {
+    it("states the rejects it will publish, and refuses when they changed since", async () => {
         const r = await open((x) => ({ gh: onePr()(x) }));
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await ready();
-        await page.locator("#note").fill("new spacing is intended");
-        await page.locator("#note").press("Escape");
         await page.keyboard.press("a");
         await expect.poll(status).toMatch(/^Accepted #2\./);
         await ready();
@@ -2254,14 +2263,13 @@ describe("review page: Finish", () => {
         expect(dialogs[0].split("\n").filter(Boolean).slice(0, 7)).toEqual([
             "Finish #123, every project:",
             "Commit 1 accept to feature.",
-            "Post 1 reject and 1 accept note as a comment on #123.",
+            "Post 1 reject as a comment on #123.",
             "Then set the commit status 'Visual review' to failure (1 rejected).",
             "Still undecided, left for a later round: compact-mantine 4, graphty-element 1.",
             "Not loaded, so not reviewed: layout, algorithms, graphty.",
             "Notes to publish:",
         ]);
         expect(dialogs[0]).toContain("Rejected compact-mantine/slider--sizes.png: too tall");
-        expect(dialogs[0]).toContain("Accepted compact-mantine/button--primary.dark.png: new spacing is intended");
         // The sheet comes back with the new summary, saying why.
         expect(dialogs[1]).toContain("Decisions changed since this sheet opened: check the summary again.");
         expect(dialogs[1]).toContain("Commit 2 accepts to feature.");
@@ -2507,7 +2515,7 @@ describe("review page: the passkey", () => {
             { review: true },
         );
         await page.locator("#review-undecided").click();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await ready();
         await page.keyboard.press("r");
         await page.keyboard.type("text is clipped");
@@ -2529,7 +2537,7 @@ describe("review page: narrow windows, touch and wording", () => {
     const outside = () =>
         page.evaluate(() => {
             const { document, innerWidth } = globalThis;
-            return [...document.querySelectorAll("header > *, .decisionbar > *, #note, .viewbar > *")]
+            return [...document.querySelectorAll("header > *, .decisionbar > *, .viewbar > *")]
                 .filter((e) => e.getClientRects().length > 0)
                 .map((e) => [e.id || e.className || e.tagName, e.getBoundingClientRect()])
                 .filter(([, r]) => r.left < 0 || r.right > innerWidth + 0.5)
@@ -2549,7 +2557,7 @@ describe("review page: narrow windows, touch and wording", () => {
             [selector, text],
         );
 
-    it("keeps the decision bar and the header on screen at every width, the note's hint whole", async () => {
+    it("keeps the decision bar and the header on screen at every width", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator(".component").first().waitFor();
         await openStory(2);
@@ -2557,13 +2565,6 @@ describe("review page: narrow windows, touch and wording", () => {
         // A wide desktop, an iPad on its side and upright, a zoomed page and iPad Split View.
         for (const width of [1280, 1180, 1024, 820, 600, 375, 320]) {
             await page.setViewportSize({ width, height: 900 });
-            // Crossing 1100 px moves the note box between the decision row and the item row.
-            await expect
-                .poll(async () => {
-                    const hint = await fits("#note");
-                    return hint.need <= hint.room;
-                }, `the note's hint at ${width} px`)
-                .toBe(true);
             expect({ width, outside: await outside() }).toEqual({ width, outside: [] });
         }
     });
@@ -2605,7 +2606,7 @@ describe("review page: narrow windows, touch and wording", () => {
             expect(await page.locator("#pick-project option:checked").textContent()).toBe("compact-mantine (186)");
             expect(await cut(["#pick-target", "#pick-project"])).toEqual([]);
             await page.locator("#review-undecided").click();
-            await page.keyboard.press("j");
+            await page.keyboard.press("k");
             await expect.poll(position).toMatch(/^2 of \d{3} -- \d{3} left$/);
             expect(await cut(["#pick-target", "#pick-project", "#position"])).toEqual([]);
             // Back on the grid under All, a decided tile's Undo is as tall as any other control.
@@ -2698,7 +2699,7 @@ describe("review page: narrow windows, touch and wording", () => {
         await page.reload();
         await page.locator("#stage").waitFor();
         await page.locator("#app").focus();
-        await page.keyboard.press("j");
+        await page.keyboard.press("k");
         await expect.poll(status).toBe(off);
     });
 
