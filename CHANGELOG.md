@@ -1,3 +1,13 @@
+## 0.2.10 (2026-10-05)
+
+### 🩹 Fixes
+
+- **visual-review:** show a local preview while another project of the CI run downloads ([fc534d028](https://github.com/graphty-org/graphty-monorepo/commit/fc534d028))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.9 (2026-10-05)
 
 ### 🚀 Features
