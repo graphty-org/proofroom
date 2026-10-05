@@ -167,3 +167,20 @@ export function validateResults(r) {
     });
     return errors;
 }
+
+/**
+ * skipped.json: what a CI job writes in place of results.json when the run chose not to capture
+ * a project because the pull request cannot affect it. It is not a capture: the gate accepts it
+ * only on a pull request's own run, only for a project with baselines on the base branch whose
+ * baselines the pull request does not change, and never in a merge-queue run (gate.mjs).
+ */
+export const SKIPPED_FILE = "skipped.json";
+
+/**
+ * Whether a parsed skipped.json is the marker for this project.
+ * @param {any} m the parsed JSON, untrusted
+ * @param {string} project the project the artifact is named for
+ * @returns {boolean} true only for exactly `{ "skipped": "not affected", "project": <project> }`
+ */
+export const isSkipMarker = (m, project) =>
+    isObj(m) && Object.keys(m).length === 2 && m.skipped === "not affected" && m.project === project;

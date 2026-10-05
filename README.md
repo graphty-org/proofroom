@@ -937,6 +937,15 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   `unchanged` or `excluded` items, including after "Re-run failed jobs" (the
   highest attempt's artifact counts); a missing, unfinished or invalid capture blocks it too. A
   rejected item stays blocking until a code change makes it match the baseline.
+- One exception: a project whose artifact holds, instead of `results.json`, the file
+  `skipped.json` with exactly `{"skipped": "not affected", "project": "<project>"}` passes without
+  a capture. A workflow that captures only the Storybooks a pull request can affect writes it for
+  the others. The gate accepts it only on a pull request's own run (never with `--queue-event`),
+  only for a project with baselines on the base branch, and only when the pull request changes
+  none of that project's baselines; anywhere else it counts as a missing capture. Which projects
+  are left out is decided by the pull request's own workflow, so the guarantee comes from the
+  merge queue, which captures every project before anything merges. The review page shows such a
+  project as "no capture".
 - A story with no baseline always blocks. `new` and `no baseline yet` only tell the reviewer
   whether the pull request changed it, measured against the default branch's newest complete
   capture, which may be a few merges older than the pull request's base.

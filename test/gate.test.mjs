@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
     approvalKeys,
+    baselinesChangedBetween,
     contentHash,
     gateProblems,
     gatedProjects,
@@ -293,6 +294,123 @@ describe("gate command", () => {
     it("prints its usage without both arguments", () => {
         const out = spawnSync(process.execPath, [GATE], { encoding: "utf8" });
         expect(out.status).toBe(2);
+    });
+});
+
+describe("the not-affected marker (skipped.json)", () => {
+    const GATE = fileURLToPath(new URL("../trusted/gate.mjs", import.meta.url));
+    // An artifact holding only the marker the visual job writes for a project it did not capture.
+    const marked = (dir, name, marker) => {
+        mkdirSync(join(dir, name));
+        writeFileSync(join(dir, name, "skipped.json"), JSON.stringify(marker));
+        return dir;
+    };
+    const MARKER = { skipped: "not affected", project: "compact-mantine" };
+    const config = normalizeConfig({ defaultBranch: "master", projects: { "compact-mantine": { storybook: "a" } } });
+    const seeded = new Set(["compact-mantine"]);
+    const skipped = { "compact-mantine": { attempt: 1, results: null, skipped: true } };
+
+    it("is read only from an artifact with no results.json, and only when it names the artifact's project", () => {
+        expect(newestResults(marked(artifacts({}), "visual-compact-mantine-1", MARKER))["compact-mantine"]).toEqual({
+            attempt: 1,
+            results: null,
+            skipped: true,
+        });
+        const other = marked(artifacts({}), "visual-compact-mantine-1", { ...MARKER, project: "layout" });
+        expect(newestResults(other)["compact-mantine"].skipped).toBeUndefined();
+        const extra = marked(artifacts({}), "visual-compact-mantine-1", { ...MARKER, all: true });
+        expect(newestResults(extra)["compact-mantine"].skipped).toBeUndefined();
+        // A capture that also left a marker (or a broken results.json beside one) is a capture.
+        const both = artifacts({});
+        marked(both, "visual-compact-mantine-1", MARKER);
+        writeFileSync(join(both, "visual-compact-mantine-1", "results.json"), "{");
+        expect(newestResults(both)["compact-mantine"]).toEqual({ attempt: 1, results: null });
+    });
+
+    it("counts only in the newest attempt", () => {
+        const dir = marked(
+            artifacts({ "visual-compact-mantine-2": results(["changed"]) }),
+            "visual-compact-mantine-1",
+            MARKER,
+        );
+        expect(gateProblems({ config, seeded, captures: newestResults(dir) })[0]).toMatch(/1 changed/);
+    });
+
+    it("stands in for the capture of a seeded project on a pull request's own run", () => {
+        expect(gateProblems({ config, seeded, captures: skipped })).toEqual([]);
+    });
+
+    it("fails in a merge-queue run, for a project with no baselines, and for one whose baselines change", () => {
+        expect(gateProblems({ config, seeded, captures: skipped, queue: true })).toEqual([
+            "compact-mantine: not captured (marked not affected by this pull request), but a merge-queue run must capture every project; re-run it",
+        ]);
+        expect(gateProblems({ config, seeded: new Set(), captures: skipped })[0]).toMatch(
+            /not captured .*but it has no baselines on master yet, so every pull request captures it$/,
+        );
+        expect(
+            gateProblems({ config, seeded, captures: skipped, baselinesChanged: new Set(["compact-mantine"]) })[0],
+        ).toMatch(/not captured .*but this pull request changes its baselines, so it must be captured$/);
+    });
+
+    it("leaves a project with neither a capture nor a marker failing", () => {
+        expect(
+            gateProblems({ config, seeded, captures: { "compact-mantine": { attempt: 1, results: null } } }),
+        ).toEqual(["compact-mantine: no capture results (the visual job failed or uploaded nothing); re-run it"]);
+    });
+
+    it("finds the projects whose baselines a pull request changes, review records left out", () => {
+        const r = makeRepo();
+        expect(baselinesChangedBetween("master", "feature", r.repo)).toEqual(new Set());
+        git(r.repo, "checkout", "-q", "feature");
+        writeFileSync(join(r.repo, "visual-baselines/compact-mantine/card--legacy.png"), "other");
+        mkdirSync(join(r.repo, "visual-baselines/reviews"), { recursive: true });
+        writeFileSync(join(r.repo, "visual-baselines/reviews/r.json"), "{}");
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "change a baseline");
+        expect(baselinesChangedBetween("master", "feature", r.repo)).toEqual(new Set(["compact-mantine"]));
+    });
+
+    describe("the gate command", () => {
+        const others = Object.fromEntries(
+            Object.keys(CONFIG.projects)
+                .filter((p) => p !== "compact-mantine")
+                .map((p) => [`visual-${p}-1`, results(["unchanged"])]),
+        );
+        const run = (repo, ...extra) =>
+            spawnSync(
+                process.execPath,
+                [
+                    GATE,
+                    "--captures",
+                    marked(artifacts(others), "visual-compact-mantine-1", MARKER),
+                    "--base",
+                    "master",
+                    "--head",
+                    "feature",
+                    ...extra,
+                ],
+                { cwd: repo, encoding: "utf8" },
+            );
+
+        it("passes a pull request that leaves out a project it cannot affect, and says so", () => {
+            const out = run(makeRepo().repo);
+            expect(out.stdout).toContain(
+                "::notice::compact-mantine was not captured: this pull request does not affect it",
+            );
+            expect(out.status).toBe(0);
+        });
+
+        it("fails the same artifacts in a merge-queue run", () => {
+            const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+            const body = "```yaml\npull_requests:\n  - number: 7\n```\n";
+            writeFileSync(file, JSON.stringify({ pull_request: { number: 995, body } }));
+            const out = run(makeRepo().repo, "--queue-event", file);
+            expect(out.stdout).toMatch(
+                /::error::visual changes not accepted -- compact-mantine: not captured .*merge-queue run/,
+            );
+            expect(out.stdout).not.toContain("::notice::");
+            expect(out.status).toBe(1);
+        });
     });
 });
 

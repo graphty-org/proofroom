@@ -20,6 +20,14 @@
  * crashed has shown the owner nothing. An invalid results.json counts as missing. So does a story
  * compared at a diffThreshold above MAX_THRESHOLD, which would hide real changes.
  *
+ * One exception: a project whose artifact holds, instead of results.json, the marker the workflow
+ * writes when the pull request cannot affect it (skipped.json, results.mjs) passes without a
+ * capture. Which projects a pull request affects is decided by the pull request's own workflow, so
+ * the marker counts only where a full capture follows: never in a merge-queue run (every batch
+ * captures every project before it merges), never for a project with no baselines on the base
+ * branch, and never for a project whose baselines the pull request changes. Anywhere else a marker
+ * is a missing capture.
+ *
  * It also fails when a baseline PNG or a story's settings file differs from the base without the
  * review records added in the pull request (<baselines>/reviews/*.json) taking that path from its
  * contents on the base branch to its new ones: each record item moves a path `from` one hash `to`
@@ -60,7 +68,7 @@ import { parseArgs } from "node:util";
 
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyRecord } from "./lib/approval.mjs";
 import { loadConfigAt, repoRoot } from "./lib/config.mjs";
-import { validateResults } from "./lib/results.mjs";
+import { isSkipMarker, SKIPPED_FILE, validateResults } from "./lib/results.mjs";
 
 const PASSING = new Set(["unchanged", "excluded"]);
 
@@ -71,12 +79,14 @@ const PASSING = new Set(["unchanged", "excluded"]);
 export const MAX_THRESHOLD = 0.8;
 
 /**
- * The newest attempt's results.json of every project in a directory of downloaded artifacts.
+ * The newest attempt's results.json of every project in a directory of downloaded artifacts, and
+ * whether that attempt holds the not-affected marker instead (`skipped: true`, only with no
+ * results.json).
  * @param {string} dir the download directory, one subdirectory per artifact
- * @returns {Record<string, { attempt: number, results: object | null }>} by project
+ * @returns {Record<string, { attempt: number, results: object | null, skipped?: true }>} by project
  */
 export function newestResults(dir) {
-    /** @type {Record<string, { attempt: number, results: object | null }>} */
+    /** @type {Record<string, { attempt: number, results: object | null, skipped?: true }>} */
     const out = {};
     const names = existsSync(dir) ? readdirSync(dir) : [];
     for (const name of names) {
@@ -97,8 +107,19 @@ export function newestResults(dir) {
             // Missing or not JSON: counted as missing, like any invalid results.json.
         }
         out[project] = { attempt, results };
+        if (!existsSync(file) && isSkipMarker(readJson(join(dir, name, SKIPPED_FILE)), project)) {
+            out[project].skipped = true;
+        }
     }
     return out;
+}
+
+function readJson(file) {
+    try {
+        return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -118,12 +139,14 @@ export function gatedProjects(config, seeded, headConfig) {
  * @param {{ config: { defaultBranch: string, baselines: string,
  *     projects: Record<string, { seedFromDefaultBranch: boolean }> },
  *     headConfig: { baselines: string, projects: Record<string, object> } | undefined, seeded: Set<string>,
- *     captures: Record<string, { attempt: number, results: object | null }> }} input the base
- *     branch's config, the pull request's config (if any), the projects with baselines on the base
- *     branch, and the newest capture of each project
+ *     captures: Record<string, { attempt: number, results: object | null, skipped?: true }>,
+ *     queue?: boolean, baselinesChanged?: Set<string> }} input the base branch's config, the pull
+ *     request's config (if any), the projects with baselines on the base branch, the newest
+ *     capture of each project, whether this is a merge-queue run, and the projects whose
+ *     baselines the pull request changes
  * @returns {string[]} one line per blocked project; empty when the gate passes
  */
-export function gateProblems({ config, headConfig, seeded, captures }) {
+export function gateProblems({ config, headConfig, seeded, captures, queue = false, baselinesChanged = new Set() }) {
     const problems = [];
     if (headConfig && headConfig.baselines !== config.baselines) {
         // Capture reads the pull request's config, so its baselines would be compared, not the base's.
@@ -134,6 +157,13 @@ export function gateProblems({ config, headConfig, seeded, captures }) {
     }
     for (const p of gatedProjects(config, seeded, headConfig)) {
         const r = captures[p]?.results;
+        if (!r && captures[p]?.skipped) {
+            const refused = skipRefused(p, { config, seeded, queue, baselinesChanged });
+            if (refused) {
+                problems.push(`${p}: not captured (marked not affected by this pull request), but ${refused}`);
+            }
+            continue;
+        }
         if (!r) {
             problems.push(`${p}: no capture results (the visual job failed or uploaded nothing); re-run it`);
             continue;
@@ -166,6 +196,48 @@ export function gateProblems({ config, headConfig, seeded, captures }) {
         }
     }
     return problems;
+}
+
+/**
+ * Why the not-affected marker does not stand in for a capture of a project; null when it does.
+ * @param {string} p the project
+ * @param {{ config: { defaultBranch: string }, seeded: Set<string>, queue: boolean,
+ *     baselinesChanged: Set<string> }} input as in gateProblems
+ * @returns {string | null} the rest of the gate's line
+ */
+function skipRefused(p, { config, seeded, queue, baselinesChanged }) {
+    if (queue) {
+        return "a merge-queue run must capture every project; re-run it";
+    }
+    if (!seeded.has(p)) {
+        return `it has no baselines on ${config.defaultBranch} yet, so every pull request captures it`;
+    }
+    if (baselinesChanged.has(p)) {
+        return "this pull request changes its baselines, so it must be captured";
+    }
+    return null;
+}
+
+/**
+ * The projects whose baselines differ between two refs: the first directory under the baselines
+ * directory of each changed path, review records left out.
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @param {string} [cwd] the repository
+ * @param {string} [baselines] the baselines directory
+ * @returns {Set<string>} the projects
+ */
+export function baselinesChangedBetween(base, head, cwd = process.cwd(), baselines = "visual-baselines") {
+    const prefix = `${baselines}/`;
+    return new Set(
+        gitOut(cwd, ["diff", "-z", "--no-renames", "--name-only", base, head, "--", prefix])
+            .toString("utf8")
+            .split("\0")
+            .filter((f) => f.startsWith(prefix))
+            .map((f) => f.slice(prefix.length).split("/"))
+            .filter((parts) => parts.length > 1 && parts[0] !== "reviews")
+            .map((parts) => parts[0]),
+    );
 }
 
 const NOT_ACCEPTED = "(not accepted; a rejected item needs a code change, not another review)";
@@ -539,7 +611,19 @@ export function runGate(args) {
     const config = loadConfigAt(values.base, root);
     const seeded = seededAt(values.base, root, config.baselines);
     const headConfig = loadConfigAt(values.head, root);
-    const problems = gateProblems({ config, headConfig, seeded, captures: newestResults(values.captures) });
+    const captures = newestResults(values.captures);
+    const queue = queueEvent !== undefined;
+    const baselinesChanged = baselinesChangedBetween(values.base, values.head, root, config.baselines);
+    const problems = gateProblems({ config, headConfig, seeded, captures, queue, baselinesChanged });
+    for (const p of gatedProjects(config, seeded, headConfig)) {
+        if (
+            captures[p]?.skipped &&
+            !captures[p].results &&
+            !skipRefused(p, { config, seeded, queue, baselinesChanged })
+        ) {
+            console.log(`::notice::${p} was not captured: this pull request does not affect it`);
+        }
+    }
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);
     }

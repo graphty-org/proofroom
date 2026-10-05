@@ -76,7 +76,7 @@ import {
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
 import { inboxOf, readyKey, writeJson } from "./inbox.mjs";
-import { validateResults } from "./results.mjs";
+import { isSkipMarker, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { scaled } from "./thumbs.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -211,15 +211,25 @@ export function sessionToken(stateDir) {
 }
 
 /**
- * Reads and validates one project's results.json.
+ * Reads and validates one project's results.json. An artifact holding the not-affected marker
+ * instead is "no capture": the run left the project out, so there is nothing to decide.
  * @param {string} dir the capture directory
+ * @param {string} name the project
  * @returns {Promise<{ results: object | null, problem: string | null }>} the results, or why not
  */
-async function loadResults(dir) {
+async function loadResults(dir, name) {
     let results;
     try {
         results = JSON.parse(await readFile(join(dir, "results.json"), "utf8"));
     } catch {
+        if (!existsSync(join(dir, "results.json"))) {
+            const marker = await readFile(join(dir, SKIPPED_FILE), "utf8")
+                .then((t) => JSON.parse(t))
+                .catch(() => null);
+            if (isSkipMarker(marker, name)) {
+                return { results: null, problem: "no capture" };
+            }
+        }
         return { results: null, problem: "capture failed" };
     }
     const problems = validateResults(results);
@@ -481,7 +491,7 @@ export function createApp({
 
     // `problem` is what CI said (the job failed, or no artifact); results.json can add its own.
     async function project(name, dir, problem) {
-        const loaded = dir ? await loadResults(dir) : { results: null, problem: null };
+        const loaded = dir ? await loadResults(dir, name) : { results: null, problem: null };
         if (loaded.results) {
             prewarm(dir, loaded.results);
         }
