@@ -13,9 +13,11 @@ import { approve, prepareRegistration, registerPasskey } from "/passkey.js";
 import pixelmatch from "/pixelmatch.mjs";
 
 // The session token, from the address, or kept in this browser from an earlier visit: the
-// notifier's link carries no token (it goes through a push service), and still opens here.
+// notifier's link carries no token (it goes through a push service), and still opens here. A
+// home-screen web app keeps its own storage, apart from the browser's, so with none here the page
+// asks for it (askToken), and again when the server refuses it.
 const TOKEN_KEY = "visual-review:token";
-const token = (() => {
+let token = (() => {
     const given = new URLSearchParams(location.hash.slice(1)).get("token");
     try {
         if (given) {
@@ -575,12 +577,93 @@ function askReason(item, decision) {
     );
 }
 
+// A request the server refused for its token: the page asks for the token, and the caller waits
+// for good (a promise that never settles), so nothing it would draw covers the question.
+const refused = () => new Promise(() => {});
+const REFUSED = "The review server did not accept that token: paste it again.";
+
+// The token form: asks for the session token, or the whole URL serve printed, and keeps it the way
+// an address with #token= does. `error` says why it asks again. The token is never shown.
+function askToken(error = "") {
+    token = "";
+    try {
+        localStorage.removeItem(TOKEN_KEY);
+    } catch {
+        // Nothing kept to remove.
+    }
+    // A refused token leaves the address, so a reload does not bring it back; the screen stays.
+    const p = new URLSearchParams(location.hash.slice(1));
+    if (p.has("token")) {
+        p.delete("token");
+        history.replaceState(null, "", p.size > 0 ? `#${p}` : location.pathname + location.search);
+    }
+    nav++;
+    blocking?.end();
+    stopFlash();
+    state.screen = "token";
+    crumbs.hidden = true;
+    finishSlot.replaceChildren();
+    setBar();
+    say("");
+    let form = document.getElementById("token-form");
+    if (!form) {
+        const field = el("input", {
+            type: "password",
+            id: "token-field",
+            autocomplete: "off",
+            autocapitalize: "off",
+            spellcheck: "false",
+            "aria-describedby": "token-error",
+        });
+        form = el(
+            "form",
+            { id: "token-form", class: "token-form", onsubmit: (e) => useToken(e, field) },
+            el("label", { for: "token-field" }, "Paste the session token (or the full URL serve printed)"),
+            field,
+            el("p", { id: "token-error", class: "error", role: "alert" }),
+            el("button", { type: "submit", class: "primary" }, "Open"),
+        );
+        render(form);
+        field.focus();
+    }
+    form.querySelector("#token-error").textContent = error;
+}
+
+function useToken(e, field) {
+    e.preventDefault();
+    const v = field.value.trim();
+    // A URL's fragment (#token=...&target=...), or the token alone.
+    const part = v.includes("#") ? v.slice(v.indexOf("#") + 1) : v;
+    const given = (part.includes("token=") ? new URLSearchParams(part).get("token") : v) ?? "";
+    if (given === "") {
+        document.getElementById("token-error").textContent = "Paste the token or the URL first.";
+        return;
+    }
+    field.value = "";
+    token = given;
+    try {
+        localStorage.setItem(TOKEN_KEY, given);
+    } catch {
+        // Kept for this visit only.
+    }
+    checkFinish();
+    route();
+}
+
 async function api(path, body) {
+    const sent = token;
     const res = await fetch(path, {
         method: body ? "POST" : "GET",
         headers: { "x-review-token": token, ...(body ? { "content-type": "application/json" } : {}) },
         body: body ? JSON.stringify(body) : undefined,
     });
+    if (res.status === 401) {
+        // Only the token in use is refused: an answer to an older one changes nothing.
+        if (sent === token) {
+            askToken(sent ? REFUSED : "");
+        }
+        return refused();
+    }
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
         const err = new Error(json.error ?? `${res.status} ${res.statusText}`);
@@ -624,7 +707,14 @@ function image(kind, file, hash, route = "img") {
         route === "img" ? IMAGES_KEPT : THUMBS_KEPT,
         () => {
             const path = [route, state.target.id, state.project, kind, file].map(encodeURIComponent).join("/");
-            return fetch(`/api/${path}`, { headers: { "x-review-token": token } }).then(async (res) => {
+            const sent = token;
+            return fetch(`/api/${path}`, { headers: { "x-review-token": sent } }).then(async (res) => {
+                if (res.status === 401) {
+                    if (sent === token) {
+                        askToken(sent ? REFUSED : "");
+                    }
+                    return refused();
+                }
                 if (!res.ok) {
                     throw new Error(`${file}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
                 }
@@ -1566,14 +1656,21 @@ function backToItem() {
     enterStory();
 }
 
+// The project a target opens on: its first with something undecided, else its first with anything
+// to review, else its first still downloading; undefined when it has none.
+function firstProject(t) {
+    return (
+        t?.projects.find((x) => x.undecided > 0 && !x.downloading) ??
+        t?.projects.find((x) => x.reviewable > 0) ??
+        t?.projects.find((x) => x.downloading)
+    );
+}
+
 // A target from the pickers or an offer: its first project with something undecided (its grid,
 // or with `story`, its first undecided item).
 async function openTarget(id, story) {
     const t = state.list?.targets?.find((x) => x.id === id);
-    const p =
-        t?.projects.find((x) => x.undecided > 0 && !x.downloading) ??
-        t?.projects.find((x) => x.reviewable > 0) ??
-        t?.projects.find((x) => x.downloading);
+    const p = firstProject(t);
     if (!p) {
         showTargets(t ? `${labelOf(t)} has nothing to review yet.` : "");
         return;
@@ -1767,7 +1864,8 @@ function enterStory() {
 
 function tile(item) {
     const number = numberOf(item);
-    const kind = item.capture ? "capture" : item.baseline ? "baseline" : null;
+    // A failed item has no image to show: the tile names its status.
+    const kind = item.status === "failed" ? null : (item.capture && "capture") || (item.baseline && "baseline") || null;
     const img = kind
         ? el("img", {
               "data-kind": kind,
@@ -2691,7 +2789,14 @@ async function renderStage(item, view, keep) {
     } else if (view === "spotlight") {
         rightLabel = "Spotlight: the new image, dimmed except around each change";
     }
-    const left = item.baseline ? pane(leftLabel, paneWait("baseline")) : pane("No baseline", null, true);
+    // A failed capture's artifact holds no copy of its baseline, so none is fetched.
+    const failed = item.status === "failed";
+    let left = pane("No baseline", null, true);
+    if (failed) {
+        left = pane("Baseline not shown: the capture failed", null, true);
+    } else if (item.baseline) {
+        left = pane(leftLabel, paneWait("baseline"));
+    }
     const right = item.capture ? pane(rightLabel, paneWait("new image")) : emptyRight();
     if (!keep) {
         stage.replaceChildren(...panes(left, right));
@@ -2736,7 +2841,7 @@ async function renderStage(item, view, keep) {
                 }
             };
             await Promise.all([
-                item.baseline && only !== "right" && fill("baseline", left),
+                item.baseline && !failed && only !== "right" && fill("baseline", left),
                 item.capture && fill("capture", right),
             ]);
             if (seq !== stageRender) {
@@ -4388,6 +4493,30 @@ async function checkFinish() {
     }
 }
 
+// The project to open for a link that names target `id` and no project, from the server's
+// counts (no GitHub call); null, having shown the targets screen, when there is none.
+async function projectOfLink(id, seq) {
+    let t;
+    try {
+        t = await api(`/api/target/${encodeURIComponent(id)}`);
+    } catch (err) {
+        if (seq === nav) {
+            const what = err.status === 404 ? `${id} is no longer listed` : `${id} could not be opened: ${err.message}`;
+            showTargets(`${what}: showing every target.`);
+        }
+        return null;
+    }
+    if (seq !== nav) {
+        return null;
+    }
+    const p = firstProject(t);
+    if (!p) {
+        showTargets(`${labelOf(t)} has nothing to review yet.`);
+        return null;
+    }
+    return p.project;
+}
+
 // Shows the screen the address names, from what the server already holds (no GitHub call); what
 // no longer exists (a closed pull request, a story gone from a new CI run) lands on the nearest
 // screen that does, with a line saying so.
@@ -4401,7 +4530,11 @@ async function route() {
             showTargets();
             return;
         }
-        const project = p.get("project");
+        // A link that names a target but no project opens the project openTarget would.
+        const project = p.get("project") ?? (await projectOfLink(id, seq));
+        if (!project) {
+            return;
+        }
         if (state.data === null || state.target?.id !== id || state.project !== project) {
             const got = await loadProject(id, project, seq);
             if (!got) {
@@ -4791,7 +4924,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 if (token === "") {
-    render(el("p", { class: "error" }, "No session token: open the URL that visual-review serve printed."));
+    askToken();
 } else {
     checkFinish();
     route();

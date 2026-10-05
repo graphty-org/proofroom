@@ -1,6 +1,9 @@
 {
     "name": "Visual review",
     "short_name": "Visual review",
+    "id": "/",
+    "start_url": "/",
+    "scope": "/",
     "display": "standalone",
     "background_color": "#f6f7f9",
     "theme_color": "#1c64d8",
