@@ -12,7 +12,21 @@
 import { approve, prepareRegistration, registerPasskey } from "/passkey.js";
 import pixelmatch from "/pixelmatch.mjs";
 
-const token = new URLSearchParams(location.hash.slice(1)).get("token") ?? "";
+// The session token, from the address, or kept in this browser from an earlier visit: the
+// notifier's link carries no token (it goes through a push service), and still opens here.
+const TOKEN_KEY = "visual-review:token";
+const token = (() => {
+    const given = new URLSearchParams(location.hash.slice(1)).get("token");
+    try {
+        if (given) {
+            localStorage.setItem(TOKEN_KEY, given);
+            return given;
+        }
+        return localStorage.getItem(TOKEN_KEY) ?? "";
+    } catch {
+        return given ?? "";
+    }
+})();
 const app = document.getElementById("app");
 const bar = document.getElementById("bar");
 const statusRow = document.getElementById("status-row");
@@ -961,14 +975,15 @@ async function followTargets(seq, ask) {
             box?.end();
             return;
         }
-        const before = JSON.stringify(state.list?.targets ?? null);
+        const before = JSON.stringify([state.list?.targets ?? null, state.list?.inbox ?? null]);
         state.list = list;
+        showCount(list.inbox);
         const stale = list.targets && list.updatedAt !== null && list.now - list.updatedAt > 60000;
         if (ask === "cached" && stale && !list.refreshing) {
             ask = "refresh";
             continue;
         }
-        if (JSON.stringify(list.targets ?? null) === before) {
+        if (JSON.stringify([list.targets ?? null, list.inbox ?? null]) === before) {
             drawListLine();
         } else {
             drawTargets();
@@ -1049,12 +1064,13 @@ function drawTargets() {
     const focused = document.activeElement?.id;
     render(
         finishOutcome(),
+        listLine(),
+        inboxView(state.list.inbox),
         finishable ? signerBlock(finishable) : null,
         finishable ? passkeyLine(finishable.passkey) : null,
-        listLine(),
         targets.length === 0
             ? el("p", {}, "No open pull requests. To seed baselines, start the server with --master-run <run id>.")
-            : null,
+            : state.list.inbox && el("h2", { class: "all-heading" }, "All pull requests"),
         ...targets.map(targetCard),
     );
     if (running()) {
@@ -1063,6 +1079,98 @@ function drawTargets() {
     // A redraw (the list refreshing under the Finish result) keeps focus where it was.
     if (focused && document.getElementById(focused) && focused !== "app") {
         document.getElementById(focused).focus({ preventScroll: true });
+    }
+}
+
+// ---------------------------------------------------------------- the inbox
+
+const ago = (from, now) => {
+    const m = Math.round(Math.max(0, now - from) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+};
+
+// What is waiting for the owner, on top of the targets screen: the pull requests with images to
+// decide (fewest first; a row opens its first undecided image), those whose capture failed, and
+// how many are still capturing or have nothing to decide.
+function inboxView(inbox) {
+    if (!inbox) {
+        return null;
+    }
+    const now = state.list.now;
+    const ready = inbox.ready.map((r) =>
+        el(
+            "li",
+            {},
+            el(
+                "button",
+                { type: "button", class: "inbox-row", "data-inbox": r.id, onclick: () => openTarget(r.id, true) },
+                el("strong", {}, `#${r.pr} `),
+                el("span", { class: "inbox-title" }, r.title),
+                el(
+                    "span",
+                    { class: "meta" },
+                    r.undecided > 0
+                        ? plural(r.undecided, "image")
+                        : `ready to Finish (${plural(r.unpublished, "decision")})`,
+                    `, ${r.source}`,
+                    r.complete ? "" : `, ${r.loaded} of ${plural(r.total, "project")} ready`,
+                    `, ${ago(r.since, now)}`,
+                ),
+            ),
+        ),
+    );
+    const notReady = inbox.notReady.map((r) =>
+        el(
+            "li",
+            { class: "inbox-bad", "data-inbox": r.id },
+            el("strong", {}, `#${r.pr} `),
+            el("span", { class: "inbox-title" }, r.title),
+            el("span", { class: "meta" }, `${r.project}: ${r.reason}`),
+            r.logUrl ? link(r.logUrl, "Job log") : null,
+            r.retry ? el("button", { type: "button", onclick: () => showTargets("", true) }, "Retry") : null,
+        ),
+    );
+    const rest = [
+        inbox.capturing > 0 ? `${inbox.capturing} capturing` : null,
+        inbox.done > 0 ? `${inbox.done} with nothing to decide` : null,
+    ].filter(Boolean);
+    return el(
+        "section",
+        { class: "inbox", "aria-label": "Waiting for you" },
+        el("h2", {}, ready.length > 0 ? `Ready for you (${ready.length})` : "Nothing waiting for you"),
+        ready.length > 0 ? el("ul", { class: "inbox-list" }, ready) : null,
+        notReady.length > 0 ? [el("h3", {}, "Not ready"), el("ul", { class: "inbox-list" }, notReady)] : null,
+        rest.length > 0 ? el("p", { class: "meta" }, rest.join(", ")) : null,
+    );
+}
+
+// The number of pull requests ready for review, in the title, the tab's icon and, on a home-screen
+// web app that allows it, the app icon's badge.
+let countShown = null;
+function showCount(inbox) {
+    const n = inbox ? inbox.ready.filter((r) => r.undecided > 0).length : null;
+    if (n === countShown) {
+        return;
+    }
+    countShown = n;
+    document.title = n ? `(${n}) Visual review` : "Visual review";
+    const label = n
+        ? `<circle cx="22" cy="10" r="10" fill="#b3261e"/><text x="22" y="15" font-size="14" font-family="sans-serif" font-weight="bold" fill="#fff" text-anchor="middle">${n > 9 ? "9+" : n}</text>`
+        : "";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#1c64d8"/><path d="M8 17l5 5 11-12" stroke="#fff" stroke-width="4" fill="none"/>${label}</svg>`;
+    const icon = document.querySelector('link[rel="icon"]');
+    if (icon) {
+        const old = icon.href;
+        // A blob: address, which the page's content security policy allows for images.
+        icon.href = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+        if (old.startsWith("blob:")) {
+            URL.revokeObjectURL(old);
+        }
+    }
+    if (n) {
+        navigator.setAppBadge?.(n).catch(() => {});
+    } else {
+        navigator.clearAppBadge?.().catch(() => {});
     }
 }
 
@@ -2944,6 +3052,7 @@ async function fillEnd(card, seq) {
             api("/api/prs?cached=1").then((list) => {
                 if (list.targets) {
                     state.list = list;
+                    showCount(list.inbox);
                 }
             }),
         ]);
@@ -4670,6 +4779,12 @@ document.getElementById("home").addEventListener("click", () => showTargets());
 document.getElementById("copy-link").addEventListener("click", copyLink);
 document.getElementById("keys-button").addEventListener("click", toggleKeys);
 window.addEventListener("popstate", () => route());
+// Back on the page (another tab, the home screen): show the current list at once.
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && state.screen === "targets" && token) {
+        showTargets();
+    }
+});
 
 if (token === "") {
     render(el("p", { class: "error" }, "No session token: open the URL that visual-review serve printed."));

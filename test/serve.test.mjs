@@ -119,6 +119,36 @@ describe("serve: pull requests", () => {
         });
     });
 
+    it("answers the inbox, and keeps it on disk for the notifier", async () => {
+        const s = await start({
+            gh: (r) =>
+                fakeGh({
+                    prs: [
+                        { number: 123, head: r.head, branch: "feature" },
+                        { number: 124, head: "4".repeat(40), branch: "no-run" },
+                    ],
+                    runs: { [r.head]: { id: 1000, head: r.head } },
+                    jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+                    results: {
+                        "visual-compact-mantine-1": { headSha: r.head },
+                        "visual-graphty-element-1": { headSha: r.head },
+                    },
+                }),
+        });
+        const { body: list } = await s.api("GET", "/api/prs");
+        const undecided = list.targets[0].projects.reduce((n, p) => n + p.undecided, 0);
+        expect(list.inbox).toMatchObject({ capturing: 1, done: 0, notReady: [] });
+        expect(list.inbox.ready).toEqual([
+            expect.objectContaining({ pr: 123, undecided, complete: true, source: "CI", headSha: s.head }),
+        ]);
+        const { body } = await s.api("GET", "/api/inbox");
+        expect(body.ready[0].since).toBe(list.inbox.ready[0].since);
+        const kept = JSON.parse(readFileSync(join(s.tmp, "state/inbox.json"), "utf8"));
+        expect(kept).toMatchObject({ origin: s.origin, capturing: 1 });
+        expect(kept.ready.map((r) => r.pr)).toEqual([123]);
+    });
+
     it("shows capture failed with the job's log when the visual job failed or uploaded nothing", async () => {
         const s = await start({
             gh: onePr({
