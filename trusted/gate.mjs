@@ -40,8 +40,14 @@
  * CI runs this file as the base branch has it, never the pull request's copy, so a pull request
  * cannot loosen the gate that judges it.
  *
- * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number>], or node
- * gate.mjs with the same options. Standard library only (results.mjs, config.mjs and approval.mjs
+ * In a merge-queue run (`--queue-event`) the head is a batch of several pull requests merged onto the
+ * base, and a record counts when it is for any pull request of the batch, read from the queue's
+ * draft pull request. Nothing else changes: every capture must still equal a baseline in the
+ * combined tree, so the queue passes a batch only on images the owner already approved on its pull
+ * requests, and never asks for a new approval.
+ *
+ * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> |
+ * --queue-event <file>], or node gate.mjs with the same options. Standard library only (results.mjs, config.mjs and approval.mjs
  * have no dependencies), so it runs from a checkout of this package without an install.
  */
 
@@ -198,7 +204,7 @@ const gitOut = (cwd, args) => execFileSync("git", args, { cwd, maxBuffer: 1 << 2
  * @param {string} head the pull request's checkout
  * @param {string} [cwd] the repository
  * @param {string} [baselines] the baselines directory
- * @param {{ keys?: object[] | null, pr?: number }} [approvals] with `keys`, every added record must
+ * @param {{ keys?: object[] | null, pr?: number | number[] }} [approvals] with `keys`, every added record must
  *     carry a passkey approval by one of them for pull request `pr` (verifyRecord) and not copy a
  *     record already on the base branch, or it counts for nothing
  * @returns {string[]} one line per unaccounted change; empty when every change has a record
@@ -225,7 +231,7 @@ export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "
  * @param {string} head the pull request's checkout
  * @param {string} cwd the repository
  * @param {string} baselines the baselines directory
- * @param {{ keys?: object[] | null, pr?: number | null }} [approvals] as in unrecordedChanges
+ * @param {{ keys?: object[] | null, pr?: number | number[] | null }} [approvals] as in unrecordedChanges
  * @returns {{ problems: string[], refused: string[], missing: { path: string, from: string | null,
  *     to: string | null }[] }} the problems with the added records, the added records that count
  *     for nothing, and every change no counted record accounts for
@@ -397,7 +403,7 @@ function fileAt(ref, path, cwd) {
  * base branch, never the pull request's. Absent, or with no key, enforcement is off.
  * @param {string} base the base branch tip
  * @param {string} head the pull request's checkout
- * @param {number | undefined} pr the pull request (`--pr`)
+ * @param {number | number[] | undefined} pr the pull request (`--pr`), or a batch's pull requests
  * @param {string} [cwd] the repository
  * @returns {{ keys: object[] | null, problems: string[] }} the keys (null when off), and what fails
  *     the gate: an invalid base file, no `--pr`, or a pull request that would switch enforcement off
@@ -453,7 +459,21 @@ export function trustFilesChanged(base, head, workflow, cwd = process.cwd()) {
         .filter(Boolean);
 }
 
-export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number>]
+/**
+ * The pull requests of a Mergify merge-queue batch, from its draft pull request's event: the body
+ * ends with a fenced yaml block whose `pull_requests:` list names each one (`- number: 988`).
+ * @param {any} event the parsed GITHUB_EVENT_PATH of the queue run
+ * @returns {number[]} the batch's pull request numbers; empty when the block is missing
+ */
+export function queuePullRequests(event) {
+    const body = String(event?.pull_request?.body ?? "");
+    const blocks = [...body.matchAll(/```yaml\r?\n([\s\S]*?)```/g)];
+    const yaml = blocks.at(-1)?.[1] ?? "";
+    const list = /^pull_requests:\r?\n((?:[ \t-].*(?:\r?\n|$))*)/m.exec(yaml)?.[1] ?? "";
+    return [...list.matchAll(/^[ \t]*- number: *(\d+)[ \t]*\r?$/gm)].map((m) => Number(m[1]));
+}
+
+export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
 
 Fails (exit 1) while a pull request holds visual changes nobody accepted, or a baseline change
 with no review record. Once ${PASSKEYS_FILE} on the base branch holds a key, every review
@@ -463,7 +483,10 @@ CI after the capture jobs, on the pull request's merge commit.
   --captures <dir>  the downloaded visual-<project>-<attempt> artifacts of this run
   --base <ref>      the base branch tip (HEAD^1 on a pull request's merge commit)
   --head <ref>      the pull request's checkout (default HEAD)
-  --pr <number>     the pull request's number (required once approvals are enforced)`;
+  --pr <number>     the pull request's number (required once approvals are enforced)
+  --queue-event <file>  in a merge-queue run, the event file of the queue's draft pull request
+                    (GITHUB_EVENT_PATH): the gate accepts a batch, whose records may be for
+                    any of its pull requests, in place of --pr`;
 
 /**
  * The gate as a command.
@@ -478,6 +501,7 @@ export function runGate(args) {
             base: { type: "string" },
             head: { type: "string", default: "HEAD" },
             pr: { type: "string" },
+            "queue-event": { type: "string" },
             help: { type: "boolean", default: false },
         },
     });
@@ -485,10 +509,31 @@ export function runGate(args) {
         console.log(GATE_USAGE);
         return 0;
     }
-    const pr = values.pr === undefined ? undefined : Number(values.pr);
-    if (!values.captures || !values.base || (pr !== undefined && !(Number.isInteger(pr) && pr > 0))) {
+    const queueEvent = values["queue-event"];
+    /** @type {number | number[] | undefined} */
+    let pr = values.pr === undefined ? undefined : Number(values.pr);
+    if (
+        !values.captures ||
+        !values.base ||
+        (pr !== undefined && !(Number.isInteger(pr) && pr > 0)) ||
+        (pr !== undefined && queueEvent !== undefined)
+    ) {
         console.error(GATE_USAGE);
         return 2;
+    }
+    if (queueEvent !== undefined) {
+        let event = null;
+        try {
+            event = JSON.parse(readFileSync(queueEvent, "utf8"));
+        } catch {
+            // Unreadable: no pull requests, which fails below.
+        }
+        pr = queuePullRequests(event);
+        if (pr.length === 0) {
+            console.log("::error::merge queue -- the queue's draft pull request names no pull requests of the batch");
+            return 1;
+        }
+        console.log(`Merge-queue batch: #${pr.join(", #")}`);
     }
     const root = repoRoot();
     const config = loadConfigAt(values.base, root);

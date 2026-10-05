@@ -124,6 +124,11 @@ describe("verifyRecord", () => {
         expect(verifyRecord({ ...approved(), rejects: undefined }, KEYS, { pr: 5 })).toMatch(/arrays/);
         expect(verifyRecord([], KEYS, { pr: 5 })).toBe("not a review record");
     });
+    it("accepts a record for any pull request of a merge-queue batch, and no other", () => {
+        expect(verifyRecord(approved(), KEYS, { pr: [4, 5, 6] })).toBeNull();
+        expect(verifyRecord(approved(), KEYS, { pr: [6, 7] })).toMatch(/pull request #5, not #6, #7/);
+        expect(verifyRecord(approved(), KEYS, { pr: [] })).toMatch(/pull request #5, not #$/);
+    });
 });
 
 describe("canonical and recordHash", () => {

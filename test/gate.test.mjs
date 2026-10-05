@@ -13,6 +13,7 @@ import {
     gatedProjects,
     MAX_THRESHOLD,
     newestResults,
+    queuePullRequests,
     reviewGaps,
     seededAt,
     trustFilesChanged,
@@ -700,6 +701,94 @@ describe("passkey approvals", () => {
             expect(noPr.stdout).toMatch(/::error::.*needs --pr <number>/);
             expect(noPr.status).toBe(1);
             expect(run(s, "--pr", "seven").status).toBe(2);
+        });
+
+        describe("a merge-queue batch (--queue-event)", () => {
+            const ADDED = "visual-baselines/compact-mantine/card--added.png";
+            const added = (pr) => ({
+                ...v2(pr),
+                items: [{ path: ADDED, from: null, to: sha256("added image"), reason: null }],
+                reviewedAt: "2026-09-28T13:00:00.000Z",
+            });
+            const event = (...prs) => {
+                const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+                const list = prs.map((n) => `  - number: ${n}\n    scopes: []\n`).join("");
+                const body = `### Queue\n\n\`\`\`yaml\n---\nchecking_base_sha: ${"f".repeat(40)}\npull_requests:\n${list}scopes: []\n...\n\n\`\`\`\n`;
+                writeFileSync(file, JSON.stringify({ pull_request: { number: 995, body } }));
+                return file;
+            };
+            // Two pull requests merged into one queue tree: #7 changes a baseline, #8 adds one.
+            const batch = (sign8 = true) => {
+                const r = repoWith(passkeysJson(KEY));
+                commit(r, {
+                    [PATH]: "new image",
+                    "visual-baselines/reviews/r7.json": signed(v2(7)),
+                    [ADDED]: "added image",
+                    "visual-baselines/reviews/r8.json": sign8 ? signed(added(8)) : added(8),
+                });
+                return r;
+            };
+
+            it("passes when every record is approved for a pull request of the batch", () => {
+                const out = run(batch(), "--queue-event", event(7, 8, 9));
+                expect(out.stdout).toContain("Merge-queue batch: #7, #8, #9");
+                expect(out.status).toBe(0);
+            });
+
+            it("fails a record for a pull request outside the batch, and one with no approval", () => {
+                const outside = run(batch(), "--queue-event", event(7));
+                expect(outside.stdout).toContain(
+                    "visual-baselines/reviews/r8.json: the record is for pull request #8, not #7",
+                );
+                expect(outside.status).toBe(1);
+                const unsigned = run(batch(false), "--queue-event", event(7, 8));
+                expect(unsigned.stdout).toContain(
+                    "visual-baselines/reviews/r8.json: the record has no passkey approval",
+                );
+                expect(unsigned.status).toBe(1);
+            });
+
+            it("fails a batch whose capture differs from the approved images", () => {
+                const changed = artifacts(
+                    Object.fromEntries(
+                        Object.keys(CONFIG.projects).map((p) => [`visual-${p}-1`, results(["unchanged", "changed"])]),
+                    ),
+                );
+                const out = spawnSync(
+                    process.execPath,
+                    [GATE, "--captures", changed, "--base", "master", "--head", "pr", "--queue-event", event(7, 8)],
+                    { cwd: batch().repo, encoding: "utf8" },
+                );
+                expect(out.stdout).toMatch(/::error::visual changes not accepted -- .*1 changed/);
+                expect(out.status).toBe(1);
+            });
+
+            it("fails closed on an event that names no pull request, and refuses --pr with it", () => {
+                const r = batch();
+                const empty = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+                writeFileSync(empty, JSON.stringify({ pull_request: { body: "no yaml here" } }));
+                expect(run(r, "--queue-event", empty).status).toBe(1);
+                expect(run(r, "--queue-event", join(r.repo, "missing.json")).status).toBe(1);
+                expect(run(r, "--pr", "7", "--queue-event", event(7)).status).toBe(2);
+            });
+
+            it("reads the pull requests from the last yaml block of the queue draft's body only", () => {
+                const body = (yaml) => ({ pull_request: { body: `text\n\`\`\`yaml\n${yaml}\`\`\`\n` } });
+                expect(
+                    queuePullRequests(body("pull_requests:\n  - number: 988\n    scopes: []\nscopes: []\n")),
+                ).toEqual([988]);
+                expect(
+                    queuePullRequests({
+                        pull_request: {
+                            body: "```yaml\npull_requests:\n  - number: 1\n```\n```yaml\npull_requests:\n  - number: 2\n  - number: 3\n```",
+                        },
+                    }),
+                ).toEqual([2, 3]);
+                expect(queuePullRequests(body("previous_failed_batches:\n  - number: 5\npull_requests: []\n"))).toEqual(
+                    [],
+                );
+                expect(queuePullRequests(null)).toEqual([]);
+            });
         });
 
         it("warns, and still passes, when the pull request changes a file that decides what the gate accepts", () => {

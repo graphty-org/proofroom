@@ -232,10 +232,12 @@ export function verifyApproval(record, keys, { origin } = {}) {
  * The gate's check of one record a pull request adds, once approvals are enforced.
  * @param {object} record the parsed record
  * @param {{ id: string, publicKey: string, rpId: string }[]} keys the base branch's keys
- * @param {{ pr: number }} options the pull request the gate runs on
+ * @param {{ pr: number | number[] }} options the pull request the gate runs on, or every pull
+ *     request of a merge-queue batch; a record for any one of them counts
  * @returns {string | null} why it fails, or null
  */
 export function verifyRecord(record, keys, { pr }) {
+    const prs = [pr].flat();
     if (typeof record !== "object" || record === null || Array.isArray(record)) {
         return "not a review record";
     }
@@ -245,8 +247,8 @@ export function verifyRecord(record, keys, { pr }) {
     if (!Array.isArray(record.items) || !Array.isArray(record.rejects)) {
         return "items and rejects must be arrays";
     }
-    if (record.pr !== pr && record.pr !== null) {
-        return `the record is for pull request #${record.pr}, not #${pr}`;
+    if (record.pr !== null && !prs.includes(record.pr)) {
+        return `the record is for pull request #${record.pr}, not #${prs.join(", #")}`;
     }
     return verifyApproval(record, keys);
 }
