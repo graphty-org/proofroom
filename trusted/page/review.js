@@ -1454,14 +1454,21 @@ function backToItem() {
     enterStory();
 }
 
+// The project a target opens on: its first with something undecided, else its first with anything
+// to review, else its first still downloading; undefined when it has none.
+function firstProject(t) {
+    return (
+        t?.projects.find((x) => x.undecided > 0 && !x.downloading) ??
+        t?.projects.find((x) => x.reviewable > 0) ??
+        t?.projects.find((x) => x.downloading)
+    );
+}
+
 // A target from the pickers or an offer: its first project with something undecided (its grid,
 // or with `story`, its first undecided item).
 async function openTarget(id, story) {
     const t = state.list?.targets?.find((x) => x.id === id);
-    const p =
-        t?.projects.find((x) => x.undecided > 0 && !x.downloading) ??
-        t?.projects.find((x) => x.reviewable > 0) ??
-        t?.projects.find((x) => x.downloading);
+    const p = firstProject(t);
     if (!p) {
         showTargets(t ? `${labelOf(t)} has nothing to review yet.` : "");
         return;
@@ -4275,6 +4282,30 @@ async function checkFinish() {
     }
 }
 
+// The project to open for a link that names target `id` and no project, from the server's
+// counts (no GitHub call); null, having shown the targets screen, when there is none.
+async function projectOfLink(id, seq) {
+    let t;
+    try {
+        t = await api(`/api/target/${encodeURIComponent(id)}`);
+    } catch (err) {
+        if (seq === nav) {
+            const what = err.status === 404 ? `${id} is no longer listed` : `${id} could not be opened: ${err.message}`;
+            showTargets(`${what}: showing every target.`);
+        }
+        return null;
+    }
+    if (seq !== nav) {
+        return null;
+    }
+    const p = firstProject(t);
+    if (!p) {
+        showTargets(`${labelOf(t)} has nothing to review yet.`);
+        return null;
+    }
+    return p.project;
+}
+
 // Shows the screen the address names, from what the server already holds (no GitHub call); what
 // no longer exists (a closed pull request, a story gone from a new CI run) lands on the nearest
 // screen that does, with a line saying so.
@@ -4288,7 +4319,11 @@ async function route() {
             showTargets();
             return;
         }
-        const project = p.get("project");
+        // A link that names a target but no project opens the project openTarget would.
+        const project = p.get("project") ?? (await projectOfLink(id, seq));
+        if (!project) {
+            return;
+        }
         if (state.data === null || state.target?.id !== id || state.project !== project) {
             const got = await loadProject(id, project, seq);
             if (!got) {

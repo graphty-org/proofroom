@@ -2158,6 +2158,22 @@ describe("review page: links and the frozen pass", () => {
         expect([...hash().keys()]).toEqual(["token"]);
     });
 
+    it("opens a target's first project with undecided items from a link that names no project", async () => {
+        const opened = hash().get("project");
+        const calls = [];
+        page.on("request", (req) => calls.push(new URL(req.url()).pathname));
+        const link = new URL(page.url());
+        link.hash = `token=${TOKEN}&target=123`;
+        await visit(link.href);
+        await page.locator(".component").first().waitFor();
+        expect(hash().get("project")).toBe(opened);
+        expect(calls.filter((u) => u.startsWith("/api/pr/"))).toEqual([`/api/pr/123/${opened}`]);
+        expect(await status()).toBe("");
+        link.hash = `token=${TOKEN}&target=999`;
+        await visit(link.href);
+        await expect.poll(status).toBe("999 is no longer listed: showing every target.");
+    });
+
     it("copies the link to the screen", async () => {
         await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
         // The header keeps Copy link from 1050 px; narrower, it is in the Options and More menus.
