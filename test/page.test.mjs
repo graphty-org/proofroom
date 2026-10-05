@@ -23,6 +23,7 @@ import {
     FIXTURE,
     fakeGh,
     git,
+    interceptedPage,
     isolateGit,
     job,
     makeRepo,
@@ -86,7 +87,7 @@ async function open(
         ...options(r),
     });
     server.on("request", app);
-    page = await browser.newPage({ viewport, hasTouch: touch, isMobile: touch });
+    page = await interceptedPage(browser, { viewport, hasTouch: touch, isMobile: touch });
     dialogs = [];
     // The page asks in its own dialog (ask in review.js). Accept all, Undo and Exclude are
     // confirmed; Finish is refused unless a test sets confirmFinish.
