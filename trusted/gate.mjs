@@ -140,13 +140,22 @@ export function gatedProjects(config, seeded, headConfig) {
  *     projects: Record<string, { seedFromDefaultBranch: boolean }> },
  *     headConfig: { baselines: string, projects: Record<string, object> } | undefined, seeded: Set<string>,
  *     captures: Record<string, { attempt: number, results: object | null, skipped?: true }>,
- *     queue?: boolean, baselinesChanged?: Set<string> }} input the base branch's config, the pull
- *     request's config (if any), the projects with baselines on the base branch, the newest
- *     capture of each project, whether this is a merge-queue run, and the projects whose
- *     baselines the pull request changes
+ *     queue?: boolean, baselinesChanged?: Set<string>, notAffected?: string[] }} input the base
+ *     branch's config, the pull request's config (if any), the projects with baselines on the base
+ *     branch, the newest capture of each project, whether this is a merge-queue run, the projects
+ *     whose baselines the pull request changes, and a list the projects whose not-affected marker
+ *     the gate accepts are added to
  * @returns {string[]} one line per blocked project; empty when the gate passes
  */
-export function gateProblems({ config, headConfig, seeded, captures, queue = false, baselinesChanged = new Set() }) {
+export function gateProblems({
+    config,
+    headConfig,
+    seeded,
+    captures,
+    queue = false,
+    baselinesChanged = new Set(),
+    notAffected = [],
+}) {
     const problems = [];
     if (headConfig && headConfig.baselines !== config.baselines) {
         // Capture reads the pull request's config, so its baselines would be compared, not the base's.
@@ -161,6 +170,8 @@ export function gateProblems({ config, headConfig, seeded, captures, queue = fal
             const refused = skipRefused(p, { config, seeded, queue, baselinesChanged });
             if (refused) {
                 problems.push(`${p}: not captured (marked not affected by this pull request), but ${refused}`);
+            } else {
+                notAffected.push(p);
             }
             continue;
         }
@@ -614,15 +625,10 @@ export function runGate(args) {
     const captures = newestResults(values.captures);
     const queue = queueEvent !== undefined;
     const baselinesChanged = baselinesChangedBetween(values.base, values.head, root, config.baselines);
-    const problems = gateProblems({ config, headConfig, seeded, captures, queue, baselinesChanged });
-    for (const p of gatedProjects(config, seeded, headConfig)) {
-        if (
-            captures[p]?.skipped &&
-            !captures[p].results &&
-            !skipRefused(p, { config, seeded, queue, baselinesChanged })
-        ) {
-            console.log(`::notice::${p} was not captured: this pull request does not affect it`);
-        }
+    const notAffected = [];
+    const problems = gateProblems({ config, headConfig, seeded, captures, queue, baselinesChanged, notAffected });
+    for (const p of notAffected) {
+        console.log(`::notice::${p} was not captured: this pull request does not affect it`);
     }
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);

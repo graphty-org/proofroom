@@ -76,7 +76,7 @@ import {
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
 import { inboxOf, readyKey, writeJson } from "./inbox.mjs";
-import { isSkipMarker, SKIPPED_FILE, validateResults } from "./results.mjs";
+import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { scaled } from "./thumbs.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -212,7 +212,7 @@ export function sessionToken(stateDir) {
 
 /**
  * Reads and validates one project's results.json. An artifact holding the not-affected marker
- * instead is "no capture": the run left the project out, so there is nothing to decide.
+ * instead is "not affected": the run left the project out, so there is nothing to decide.
  * @param {string} dir the capture directory
  * @param {string} name the project
  * @returns {Promise<{ results: object | null, problem: string | null }>} the results, or why not
@@ -227,7 +227,7 @@ async function loadResults(dir, name) {
                 .then((t) => JSON.parse(t))
                 .catch(() => null);
             if (isSkipMarker(marker, name)) {
-                return { results: null, problem: "no capture" };
+                return { results: null, problem: NOT_AFFECTED };
             }
         }
         return { results: null, problem: "capture failed" };
@@ -921,10 +921,11 @@ export function createApp({
             for (const t of saved.targets) {
                 const list = [];
                 for (const p of t.projects) {
-                    const there = p.dir && existsSync(join(p.dir, "results.json"));
+                    const there =
+                        p.dir && (existsSync(join(p.dir, "results.json")) || existsSync(join(p.dir, SKIPPED_FILE)));
                     const loaded = there ? await project(p.project, p.dir, p.problem) : null;
                     list.push(
-                        p.dir && !loaded?.results
+                        p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
                             ? { ...p, dir: null, results: null, problem: null, downloading: true }
                             : { ...p, results: loaded?.results ?? null },
                     );
@@ -1150,7 +1151,7 @@ export function createApp({
         const { list, digest } = finishList(t);
         const s = summary(t);
         const count = (d) => list.filter((x) => x.decision === d).length;
-        const unloaded = t.projects.filter((p) => !p.results).map((p) => p.project);
+        const unloaded = t.projects.filter((p) => !p.results && p.problem !== NOT_AFFECTED).map((p) => p.project);
         const undecided = s.projects.reduce((n, p) => n + p.undecided, 0);
         const notes = list
             .filter((x) => x.reason !== null && x.decision !== "exclude")
@@ -1194,7 +1195,7 @@ export function createApp({
         ...finishList(t),
         captures: capturesOf(t),
         undecided: summary(t).projects.reduce((n, p) => n + p.undecided, 0),
-        unloaded: t.projects.filter((p) => !p.results).map((p) => p.project),
+        unloaded: t.projects.filter((p) => !p.results && p.problem !== NOT_AFFECTED).map((p) => p.project),
     });
 
     /**

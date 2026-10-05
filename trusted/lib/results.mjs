@@ -176,6 +176,9 @@ export function validateResults(r) {
  */
 export const SKIPPED_FILE = "skipped.json";
 
+/** The problem the review server shows for a project the run left out: neutral, nothing to decide. */
+export const NOT_AFFECTED = "not affected";
+
 /**
  * Whether a parsed skipped.json is the marker for this project.
  * @param {any} m the parsed JSON, untrusted

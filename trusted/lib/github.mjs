@@ -197,6 +197,9 @@ export function hurry(wanted) {
     queued.splice(0, queued.length, ...first, ...queued.filter((q) => !wanted(q.dir)));
 }
 
+// An artifact directory that holds a capture's results.json or the not-affected marker.
+const whole = (d) => existsSync(join(d, "results.json")) || existsSync(join(d, SKIPPED_FILE));
+
 /**
  * Downloads one artifact into `dir`, unless it is already there. It is extracted into a sibling
  * temporary directory and renamed into place only once its results.json is there, so `dir` either
@@ -210,9 +213,8 @@ export function hurry(wanted) {
  * @returns {Promise<void>} settles when `dir` is complete, or the artifact had no results.json
  */
 function download(gh, runId, name, dir) {
-    const whole = (d) => existsSync(join(d, "results.json")) || existsSync(join(d, SKIPPED_FILE));
-    if (!downloading.has(dir) && !existsSync(join(dir, "results.json")) && existsSync(join(dir, SKIPPED_FILE))) {
-        return Promise.resolve();
+    if (!downloading.has(dir) && !existsSync(join(dir, "results.json")) && whole(dir)) {
+        return Promise.resolve(); // The not-affected marker: nothing to validate.
     }
     if (!downloading.has(dir) && existsSync(join(dir, "results.json"))) {
         try {
@@ -313,9 +315,7 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
                 const dir = join(tmp, `${run.id}-${a.attempt}`, project);
                 const got = { attempt: a.attempt, bytes: a.bytes };
                 if (a.expired) {
-                    out[project] = existsSync(join(dir, "results.json"))
-                        ? { dir, ...got }
-                        : { dir: null, ...got, expired: true };
+                    out[project] = whole(dir) ? { dir, ...got } : { dir: null, ...got, expired: true };
                 } else {
                     try {
                         await download(gh, run.id, a.name, dir);
