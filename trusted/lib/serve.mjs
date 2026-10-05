@@ -55,6 +55,7 @@ import {
     commitStatus,
     decisionProblem,
     finish,
+    isPreviewOf,
     legacyApprovals,
     newerOnMaster,
     prepareRecord,
@@ -255,10 +256,26 @@ async function loadResults(dir) {
  * @param {string} [options.startCommand] the shell command that starts this server, shown so the
  *     owner can restart it from their own shell and sign Finish with their own key
  * @param {boolean} [options.warm] start downloading every target's captures right away
+ * @param {string | null} [options.previews] where tools/visual-preview.sh writes its local previews
+ *     (`<previews>/<pr>/<project>/results.json`): a complete preview of a pull request's current
+ *     head stands in for each project CI has not captured yet, marked "CI pending", and is decided
+ *     and finished like a CI capture. CI's capture replaces it project by project as it lands.
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void}
  *     the handler, for node:https in the CLI and node:http in the tests
  */
-export function createApp({ repo, gh, config, tmp, token, origin, masterRun, results, startCommand = null, warm }) {
+export function createApp({
+    repo,
+    gh,
+    config,
+    tmp,
+    token,
+    origin,
+    masterRun,
+    results,
+    startCommand = null,
+    warm,
+    previews = null,
+}) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
     const names = Object.keys(projects);
@@ -526,6 +543,7 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             p.logUrl = jobs[name]?.url ?? run.url;
             p.bytes = sizes[name] ?? null;
             partial.projects[names.indexOf(name)] = p;
+            await withPreviews(partial);
             await decorate(partial);
         };
         const downloads = downloadCaptures(
@@ -594,7 +612,39 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
             (p) =>
                 `the run captured ${p}, which this server's ${CONFIG_FILE} does not list: serve from a checkout that has it`,
         );
-        return { ...info, runId: run.id, runAttempt: run.attempt, runUrl: run.url, projects: list, warnings };
+        return withPreviews({
+            ...info,
+            runId: run.id,
+            runAttempt: run.attempt,
+            runUrl: run.url,
+            projects: list,
+            warnings,
+        });
+    }
+
+    /**
+     * Puts a pull request's local preview in place of every project CI has not captured (nor is
+     * downloading): only a complete preview of the head GitHub lists now, so one of an older push,
+     * or one still capturing, is never offered.
+     * @param {object} t the target, changed in place; `head` is the pull request's head
+     * @returns {Promise<object>} the target
+     */
+    async function withPreviews(t) {
+        if (!previews || t.pr === null) {
+            return t;
+        }
+        for (const [i, p] of t.projects.entries()) {
+            const dir = join(previews, String(t.pr), p.project);
+            if (p.results || p.downloading || !existsSync(join(dir, "results.json"))) {
+                continue;
+            }
+            const local = await project(p.project, dir, null);
+            const r = local.results;
+            if (r?.complete && isPreviewOf(r, t.pr) && r.headSha === t.head) {
+                t.projects[i] = { ...local, preview: true, ciProblem: p.problem, logUrl: p.logUrl ?? null };
+            }
+        }
+        return t;
     }
 
     // Why a project's capture is missing, from its download and its CI job; null when it is there.
@@ -748,12 +798,13 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                         title: pr.title,
                         url: pr.url,
                         branch: pr.branch,
+                        head: pr.headSha,
                     };
                     try {
                         const run = await newestCiRun(gh, pr.headSha, config);
                         return run
                             ? await build(info, run)
-                            : blank(info, `waiting for CI on ${pr.headSha.slice(0, 10)}`);
+                            : await withPreviews(blank(info, `waiting for CI on ${pr.headSha.slice(0, 10)}`));
                     } catch (err) {
                         return keptOr(info, err);
                     } finally {
@@ -991,6 +1042,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                     notOpened: mine.filter(([, d]) => d.bulk).length,
                     acceptable: acceptable(t, p.project),
                     local: p.results?.local ?? null,
+                    // A local preview of the head, decided like CI's capture until CI's replaces it.
+                    preview: p.preview === true,
                     // The default branch's baseline files this capture was not compared with.
                     newer: p.newer ?? [],
                 };
@@ -998,10 +1051,13 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
         };
     };
 
-    // A local preview (--results, or any capture not made by CI) is only looked at: no decision is
-    // taken on it and it has no Finish, since Finish accepts only CI captures.
-    const isLocal = (t, name) =>
-        t.local === true || Boolean(t.projects.find((x) => x.project === name)?.results?.local);
+    // A local capture (--results, or any capture not made by CI) is only looked at: no decision is
+    // taken on it and it has no Finish. The exception is a preview of this pull request's head
+    // (tools/visual-preview.sh): Finish accepts it, and the gate checks CI's capture against it.
+    const isLocal = (t, name) => {
+        const r = t.projects.find((x) => x.project === name)?.results;
+        return t.local === true || (Boolean(r?.local) && !isPreviewOf(r, t.pr));
+    };
     const acceptable = (t, name) =>
         !isLocal(t, name) && (t.pr !== null || projects[name].seedFromDefaultBranch === true);
     const LOCAL = "is a local preview: nothing is decided on it; only CI captures of a pushed commit are";
@@ -1075,6 +1131,8 @@ export function createApp({ repo, gh, config, tmp, token, origin, masterRun, res
                 .filter((p) => p.undecided > 0)
                 .map((p) => ({ project: p.project, undecided: p.undecided })),
             unloaded,
+            // The projects whose capture is a local preview: CI checks them after Finish.
+            previews: t.projects.filter((p) => p.preview && p.results).map((p) => p.project),
             // Approvals from before passkeys a signed Finish signs again, and the unsigned records
             // it removes.
             legacy: legacyOf(t) && { files: legacyOf(t).items.length, records: legacyOf(t).drop },

@@ -448,6 +448,32 @@ describe("passkey approvals", () => {
         expect(check(r)).toEqual([]);
     });
 
+    it("verifies a record of a local preview as one of a CI capture, and still fails CI's capture that differs from it", () => {
+        const r = repoWith(passkeysJson(KEY));
+        const local = v2();
+        local.subject = {
+            ...local.subject,
+            runId: null,
+            runAttempt: null,
+            local: [{ project: "compact-mantine", merge: "1".repeat(40), host: "devbox", tool: "test" }],
+        };
+        // The owner approved the locally captured image: the branch holds it, with the signed record.
+        commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(local) });
+        expect(check(r)).toEqual([]);
+        // CI's own capture of that head is compared with the approved image. Identical: nothing to
+        // decide. Different: changed, and the local approval does not cover it.
+        const config = normalizeConfig({
+            defaultBranch: "master",
+            projects: { "compact-mantine": { storybook: "a" } },
+        });
+        const seeded = new Set(["compact-mantine"]);
+        const ci = (status) => ({ "compact-mantine": { attempt: 1, results: results([status]) } });
+        expect(gateProblems({ config, seeded, captures: ci("unchanged") })).toEqual([]);
+        expect(gateProblems({ config, seeded, captures: ci("changed") })).toEqual([
+            expect.stringMatching(/^compact-mantine: 1 changed/),
+        ]);
+    });
+
     it("fails an old-format record added after enforcement, and reports its baseline unrecorded", () => {
         const r = repoWith(passkeysJson(KEY));
         commit(r, {

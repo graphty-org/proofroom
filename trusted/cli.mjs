@@ -54,7 +54,7 @@ prints its directory, or prints nothing when there is none. CI runs it before \`
 Compares every PNG in the two directories by name and prints one JSON line per file that is not
 unchanged, then a summary. Exits 1 when anything differs. For local use.`,
 
-    serve: `usage: PORT=<n> visual-review serve [--master-run <id>] [--results <dir>]
+    serve: `usage: PORT=<n> visual-review serve [--master-run <id>] [--results <dir>] [--previews <dir>]
 
 Serves the review page on $PORT, bound to $HOST (default localhost). With $HTTPS_CERT_PATH and
 $HTTPS_KEY_PATH set it serves HTTPS; without them, plain HTTP, and then only on a loopback HOST.
@@ -64,7 +64,12 @@ The URL to open, with its session token, is printed at every start.
 
   --master-run <id>  also list the default branch at that workflow run, for seeding baselines
   --results <dir>    serve a local directory of <project>/results.json instead, offline, as a
-                     preview to look at: gh is never run, nothing can be decided, no Finish`,
+                     preview to look at: gh is never run, nothing can be decided, no Finish
+  --previews <dir>   where local previews of pull requests are (<dir>/<pr>/<project>), as a
+                     preview script writes them; default: the config's workDir/local in the main
+                     checkout of this repository, so every worktree's server finds them. A complete
+                     preview of a pull request's head is reviewed and finished like CI's capture
+                     until CI's lands; the gate still checks CI's capture against what you accept`,
 
     gate: null, // gate.mjs's own usage
 
@@ -183,6 +188,7 @@ async function serve(args) {
         options: {
             "master-run": { type: "string" },
             results: { type: "string" },
+            previews: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
@@ -210,6 +216,13 @@ async function serve(args) {
         return 1;
     }
     const tmp = join(root, config.workDir);
+    // The main checkout, not this worktree: a preview script run from any worktree writes there.
+    const { execFileSync } = await import("node:child_process");
+    const { dirname } = await import("node:path");
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root })
+        .toString("utf8")
+        .trim();
+    const previews = values.previews ? resolve(values.previews) : join(dirname(common), config.workDir, "local");
     const token = sessionToken(join(tmp, "state"));
     const origin = `${https ? "https" : "http"}://${HOST.includes(":") ? `[${HOST}]` : HOST}:${PORT}`;
     // Offline: a local results directory is a preview, so nothing is posted to GitHub.
@@ -228,6 +241,7 @@ async function serve(args) {
         masterRun,
         results: values.results && resolve(values.results),
         warm: true,
+        previews: values.results ? null : previews,
         // What the owner types to run this server from their own shell, so Finish signs with
         // their key rather than the environment of whoever started it (an agent, say).
         startCommand:
