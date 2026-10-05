@@ -2870,7 +2870,7 @@ describe("review page: the inbox", () => {
         await open((r) => ({ gh: twoPrs(r, capturedItems()) }), { review: false });
         const group = page.locator(".inbox-group");
         await group.waitFor();
-        expect(await group.locator(".group-head strong").textContent()).toBe("Coupled: merge #123, then #124");
+        expect(await group.locator(".group-head strong").textContent()).toBe("Coupled: #123, #124 (oldest first)");
         expect(await group.locator(".inbox-fold").textContent()).toBe("Suggestion for the agents: fold #124 into #123");
         expect(await group.locator(".inbox-row").count()).toBe(2);
         await group.getByRole("button", { name: "Review together" }).click();

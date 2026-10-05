@@ -1711,6 +1711,14 @@ export function createApp({
                 }
                 const [s, a] = await call("POST /api/decide", { ...body, id: o.id, hash: imageHash(item) });
                 if (s === 200) {
+                    // Decided here, not opened there: its Finish counts it as not opened, as Accept all.
+                    if (!theirs && body.decision !== null) {
+                        update(o, (saved) => {
+                            if (saved[key]) {
+                                saved[key].bulk = true;
+                            }
+                        });
+                    }
                     also.push(o.pr);
                 } else {
                     failed.push({ pr: o.pr, error: a.error });
@@ -1725,19 +1733,34 @@ export function createApp({
             if (status !== 200) {
                 return [status, answer];
             }
-            const { t, p } = await projectOf(String(body.id), body.project);
+            const { t } = await projectOf(String(body.id), body.project);
             const group = groupOf(t);
+            const saved = readState(t);
+            // Each member with the capture it had when it was found sharing an image: its accept-all
+            // is refused if a refresh replaced that capture meanwhile.
             const byMember = new Map();
             for (const file of answer.files) {
-                const item = p.results.items.find((i) => i.file === file);
-                for (const o of group.sharing(body.project, item)) {
-                    byMember.set(o, [...(byMember.get(o) ?? []), file]);
+                // What was accepted here, not what the capture shows now: it may have been replaced.
+                const d = saved[`${body.project}/${file}`];
+                if (!d) {
+                    continue;
+                }
+                for (const o of group.sharing(body.project, { file, capture: d.hash, baseline: d.base })) {
+                    const m = byMember.get(o.id) ?? { o, runId: o.runId, runAttempt: o.runAttempt, files: [] };
+                    m.files.push(file);
+                    byMember.set(o.id, m);
                 }
             }
             const also = [];
             const failed = [];
-            for (const [o, files] of byMember) {
-                const [s, a] = await call("POST /api/accept-all", { id: o.id, project: body.project, files });
+            for (const { o, runId, runAttempt, files } of byMember.values()) {
+                const [s, a] = await call("POST /api/accept-all", {
+                    id: o.id,
+                    project: body.project,
+                    files,
+                    runId,
+                    runAttempt,
+                });
                 if (s === 200) {
                     also.push(o.pr);
                 } else {

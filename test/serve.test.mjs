@@ -310,7 +310,7 @@ describe("serve: coupled pull requests", () => {
     };
     const decisions = async (s, id) => (await s.api("GET", `/api/pr/${id}/compact-mantine`)).body.decisions;
 
-    it("lists them as one group in merge order, counting a shared image once", async () => {
+    it("lists them as one group oldest first, counting a shared image once", async () => {
         const s = await start({ gh: coupled });
         await s.api("GET", "/api/prs");
         const { body } = await s.api("GET", "/api/inbox");
@@ -345,7 +345,11 @@ describe("serve: coupled pull requests", () => {
             });
         const one = await decide("button--primary.dark.png", "accept");
         expect(one.body).toMatchObject({ ok: true, also: [124], failed: [] });
-        expect((await decisions(s, "124"))["button--primary.dark.png"]).toMatchObject({ decision: "accept" });
+        // Decided while reviewing #123: #124's Finish counts it as not opened there.
+        expect((await decisions(s, "124"))["button--primary.dark.png"]).toMatchObject({
+            decision: "accept",
+            bulk: true,
+        });
         // A different capture on #124: decided on #123 only.
         expect((await decide("slider--sizes.png", "accept")).body.also).toEqual([]);
         expect((await decisions(s, "124"))["slider--sizes.png"]).toBeUndefined();

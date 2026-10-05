@@ -279,13 +279,14 @@ asks the server again every few seconds while it is shown, and at once when you 
 `GET /api/inbox` (with the token) answers the same list as JSON.
 
 Pull requests that change the same baseline files are **coupled**: once the first merges, the
-others conflict and need another review. The inbox shows them first, as one group in the order to
-merge them (oldest first), with how many baselines they share and how many images the group holds
-once an image shown identically on several of them is counted once. **Review together** opens the
+others conflict and need another review. The inbox shows them first, as one group, oldest first
+(not a merge order: the merge queue decides that), with how many baselines they share and how many
+images the group holds once an image shown identically on several of them is counted once. **Review together** opens the
 first; while you review it, each accept, reject, exclude or undo (and Accept all) is also taken on
 every other pull request of the group whose image and baseline are the same, so the next one opens
 on only what is its own. An image a member already decided otherwise is never changed; the status
-line names it. When every member touches the same top-level directory and none is breaking (`!`
+line names it. A decision taken this way on another pull request counts there as not opened, as
+an Accept all does, so its Finish still says which images you looked at on it. When every member touches the same top-level directory and none is breaking (`!`
 in its title), the group also shows "fold #B into #A" as a suggestion for whoever maintains those
 branches; the page never folds anything. The groups are in `GET /api/inbox` as `groups`, and every
 group decision is logged to `<workDir>/state/groups.jsonl`.

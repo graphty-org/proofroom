@@ -7,7 +7,7 @@
  * it on GET /api/inbox and keeps it in `<workDir>/state/inbox.json`.
  *
  * `coupledGroups` finds the pull requests that change the same baseline files: they conflict when
- * the first of them merges, so the inbox shows them as one group, in the order to merge them, with
+ * the first of them merges, so the inbox shows them as one group, oldest first, with
  * how many images the group holds once the ones shared by the same image are counted once, and,
  * when they all touch one package and none is breaking, a suggestion to fold them into the first.
  *
@@ -127,8 +127,8 @@ const BREAKING = /^\w+(\([^)]*\))?!:/;
 
 /**
  * The groups of pull requests that change at least one baseline file in common (directly, or
- * through another member), each in the order to merge them.
- * ponytail: merge order is oldest pull request first; Mergify's queue order is not known here.
+ * through another member), each oldest pull request first. That is not a merge order: Mergify
+ * owns the queue, and decisions are keyed by image and baseline hash, so the order changes nothing.
  * @param {{ id: string, pr: number, title: string, paths: string[], images: string[],
  *     packages: string[] | null }[]} entries per pull request: the baseline files it changes
  *     (`<project>/<file>`), its undecided images (`<project>/<file> <image hash> <baseline hash>`),

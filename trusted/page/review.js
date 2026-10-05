@@ -1096,7 +1096,7 @@ const ago = (from, now) => {
 // What is waiting for the owner, on top of the targets screen: the pull requests with images to
 // decide (fewest first; a row opens its first undecided image), those whose capture failed, and
 // how many are still capturing or have nothing to decide. Coupled pull requests (they change the
-// same baselines) come first, each group in the order to merge them, with Review together.
+// same baselines) come first, each group oldest first, with Review together.
 function inboxView(inbox) {
     if (!inbox) {
         return null;
@@ -1161,7 +1161,7 @@ function inboxView(inbox) {
             el(
                 "p",
                 { class: "group-head" },
-                el("strong", {}, `Coupled: merge ${g.prs.map((pr) => `#${pr}`).join(", then ")}`),
+                el("strong", {}, `Coupled: ${g.prs.map((pr) => `#${pr}`).join(", ")} (oldest first)`),
                 el(
                     "span",
                     { class: "meta" },
