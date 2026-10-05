@@ -1,3 +1,19 @@
+## 0.2.11 (2026-10-05)
+
+### 🚀 Features
+
+- **visual-review:** open the review page on a pending-approvals inbox and add a quiet notifier ([8cbbd540b](https://github.com/graphty-org/graphty-monorepo/commit/8cbbd540b))
+- **ci:** test Mergify batches of up to 4, with a visual gate that accepts a batch ([020bf7138](https://github.com/graphty-org/graphty-monorepo/commit/020bf7138))
+
+### 🩹 Fixes
+
+- **ci:** drop the Microsoft apt sources before apt runs ([3e757a40c](https://github.com/graphty-org/graphty-monorepo/commit/3e757a40c))
+- **visual-review:** type the gate's pull request as one number or a batch ([094f91532](https://github.com/graphty-org/graphty-monorepo/commit/094f91532))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.10 (2026-10-05)
 
 ### 🩹 Fixes
