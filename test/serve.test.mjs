@@ -679,6 +679,30 @@ describe("serve: local previews of a pull request", () => {
         expect((await other.api("GET", "/api/prs")).body.targets[0].projects[0].preview).toBe(false);
     });
 
+    it("shows a preview for a project CI has not captured while another project of the run still downloads", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        // CI's run holds only graphty-element, and its download takes longer than the page waits.
+        const s = await start({
+            ...r,
+            previews,
+            gh: (repo) => {
+                const ci = onePr({ artifacts: { 1000: ["visual-graphty-element-1"] } })(repo);
+                return async (args, input) => {
+                    if (args[0] === "run" && args[1] === "download") {
+                        await new Promise((resolve) => setTimeout(resolve, 1500));
+                    }
+                    return ci(args, input);
+                };
+            },
+        });
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.downloading).toBe(true);
+        expect(t.projects[0]).toMatchObject({ project: "compact-mantine", preview: true, reviewable: 6 });
+        expect(t.projects[1]).toMatchObject({ project: "graphty-element", downloading: true });
+    });
+
     it("decides and finishes on a preview, and the record and commit say it was captured locally", async () => {
         const out = vi.spyOn(console, "log").mockImplementation(() => {});
         onTestFinished(() => out.mockRestore());
