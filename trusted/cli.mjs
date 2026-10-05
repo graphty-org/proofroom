@@ -54,7 +54,7 @@ prints its directory, or prints nothing when there is none. CI runs it before \`
 Compares every PNG in the two directories by name and prints one JSON line per file that is not
 unchanged, then a summary. Exits 1 when anything differs. For local use.`,
 
-    serve: `usage: PORT=<n> visual-review serve [--master-run <id>] [--results <dir>]
+    serve: `usage: PORT=<n> visual-review serve [--master-run <id>] [--results <dir>] [--previews <dir>]
 
 Serves the review page on $PORT, bound to $HOST (default localhost). With $HTTPS_CERT_PATH and
 $HTTPS_KEY_PATH set it serves HTTPS; without them, plain HTTP, and then only on a loopback HOST.
@@ -64,9 +64,27 @@ The URL to open, with its session token, is printed at every start.
 
   --master-run <id>  also list the default branch at that workflow run, for seeding baselines
   --results <dir>    serve a local directory of <project>/results.json instead, offline, as a
-                     preview to look at: gh is never run, nothing can be decided, no Finish`,
+                     preview to look at: gh is never run, nothing can be decided, no Finish
+  --previews <dir>   where local previews of pull requests are (<dir>/<pr>/<project>), as a
+                     preview script writes them; default: the config's workDir/local in the main
+                     checkout of this repository, so every worktree's server finds them. A complete
+                     preview of a pull request's head is reviewed and finished like CI's capture
+                     until CI's lands; the gate still checks CI's capture against what you accept`,
 
     gate: null, // gate.mjs's own usage
+
+    notify: `usage: visual-review notify [--command '<json argv>'] [--gap <minutes>]
+
+Runs beside \`serve\` (same checkout) and sends one message when pull requests become ready
+for review: images to decide, captures complete. The first goes at once; any more within --gap
+minutes (default 10) wait and go together as one message. Nothing new, nothing sent; never for
+CI running, failed captures or anything already announced. It reads only the inbox \`serve\`
+keeps in <workDir>/state/inbox.json, so it never calls GitHub.
+
+  --command <json>  the program to run and its arguments, as a JSON array; {title}, {message}
+                    and {url} are replaced, and no shell runs it. Default: $VISUAL_REVIEW_NOTIFY.
+                    The address it sends carries no session token: open it once with the token on
+                    each device and the page remembers it.`,
 
     update: `usage: visual-review update <pull request number>
 
@@ -91,6 +109,7 @@ const COMMANDS = {
     compare,
     serve,
     gate,
+    notify,
     update,
     "install-browser": installBrowser,
 };
@@ -106,6 +125,7 @@ Commands:
   reference        download the default branch's newest capture (CI, before capture)
   gate             fail a pull request that holds changes nobody accepted (CI)
   serve            the review page
+  notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
   compare          compare two directories of PNGs (local use)
   install-browser  install the Chromium capture uses
@@ -183,6 +203,7 @@ async function serve(args) {
         options: {
             "master-run": { type: "string" },
             results: { type: "string" },
+            previews: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
@@ -210,6 +231,13 @@ async function serve(args) {
         return 1;
     }
     const tmp = join(root, config.workDir);
+    // The main checkout, not this worktree: a preview script run from any worktree writes there.
+    const { execFileSync } = await import("node:child_process");
+    const { dirname } = await import("node:path");
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root })
+        .toString("utf8")
+        .trim();
+    const previews = values.previews ? resolve(values.previews) : join(dirname(common), config.workDir, "local");
     const token = sessionToken(join(tmp, "state"));
     const origin = `${https ? "https" : "http"}://${HOST.includes(":") ? `[${HOST}]` : HOST}:${PORT}`;
     // Offline: a local results directory is a preview, so nothing is posted to GitHub.
@@ -228,6 +256,7 @@ async function serve(args) {
         masterRun,
         results: values.results && resolve(values.results),
         warm: true,
+        previews: values.results ? null : previews,
         // What the owner types to run this server from their own shell, so Finish signs with
         // their key rather than the environment of whoever started it (an agent, say).
         startCommand:
@@ -241,6 +270,47 @@ async function serve(args) {
         : (await import("node:http")).createServer(app);
     await new Promise((done) => server.listen({ port: Number(PORT), host: HOST }, () => done(null)));
     console.log(`visual-review: open ${origin}/#token=${token}`);
+    // Keep running until the process is stopped.
+    await new Promise(() => {});
+    return 0;
+}
+
+async function notify(args) {
+    const { values } = parseArgs({ args, options: { command: { type: "string" }, gap: { type: "string" } } });
+    const text = values.command ?? process.env.VISUAL_REVIEW_NOTIFY;
+    let command;
+    try {
+        command = JSON.parse(text ?? "null");
+    } catch {
+        command = null;
+    }
+    const gap = Number(values.gap ?? 10);
+    if (
+        !Array.isArray(command) ||
+        command.length === 0 ||
+        !command.every((a) => typeof a === "string") ||
+        Number.isNaN(gap) ||
+        gap < 0
+    ) {
+        console.error(HELP.notify);
+        return 2;
+    }
+    const { root, config } = await settings();
+    const { notifyOnce } = await import("./lib/inbox.mjs");
+    const stateDir = join(root, config.workDir, "state");
+    console.log(`visual-review notify: watching ${join(stateDir, "inbox.json")}`);
+    const tick = async () => {
+        try {
+            const sent = await notifyOnce({ stateDir, command, gap: gap * 60000 });
+            if (sent.length > 0) {
+                console.log(`visual-review notify: announced ${sent.map((r) => "#" + r.pr).join(", ")}`);
+            }
+        } catch (err) {
+            console.error(`visual-review notify: ${err.message}`);
+        }
+        setTimeout(tick, 30000);
+    };
+    await tick();
     // Keep running until the process is stopped.
     await new Promise(() => {});
     return 0;

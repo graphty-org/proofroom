@@ -119,6 +119,36 @@ describe("serve: pull requests", () => {
         });
     });
 
+    it("answers the inbox, and keeps it on disk for the notifier", async () => {
+        const s = await start({
+            gh: (r) =>
+                fakeGh({
+                    prs: [
+                        { number: 123, head: r.head, branch: "feature" },
+                        { number: 124, head: "4".repeat(40), branch: "no-run" },
+                    ],
+                    runs: { [r.head]: { id: 1000, head: r.head } },
+                    jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+                    results: {
+                        "visual-compact-mantine-1": { headSha: r.head },
+                        "visual-graphty-element-1": { headSha: r.head },
+                    },
+                }),
+        });
+        const { body: list } = await s.api("GET", "/api/prs");
+        const undecided = list.targets[0].projects.reduce((n, p) => n + p.undecided, 0);
+        expect(list.inbox).toMatchObject({ capturing: 1, done: 0, notReady: [] });
+        expect(list.inbox.ready).toEqual([
+            expect.objectContaining({ pr: 123, undecided, complete: true, source: "CI", headSha: s.head }),
+        ]);
+        const { body } = await s.api("GET", "/api/inbox");
+        expect(body.ready[0].since).toBe(list.inbox.ready[0].since);
+        const kept = JSON.parse(readFileSync(join(s.tmp, "state/inbox.json"), "utf8"));
+        expect(kept).toMatchObject({ origin: s.origin, capturing: 1 });
+        expect(kept.ready.map((r) => r.pr)).toEqual([123]);
+    });
+
     it("shows capture failed with the job's log when the visual job failed or uploaded nothing", async () => {
         const s = await start({
             gh: onePr({
@@ -625,6 +655,150 @@ describe("serve: local results", () => {
         expect((await decide("card--legacy.png", "reject", "keep it")).status).toBe(403);
         expect((await s.api("GET", "/api/pr/local/compact-mantine")).body.acceptable).toBe(false);
         expect((await s.api("POST", "/api/finish", { id: "local" })).status).toBe(403);
+    });
+});
+
+describe("serve: local previews of a pull request", () => {
+    /**
+     * Writes a local preview of one project as tools/visual-preview.sh leaves it.
+     * @param {string} previews the previews directory
+     * @param {string} project the fixture project
+     * @param {string} head the pull request head it captured
+     * @param {object} [extra] more results.json fields
+     * @returns {{ dir: string, results: object }} the copy
+     */
+    const preview = (previews, project, head, extra = {}) =>
+        copyFixture(project, join(previews, "123", project), {
+            commit: "3".repeat(40),
+            headSha: head,
+            pr: 123,
+            runId: null,
+            runAttempt: null,
+            local: {
+                describe: "abc1234-dirty",
+                diff: "0".repeat(64),
+                preview: { merge: "3".repeat(40), host: "devbox", tool: "test" },
+            },
+            ...extra,
+        });
+    // #123 with no CI run yet.
+    const noRun = (r) => fakeGh({ prs: [{ number: 123, head: r.head, branch: "feature" }] });
+    const decide = (s, file, decision, reason, project = "compact-mantine") =>
+        s.api("POST", "/api/decide", { id: "123", project, file, decision, reason });
+
+    it("lists a complete preview of the head while CI is pending, and never one of an older head or an ad hoc capture", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        preview(previews, "graphty-element", "4".repeat(40));
+        const s = await start({ ...r, gh: noRun, previews });
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        const [cm, ge] = t.projects;
+        expect(cm).toMatchObject({ preview: true, acceptable: true, reviewable: 6, problem: null });
+        expect(ge).toMatchObject({ preview: false, problem: `waiting for CI on ${r.head.slice(0, 10)}` });
+        expect(t.headSha).toBe(r.head);
+
+        // A capture without the preview's provenance (an ad hoc `capture --stories`) stays look only.
+        const adhoc = join(r.dir, "adhoc");
+        preview(adhoc, "compact-mantine", r.head, {
+            pr: null,
+            headSha: null,
+            local: { describe: "x", diff: "0".repeat(64) },
+        });
+        const other = await start({ ...r, gh: noRun, previews: adhoc });
+        expect((await other.api("GET", "/api/prs")).body.targets[0].projects[0].preview).toBe(false);
+    });
+
+    it("shows a preview for a project CI has not captured while another project of the run still downloads", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        // CI's run holds only graphty-element, and its download takes longer than the page waits.
+        const s = await start({
+            ...r,
+            previews,
+            gh: (repo) => {
+                const ci = onePr({ artifacts: { 1000: ["visual-graphty-element-1"] } })(repo);
+                return async (args, input) => {
+                    if (args[0] === "run" && args[1] === "download") {
+                        await new Promise((resolve) => setTimeout(resolve, 1500));
+                    }
+                    return ci(args, input);
+                };
+            },
+        });
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.downloading).toBe(true);
+        expect(t.projects[0]).toMatchObject({ project: "compact-mantine", preview: true, reviewable: 6 });
+        expect(t.projects[1]).toMatchObject({ project: "graphty-element", downloading: true });
+    });
+
+    it("decides and finishes on a preview, and the record and commit say it was captured locally", async () => {
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => out.mockRestore());
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        const s = await start({ ...r, gh: noRun, previews });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const sheet = (await s.api("GET", "/api/target/123?finish=1")).body.finish;
+        expect(sheet.previews).toEqual(["compact-mantine"]);
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        expect(git(s.remote, "rev-parse", "feature~1")).toBe(s.head);
+        const message = git(s.remote, "log", "-1", "--format=%B", "feature");
+        expect(message).toMatch(/Captured locally at 3{40} \(compact-mantine\)/);
+        const path = /Record: (\S+)/.exec(message)[1];
+        const record = JSON.parse(git(s.remote, "show", `feature:${path}`));
+        expect(record.subject).toMatchObject({
+            head: r.head,
+            runId: null,
+            runAttempt: null,
+            local: [{ project: "compact-mantine", merge: "3".repeat(40), host: "devbox", tool: "test" }],
+        });
+        expect(record.items).toEqual([
+            expect.objectContaining({ path: "visual-baselines/compact-mantine/badge--default.light.png", from: null }),
+        ]);
+    });
+
+    it("carries decisions over to CI's capture where its bytes are identical, and shows a differing image undecided", async () => {
+        // The made-up hash of CI's slider--sizes has no such bytes on disk: its thumbnail says so.
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => err.mockRestore());
+        let ci = false;
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head);
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        // CI draws slider--sizes differently from the preview; everything else byte for byte.
+        const items = fixture.items.map((i) =>
+            i.file === "slider--sizes.png" ? { ...i, capture: "e".repeat(64) } : i,
+        );
+        const at = { commit: r.head, headSha: r.head };
+        const s = await start({
+            ...r,
+            previews,
+            gh: (repo) => {
+                const before = noRun(repo);
+                const after = onePr({
+                    results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at },
+                })(repo);
+                return (args, input) => (ci ? after : before)(args, input);
+            },
+        });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        expect((await decide(s, "slider--sizes.png", "accept")).status).toBe(200);
+        expect((await decide(s, "card--legacy.png", "reject", "keep the card")).status).toBe(200);
+        ci = true;
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.runId).toBe(1000);
+        expect(t.projects[0]).toMatchObject({ preview: false, decided: 2, undecided: 4 });
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
+            "button--primary.dark.png": { decision: "accept", reason: null },
+            "card--legacy.png": { decision: "reject", reason: "keep the card" },
+        });
     });
 });
 

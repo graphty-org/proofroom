@@ -195,7 +195,10 @@ changes every capture with text, which is one re-baseline.
   `visual-review gate` at the version `init` pinned, with `npx`, so a pull request's own
   dependencies cannot change it. It passes `--pr` with the pull request's number, which the
   passkey check needs (see [Approving with a passkey](#approving-with-a-passkey)). Make it a
-  required check.
+  required check. In a Mergify merge-queue run, pass `--queue-event "$GITHUB_EVENT_PATH"` instead
+  of `--pr`: the gate reads the batch's pull requests from the queue's draft pull request and
+  accepts a review record for any of them. Every capture must still equal a baseline, so a batch
+  passes only on images already approved on its pull requests.
 
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
@@ -245,11 +248,54 @@ token is kept in the work directory, so the URL stays valid across restarts; del
 - `--master-run <run id>` also lists the default branch at that run, for seeding.
 - `--results <dir>` serves local captures offline (a directory of `<project>/results.json`), for
   looking at a story before a pull request exists. It is listed as "Local preview" and is look
-  only: no Accept, Reject or Exclude, and no Finish. Only CI captures of a pushed commit are
-  decided.
-  A change to this rule is designed and not yet built: a local capture of a pull request's merge
-  tree, made with the repository's pinned fonts, becomes reviewable and finishable, and the gate
-  still passes it only when CI's own capture matches ([local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md)).
+  only: no Accept, Reject or Exclude, and no Finish.
+- `--previews <dir>` is where local previews of pull requests are, as `<dir>/<pr>/<project>/`
+  (default: the config's `workDir` plus `/local`, in the repository's main checkout, so a server
+  run from any worktree finds them). A local preview is a capture of the pull request's merge tree
+  (`refs/pull/<n>/merge`) made with `VISUAL_REVIEW_PREVIEW_PR=<n>` and
+  `VISUAL_REVIEW_PREVIEW_HEAD=<head sha>` set, ideally with the config's `fontconfig` so its bytes
+  match CI's. While CI has not captured a project of that head, a complete preview of it is listed
+  in its place as "local preview, CI pending", and Accept, Reject, Exclude and Finish work on it as
+  on CI's capture. Finish's record then names no CI run (`subject.runId` is null) and lists the
+  previewed projects in `subject.local`. The gate does not change: CI captures the Finish commit
+  and compares it with the images you accepted, so the pull request passes with nothing left to
+  decide when CI draws the same bytes, and any image CI draws differently comes back to you
+  undecided. Decisions are kept by image hash, so when CI's capture of the same head lands every
+  identical image keeps its decision. See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
+
+### What is waiting for you, and one quiet notification
+
+The page opens on **Ready for you**: every open pull request with images to decide (or decisions
+not yet finished), complete captures first, then fewest images first, then the longest waiting.
+Each row says how many images, whether they come from CI or a local preview, "2 of 3 projects
+ready" while some are still being captured, and how long ago it became ready; tapping it opens
+its first undecided image. Under it, **Not ready** lists the pull requests whose capture failed,
+each with the project and the reason, its job log and Retry where a retry can help; then one line
+counts the pull requests still capturing and those with nothing to decide. The cards of every
+pull request follow, as before. The number ready is in the tab's title ("(3) Visual review") and
+on its icon, and, on a home-screen web app where the browser allows it, on the app icon. The page
+asks the server again every few seconds while it is shown, and at once when you come back to it.
+`GET /api/inbox` (with the token) answers the same list as JSON.
+
+To keep it on an iPad's home screen, open the page with its token and use **Add to Home Screen**:
+the page has a web app manifest and opens full screen. The page also remembers the token in that
+browser, so an address without it (the notifier's) opens there too.
+
+`visual-review notify` runs beside `serve`, from the same checkout, and sends one message when
+pull requests become ready: the first at once, any more within ten minutes (`--gap <minutes>`)
+held and sent together, nothing when nothing is new. A pull request is announced once per pushed
+head while it waits; never for CI running, a failed capture, a download or a merge. It reads only
+the inbox `serve` keeps in `<workDir>/state/inbox.json` and remembers what it sent in
+`<workDir>/state/notify.json`, so a restart neither repeats nor loses a message. It sends by
+running the program you name, as a JSON array, with `{title}`, `{message}` and `{url}` replaced
+and no shell:
+
+```bash
+VISUAL_REVIEW_NOTIFY='["/path/to/send-push.sh", "{title}", "{message}"]' npx visual-review notify
+```
+
+The message lists one line per pull request ("#812 Fix label padding: 2 images") and the page's
+address without the token, so the token never passes through a push service.
 
 ### Links to a screen
 
@@ -792,11 +838,9 @@ npx visual-review capture --project web --out .visual-review/preview/web --stori
 `--stories` captures only the story ids that start with one of the given prefixes, in seconds
 rather than minutes, and then reports no baseline as removed. Start the server with
 `--results .visual-review/preview` to see the capture beside its baseline. Capture and look again
-after each change. A local preview is look only: its fonts and graphics stack are not CI's, so
-only a CI capture of a pushed commit becomes a baseline. Push, let CI capture, and accept it on
-the pull request.
-This rule is being replaced for pull requests: see [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md), which lets the owner
-accept and Finish on a local capture of the pull request while CI's capture stays the judge.
+after each change. Such an ad hoc capture is look only. To approve before CI has captured, push,
+capture the pull request's merge tree as a local preview (`serve --previews` above), and accept it
+on the pull request; CI's capture stays the judge.
 
 ## How captures and baselines move
 
@@ -1024,6 +1068,6 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   pushes, and CI captures again; review what still differs. It refuses, changing nothing, when
   anything outside the baselines directory conflicts too.
 - **Captures differ from what you see locally.** Only CI's captures are compared: fonts and the
-  graphics stack differ from machine to machine. Look locally with `capture --stories` and
-  `serve --results`, but let CI's capture become the baseline.
-  With pinned fonts this changes; see [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
+  graphics stack differ from machine to machine unless the config's `fontconfig` pins the fonts.
+  A local preview you accepted that CI draws differently comes back to you undecided on CI's
+  capture: accept it there. See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).

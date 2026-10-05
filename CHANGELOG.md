@@ -1,3 +1,50 @@
+## 0.2.11 (2026-10-05)
+
+### 🚀 Features
+
+- **visual-review:** open the review page on a pending-approvals inbox and add a quiet notifier ([8cbbd540b](https://github.com/graphty-org/graphty-monorepo/commit/8cbbd540b))
+- **ci:** test Mergify batches of up to 4, with a visual gate that accepts a batch ([020bf7138](https://github.com/graphty-org/graphty-monorepo/commit/020bf7138))
+
+### 🩹 Fixes
+
+- **ci:** drop the Microsoft apt sources before apt runs ([3e757a40c](https://github.com/graphty-org/graphty-monorepo/commit/3e757a40c))
+- **visual-review:** type the gate's pull request as one number or a batch ([094f91532](https://github.com/graphty-org/graphty-monorepo/commit/094f91532))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
+## 0.2.10 (2026-10-05)
+
+### 🩹 Fixes
+
+- **visual-review:** show a local preview while another project of the CI run downloads ([fc534d028](https://github.com/graphty-org/graphty-monorepo/commit/fc534d028))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
+## 0.2.9 (2026-10-05)
+
+### 🚀 Features
+
+- **visual-review:** review and finish on a local preview of a pull request ([f5636fb54](https://github.com/graphty-org/graphty-monorepo/commit/f5636fb54))
+- **visual-review:** capture with the fonts the config's fontconfig pins ([5eb56d652](https://github.com/graphty-org/graphty-monorepo/commit/5eb56d652))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
+## 0.2.8 (2026-10-04)
+
+### 🚀 Features
+
+- **visual-review:** finish without merging master first ([f4cc31c41](https://github.com/graphty-org/graphty-monorepo/commit/f4cc31c41))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.7 (2026-10-04)
 
 ### 🩹 Fixes
