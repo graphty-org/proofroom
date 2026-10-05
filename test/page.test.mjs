@@ -2817,3 +2817,22 @@ async function openStoryFromGrid(number) {
     await page.locator(".component").first().waitFor();
     await openStory(number);
 }
+
+describe("review page: the inbox", () => {
+    it("opens on what waits, counts it in the title, opens the first undecided image, and keeps the token", async () => {
+        await open((r) => ({ gh: twoPrs(r) }), { review: false });
+        const rows = page.locator(".inbox-row");
+        await expect.poll(() => rows.count()).toBe(2);
+        await expect.poll(() => page.title()).toBe("(2) Visual review");
+        expect(await page.locator(".inbox h2").textContent()).toBe("Ready for you (2)");
+        expect(await rows.first().textContent()).toMatch(/^#123 PR 123\d+ images, CI, just now$/);
+        const box = await rows.first().boundingBox();
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        expect((await page.request.get(`${origin}/manifest.webmanifest`)).status()).toBe(200);
+        await rows.first().click();
+        await page.locator("#app.story-screen").waitFor();
+        // The notifier's link carries no token: a browser that used the page before still opens it.
+        await page.goto(`${origin}/`);
+        await expect.poll(() => page.locator(".inbox-row").count()).toBe(2);
+    });
+});

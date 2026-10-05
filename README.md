@@ -263,6 +263,40 @@ token is kept in the work directory, so the URL stays valid across restarts; del
   undecided. Decisions are kept by image hash, so when CI's capture of the same head lands every
   identical image keeps its decision. See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
 
+### What is waiting for you, and one quiet notification
+
+The page opens on **Ready for you**: every open pull request with images to decide (or decisions
+not yet finished), complete captures first, then fewest images first, then the longest waiting.
+Each row says how many images, whether they come from CI or a local preview, "2 of 3 projects
+ready" while some are still being captured, and how long ago it became ready; tapping it opens
+its first undecided image. Under it, **Not ready** lists the pull requests whose capture failed,
+each with the project and the reason, its job log and Retry where a retry can help; then one line
+counts the pull requests still capturing and those with nothing to decide. The cards of every
+pull request follow, as before. The number ready is in the tab's title ("(3) Visual review") and
+on its icon, and, on a home-screen web app where the browser allows it, on the app icon. The page
+asks the server again every few seconds while it is shown, and at once when you come back to it.
+`GET /api/inbox` (with the token) answers the same list as JSON.
+
+To keep it on an iPad's home screen, open the page with its token and use **Add to Home Screen**:
+the page has a web app manifest and opens full screen. The page also remembers the token in that
+browser, so an address without it (the notifier's) opens there too.
+
+`visual-review notify` runs beside `serve`, from the same checkout, and sends one message when
+pull requests become ready: the first at once, any more within ten minutes (`--gap <minutes>`)
+held and sent together, nothing when nothing is new. A pull request is announced once per pushed
+head while it waits; never for CI running, a failed capture, a download or a merge. It reads only
+the inbox `serve` keeps in `<workDir>/state/inbox.json` and remembers what it sent in
+`<workDir>/state/notify.json`, so a restart neither repeats nor loses a message. It sends by
+running the program you name, as a JSON array, with `{title}`, `{message}` and `{url}` replaced
+and no shell:
+
+```bash
+VISUAL_REVIEW_NOTIFY='["/path/to/send-push.sh", "{title}", "{message}"]' npx visual-review notify
+```
+
+The message lists one line per pull request ("#812 Fix label padding: 2 images") and the page's
+address without the token, so the token never passes through a push service.
+
 ### Links to a screen
 
 The address always names the screen you are on, after the token: the targets list; a pull

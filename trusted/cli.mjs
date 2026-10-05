@@ -73,6 +73,19 @@ The URL to open, with its session token, is printed at every start.
 
     gate: null, // gate.mjs's own usage
 
+    notify: `usage: visual-review notify [--command '<json argv>'] [--gap <minutes>]
+
+Runs beside \`serve\` (same checkout) and sends one message when pull requests become ready
+for review: images to decide, captures complete. The first goes at once; any more within --gap
+minutes (default 10) wait and go together as one message. Nothing new, nothing sent; never for
+CI running, failed captures or anything already announced. It reads only the inbox \`serve\`
+keeps in <workDir>/state/inbox.json, so it never calls GitHub.
+
+  --command <json>  the program to run and its arguments, as a JSON array; {title}, {message}
+                    and {url} are replaced, and no shell runs it. Default: $VISUAL_REVIEW_NOTIFY.
+                    The address it sends carries no session token: open it once with the token on
+                    each device and the page remembers it.`,
+
     update: `usage: visual-review update <pull request number>
 
 Merges the default branch into the pull request's branch (a merge commit, never a rebase) and
@@ -96,6 +109,7 @@ const COMMANDS = {
     compare,
     serve,
     gate,
+    notify,
     update,
     "install-browser": installBrowser,
 };
@@ -111,6 +125,7 @@ Commands:
   reference        download the default branch's newest capture (CI, before capture)
   gate             fail a pull request that holds changes nobody accepted (CI)
   serve            the review page
+  notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
   compare          compare two directories of PNGs (local use)
   install-browser  install the Chromium capture uses
@@ -255,6 +270,47 @@ async function serve(args) {
         : (await import("node:http")).createServer(app);
     await new Promise((done) => server.listen({ port: Number(PORT), host: HOST }, () => done(null)));
     console.log(`visual-review: open ${origin}/#token=${token}`);
+    // Keep running until the process is stopped.
+    await new Promise(() => {});
+    return 0;
+}
+
+async function notify(args) {
+    const { values } = parseArgs({ args, options: { command: { type: "string" }, gap: { type: "string" } } });
+    const text = values.command ?? process.env.VISUAL_REVIEW_NOTIFY;
+    let command;
+    try {
+        command = JSON.parse(text ?? "null");
+    } catch {
+        command = null;
+    }
+    const gap = Number(values.gap ?? 10);
+    if (
+        !Array.isArray(command) ||
+        command.length === 0 ||
+        !command.every((a) => typeof a === "string") ||
+        Number.isNaN(gap) ||
+        gap < 0
+    ) {
+        console.error(HELP.notify);
+        return 2;
+    }
+    const { root, config } = await settings();
+    const { notifyOnce } = await import("./lib/inbox.mjs");
+    const stateDir = join(root, config.workDir, "state");
+    console.log(`visual-review notify: watching ${join(stateDir, "inbox.json")}`);
+    const tick = async () => {
+        try {
+            const sent = await notifyOnce({ stateDir, command, gap: gap * 60000 });
+            if (sent.length > 0) {
+                console.log(`visual-review notify: announced ${sent.map((r) => "#" + r.pr).join(", ")}`);
+            }
+        } catch (err) {
+            console.error(`visual-review notify: ${err.message}`);
+        }
+        setTimeout(tick, 30000);
+    };
+    await tick();
     // Keep running until the process is stopped.
     await new Promise(() => {});
     return 0;

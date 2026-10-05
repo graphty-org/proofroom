@@ -257,13 +257,14 @@ describe("review page: stale caches", () => {
                 );
             }, n);
         }
-        // At most the 50 images kept, plus the grid's thumbnails (one per tile it loaded).
+        // At most the 50 images kept, plus the grid's thumbnails (one per tile it loaded), plus the
+        // tab's icon with the count of pull requests waiting (one, replaced in place).
         const thumbs = await page.evaluate(
             () =>
                 globalThis.performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/thumb/"))
                     .length,
         );
-        expect(await page.evaluate(() => globalThis.liveUrls())).toBeLessThanOrEqual(50 + thumbs);
+        expect(await page.evaluate(() => globalThis.liveUrls())).toBeLessThanOrEqual(50 + thumbs + 1);
     });
 });
 

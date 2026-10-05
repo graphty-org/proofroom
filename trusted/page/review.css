@@ -1497,3 +1497,65 @@ details.menu > div {
 #app:focus-visible {
     outline: none;
 }
+
+/* The inbox: full-width rows, at least 44 px tall, readable at iPad portrait width. */
+.inbox {
+    margin-bottom: 16px;
+}
+
+.inbox h2 {
+    margin: 0 0 8px;
+}
+
+.inbox h3 {
+    margin: 12px 0 8px;
+}
+
+.inbox-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.inbox-list > li {
+    margin-bottom: 8px;
+}
+
+.inbox-row,
+.inbox-bad {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: center;
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 16px;
+    background: var(--card);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    text-align: left;
+}
+
+.inbox-row {
+    cursor: pointer;
+}
+
+.inbox-row:hover,
+.inbox-row:focus-visible {
+    border-color: var(--accent);
+}
+
+.inbox-bad {
+    border-left: 4px solid var(--warn);
+}
+
+.inbox-title {
+    flex: 1 1 12em;
+    overflow-wrap: anywhere;
+}
+
+.all-heading {
+    margin: 24px 0 8px;
+}
