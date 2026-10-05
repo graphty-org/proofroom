@@ -543,6 +543,7 @@ export function createApp({
             p.logUrl = jobs[name]?.url ?? run.url;
             p.bytes = sizes[name] ?? null;
             partial.projects[names.indexOf(name)] = p;
+            await withPreviews(partial);
             await decorate(partial);
         };
         const downloads = downloadCaptures(
@@ -611,18 +612,24 @@ export function createApp({
             (p) =>
                 `the run captured ${p}, which this server's ${CONFIG_FILE} does not list: serve from a checkout that has it`,
         );
-        return { ...info, runId: run.id, runAttempt: run.attempt, runUrl: run.url, projects: list, warnings };
+        return withPreviews({
+            ...info,
+            runId: run.id,
+            runAttempt: run.attempt,
+            runUrl: run.url,
+            projects: list,
+            warnings,
+        });
     }
 
     /**
      * Puts a pull request's local preview in place of every project CI has not captured (nor is
      * downloading): only a complete preview of the head GitHub lists now, so one of an older push,
      * or one still capturing, is never offered.
-     * @param {object} t the target, changed in place
-     * @param {string} head the pull request's head
+     * @param {object} t the target, changed in place; `head` is the pull request's head
      * @returns {Promise<object>} the target
      */
-    async function withPreviews(t, head) {
+    async function withPreviews(t) {
         if (!previews || t.pr === null) {
             return t;
         }
@@ -633,7 +640,7 @@ export function createApp({
             }
             const local = await project(p.project, dir, null);
             const r = local.results;
-            if (r?.complete && isPreviewOf(r, t.pr) && r.headSha === head) {
+            if (r?.complete && isPreviewOf(r, t.pr) && r.headSha === t.head) {
                 t.projects[i] = { ...local, preview: true, ciProblem: p.problem, logUrl: p.logUrl ?? null };
             }
         }
@@ -791,13 +798,13 @@ export function createApp({
                         title: pr.title,
                         url: pr.url,
                         branch: pr.branch,
+                        head: pr.headSha,
                     };
                     try {
                         const run = await newestCiRun(gh, pr.headSha, config);
-                        return await withPreviews(
-                            run ? await build(info, run) : blank(info, `waiting for CI on ${pr.headSha.slice(0, 10)}`),
-                            pr.headSha,
-                        );
+                        return run
+                            ? await build(info, run)
+                            : await withPreviews(blank(info, `waiting for CI on ${pr.headSha.slice(0, 10)}`));
                     } catch (err) {
                         return keptOr(info, err);
                     } finally {
