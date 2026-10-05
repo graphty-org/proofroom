@@ -16,6 +16,7 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 
 // A project still being captured or downloaded, rather than one whose capture failed.
 const CAPTURING = /^(waiting for CI|CI still running)/;
@@ -29,6 +30,19 @@ const RETRY = /[;:] reload (the page )?(to retry|in a moment|when it finishes)$/
  * @returns {string} the key
  */
 export const readyKey = (r) => `${r.pr}@${r.headSha ?? ""}`;
+
+/**
+ * Where a ready pull request's images come from.
+ * @param {number} previews how many of its loaded projects are local previews
+ * @param {number} loaded how many projects are loaded
+ * @returns {string} "CI", "local preview" or both
+ */
+function sourceOf(previews, loaded) {
+    if (previews === 0) {
+        return "CI";
+    }
+    return previews === loaded ? "local preview" : "local preview and CI";
+}
 
 /**
  * Sorts the pull requests the server lists into the inbox.
@@ -68,7 +82,7 @@ export function inboxOf(targets, { now, since = new Map() }) {
                 loaded: loaded.length,
                 total: t.projects.length,
                 complete: loaded.length === t.projects.length,
-                source: previews === 0 ? "CI" : previews === loaded.length ? "local preview" : "local preview and CI",
+                source: sourceOf(previews, loaded.length),
                 since: since.get(key) ?? now,
             });
         } else if (loaded.length < t.projects.length) {
@@ -152,11 +166,9 @@ export async function notifyOnce({ stateDir, command, now = Date.now(), gap = 10
     if (fresh.length > 0) {
         const url = `${inbox.origin}/`;
         const m = { ...message(fresh, url), url };
-        const [program, ...args] = command.map((a) => a.replace(/\{(title|message|url)\}/g, (_, k) => m[k]));
+        const [program, ...args] = command.map((a) => a.replaceAll(/\{(title|message|url)\}/g, (_, k) => m[k]));
         // Kept as sent only once the command succeeded, so a failed send is tried again next time.
-        await new Promise((resolve, reject) =>
-            execFile(program, args, { timeout: 60000 }, (err) => (err ? reject(err) : resolve(null))),
-        );
+        await promisify(execFile)(program, args, { timeout: 60000 });
     }
     if (JSON.stringify(state) !== JSON.stringify(before)) {
         writeJson(file, state);

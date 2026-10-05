@@ -1086,7 +1086,10 @@ function drawTargets() {
 
 const ago = (from, now) => {
     const m = Math.round(Math.max(0, now - from) / 60000);
-    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+    if (m < 1) {
+        return "just now";
+    }
+    return m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
 };
 
 // What is waiting for the owner, on top of the targets screen: the pull requests with images to
@@ -1154,8 +1157,9 @@ function showCount(inbox) {
     }
     countShown = n;
     document.title = n ? `(${n}) Visual review` : "Visual review";
+    const shownN = n > 9 ? "9+" : String(n);
     const label = n
-        ? `<circle cx="22" cy="10" r="10" fill="#b3261e"/><text x="22" y="15" font-size="14" font-family="sans-serif" font-weight="bold" fill="#fff" text-anchor="middle">${n > 9 ? "9+" : n}</text>`
+        ? `<circle cx="22" cy="10" r="10" fill="#b3261e"/><text x="22" y="15" font-size="14" font-family="sans-serif" font-weight="bold" fill="#fff" text-anchor="middle">${shownN}</text>`
         : "";
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#1c64d8"/><path d="M8 17l5 5 11-12" stroke="#fff" stroke-width="4" fill="none"/>${label}</svg>`;
     const icon = document.querySelector('link[rel="icon"]');

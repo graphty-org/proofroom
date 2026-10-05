@@ -289,7 +289,8 @@ async function notify(args) {
         !Array.isArray(command) ||
         command.length === 0 ||
         !command.every((a) => typeof a === "string") ||
-        !(gap >= 0)
+        Number.isNaN(gap) ||
+        gap < 0
     ) {
         console.error(HELP.notify);
         return 2;
@@ -298,17 +299,21 @@ async function notify(args) {
     const { notifyOnce } = await import("./lib/inbox.mjs");
     const stateDir = join(root, config.workDir, "state");
     console.log(`visual-review notify: watching ${join(stateDir, "inbox.json")}`);
-    for (;;) {
+    const tick = async () => {
         try {
             const sent = await notifyOnce({ stateDir, command, gap: gap * 60000 });
             if (sent.length > 0) {
-                console.log(`visual-review notify: announced ${sent.map((r) => `#${r.pr}`).join(", ")}`);
+                console.log(`visual-review notify: announced ${sent.map((r) => "#" + r.pr).join(", ")}`);
             }
         } catch (err) {
             console.error(`visual-review notify: ${err.message}`);
         }
-        await new Promise((done) => setTimeout(done, 30000));
-    }
+        setTimeout(tick, 30000);
+    };
+    await tick();
+    // Keep running until the process is stopped.
+    await new Promise(() => {});
+    return 0;
 }
 
 async function update(args) {
