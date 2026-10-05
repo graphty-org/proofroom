@@ -239,7 +239,9 @@ PORT=4800 npx visual-review serve
 
 It prints the address to open, with a session token after `#token=`; open that exact URL. The
 token is kept in the work directory, so the URL stays valid across restarts; delete
-`<workDir>/state/token` to issue a new one. Without the token the page shows "No session token".
+`<workDir>/state/token` to issue a new one. The page remembers the token in that browser. When it
+has none, or the server refuses the one it has (a new token was issued), it asks for it: paste the
+token, or the whole URL `serve` printed, and it loads. The field hides what you paste.
 
 - Without a certificate it serves plain HTTP, and only on `localhost` (`HOST` defaults to it).
   To open the page from another device (an iPad, say), serve HTTPS: set `HOST` to the machine's
@@ -277,9 +279,11 @@ on its icon, and, on a home-screen web app where the browser allows it, on the a
 asks the server again every few seconds while it is shown, and at once when you come back to it.
 `GET /api/inbox` (with the token) answers the same list as JSON.
 
-To keep it on an iPad's home screen, open the page with its token and use **Add to Home Screen**:
-the page has a web app manifest and opens full screen. The page also remembers the token in that
-browser, so an address without it (the notifier's) opens there too.
+To keep it on an iPad's home screen, use **Add to Home Screen** in Safari: the page has a web app
+manifest and opens full screen, always on this list. A home-screen app keeps its own storage, apart
+from Safari's, and its address never carries the token, so the first time it opens it asks for the
+token: paste the URL `serve` printed once and the app remembers it. The page also remembers the
+token in each browser, so an address without it (the notifier's) opens there too.
 
 `visual-review notify` runs beside `serve`, from the same checkout, and sends one message when
 pull requests become ready: the first at once, any more within ten minutes (`--gap <minutes>`)

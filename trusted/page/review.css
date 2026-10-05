@@ -370,7 +370,8 @@ select {
 }
 
 input[type="text"],
-input[type="search"] {
+input[type="search"],
+input[type="password"] {
     padding: 4px 8px;
     border: 1px solid var(--line);
     border-radius: 4px;
@@ -1558,4 +1559,20 @@ details.menu > div {
 
 .all-heading {
     margin: 24px 0 8px;
+}
+
+/* The token form: one field and one button, each a full touch target. */
+.token-form {
+    display: grid;
+    gap: 8px;
+    max-width: 480px;
+}
+
+.token-form input,
+.token-form button {
+    min-height: 44px;
+}
+
+.token-form .error:empty {
+    display: none;
 }
