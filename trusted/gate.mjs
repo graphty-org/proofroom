@@ -510,6 +510,7 @@ export function runGate(args) {
         return 0;
     }
     const queueEvent = values["queue-event"];
+    /** @type {number | number[] | undefined} */
     let pr = values.pr === undefined ? undefined : Number(values.pr);
     if (
         !values.captures ||
