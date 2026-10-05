@@ -83,6 +83,7 @@ const reduceMotion = () => globalThis.matchMedia?.("(prefers-reduced-motion: red
 const state = {
     list: null, // GET /api/prs?cached=1: the targets, when they were read, and any refresh running
     target: null, // summary of the pull request (or master) being reviewed
+    together: null, // the inbox's coupled group opened with Review together: decisions apply to all of it
     project: null,
     data: null, // GET /api/pr/:id/:project
     filter: "undecided", // the grid opens on what still needs a decision
@@ -1094,19 +1095,28 @@ const ago = (from, now) => {
 
 // What is waiting for the owner, on top of the targets screen: the pull requests with images to
 // decide (fewest first; a row opens its first undecided image), those whose capture failed, and
-// how many are still capturing or have nothing to decide.
+// how many are still capturing or have nothing to decide. Coupled pull requests (they change the
+// same baselines) come first, each group in the order to merge them, with Review together.
 function inboxView(inbox) {
     if (!inbox) {
         return null;
     }
     const now = state.list.now;
-    const ready = inbox.ready.map((r) =>
+    const readyRow = (r) =>
         el(
             "li",
             {},
             el(
                 "button",
-                { type: "button", class: "inbox-row", "data-inbox": r.id, onclick: () => openTarget(r.id, true) },
+                {
+                    type: "button",
+                    class: "inbox-row",
+                    "data-inbox": r.id,
+                    onclick: () => {
+                        state.together = null;
+                        openTarget(r.id, true);
+                    },
+                },
                 el("strong", {}, `#${r.pr} `),
                 el("span", { class: "inbox-title" }, r.title),
                 el(
@@ -1120,9 +1130,8 @@ function inboxView(inbox) {
                     `, ${ago(r.since, now)}`,
                 ),
             ),
-        ),
-    );
-    const notReady = inbox.notReady.map((r) =>
+        );
+    const badRow = (r) =>
         el(
             "li",
             { class: "inbox-bad", "data-inbox": r.id },
@@ -1131,8 +1140,59 @@ function inboxView(inbox) {
             el("span", { class: "meta" }, `${r.project}: ${r.reason}`),
             r.logUrl ? link(r.logUrl, "Job log") : null,
             r.retry ? el("button", { type: "button", onclick: () => showTargets("", true) }, "Retry") : null,
-        ),
-    );
+        );
+    const groups = inbox.groups ?? [];
+    const grouped = new Set(groups.flatMap((g) => g.ids));
+    const ready = inbox.ready.filter((r) => !grouped.has(r.id)).map(readyRow);
+    const notReady = inbox.notReady.filter((r) => !grouped.has(r.id)).map(badRow);
+    const groupRows = groups.map((g) => {
+        const rows = g.ids.map((id, n) => {
+            const r = inbox.ready.find((x) => x.id === id);
+            const bad = inbox.notReady.find((x) => x.id === id);
+            if (r) {
+                return readyRow(r);
+            }
+            return bad ? badRow(bad) : el("li", { class: "meta" }, `#${g.prs[n]}: nothing to decide`);
+        });
+        const first = g.ids.find((id) => inbox.ready.some((r) => r.id === id && r.undecided > 0));
+        return el(
+            "li",
+            { class: "inbox-group", "data-group": g.ids.join(" ") },
+            el(
+                "p",
+                { class: "group-head" },
+                el("strong", {}, `Coupled: merge ${g.prs.map((pr) => `#${pr}`).join(", then ")}`),
+                el(
+                    "span",
+                    { class: "meta" },
+                    `${plural(g.shared.length, "shared baseline")}; ${plural(g.distinct, "image")} to look at, ` +
+                        `${g.images} across the group`,
+                ),
+                g.fold
+                    ? el(
+                          "span",
+                          { class: "meta inbox-fold" },
+                          `Suggestion for the agents: fold ${g.fold.from.map((pr) => `#${pr}`).join(", ")} into #${g.fold.into}`,
+                      )
+                    : null,
+                first
+                    ? el(
+                          "button",
+                          {
+                              type: "button",
+                              onclick: () => {
+                                  state.together = g;
+                                  openTarget(first, true);
+                              },
+                          },
+                          "Review together",
+                      )
+                    : null,
+            ),
+            el("ul", { class: "inbox-list" }, rows),
+        );
+    });
+    const readyCount = inbox.ready.length;
     const rest = [
         inbox.capturing > 0 ? `${inbox.capturing} capturing` : null,
         inbox.done > 0 ? `${inbox.done} with nothing to decide` : null,
@@ -1140,12 +1200,21 @@ function inboxView(inbox) {
     return el(
         "section",
         { class: "inbox", "aria-label": "Waiting for you" },
-        el("h2", {}, ready.length > 0 ? `Ready for you (${ready.length})` : "Nothing waiting for you"),
+        el("h2", {}, readyCount > 0 ? `Ready for you (${readyCount})` : "Nothing waiting for you"),
+        groupRows.length > 0 ? el("ul", { class: "inbox-list" }, groupRows) : null,
         ready.length > 0 ? el("ul", { class: "inbox-list" }, ready) : null,
         notReady.length > 0 ? [el("h3", {}, "Not ready"), el("ul", { class: "inbox-list" }, notReady)] : null,
         rest.length > 0 ? el("p", { class: "meta" }, rest.join(", ")) : null,
     );
 }
+
+// A write's route: its group form while the target is in the group opened with Review together,
+// so the decision is also taken on the coupled pull requests showing the same image.
+const groupRoute = (route) => (state.together?.ids.includes(state.target?.id) ? `${route}-group` : route);
+// What a group write also did: the pull requests it decided too, and those it could not.
+const alsoOn = (answer) =>
+    (answer.also?.length > 0 ? ` (also on ${answer.also.map((pr) => `#${pr}`).join(", ")})` : "") +
+    (answer.failed ?? []).map((f) => `; not on #${f.pr}: ${f.error}`).join("");
 
 // The number of pull requests ready for review, in the title, the tab's icon and, on a home-screen
 // web app that allows it, the app icon's badge.
@@ -3438,7 +3507,7 @@ async function decide(decision) {
     }
     const slow = setTimeout(() => sayBusy("Saving the last decision..."), SLOW_MS);
     let answer;
-    saving = api("/api/decide", {
+    saving = api(groupRoute("/api/decide"), {
         id: state.target.id,
         project: state.project,
         file: item.file,
@@ -3474,12 +3543,12 @@ async function decide(decision) {
     if (decision === null) {
         // Undo stays on the item, undecided again.
         showStory();
-        say(`Undid ${n}: undecided again.`);
+        say(`Undid ${n}: undecided again${alsoOn(answer)}.`);
         return;
     }
     // The pass is frozen, so a decided item stays in it: a decision moves on to the next one, and
     // Previous comes back to it. After the last one, the end card.
-    const did = `${DECISIONS[decision]} ${n}.`;
+    const did = `${DECISIONS[decision]} ${n}${alsoOn(answer)}.`;
     if (state.index >= items.length - 1) {
         showEnd(`${did} End of this pass.`);
         return;
@@ -3513,7 +3582,7 @@ async function undo(files, where, one = false) {
             if (!one) {
                 sayBusy(`Undoing ${done + 1} of ${files.length}...`, " ", meter, " ", stop);
             }
-            await api("/api/decide", {
+            await api(groupRoute("/api/decide"), {
                 id: state.target.id,
                 project: state.project,
                 file,
@@ -3594,7 +3663,7 @@ async function acceptAll(component) {
     }
     let answer;
     try {
-        answer = await api("/api/accept-all", {
+        answer = await api(groupRoute("/api/accept-all"), {
             id: state.target.id,
             project: state.project,
             runId: state.data.target.runId,
@@ -3622,7 +3691,7 @@ async function acceptAll(component) {
     } else {
         showGrid();
     }
-    say(`Accepted ${plural(answer.accepted, "item")} in ${where}.`);
+    say(`Accepted ${plural(answer.accepted, "item")} in ${where}${alsoOn(answer)}.`);
 }
 
 // After a component's Accept N: its accepted tiles show their decision, or leave a filter that no

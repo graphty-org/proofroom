@@ -2866,6 +2866,26 @@ describe("review page: the inbox", () => {
         await expect.poll(() => page.locator(".inbox-row").count()).toBe(2);
     });
 
+    it("shows coupled pull requests as one group, and Review together decides a shared image on both", async () => {
+        await open((r) => ({ gh: twoPrs(r, capturedItems()) }), { review: false });
+        const group = page.locator(".inbox-group");
+        await group.waitFor();
+        expect(await group.locator(".group-head strong").textContent()).toBe("Coupled: merge #123, then #124");
+        expect(await group.locator(".inbox-fold").textContent()).toBe("Suggestion for the agents: fold #124 into #123");
+        expect(await group.locator(".inbox-row").count()).toBe(2);
+        await group.getByRole("button", { name: "Review together" }).click();
+        await page.locator("#app.story-screen").waitFor();
+        await ready();
+        await page.keyboard.press("a");
+        await expect.poll(status).toMatch(/^Accepted \S+ \(also on #124\)\. Now /);
+        const { decisions } = await page.evaluate(
+            async (token) =>
+                (await fetch("/api/pr/124/compact-mantine", { headers: { "x-review-token": token } })).json(),
+            TOKEN,
+        );
+        expect(Object.values(decisions)).toEqual([expect.objectContaining({ decision: "accept" })]);
+    });
+
     it("lists a pull request with a failed story under Not ready with its reason, never as ready", async () => {
         await open((r) => ({ gh: twoPrs(r) }), { review: false });
         const bad = page.locator(".inbox-bad");

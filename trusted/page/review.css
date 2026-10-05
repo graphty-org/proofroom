@@ -1556,6 +1556,24 @@ details.menu > div {
     overflow-wrap: anywhere;
 }
 
+/* A coupled group: its member rows under one heading, in merge order. */
+.inbox-group {
+    padding: 8px 0 0 12px;
+    border-left: 4px solid var(--accent);
+}
+
+.group-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: center;
+    margin: 0 0 8px;
+}
+
+.group-head button {
+    min-height: 44px;
+}
+
 .all-heading {
     margin: 24px 0 8px;
 }

@@ -39,11 +39,26 @@
  * (its jobs and artifacts) is asked once and kept beside its downloads. Grid tiles load
  * thumbnails (`GET /api/thumb/...`), scaled down in worker threads as soon as a capture lands and
  * kept on disk.
+ *
+ * Coupled pull requests (inbox.mjs coupledGroups) change the same baseline files. POST
+ * /api/decide-group and /api/accept-all-group do what /api/decide and /api/accept-all do, then the
+ * same on every other member of the target's group whose item shows the same image against the
+ * same baseline, so the owner reviews a shared image once. Each call is logged to
+ * `<tmp>/state/groups.jsonl`, to count approvals per group.
  */
 
 import { execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,7 +90,7 @@ import {
     visualJobs,
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
-import { inboxOf, readyKey, writeJson } from "./inbox.mjs";
+import { coupledGroups, inboxOf, readyKey, writeJson } from "./inbox.mjs";
 import { validateResults } from "./results.mjs";
 import { scaled } from "./thumbs.mjs";
 
@@ -105,7 +120,20 @@ const HEADERS = {
 const componentOf = (id) => id.split("--")[0];
 
 const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"]);
-const WRITES = new Set(["decide", "accept-all", "finish", "finish-prepare", "passkey-challenge", "register", "update"]);
+// The statuses whose accept changes the baseline file: two pull requests with one of these on the
+// same file conflict once the first merges.
+const CHANGES = new Set(["changed", "moved", "new", "unseeded", "removed"]);
+const WRITES = new Set([
+    "decide",
+    "decide-group",
+    "accept-all",
+    "accept-all-group",
+    "finish",
+    "finish-prepare",
+    "passkey-challenge",
+    "register",
+    "update",
+]);
 // A registration challenge is good for one use within this long; a prepared approval for this long.
 const CHALLENGE_MS = 5 * 60000;
 const APPROVAL_MS = 10 * 60000;
@@ -855,7 +883,7 @@ export function createApp({
      */
     const inbox = (summaries = [...targets.values()].map(summary)) => {
         const now = Date.now();
-        const box = inboxOf(summaries, { now, since: readySince });
+        const box = inboxOf(summaries, { now, since: readySince, coupling: couplings() });
         readySince = new Map(box.ready.map((r) => [readyKey(r), r.since]));
         return box;
     };
@@ -948,6 +976,20 @@ export function createApp({
                 () => true,
                 () => false,
             ));
+        // Every file the pull request changes, for the inbox's coupled groups (null: unknown).
+        t.changedFiles =
+            known && t.pr !== null && !t.local
+                ? await exec(
+                      "git",
+                      ["diff", "--name-only", "--no-renames", `refs/remotes/origin/${defaultBranch}...${base}`],
+                      {
+                          cwd: repo,
+                      },
+                  ).then(
+                      (out) => out.split("\n").filter(Boolean),
+                      () => null,
+                  )
+                : null;
         t.mergeMasterFirst = false;
         for (const p of t.projects) {
             p.newer = [];
@@ -1074,6 +1116,88 @@ export function createApp({
                 };
             }),
         };
+    };
+
+    /**
+     * What the inbox groups a pull request by: the baseline files it changes (`<project>/<file>`,
+     * from its captures and from its own commits under the baselines directory), its undecided
+     * images, and the top-level directories of its other files.
+     * @param {object} t the target
+     * @returns {{ paths: string[], images: string[], packages: string[] | null }} its coupling
+     */
+    const couplingOf = (t) => {
+        const prefix = `${config.baselines}/`;
+        const files = t.changedFiles ?? [];
+        const paths = new Set(
+            files.filter((f) => f.startsWith(prefix) && f.endsWith(".png")).map((f) => f.slice(prefix.length)),
+        );
+        let decided = new Map();
+        try {
+            decided = decisionsOf(t);
+        } catch {
+            // summary() reports an unreadable decisions file; here every image counts as undecided.
+        }
+        const images = [];
+        for (const p of t.projects) {
+            for (const item of p.results?.items ?? []) {
+                const key = `${p.project}/${item.file}`;
+                if (CHANGES.has(item.status)) {
+                    paths.add(key);
+                }
+                if (REVIEWABLE.has(item.status) && !decided.has(key)) {
+                    images.push(`${key} ${imageHash(item)} ${item.baseline ?? ""}`);
+                }
+            }
+        }
+        const top = (f) => (f.includes("/") ? f.slice(0, f.indexOf("/")) : ".");
+        return {
+            paths: [...paths],
+            images,
+            packages: t.changedFiles ? [...new Set(files.filter((f) => !f.startsWith(prefix)).map(top))] : null,
+        };
+    };
+    const couplings = () =>
+        new Map([...targets.values()].filter((t) => t.pr !== null && !t.local).map((t) => [t.id, couplingOf(t)]));
+
+    /**
+     * The coupled group `t` is in, and for an item of it, the other members whose item of the same
+     * file shows the same image against the same baseline.
+     * @param {object} t the target
+     * @returns {{ prs: number[], sharing: (project: string, item: object) => object[] }} the group's
+     *     pull requests (none: not in a group) and the members sharing an item
+     */
+    const groupOf = (t) => {
+        const c = couplings();
+        const group = coupledGroups(
+            [...targets.values()].filter((x) => c.has(x.id)).map((x) => ({ ...x, ...c.get(x.id) })),
+        ).find((g) => g.ids.includes(t.id));
+        const others = (group?.ids ?? []).filter((id) => id !== t.id).map((id) => targets.get(id));
+        const sharing = (project, item) =>
+            others.filter((o) => {
+                const same = o.projects
+                    .find((p) => p.project === project)
+                    ?.results?.items.find((i) => i.file === item.file);
+                return (
+                    same && imageHash(same) === imageHash(item) && (same.baseline ?? null) === (item.baseline ?? null)
+                );
+            });
+        return { prs: group?.prs ?? [], sharing };
+    };
+
+    /**
+     * Keeps one line per group decision, so approvals per coupled group can be counted.
+     * @param {object} entry what was decided, on which pull requests
+     */
+    const logGroup = (entry) => {
+        if (entry.group.length === 0) {
+            return;
+        }
+        try {
+            mkdirSync(join(tmp, "state"), { recursive: true });
+            appendFileSync(join(tmp, "state", "groups.jsonl"), `${JSON.stringify({ at: Date.now(), ...entry })}\n`);
+        } catch (err) {
+            warnOnce(`could not log a group decision: ${err.message}`);
+        }
     };
 
     // A local capture (--results, or any capture not made by CI) is only looked at: no decision is
@@ -1354,6 +1478,17 @@ export function createApp({
         return [200, bytes, "image/png"];
     }
 
+    /**
+     * Runs a write route from another route, as the router would.
+     * @param {string} route the route
+     * @param {object} body its body
+     * @returns {Promise<[number, { error?: string, files?: string[], accepted?: number }]>} its status
+     *     and answer
+     */
+    const call = async (route, body) => {
+        const [status, answer] = await routes[route]([], body);
+        return [/** @type {number} */ (status), /** @type {{ error?: string, files?: string[] }} */ (answer)];
+    };
     const routes = {
         "GET /api/prs": async (_, __, query) => {
             // ?cached=1 answers at once (starting the first load if there is none); ?refresh=1
@@ -1554,6 +1689,63 @@ export function createApp({
                 }
             });
             return [200, { accepted: files.length, files, unpublished: unpublishedOf(t) }];
+        },
+        // /api/decide, then the same decision on the coupled pull requests showing the same image.
+        // An Undo there undoes only the same decision; one decided otherwise is listed in `failed`.
+        "POST /api/decide-group": async (_, body) => {
+            const { t, p } = await projectOf(String(body.id), body.project);
+            const item = p?.results.items.find((i) => i.file === body.file);
+            const key = `${body.project}/${body.file}`;
+            const before = t && item ? decisionsOf(t).get(key) : undefined;
+            const [status, answer] = await call("POST /api/decide", body);
+            if (status !== 200 || body.opened === true) {
+                return [status, answer];
+            }
+            const group = groupOf(t);
+            const also = [];
+            const failed = [];
+            for (const o of group.sharing(body.project, item)) {
+                const theirs = decisionsOf(o).get(key);
+                if (body.decision === null && (!theirs || theirs.decision !== before?.decision)) {
+                    continue;
+                }
+                const [s, a] = await call("POST /api/decide", { ...body, id: o.id, hash: imageHash(item) });
+                if (s === 200) {
+                    also.push(o.pr);
+                } else {
+                    failed.push({ pr: o.pr, error: a.error });
+                }
+            }
+            logGroup({ group: group.prs, pr: t.pr, action: "decide", decision: body.decision, files: 1, also });
+            return [200, { ...answer, also, failed }];
+        },
+        // /api/accept-all, then the same accepts on the coupled pull requests showing the same images.
+        "POST /api/accept-all-group": async (_, body) => {
+            const [status, answer] = await call("POST /api/accept-all", body);
+            if (status !== 200) {
+                return [status, answer];
+            }
+            const { t, p } = await projectOf(String(body.id), body.project);
+            const group = groupOf(t);
+            const byMember = new Map();
+            for (const file of answer.files) {
+                const item = p.results.items.find((i) => i.file === file);
+                for (const o of group.sharing(body.project, item)) {
+                    byMember.set(o, [...(byMember.get(o) ?? []), file]);
+                }
+            }
+            const also = [];
+            const failed = [];
+            for (const [o, files] of byMember) {
+                const [s, a] = await call("POST /api/accept-all", { id: o.id, project: body.project, files });
+                if (s === 200) {
+                    also.push(o.pr);
+                } else {
+                    failed.push({ pr: o.pr, error: a.error });
+                }
+            }
+            logGroup({ group: group.prs, pr: t.pr, action: "accept-all", files: answer.files.length, also });
+            return [200, { ...answer, also, failed }];
         },
         "GET /api/passkeys": async () => {
             const { main, pending } = await knownKeys();

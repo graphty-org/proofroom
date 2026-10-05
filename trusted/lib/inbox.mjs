@@ -6,6 +6,11 @@
  * that failed, or a capture with a story that failed, with its reason) and two counts (capturing, nothing to decide). The server answers
  * it on GET /api/inbox and keeps it in `<workDir>/state/inbox.json`.
  *
+ * `coupledGroups` finds the pull requests that change the same baseline files: they conflict when
+ * the first of them merges, so the inbox shows them as one group, in the order to merge them, with
+ * how many images the group holds once the ones shared by the same image are counted once, and,
+ * when they all touch one package and none is breaking, a suggestion to fold them into the first.
+ *
  * `notify` (the `visual-review notify` command) reads that file and sends one message when pull
  * requests become ready: the first at once, any more within `gap` held and sent together when the
  * gap ends, nothing when nothing is new. A pull request is announced once per head while it stays
@@ -47,13 +52,15 @@ function sourceOf(previews, loaded) {
 /**
  * Sorts the pull requests the server lists into the inbox.
  * @param {object[]} targets the server's target summaries (GET /api/prs)
- * @param {{ now: number, since?: Map<string, number> }} at the time, and when each ready entry
- *     (by readyKey) entered the ready list before
- * @returns {{ ready: object[], notReady: object[], capturing: number, done: number }} the inbox;
- *     `ready` complete ones first, then fewest undecided images, then longest waiting
+ * @param {{ now: number, since?: Map<string, number>, coupling?: Map<string, { paths: string[],
+ *     images: string[], packages: string[] | null }> }} at the time, when each ready entry (by
+ *     readyKey) entered the ready list before, and what each pull request changes (coupledGroups)
+ * @returns {{ ready: object[], notReady: object[], capturing: number, done: number,
+ *     groups: ReturnType<typeof coupledGroups> }} the inbox; `ready` complete ones first, then
+ *     fewest undecided images, then longest waiting; `groups` those with a member listed
  */
-export function inboxOf(targets, { now, since = new Map() }) {
-    const inbox = { ready: [], notReady: [], capturing: 0, done: 0 };
+export function inboxOf(targets, { now, since = new Map(), coupling = new Map() }) {
+    const inbox = { ready: [], notReady: [], capturing: 0, done: 0, groups: [] };
     for (const t of targets) {
         if (t.pr === null || t.local) {
             continue;
@@ -107,7 +114,73 @@ export function inboxOf(targets, { now, since = new Map() }) {
         }
     }
     inbox.ready.sort((a, b) => b.complete - a.complete || a.undecided - b.undecided || a.since - b.since);
+    const listed = new Set([...inbox.ready, ...inbox.notReady].map((r) => r.id));
+    // Only groups with a member waiting for the owner: the rest have nothing to review together.
+    inbox.groups = coupledGroups(
+        targets.filter((t) => coupling.has(t.id)).map((t) => ({ ...t, ...coupling.get(t.id) })),
+    ).filter((g) => g.ids.some((id) => listed.has(id)));
     return inbox;
+}
+
+// A conventional-commit title marked breaking: `feat!: ...`, `fix(scope)!: ...`.
+const BREAKING = /^\w+(\([^)]*\))?!:/;
+
+/**
+ * The groups of pull requests that change at least one baseline file in common (directly, or
+ * through another member), each in the order to merge them.
+ * ponytail: merge order is oldest pull request first; Mergify's queue order is not known here.
+ * @param {{ id: string, pr: number, title: string, paths: string[], images: string[],
+ *     packages: string[] | null }[]} entries per pull request: the baseline files it changes
+ *     (`<project>/<file>`), its undecided images (`<project>/<file> <image hash> <baseline hash>`),
+ *     and the top-level directories of its other changed files (null: unknown)
+ * @returns {{ ids: string[], prs: number[], shared: string[], images: number, distinct: number,
+ *     fold: { into: number, from: number[] } | null }[]} the groups of two or more, lowest first
+ *     pull request first; `shared` the files more than one member changes, `images` the members'
+ *     undecided images, `distinct` those once an image shared with the same hashes counts once
+ */
+export function coupledGroups(entries) {
+    const leader = new Map(entries.map((e) => [e.id, e.id]));
+    const find = (id) => (leader.get(id) === id ? id : find(leader.get(id)));
+    const byPath = new Map();
+    for (const e of entries) {
+        for (const path of e.paths) {
+            const first = byPath.get(path);
+            if (first === undefined) {
+                byPath.set(path, e.id);
+            } else {
+                leader.set(find(e.id), find(first));
+            }
+        }
+    }
+    const members = new Map();
+    for (const e of entries) {
+        members.set(find(e.id), [...(members.get(find(e.id)) ?? []), e]);
+    }
+    const groups = [];
+    for (const list of members.values()) {
+        if (list.length < 2) {
+            continue;
+        }
+        list.sort((a, b) => a.pr - b.pr);
+        const count = new Map();
+        for (const path of list.flatMap((e) => e.paths)) {
+            count.set(path, (count.get(path) ?? 0) + 1);
+        }
+        const packages = new Set(list.flatMap((e) => e.packages ?? [null]));
+        const foldable = packages.size === 1 && !packages.has(null) && !list.some((e) => BREAKING.test(e.title));
+        groups.push({
+            ids: list.map((e) => e.id),
+            prs: list.map((e) => e.pr),
+            shared: [...count]
+                .filter(([, n]) => n > 1)
+                .map(([p]) => p)
+                .sort(),
+            images: list.reduce((n, e) => n + e.images.length, 0),
+            distinct: new Set(list.flatMap((e) => e.images)).size,
+            fold: foldable ? { into: list[0].pr, from: list.slice(1).map((e) => e.pr) } : null,
+        });
+    }
+    return groups.sort((a, b) => a.prs[0] - b.prs[0]);
 }
 
 /**
