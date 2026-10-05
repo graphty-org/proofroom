@@ -1055,6 +1055,10 @@ export function createApp({
                     bytes: p.downloading ? (p.bytes ?? null) : null,
                     logUrl: p.logUrl,
                     counts,
+                    // The stories whose capture failed: the inbox holds the pull request back for them.
+                    failed: (p.results?.items ?? [])
+                        .filter((i) => i.status === "failed")
+                        .map((i) => ({ id: i.id, mode: i.mode, reason: i.reason })),
                     reviewable,
                     decided: mine.length,
                     undecided: reviewable - mine.length,
@@ -1291,7 +1295,12 @@ export function createApp({
         for (const item of r.items) {
             const kind = item.capture ? "capture" : "baseline";
             const hash = item[kind];
-            if (REVIEWABLE.has(item.status) && hash && !existsSync(join(tmp, "thumbs", `${hash}.png`))) {
+            if (
+                REVIEWABLE.has(item.status) &&
+                item.status !== "failed" &&
+                hash &&
+                !existsSync(join(tmp, "thumbs", `${hash}.png`))
+            ) {
                 const own = kind === "capture" || item.baseline === item.capture;
                 const path = own ? join(dir, item.file) : join(dir, "baselines", item.file);
                 thumbOf({ path, hash, file: item.file, dir }, false).catch((err) =>
@@ -1320,7 +1329,8 @@ export function createApp({
             return gone(id);
         }
         const item = p?.results.items.find((i) => i.file === file);
-        const hash = item && { capture: item.capture, baseline: item.baseline }[kind];
+        // A failed item has no image in the artifact: capture keeps no copy of its baseline.
+        const hash = item && item.status !== "failed" && { capture: item.capture, baseline: item.baseline }[kind];
         if (!hash) {
             return [404, { error: "no such image" }];
         }

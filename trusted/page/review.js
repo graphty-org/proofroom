@@ -1767,7 +1767,8 @@ function enterStory() {
 
 function tile(item) {
     const number = numberOf(item);
-    const kind = item.capture ? "capture" : item.baseline ? "baseline" : null;
+    // A failed item has no image to show: the tile names its status.
+    const kind = item.status === "failed" ? null : (item.capture && "capture") || (item.baseline && "baseline") || null;
     const img = kind
         ? el("img", {
               "data-kind": kind,
@@ -2691,7 +2692,14 @@ async function renderStage(item, view, keep) {
     } else if (view === "spotlight") {
         rightLabel = "Spotlight: the new image, dimmed except around each change";
     }
-    const left = item.baseline ? pane(leftLabel, paneWait("baseline")) : pane("No baseline", null, true);
+    // A failed capture's artifact holds no copy of its baseline, so none is fetched.
+    const failed = item.status === "failed";
+    let left = pane("No baseline", null, true);
+    if (failed) {
+        left = pane("Baseline not shown: the capture failed", null, true);
+    } else if (item.baseline) {
+        left = pane(leftLabel, paneWait("baseline"));
+    }
     const right = item.capture ? pane(rightLabel, paneWait("new image")) : emptyRight();
     if (!keep) {
         stage.replaceChildren(...panes(left, right));
@@ -2736,7 +2744,7 @@ async function renderStage(item, view, keep) {
                 }
             };
             await Promise.all([
-                item.baseline && only !== "right" && fill("baseline", left),
+                item.baseline && !failed && only !== "right" && fill("baseline", left),
                 item.capture && fill("capture", right),
             ]);
             if (seq !== stageRender) {

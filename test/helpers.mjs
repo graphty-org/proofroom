@@ -257,6 +257,16 @@ export const onePr =
         });
 
 /**
+ * The compact-mantine fixture's items without its failed capture: a pull request the inbox can
+ * call ready (one with a failed story never is).
+ * @returns {object[]} the items
+ */
+export const capturedItems = () =>
+    JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items.filter(
+        (i) => i.status !== "failed",
+    );
+
+/**
  * The fixture as pull request #123, with slider--sizes renamed from old-slider--sizes and looking
  * exactly as that old id's baseline: a moved item, whose baseline is its own capture's bytes.
  * @param {object} r the repository

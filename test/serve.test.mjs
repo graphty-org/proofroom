@@ -8,7 +8,9 @@ import { downloadCaptures, hurry, newestMasterCapture, withRetries } from "../tr
 import { createApp } from "../trusted/lib/serve.mjs";
 import { thumbnail } from "../trusted/lib/thumbs.mjs";
 import { PNG } from "pngjs";
+import { notifyOnce } from "../trusted/lib/inbox.mjs";
 import {
+    capturedItems,
     copyFixture,
     FIXTURE,
     FIXTURE_CONFIG,
@@ -131,7 +133,7 @@ describe("serve: pull requests", () => {
                     jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
                     artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
                     results: {
-                        "visual-compact-mantine-1": { headSha: r.head },
+                        "visual-compact-mantine-1": { headSha: r.head, items: capturedItems() },
                         "visual-graphty-element-1": { headSha: r.head },
                     },
                 }),
@@ -147,6 +149,44 @@ describe("serve: pull requests", () => {
         const kept = JSON.parse(readFileSync(join(s.tmp, "state/inbox.json"), "utf8"));
         expect(kept).toMatchObject({ origin: s.origin, capturing: 1 });
         expect(kept.ready.map((r) => r.pr)).toEqual([123]);
+    });
+
+    it("holds back a pull request with a failed story, with its reason, and the notifier never announces it", async () => {
+        // The fixture's menu--open failed; give it a baseline, as a story that rendered before.
+        const items = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items.map((i) =>
+            i.status === "failed" ? { ...i, baseline: "a".repeat(64) } : i,
+        );
+        const s = await start({
+            gh: (r) =>
+                onePr({
+                    results: {
+                        "visual-compact-mantine-1": { headSha: r.head, items },
+                        "visual-graphty-element-1": { headSha: r.head },
+                    },
+                })(r),
+        });
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/inbox");
+        expect(body.ready).toEqual([]);
+        expect(body.notReady).toEqual([
+            expect.objectContaining({
+                pr: 123,
+                project: "compact-mantine",
+                story: "menu--open",
+                reason: "capture failed: menu--open: story render errored",
+                retry: false,
+            }),
+        ]);
+        const out = join(s.tmp, "sent.json");
+        const command = [process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(out)}, "sent")`];
+        expect(await notifyOnce({ stateDir: join(s.tmp, "state"), command, gap: 0 })).toEqual([]);
+        expect(existsSync(out)).toBe(false);
+        // A failed item has no image in the artifact: asking for one is "no such image", never a
+        // damaged download that throws the capture away.
+        const img = await s.api("GET", "/api/img/123/compact-mantine/baseline/menu--open.png");
+        expect(img.status).toBe(404);
+        expect(JSON.stringify(img.body)).not.toContain("damaged");
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).status).toBe(200);
     });
 
     it("shows capture failed with the job's log when the visual job failed or uploaded nothing", async () => {
