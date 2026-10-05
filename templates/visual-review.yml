@@ -72,6 +72,11 @@ jobs:
 
             # __SETUP__
 
+            # packages.microsoft.com, an apt source the hosted Ubuntu images ship and this job never
+            # installs from, sometimes answers 403; apt-get update then fails install-browser.
+            - name: Drop the Microsoft apt sources
+              run: "{ grep -rl packages.microsoft.com /etc/apt/sources.list.d || true; } | xargs -r sudo rm -fv"
+
             - name: Install Chromium
               run: __CLI__ install-browser
 
