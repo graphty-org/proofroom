@@ -1,7 +1,9 @@
 import { defineConfig } from "vitest/config";
+import { ciJunitReporter } from "../vitest.ci-junit.mjs";
 
 export default defineConfig({
     test: {
+        reporters: ["default", ...ciJunitReporter()],
         environment: "node",
         include: ["test/**/*.test.mjs"],
         coverage: {
