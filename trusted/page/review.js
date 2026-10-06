@@ -1495,7 +1495,8 @@ function projectRow(t, p) {
             p.problem
                 ? el(
                       "span",
-                      { class: "badge warn" },
+                      // The server's NOT_AFFECTED (lib/results.mjs): a project the run left out on purpose.
+                      { class: p.problem === "not affected" ? "badge" : "badge warn" },
                       p.problem.replace(/[;:] reload (the page )?(to retry|in a moment|when it finishes)$/, ""),
                   )
                 : null,
