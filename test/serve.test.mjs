@@ -204,6 +204,37 @@ describe("serve: pull requests", () => {
         expect(ge).toMatchObject({ problem: "capture failed", logUrl: "https://gh/job/graphty-element" });
     });
 
+    it("shows a project the run left out as not affected, not as a failed capture, across a restart", async () => {
+        const gh = (r) => {
+            const inner = onePr()(r);
+            return async (args, input) => {
+                if (args[0] === "run" && args[1] === "download" && args[4] === "visual-graphty-element-1") {
+                    mkdirSync(args[6], { recursive: true });
+                    const marker = { skipped: "not affected", project: "graphty-element" };
+                    writeFileSync(join(args[6], "skipped.json"), JSON.stringify(marker));
+                    return "";
+                }
+                return inner(args, input);
+            };
+        };
+        const first = await start({ warm: true, gh });
+        const { body } = await first.api("GET", "/api/prs");
+        const ge = body.targets[0].projects.find((x) => x.project === "graphty-element");
+        expect(ge).toMatchObject({ problem: "not affected" });
+        // Not a failed capture, so it never holds the pull request out of the inbox.
+        const inbox = (await first.api("GET", "/api/inbox")).body;
+        expect(inbox.notReady.map((n) => n.project)).not.toContain("graphty-element");
+        // Nor does it leave Finish's status pending as an unreviewed project.
+        expect((await first.api("GET", "/api/target/123?finish=1")).body.finish.unloaded).toEqual([]);
+        server.close();
+        const s = await start({ repo: first.repo, head: first.head, master: first.master, warm: true, gh });
+        const kept = (await s.api("GET", "/api/prs?cached=1")).body.targets[0].projects;
+        expect(kept.find((x) => x.project === "graphty-element")).toMatchObject({
+            problem: "not affected",
+            downloading: false,
+        });
+    });
+
     it("shows an incomplete capture as N of M stories", async () => {
         const s = await start({
             gh: (r) =>

@@ -25,7 +25,7 @@ describe("inboxOf", () => {
         target(4, [project("a", { problem: "capture failed", logUrl: "https://gh/job/a" }), project("b")]),
         target(5, [project("a", { problem: "download failed: boom; reload the page to retry" }), project("b")]),
         target(6, [project("a", { problem: "waiting for CI on 1234567890" }), project("b")]),
-        target(7, [project("a"), project("b", { problem: "no capture" })]),
+        target(7, [project("a"), project("b", { problem: "no capture" }), project("c", { problem: "not affected" })]),
         target(8, [project("a"), project("b")], { unpublished: 3 }),
         target(null, [project("a", { undecided: 9 })], { id: "master" }),
         target(9, [project("a", { undecided: 9 })], { local: true }),
