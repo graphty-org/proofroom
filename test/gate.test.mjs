@@ -14,6 +14,7 @@ import {
     gatedProjects,
     MAX_THRESHOLD,
     newestResults,
+    queueBaseSha,
     queuePullRequests,
     reviewGaps,
     seededAt,
@@ -402,9 +403,10 @@ describe("the not-affected marker (skipped.json)", () => {
 
         it("fails the same artifacts in a merge-queue run", () => {
             const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
-            const body = "```yaml\npull_requests:\n  - number: 7\n```\n";
+            const r = makeRepo();
+            const body = `\`\`\`yaml\nchecking_base_sha: ${git(r.repo, "rev-parse", "master")}\npull_requests:\n  - number: 7\n\`\`\`\n`;
             writeFileSync(file, JSON.stringify({ pull_request: { number: 995, body } }));
-            const out = run(makeRepo().repo, "--queue-event", file);
+            const out = run(r.repo, "--queue-event", file);
             expect(out.stdout).toMatch(
                 /::error::visual changes not accepted -- compact-mantine: not captured .*merge-queue run/,
             );
@@ -828,10 +830,12 @@ describe("passkey approvals", () => {
                 items: [{ path: ADDED, from: null, to: sha256("added image"), reason: null }],
                 reviewedAt: "2026-09-28T13:00:00.000Z",
             });
-            const event = (...prs) => {
+            // The draft's event; the batch sits on `base` (a ref of r, or null for no checking_base_sha).
+            const event = (r, base, ...prs) => {
                 const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
                 const list = prs.map((n) => `  - number: ${n}\n    scopes: []\n`).join("");
-                const body = `### Queue\n\n\`\`\`yaml\n---\nchecking_base_sha: ${"f".repeat(40)}\npull_requests:\n${list}scopes: []\n...\n\n\`\`\`\n`;
+                const sha = base === null ? "" : `checking_base_sha: ${git(r.repo, "rev-parse", base)}\n`;
+                const body = `### Queue\n\n\`\`\`yaml\n---\n${sha}pull_requests:\n${list}scopes: []\n...\n\n\`\`\`\n`;
                 writeFileSync(file, JSON.stringify({ pull_request: { number: 995, body } }));
                 return file;
             };
@@ -848,18 +852,21 @@ describe("passkey approvals", () => {
             };
 
             it("passes when every record is approved for a pull request of the batch", () => {
-                const out = run(batch(), "--queue-event", event(7, 8, 9));
+                const r = batch();
+                const out = run(r, "--queue-event", event(r, "master", 7, 8, 9));
                 expect(out.stdout).toContain("Merge-queue batch: #7, #8, #9");
                 expect(out.status).toBe(0);
             });
 
             it("fails a record for a pull request outside the batch, and one with no approval", () => {
-                const outside = run(batch(), "--queue-event", event(7));
+                const b = batch();
+                const outside = run(b, "--queue-event", event(b, "master", 7));
                 expect(outside.stdout).toContain(
                     "visual-baselines/reviews/r8.json: the record is for pull request #8, not #7",
                 );
                 expect(outside.status).toBe(1);
-                const unsigned = run(batch(false), "--queue-event", event(7, 8));
+                const u = batch(false);
+                const unsigned = run(u, "--queue-event", event(u, "master", 7, 8));
                 expect(unsigned.stdout).toContain(
                     "visual-baselines/reviews/r8.json: the record has no passkey approval",
                 );
@@ -872,10 +879,21 @@ describe("passkey approvals", () => {
                         Object.keys(CONFIG.projects).map((p) => [`visual-${p}-1`, results(["unchanged", "changed"])]),
                     ),
                 );
+                const r = batch();
                 const out = spawnSync(
                     process.execPath,
-                    [GATE, "--captures", changed, "--base", "master", "--head", "pr", "--queue-event", event(7, 8)],
-                    { cwd: batch().repo, encoding: "utf8" },
+                    [
+                        GATE,
+                        "--captures",
+                        changed,
+                        "--base",
+                        "master",
+                        "--head",
+                        "pr",
+                        "--queue-event",
+                        event(r, "master", 7, 8),
+                    ],
+                    { cwd: r.repo, encoding: "utf8" },
                 );
                 expect(out.stdout).toMatch(/::error::visual changes not accepted -- .*1 changed/);
                 expect(out.status).toBe(1);
@@ -887,7 +905,43 @@ describe("passkey approvals", () => {
                 writeFileSync(empty, JSON.stringify({ pull_request: { body: "no yaml here" } }));
                 expect(run(r, "--queue-event", empty).status).toBe(1);
                 expect(run(r, "--queue-event", join(r.repo, "missing.json")).status).toBe(1);
-                expect(run(r, "--pr", "7", "--queue-event", event(7)).status).toBe(2);
+                expect(run(r, "--pr", "7", "--queue-event", event(r, "master", 7)).status).toBe(2);
+            });
+
+            it("compares a batch stacked on another batch with the commit it sits on, not the base branch", () => {
+                // Branch `first`: the earlier batch, #942's approved change, not yet on master. Branch
+                // `pr`: this batch, #9's approved added image, stacked on it.
+                const r = repoWith(passkeysJson(KEY));
+                commit(r, { [PATH]: "new image", "visual-baselines/reviews/r942.json": signed(v2(942)) });
+                git(r.repo, "branch", "first");
+                commit(r, { [ADDED]: "added image", "visual-baselines/reviews/r9.json": signed(added(9)) });
+                const stacked = run(r, "--queue-event", event(r, "first", 9));
+                expect(stacked.stdout).toContain("Baseline changes compared with the batch's base");
+                expect(stacked.status).toBe(0);
+                // Against master, #942's record is outside this batch.
+                const onMaster = run(r, "--queue-event", event(r, "master", 9));
+                expect(onMaster.stdout).toContain("r942.json: the record is for pull request #942, not #9");
+                expect(onMaster.status).toBe(1);
+                // The batch's own changes still need their records.
+                const own = run(r, "--queue-event", event(r, "first", 942));
+                expect(own.stdout).toContain("r9.json: the record is for pull request #9, not #942");
+                expect(own.status).toBe(1);
+            });
+
+            it("fails closed when the draft names no checking_base_sha, or one that is not in the repository", () => {
+                const r = batch();
+                const missing = run(r, "--queue-event", event(r, null, 7, 8));
+                expect(missing.stdout).toContain("names no checking_base_sha the gate can read (missing)");
+                expect(missing.status).toBe(1);
+                const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+                const body = `\`\`\`yaml\nchecking_base_sha: ${"f".repeat(40)}\npull_requests:\n  - number: 7\n\`\`\`\n`;
+                writeFileSync(file, JSON.stringify({ pull_request: { body } }));
+                const unknown = run(r, "--queue-event", file);
+                expect(unknown.stdout).toContain(`names no checking_base_sha the gate can read (${"f".repeat(40)})`);
+                expect(unknown.status).toBe(1);
+                expect(queueBaseSha({ pull_request: { body: "```yaml\nchecking_base_sha: c0f44c1da\n```" } })).toBe(
+                    null,
+                );
             });
 
             it("reads the pull requests from the last yaml block of the queue draft's body only", () => {
