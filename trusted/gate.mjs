@@ -50,9 +50,11 @@
  *
  * In a merge-queue run (`--queue-event`) the head is a batch of several pull requests merged onto the
  * base, and a record counts when it is for any pull request of the batch, read from the queue's
- * draft pull request. Nothing else changes: every capture must still equal a baseline in the
- * combined tree, so the queue passes a batch only on images the owner already approved on its pull
- * requests, and never asks for a new approval.
+ * draft pull request. Baseline changes are compared with the commit the batch sits on (the draft's
+ * `checking_base_sha`), not with the base branch, since a batch stacked on another holds that
+ * batch's changes; a draft that names no such commit fails. Nothing else changes: every capture
+ * must still equal a baseline in the combined tree, so the queue passes a batch only on images the
+ * owner already approved on its pull requests, and never asks for a new approval.
  *
  * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> |
  * --queue-event <file>], or node gate.mjs with the same options. Standard library only (results.mjs, config.mjs and approval.mjs
@@ -560,11 +562,49 @@ export function trustFilesChanged(base, head, workflow, cwd = process.cwd()) {
  * @returns {number[]} the batch's pull request numbers; empty when the block is missing
  */
 export function queuePullRequests(event) {
-    const body = String(event?.pull_request?.body ?? "");
-    const blocks = [...body.matchAll(/```yaml\r?\n([\s\S]*?)```/g)];
-    const yaml = blocks.at(-1)?.[1] ?? "";
-    const list = /^pull_requests:\r?\n((?:[ \t-].*(?:\r?\n|$))*)/m.exec(yaml)?.[1] ?? "";
+    const list = /^pull_requests:\r?\n((?:[ \t-].*(?:\r?\n|$))*)/m.exec(queueYaml(event))?.[1] ?? "";
     return [...list.matchAll(/^[ \t]*- number: *(\d+)[ \t]*\r?$/gm)].map((m) => Number(m[1]));
+}
+
+/**
+ * The commit a Mergify merge-queue batch sits on, from the same yaml block: `checking_base_sha:`.
+ * It is the default branch for the first batch, and the previous batch's draft branch for a batch
+ * stacked on it (Mergify checks two batches at once).
+ * @param {any} event the parsed GITHUB_EVENT_PATH of the queue run
+ * @returns {string | null} the full commit hash; null when it is missing or not a full hash
+ */
+export function queueBaseSha(event) {
+    return /^checking_base_sha: *([0-9a-f]{40})[ \t]*\r?$/m.exec(queueYaml(event))?.[1] ?? null;
+}
+
+/**
+ * The last fenced yaml block of a queue draft's body, where Mergify writes the batch.
+ * @param {any} event the parsed event
+ * @returns {string} the block's text; empty when there is none
+ */
+function queueYaml(event) {
+    const body = String(event?.pull_request?.body ?? "");
+    return [...body.matchAll(/```yaml\r?\n([\s\S]*?)```/g)].at(-1)?.[1] ?? "";
+}
+
+/**
+ * Whether the repository holds a commit, fetching it from origin when it does not (a queue base
+ * on a mergify/merge-queue/* branch is not in CI's shallow checkout).
+ * @param {string} sha the full commit hash
+ * @param {string} cwd the repository
+ * @returns {boolean} whether the commit is there now
+ */
+function haveCommit(sha, cwd) {
+    const git = (args) => {
+        try {
+            gitOut(cwd, args);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    const has = () => git(["cat-file", "-e", `${sha}^{commit}`]);
+    return has() || (git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", sha]) && has());
 }
 
 export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
@@ -580,7 +620,8 @@ CI after the capture jobs, on the pull request's merge commit.
   --pr <number>     the pull request's number (required once approvals are enforced)
   --queue-event <file>  in a merge-queue run, the event file of the queue's draft pull request
                     (GITHUB_EVENT_PATH): the gate accepts a batch, whose records may be for
-                    any of its pull requests, in place of --pr`;
+                    any of its pull requests, in place of --pr, and baseline changes are
+                    compared with the batch's checking_base_sha instead of --base`;
 
 /**
  * The gate as a command.
@@ -606,6 +647,11 @@ export function runGate(args) {
     const queueEvent = values["queue-event"];
     /** @type {number | number[] | undefined} */
     let pr = values.pr === undefined ? undefined : Number(values.pr);
+    // A batch's changes are those since the commit it sits on, not since the base branch: a batch
+    // stacked on another holds that batch's approved changes, which its own run gated. If that batch
+    // fails, Mergify rebuilds this one on a new base. The config, the seeded projects and the keys
+    // are still read from --base.
+    let queueBase = null;
     if (
         !values.captures ||
         !values.base ||
@@ -628,6 +674,14 @@ export function runGate(args) {
             return 1;
         }
         console.log(`Merge-queue batch: #${pr.join(", #")}`);
+        queueBase = queueBaseSha(event);
+        if (queueBase === null || !haveCommit(queueBase, repoRoot())) {
+            console.log(
+                `::error::merge queue -- the queue's draft pull request names no checking_base_sha the gate can read (${queueBase ?? "missing"})`,
+            );
+            return 1;
+        }
+        console.log(`Baseline changes compared with the batch's base ${queueBase}`);
     }
     const root = repoRoot();
     const config = loadConfigAt(values.base, root);
@@ -635,7 +689,8 @@ export function runGate(args) {
     const headConfig = loadConfigAt(values.head, root);
     const captures = newestResults(values.captures);
     const queue = queueEvent !== undefined;
-    const baselinesChanged = baselinesChangedBetween(values.base, values.head, root, config.baselines);
+    const diffBase = queueBase ?? values.base;
+    const baselinesChanged = baselinesChangedBetween(diffBase, values.head, root, config.baselines);
     const notAffected = [];
     const problems = gateProblems({ config, headConfig, seeded, captures, queue, baselinesChanged, notAffected });
     for (const p of notAffected) {
@@ -648,11 +703,11 @@ export function runGate(args) {
     for (const line of approval) {
         console.log(`::error::passkey approval -- ${line}`);
     }
-    const unrecorded = unrecordedChanges(values.base, values.head, root, config.baselines, { keys, pr });
+    const unrecorded = unrecordedChanges(diffBase, values.head, root, config.baselines, { keys, pr });
     for (const line of unrecorded) {
         console.log(`::error::baseline without a review -- ${line}`);
     }
-    for (const file of trustFilesChanged(values.base, values.head, config.workflow, root)) {
+    for (const file of trustFilesChanged(diffBase, values.head, config.workflow, root)) {
         console.log(
             `::warning::this pull request changes ${file}, which decides what the visual gate accepts: review that change with care`,
         );
