@@ -17,7 +17,7 @@ const toB64u = (buffer) => {
     return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 const fromB64u = (s) => {
-    const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+    const bin = atob(s.replaceAll("-", "+").replaceAll("_", "/") + "===".slice((s.length + 3) % 4));
     return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 };
 const credential = (id) => ({ type: "public-key", id: fromB64u(id) });

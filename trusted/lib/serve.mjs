@@ -1831,7 +1831,7 @@ export function createApp({
             if (finishing) {
                 return [409, { error: "a Finish is running: register when it ends" }];
             }
-            const label = typeof body.label === "string" ? body.label.replace(/\s+/g, " ").trim().slice(0, 60) : "";
+            const label = typeof body.label === "string" ? body.label.replaceAll(/\s+/g, " ").trim().slice(0, 60) : "";
             const entry = {
                 id: body.credentialId,
                 publicKey: body.publicKey,
