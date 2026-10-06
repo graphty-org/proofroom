@@ -1339,7 +1339,7 @@ describe("serve: what the page waits on", () => {
 
 describe("serve: loading without waiting", () => {
     const until = async (check, ms = 6000) => {
-        for (const end = Date.now() + ms; Date.now() < end; ) {
+        for (const end = Date.now() + ms; Date.now() < end;) {
             const value = await check();
             if (value) {
                 return value;
