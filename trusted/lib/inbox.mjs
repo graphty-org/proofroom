@@ -156,31 +156,37 @@ export function coupledGroups(entries) {
     for (const e of entries) {
         members.set(find(e.id), [...(members.get(find(e.id)) ?? []), e]);
     }
-    const groups = [];
-    for (const list of members.values()) {
-        if (list.length < 2) {
-            continue;
-        }
-        list.sort((a, b) => a.pr - b.pr);
-        const count = new Map();
-        for (const path of list.flatMap((e) => e.paths)) {
-            count.set(path, (count.get(path) ?? 0) + 1);
-        }
-        const packages = new Set(list.flatMap((e) => e.packages ?? [null]));
-        const foldable = packages.size === 1 && !packages.has(null) && !list.some((e) => BREAKING.test(e.title));
-        groups.push({
-            ids: list.map((e) => e.id),
-            prs: list.map((e) => e.pr),
-            shared: [...count]
-                .filter(([, n]) => n > 1)
-                .map(([p]) => p)
-                .sort(),
-            images: list.reduce((n, e) => n + e.images.length, 0),
-            distinct: new Set(list.flatMap((e) => e.images)).size,
-            fold: foldable ? { into: list[0].pr, from: list.slice(1).map((e) => e.pr) } : null,
-        });
+    return [...members.values()]
+        .filter((list) => list.length > 1)
+        .map(groupFrom)
+        .sort((a, b) => a.prs[0] - b.prs[0]);
+}
+
+/**
+ * One coupled group, from its members.
+ * @param {{ id: string, pr: number, title: string, paths: string[], images: string[],
+ *     packages: string[] | null }[]} list the members
+ * @returns {ReturnType<typeof coupledGroups>[number]} the group
+ */
+function groupFrom(list) {
+    list.sort((a, b) => a.pr - b.pr);
+    const count = new Map();
+    for (const path of list.flatMap((e) => e.paths)) {
+        count.set(path, (count.get(path) ?? 0) + 1);
     }
-    return groups.sort((a, b) => a.prs[0] - b.prs[0]);
+    const packages = new Set(list.flatMap((e) => e.packages ?? [null]));
+    const foldable = packages.size === 1 && !packages.has(null) && !list.some((e) => BREAKING.test(e.title));
+    return {
+        ids: list.map((e) => e.id),
+        prs: list.map((e) => e.pr),
+        shared: [...count]
+            .filter(([, n]) => n > 1)
+            .map(([p]) => p)
+            .sort((a, b) => a.localeCompare(b)),
+        images: list.reduce((n, e) => n + e.images.length, 0),
+        distinct: new Set(list.flatMap((e) => e.images)).size,
+        fold: foldable ? { into: list[0].pr, from: list.slice(1).map((e) => e.pr) } : null,
+    };
 }
 
 /**

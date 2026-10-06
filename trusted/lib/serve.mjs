@@ -1174,9 +1174,7 @@ export function createApp({
         const others = (group?.ids ?? []).filter((id) => id !== t.id).map((id) => targets.get(id));
         const sharing = (project, item) =>
             others.filter((o) => {
-                const same = o.projects
-                    .find((p) => p.project === project)
-                    ?.results?.items.find((i) => i.file === item.file);
+                const same = itemOf(o, `${project}/${item.file}`);
                 return (
                     same && imageHash(same) === imageHash(item) && (same.baseline ?? null) === (item.baseline ?? null)
                 );
@@ -1706,7 +1704,7 @@ export function createApp({
             const failed = [];
             for (const o of group.sharing(body.project, item)) {
                 const theirs = decisionsOf(o).get(key);
-                if (body.decision === null && (!theirs || theirs.decision !== before?.decision)) {
+                if (body.decision === null && theirs?.decision !== (before?.decision ?? null)) {
                     continue;
                 }
                 const [s, a] = await call("POST /api/decide", { ...body, id: o.id, hash: imageHash(item) });
