@@ -521,9 +521,10 @@ describe("review page: the Focus point, on an iPad", () => {
             await page.keyboard.press("o");
             await expect.poll(() => focus().getAttribute("aria-pressed")).toBe("true");
             expect(new URLSearchParams(new URL(page.url()).hash.slice(1)).get("focus")).toBe("on");
-            // The changed area [160, 80, 40, 40] has its middle at (180, 100), in both panes.
-            await expect.poll(() => centeredOn([180, 100])).toBe(true);
-            expect((await panes()).length).toBe(2);
+            // The changed area [160, 80, 40, 40] has its middle at (180, 100), in both panes. The
+            // stage redraws its frames on the zoom, so wait for both to hold a picture again: one
+            // centered pane alone is a frame caught halfway through that redraw.
+            await expect.poll(async () => (await panes()).length === 2 && (await centeredOn([180, 100]))).toBe(true);
             expect(await scrolled()).toBe(true);
             await ready();
             // Whether the next item's new image is already scrolled in the first frame that draws it.
