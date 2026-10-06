@@ -18,10 +18,13 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
+import { NOT_AFFECTED } from "./results.mjs";
+
 // A project still being captured or downloaded, rather than one whose capture failed.
 const CAPTURING = /^(waiting for CI|CI still running)/;
-// A project the run did not capture at all (a pull request that does not affect it): nothing to decide.
-const NONE = "no capture";
+// A project the run did not capture at all (no job ran for it, or the pull request does not affect
+// it): nothing to decide.
+const NONE = new Set(["no capture", NOT_AFFECTED]);
 const RETRY = /[;:] reload (the page )?(to retry|in a moment|when it finishes)$/;
 
 /**
@@ -59,9 +62,9 @@ export function inboxOf(targets, { now, since = new Map() }) {
             continue;
         }
         const failed = t.projects.find(
-            (p) => !p.downloading && p.problem && p.problem !== NONE && !CAPTURING.test(p.problem),
+            (p) => !p.downloading && p.problem && !NONE.has(p.problem) && !CAPTURING.test(p.problem),
         );
-        const loaded = t.projects.filter((p) => !p.downloading && (!p.problem || p.problem === NONE));
+        const loaded = t.projects.filter((p) => !p.downloading && (!p.problem || NONE.has(p.problem)));
         const undecided = loaded.reduce((n, p) => n + p.undecided, 0);
         // A story whose capture failed: never sent for review until it is fixed, whatever else waits.
         const failedStory = loaded.find((p) => p.failed?.length > 0);

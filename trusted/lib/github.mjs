@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import { validateResults } from "./results.mjs";
+import { SKIPPED_FILE, validateResults } from "./results.mjs";
 
 /**
  * Runs a program and resolves with its trimmed stdout. A program that runs longer than
@@ -197,11 +197,15 @@ export function hurry(wanted) {
     queued.splice(0, queued.length, ...first, ...queued.filter((q) => !wanted(q.dir)));
 }
 
+// An artifact directory that holds a capture's results.json or the not-affected marker.
+const whole = (d) => existsSync(join(d, "results.json")) || existsSync(join(d, SKIPPED_FILE));
+
 /**
  * Downloads one artifact into `dir`, unless it is already there. It is extracted into a sibling
  * temporary directory and renamed into place only once its results.json is there, so `dir` either
  * does not exist or holds a whole artifact; a failed or interrupted download leaves nothing behind.
- * An artifact without results.json is discarded, and its readers report the capture as failed.
+ * An artifact with neither results.json nor the not-affected marker (skipped.json, written for a
+ * project the run left out) is discarded, and its readers report the capture as failed.
  * @param {Function} gh the gh runner
  * @param {number} runId the run
  * @param {string} name the artifact
@@ -209,6 +213,9 @@ export function hurry(wanted) {
  * @returns {Promise<void>} settles when `dir` is complete, or the artifact had no results.json
  */
 function download(gh, runId, name, dir) {
+    if (!downloading.has(dir) && !existsSync(join(dir, "results.json")) && whole(dir)) {
+        return Promise.resolve(); // The not-affected marker: nothing to validate.
+    }
     if (!downloading.has(dir) && existsSync(join(dir, "results.json"))) {
         try {
             JSON.parse(readFileSync(join(dir, "results.json"), "utf8"));
@@ -238,7 +245,7 @@ function download(gh, runId, name, dir) {
             const part = mkdtempSync(`${dir}.part-`);
             try {
                 await gh(["run", "download", String(runId), "-n", name, "-D", part]);
-                if (existsSync(join(part, "results.json"))) {
+                if (whole(part)) {
                     renameSync(part, dir);
                 }
             } finally {
@@ -308,9 +315,7 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
                 const dir = join(tmp, `${run.id}-${a.attempt}`, project);
                 const got = { attempt: a.attempt, bytes: a.bytes };
                 if (a.expired) {
-                    out[project] = existsSync(join(dir, "results.json"))
-                        ? { dir, ...got }
-                        : { dir: null, ...got, expired: true };
+                    out[project] = whole(dir) ? { dir, ...got } : { dir: null, ...got, expired: true };
                 } else {
                     try {
                         await download(gh, run.id, a.name, dir);
