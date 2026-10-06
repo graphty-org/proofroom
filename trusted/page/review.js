@@ -1161,7 +1161,7 @@ function inboxView(inbox) {
             el(
                 "p",
                 { class: "group-head" },
-                el("strong", {}, `Coupled: ${g.prs.map((pr) => `#${pr}`).join(", ")} (oldest first)`),
+                el("strong", {}, `Coupled: ${prList(g.prs)} (oldest first)`),
                 el(
                     "span",
                     { class: "meta" },
@@ -1172,7 +1172,7 @@ function inboxView(inbox) {
                     ? el(
                           "span",
                           { class: "meta inbox-fold" },
-                          `Suggestion for the agents: fold ${g.fold.from.map((pr) => `#${pr}`).join(", ")} into #${g.fold.into}`,
+                          `Suggestion for the agents: fold ${prList(g.fold.from)} into #${g.fold.into}`,
                       )
                     : null,
                 first
@@ -1211,9 +1211,12 @@ function inboxView(inbox) {
 // A write's route: its group form while the target is in the group opened with Review together,
 // so the decision is also taken on the coupled pull requests showing the same image.
 const groupRoute = (route) => (state.together?.ids.includes(state.target?.id) ? `${route}-group` : route);
+// Pull request numbers as "#1, #2".
+const prList = (prs) => prs.map((pr) => "#" + pr).join(", ");
+
 // What a group write also did: the pull requests it decided too, and those it could not.
 const alsoOn = (answer) =>
-    (answer.also?.length > 0 ? ` (also on ${answer.also.map((pr) => `#${pr}`).join(", ")})` : "") +
+    (answer.also?.length > 0 ? ` (also on ${prList(answer.also)})` : "") +
     (answer.failed ?? []).map((f) => `; not on #${f.pr}: ${f.error}`).join("");
 
 // The number of pull requests ready for review, in the title, the tab's icon and, on a home-screen
