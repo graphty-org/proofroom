@@ -175,36 +175,47 @@ export function gateProblems({
             }
             continue;
         }
-        if (!r) {
-            problems.push(`${p}: no capture results (the visual job failed or uploaded nothing); re-run it`);
-            continue;
+        problems.push(...captureProblems(p, r, config, seeded));
+    }
+    return problems;
+}
+
+/**
+ * What blocks one project's capture.
+ * @param {string} p the project
+ * @param {object | null | undefined} r its newest results.json
+ * @param {{ defaultBranch: string, projects: Record<string, { seedFromDefaultBranch: boolean }> }} config the base branch's config
+ * @param {Set<string>} seeded the projects with baselines on the base branch
+ * @returns {string[]} the gate's lines for it
+ */
+function captureProblems(p, r, config, seeded) {
+    if (!r) {
+        return [`${p}: no capture results (the visual job failed or uploaded nothing); re-run it`];
+    }
+    const invalid = validateResults(r);
+    if (invalid.length > 0) {
+        return [`${p}: results.json is invalid (${invalid[0]}); re-run the visual job`];
+    }
+    if (!r.complete) {
+        return [`${p}: the capture did not finish (${r.items.length} of ${r.expected} items); re-run it`];
+    }
+    const problems = [];
+    const loose = r.items.filter((i) => i.threshold > MAX_THRESHOLD).length;
+    if (loose > 0) {
+        problems.push(
+            `${p}: ${loose} ${loose === 1 ? "item is" : "items are"} compared at a diffThreshold above ${MAX_THRESHOLD}, ` +
+                "which hides real changes; lower it in the story's parameters or its settings file",
+        );
+    }
+    const open = r.items.map((i) => i.status).filter((s) => !PASSING.has(s));
+    if (open.length > 0) {
+        // No Object.groupBy: the gate runs on the runner's own Node, which may be 20.
+        const counts = new Map();
+        for (const s of open) {
+            counts.set(s, (counts.get(s) ?? 0) + 1);
         }
-        const invalid = validateResults(r);
-        if (invalid.length > 0) {
-            problems.push(`${p}: results.json is invalid (${invalid[0]}); re-run the visual job`);
-            continue;
-        }
-        if (!r.complete) {
-            problems.push(`${p}: the capture did not finish (${r.items.length} of ${r.expected} items); re-run it`);
-            continue;
-        }
-        const loose = r.items.filter((i) => i.threshold > MAX_THRESHOLD).length;
-        if (loose > 0) {
-            problems.push(
-                `${p}: ${loose} ${loose === 1 ? "item is" : "items are"} compared at a diffThreshold above ${MAX_THRESHOLD}, ` +
-                    "which hides real changes; lower it in the story's parameters or its settings file",
-            );
-        }
-        const open = r.items.map((i) => i.status).filter((s) => !PASSING.has(s));
-        if (open.length > 0) {
-            // No Object.groupBy: the gate runs on the runner's own Node, which may be 20.
-            const counts = new Map();
-            for (const s of open) {
-                counts.set(s, (counts.get(s) ?? 0) + 1);
-            }
-            const what = [...counts].map(([s, n]) => `${n} ${s}`).join(", ");
-            problems.push(`${p}: ${what} ${seeded.has(p) ? NOT_ACCEPTED : notSeeded(config, p)}`);
-        }
+        const what = [...counts].map(([s, n]) => `${n} ${s}`).join(", ");
+        problems.push(`${p}: ${what} ${seeded.has(p) ? NOT_ACCEPTED : notSeeded(config, p)}`);
     }
     return problems;
 }
