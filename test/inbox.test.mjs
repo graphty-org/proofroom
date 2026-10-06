@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { inboxOf, message, notifyOnce, notifyStep } from "../trusted/lib/inbox.mjs";
+import { coupledGroups, inboxOf, message, notifyOnce, notifyStep } from "../trusted/lib/inbox.mjs";
 
 const project = (name, extra = {}) => ({ project: name, problem: null, downloading: false, undecided: 0, ...extra });
 const target = (pr, projects, extra = {}) => ({
@@ -66,6 +66,58 @@ describe("inboxOf", () => {
             [2, 5],
             [1, 50],
         ]);
+    });
+});
+
+describe("coupledGroups", () => {
+    const pr = (n, paths, extra = {}) => ({
+        id: String(n),
+        pr: n,
+        title: `feat: ${n}`,
+        paths,
+        images: paths.map((p) => `${p} h${p} b`),
+        packages: ["graphty-element"],
+        ...extra,
+    });
+
+    it("groups pull requests sharing a baseline, through each other, oldest first", () => {
+        const groups = coupledGroups([
+            pr(30, ["a/x.png"]),
+            pr(10, ["a/x.png", "a/y.png"]),
+            pr(20, ["a/y.png", "a/z.png"]),
+            pr(40, ["b/w.png"]),
+        ]);
+        expect(groups).toEqual([
+            {
+                ids: ["10", "20", "30"],
+                prs: [10, 20, 30],
+                shared: ["a/x.png", "a/y.png"],
+                images: 5,
+                distinct: 3,
+                fold: { into: 10, from: [20, 30] },
+            },
+        ]);
+    });
+
+    it("counts an image once only when its capture and baseline are the same", () => {
+        const [g] = coupledGroups([pr(1, ["a/x.png"]), pr(2, ["a/x.png"], { images: ["a/x.png other b"] })]);
+        expect(g).toMatchObject({ images: 2, distinct: 2 });
+    });
+
+    it("suggests a fold only on one package with nothing breaking", () => {
+        const fold = (...e) => coupledGroups(e)[0].fold;
+        expect(fold(pr(1, ["a/x.png"]), pr(2, ["a/x.png"], { packages: ["graphty"] }))).toBeNull();
+        expect(fold(pr(1, ["a/x.png"]), pr(2, ["a/x.png"], { packages: null }))).toBeNull();
+        expect(fold(pr(1, ["a/x.png"]), pr(2, ["a/x.png"], { title: "feat(element)!: drop x" }))).toBeNull();
+        expect(fold(pr(1, ["a/x.png"]), pr(2, ["a/x.png"], { packages: [] }))).toEqual({ into: 1, from: [2] });
+    });
+
+    it("shows in the inbox only groups with a member waiting for the owner", () => {
+        const waiting = [target(1, [project("a", { undecided: 1 })]), target(2, [project("a")])];
+        const coupling = new Map(waiting.map((t) => [t.id, { paths: ["a/x.png"], images: [], packages: ["p"] }]));
+        expect(inboxOf(waiting, { now: 0, coupling }).groups.map((g) => g.prs)).toEqual([[1, 2]]);
+        const decided = [target(1, [project("a")]), target(2, [project("a")])];
+        expect(inboxOf(decided, { now: 0, coupling }).groups).toEqual([]);
     });
 });
 

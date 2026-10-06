@@ -5,7 +5,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -78,6 +78,17 @@ describe("lfs-pre-push.sh", () => {
         commit(repo, "visual-baselines/demo/story--two.png", "image two");
         git(repo, "push", "-q", "--no-verify", "origin", "master");
         expect(existsSync(lfsObject(remote, sha256(Buffer.from("image two"))))).toBe(false);
+    });
+
+    it("refuses the push when a baseline's LFS object is not here to upload", () => {
+        // A branch holding baselines whose images this checkout never downloaded (pointer files
+        // only) must not reach GitHub as pointers to objects nobody uploaded.
+        const { repo, remote } = setup();
+        commit(repo, PNG, "image one");
+        rmSync(lfsObject(join(repo, ".git"), sha256(Buffer.from("image one"))));
+        const out = push(repo);
+        expect(out.status).not.toBe(0);
+        expect(git(remote, "log", "--format=%s", "master")).toBe("init");
     });
 
     it("without git-lfs, refuses a push holding LFS files and says how to install it", () => {
