@@ -9,17 +9,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isolateGit } from "../../tools/isolated-git-env.mjs";
 import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
+
+// Every test file already runs isolated (vitest.config.mjs's setup file); kept for the files that call it.
+export { isolateGit };
 
 export const FIXTURE = fileURLToPath(new URL("fixtures/results/", import.meta.url));
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
-
-// Inside a git hook (the pre-push gate runs these tests) git exports GIT_DIR and friends, which
-// point every git command here, even one run in a temporary directory, at the real repository:
-// `git init --bare` there turned the developer's checkout bare. Drop them before any git runs.
-for (const name of execFileSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" }).split("\n")) {
-    if (name) delete process.env[name];
-}
 
 /** The monorepo's own visual-review.config.json: default branch master, workflow ci.yml. */
 const CONFIG_TEXT = readFileSync(join(ROOT, CONFIG_FILE), "utf8");
@@ -49,17 +46,6 @@ export const LFS_ATTRIBUTES = readFileSync(join(ROOT, ".gitattributes"), "utf8")
  * @returns {string} the path
  */
 export const lfsObject = (remote, oid) => join(remote, "lfs/objects", oid.slice(0, 2), oid.slice(2, 4), oid);
-
-/**
- * Keeps the developer's own git configuration (signing, hooks, aliases) out of the tests. Every
- * git process the code under test starts inherits this environment.
- */
-export function isolateGit() {
-    const home = mkdtempSync(join(tmpdir(), "vr-home-"));
-    writeFileSync(join(home, "gitconfig"), "");
-    process.env.GIT_CONFIG_GLOBAL = join(home, "gitconfig");
-    process.env.GIT_CONFIG_NOSYSTEM = "1";
-}
 
 /**
  * Runs git and returns its trimmed output.
