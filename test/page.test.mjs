@@ -17,7 +17,20 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
 import { withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { CONFIG, FIXTURE, fakeGh, git, isolateGit, job, makeRepo, onePr, pushCommit, withMoved } from "./helpers.mjs";
+import {
+    CONFIG,
+    capturedItems,
+    FIXTURE,
+    fakeGh,
+    git,
+    interceptedPage,
+    isolateGit,
+    job,
+    makeRepo,
+    onePr,
+    pushCommit,
+    withMoved,
+} from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
@@ -37,8 +50,9 @@ beforeAll(async () => {
 });
 afterAll(() => browser?.close());
 
-// Two pull requests, #123 and #124, on the same head and CI run.
-const twoPrs = (r) =>
+// Two pull requests, #123 and #124, on the same head and CI run; `items`, compact-mantine's
+// items instead of the fixture's.
+const twoPrs = (r, items) =>
     fakeGh({
         prs: [
             { number: 123, head: r.head, branch: "feature" },
@@ -48,7 +62,7 @@ const twoPrs = (r) =>
         jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
         artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
         results: {
-            "visual-compact-mantine-1": { commit: r.head, headSha: r.head },
+            "visual-compact-mantine-1": { commit: r.head, headSha: r.head, ...(items && { items }) },
             "visual-graphty-element-1": { commit: r.head, headSha: r.head },
         },
     });
@@ -73,7 +87,7 @@ async function open(
         ...options(r),
     });
     server.on("request", app);
-    page = await browser.newPage({ viewport, hasTouch: touch, isMobile: touch });
+    page = await interceptedPage(browser, { viewport, hasTouch: touch, isMobile: touch });
     dialogs = [];
     // The page asks in its own dialog (ask in review.js). Accept all, Undo and Exclude are
     // confirmed; Finish is refused unless a test sets confirmFinish.
@@ -2158,6 +2172,22 @@ describe("review page: links and the frozen pass", () => {
         expect([...hash().keys()]).toEqual(["token"]);
     });
 
+    it("opens a target's first project with undecided items from a link that names no project", async () => {
+        const opened = hash().get("project");
+        const calls = [];
+        page.on("request", (req) => calls.push(new URL(req.url()).pathname));
+        const link = new URL(page.url());
+        link.hash = `token=${TOKEN}&target=123`;
+        await visit(link.href);
+        await page.locator(".component").first().waitFor();
+        expect(hash().get("project")).toBe(opened);
+        expect(calls.filter((u) => u.startsWith("/api/pr/"))).toEqual([`/api/pr/123/${opened}`]);
+        expect(await status()).toBe("");
+        link.hash = `token=${TOKEN}&target=999`;
+        await visit(link.href);
+        await expect.poll(status).toBe("999 is no longer listed: showing every target.");
+    });
+
     it("copies the link to the screen", async () => {
         await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin });
         // The header keeps Copy link from 1050 px; narrower, it is in the Options and More menus.
@@ -2820,7 +2850,7 @@ async function openStoryFromGrid(number) {
 
 describe("review page: the inbox", () => {
     it("opens on what waits, counts it in the title, opens the first undecided image, and keeps the token", async () => {
-        await open((r) => ({ gh: twoPrs(r) }), { review: false });
+        await open((r) => ({ gh: twoPrs(r, capturedItems()) }), { review: false });
         const rows = page.locator(".inbox-row");
         await expect.poll(() => rows.count()).toBe(2);
         await expect.poll(() => page.title()).toBe("(2) Visual review");
@@ -2834,5 +2864,42 @@ describe("review page: the inbox", () => {
         // The notifier's link carries no token: a browser that used the page before still opens it.
         await page.goto(`${origin}/`);
         await expect.poll(() => page.locator(".inbox-row").count()).toBe(2);
+    });
+
+    it("lists a pull request with a failed story under Not ready with its reason, never as ready", async () => {
+        await open((r) => ({ gh: twoPrs(r) }), { review: false });
+        const bad = page.locator(".inbox-bad");
+        await expect.poll(() => bad.count()).toBe(2);
+        expect(await page.locator(".inbox-row").count()).toBe(0);
+        expect(await page.locator(".inbox h2").textContent()).toBe("Nothing waiting for you");
+        expect(await bad.first().textContent()).toContain(
+            "compact-mantine: capture failed: menu--open: story render errored",
+        );
+    });
+
+    it("shows a failed item as No capture with its reason, never as a damaged download", async () => {
+        // A story that rendered before has a baseline, which a failed capture's artifact never holds.
+        const items = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items.map((i) =>
+            i.status === "failed" ? { ...i, baseline: "a".repeat(64), console: [] } : i,
+        );
+        await open((r) => ({
+            gh: onePr({
+                results: {
+                    "visual-compact-mantine-1": { commit: r.head, headSha: r.head, items },
+                    "visual-graphty-element-1": { commit: r.head, headSha: r.head },
+                },
+            })(r),
+        }));
+        await page.locator(".component").first().waitFor();
+        await openStory(1);
+        await expect
+            .poll(() => page.locator("#stage .label").allTextContents())
+            .toEqual(["Baseline not shown: the capture failed", "No capture: it failed"]);
+        expect(await page.locator("#stage").textContent()).toContain("story render errored");
+        await page.keyboard.press("Escape");
+        await page.locator(".component").first().waitFor();
+        expect(await page.locator('.tile[data-file="menu--open.png"] img').count()).toBe(0);
+        expect(await page.locator("body").textContent()).not.toContain("damaged");
+        expect(await status()).not.toContain("damaged");
     });
 });

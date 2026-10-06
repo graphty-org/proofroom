@@ -3,7 +3,7 @@
  *
  * `inboxOf` sorts the review server's pull requests into what is waiting for the owner ("ready":
  * images to decide, or decisions not yet finished), what cannot be reviewed ("notReady": a capture
- * that failed, with its reason) and two counts (capturing, nothing to decide). The server answers
+ * that failed, or a capture with a story that failed, with its reason) and two counts (capturing, nothing to decide). The server answers
  * it on GET /api/inbox and keeps it in `<workDir>/state/inbox.json`.
  *
  * `notify` (the `visual-review notify` command) reads that file and sends one message when pull
@@ -63,6 +63,8 @@ export function inboxOf(targets, { now, since = new Map() }) {
         );
         const loaded = t.projects.filter((p) => !p.downloading && (!p.problem || p.problem === NONE));
         const undecided = loaded.reduce((n, p) => n + p.undecided, 0);
+        // A story whose capture failed: never sent for review until it is fixed, whatever else waits.
+        const failedStory = loaded.find((p) => p.failed?.length > 0);
         const about = { id: t.id, pr: t.pr, title: t.title, url: t.url, headSha: t.headSha };
         if (failed) {
             inbox.notReady.push({
@@ -71,6 +73,19 @@ export function inboxOf(targets, { now, since = new Map() }) {
                 reason: failed.problem.replace(RETRY, ""),
                 retry: RETRY.test(failed.problem),
                 logUrl: failed.logUrl ?? null,
+            });
+        } else if (failedStory) {
+            const [first, ...more] = failedStory.failed;
+            const story = first.mode ? `${first.id} (${first.mode})` : first.id;
+            inbox.notReady.push({
+                ...about,
+                project: failedStory.project,
+                story: first.id,
+                reason:
+                    `capture failed: ${story}: ${first.reason ?? "no reason given"}` +
+                    (more.length > 0 ? ` (and ${more.length} more)` : ""),
+                retry: false,
+                logUrl: failedStory.logUrl ?? null,
             });
         } else if (undecided > 0 || t.unpublished > 0) {
             const previews = loaded.filter((p) => p.preview).length;

@@ -270,7 +270,8 @@ not yet finished), complete captures first, then fewest images first, then the l
 Each row says how many images, whether they come from CI or a local preview, "2 of 3 projects
 ready" while some are still being captured, and how long ago it became ready; tapping it opens
 its first undecided image. Under it, **Not ready** lists the pull requests whose capture failed,
-each with the project and the reason, its job log and Retry where a retry can help; then one line
+or that have a story whose capture failed (these are fixed before review, never sent for it),
+each with the project, the story and the reason, its job log and Retry where a retry can help; then one line
 counts the pull requests still capturing and those with nothing to decide. The cards of every
 pull request follow, as before. The number ready is in the tab's title ("(3) Visual review") and
 on its icon, and, on a home-screen web app where the browser allows it, on the app icon. The page

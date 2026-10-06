@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import { withRetries } from "../trusted/lib/github.mjs";
 import { startApp, world } from "./faults.mjs";
-import { FIXTURE, isolateGit, job, makeRepo } from "./helpers.mjs";
+import { FIXTURE, interceptedPage, isolateGit, job, makeRepo } from "./helpers.mjs";
 
 const TOKEN = "t".repeat(43);
 const OTHER = "4".repeat(40);
@@ -56,7 +56,7 @@ afterEach(async () => {
  * @returns {Promise<import("playwright").Page>} the tab
  */
 async function tab(hash = "") {
-    const p = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+    const p = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
     pages.push(p);
     await p.exposeFunction("asked", (message) => {
         dialogs.push(message);
@@ -224,7 +224,7 @@ describe("review page: stale caches", () => {
         );
         s = await startApp(r, { gh: w.gh, token: TOKEN });
         dialogs = [];
-        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+        page = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
         pages.push(page);
         // Counts the object URLs the page holds: created and not yet revoked.
         await page.addInitScript(() => {
@@ -466,7 +466,7 @@ describe("review page: rendering and routing", () => {
         const w = world(r);
         s = await startApp(r, { gh: w.gh, token: TOKEN });
         dialogs = [];
-        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+        page = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
         pages.push(page);
         let calls = 0;
         const running = {
