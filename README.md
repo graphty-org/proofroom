@@ -197,8 +197,10 @@ changes every capture with text, which is one re-baseline.
   passkey check needs (see [Approving with a passkey](#approving-with-a-passkey)). Make it a
   required check. In a Mergify merge-queue run, pass `--queue-event "$GITHUB_EVENT_PATH"` instead
   of `--pr`: the gate reads the batch's pull requests from the queue's draft pull request and
-  accepts a review record for any of them. Every capture must still equal a baseline, so a batch
-  passes only on images already approved on its pull requests.
+  accepts a review record for any of them. It compares baseline changes with the commit the batch
+  sits on (its `checking_base_sha`), so a batch stacked on another is not charged with that
+  batch's changes. Every capture must still equal a baseline, so a batch passes only on images
+  already approved on its pull requests.
 
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
