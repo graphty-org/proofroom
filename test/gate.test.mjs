@@ -665,7 +665,6 @@ describe("passkey approvals", () => {
             const cases = [
                 [{ record: at("other-image") }, "the earlier record does not approve this image for this story"],
                 [{ record: at("unsigned") }, "the record has no passkey approval"],
-                [{ record: at("for-5"), pr: 6 }, "the earlier record is for #5, not #6"],
                 [{ record: at("nothing") }, `${at("nothing")} is not at ${sha}`],
                 [{ record: "visual-baselines/../passkeys.json" }, "it names no commit and review record"],
                 [{ record: at("chained") }, "the earlier record does not approve this image for this story"],
@@ -684,16 +683,22 @@ describe("passkey approvals", () => {
             ]);
         });
 
-        it("checks the earlier record even before passkeys are enforced", () => {
+        it("before passkeys are enforced, takes an unsigned earlier record only from the base branch", () => {
+            const unsigned = { version: 1, unproven: true, pr: 5, items: [{ path: PATH, from: LEGACY, to: TO }] };
+            // On a branch anyone can push to: refused.
             const r = repoWith(undefined);
-            const sha = earlierOn(r, {
-                version: 1,
-                unproven: true,
-                pr: 5,
-                items: [{ path: PATH, from: LEGACY, to: TO }],
-            });
+            const sha = earlierOn(r, unsigned);
             commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused(sha) });
-            expect(unrecordedChanges("master", "pr", r.repo)).toEqual([]);
+            expect(unrecordedChanges("master", "pr", r.repo)[0]).toContain(
+                `its commit ${sha} is not on the base branch, and an unsigned record counts only there`,
+            );
+            // On the base branch (a pull request the owner finished and merged): it stands.
+            const m = makeRepo();
+            commit(m, { [RECORD]: unsigned });
+            const merged = git(m.repo, "rev-parse", "HEAD");
+            git(m.repo, "checkout", "-q", "-b", "pr");
+            commit(m, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused(merged) });
+            expect(unrecordedChanges("master", "pr", m.repo)).toEqual([]);
             const s = repoWith(undefined);
             commit(s, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused("9".repeat(40)) });
             expect(unrecordedChanges("master", "pr", s.repo)[0]).toContain("cannot be fetched");

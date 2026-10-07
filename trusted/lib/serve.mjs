@@ -334,6 +334,8 @@ export function createApp({
     let approved = new Map();
     /** Review records by blob id: a blob never changes, so each is read once. */
     const recordBlobs = new Map();
+    /** The default branch's commit that added each review record blob. */
+    const addedIn = new Map();
     /** The stories proven to be capture noise, by `<project>/<file>` (filters.mjs knownNoise). */
     let noise = new Map();
     const evidenceFile = join(stateDir, "noise-evidence.json");
@@ -612,25 +614,46 @@ export function createApp({
             return;
         }
         const git = (args) => exec("git", args, { cwd: repo });
+        const has = (sha) =>
+            git(["cat-file", "-e", `${sha}^{commit}`]).then(
+                () => true,
+                () => false,
+            );
         const records = [];
-        const seen = new Set();
-        const branches = [defaultBranch, ...list.filter((t) => t.pr !== null && t.branch).map((t) => t.branch)];
-        for (const branch of new Set(branches)) {
-            const tip = tips.get(branch);
-            const listing = tip
-                ? await git(["ls-tree", tip, "--", `${config.baselines}/reviews/`]).catch(() => "")
-                : "";
+        // The default branch's tip, and each pull request's head as GitHub names it: a fork's too,
+        // fetched from refs/pull/<n>/head, never a branch of the same name on origin.
+        const refs = [{ sha: tips.get(defaultBranch), main: true }];
+        for (const t of list.filter((x) => x.pr !== null && /^[0-9a-f]{40}$/.test(x.head ?? ""))) {
+            if (!(await has(t.head))) {
+                await git(["fetch", "-q", "origin", `+refs/pull/${t.pr}/head:refs/visual-review/pull/${t.pr}`]).catch(
+                    () => {},
+                );
+            }
+            if (await has(t.head)) {
+                refs.push({ sha: t.head, main: false });
+            }
+        }
+        for (const { sha, main } of refs.filter((r) => r.sha)) {
+            const listing = await git(["ls-tree", sha, "--", `${config.baselines}/reviews/`]).catch(() => "");
             for (const line of listing.split("\n")) {
                 const [meta, path] = line.split("\t");
                 const blob = meta.split(" ")[2];
-                if (!path?.endsWith(".json") || seen.has(blob)) {
+                if (!path?.endsWith(".json")) {
                     continue;
                 }
-                seen.add(blob);
                 if (!recordBlobs.has(blob)) {
                     recordBlobs.set(blob, await git(["cat-file", "blob", blob]).then(JSON.parse, () => null));
                 }
-                records.push({ commit: tip, path, record: recordBlobs.get(blob), main: branch === defaultBranch });
+                // On the default branch, the commit that added the record: the gate finds it on
+                // the base of every pull request that branched after it.
+                let commit = sha;
+                if (main) {
+                    if (!addedIn.has(blob)) {
+                        addedIn.set(blob, await git(["log", "-1", "--format=%H", "--diff-filter=A", sha, "--", path]));
+                    }
+                    commit = addedIn.get(blob) || sha;
+                }
+                records.push({ ref: sha, commit, path, record: recordBlobs.get(blob), main });
             }
         }
         approved = approvalIndex(records, passkeyState.main.length > 0 ? passkeyState.main : null);
@@ -1519,6 +1542,10 @@ export function createApp({
             notes,
             // Accepts taken because the owner approved the same image before; the gate checks each.
             approvedBefore: list.filter((x) => x.approvedBefore).length,
+            // Each of them, so the sheet lists them and opens any one: none is included unseen.
+            approvedBeforeItems: list
+                .filter((x) => x.approvedBefore)
+                .map((x) => ({ project: x.project, file: x.file, pr: x.approvedBefore.pr })),
             notOpened: s.projects.reduce((n, p) => n + p.notOpened, 0),
             undecided: s.projects
                 .filter((p) => p.undecided > 0)

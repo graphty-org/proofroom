@@ -1243,7 +1243,11 @@ describe("serve: safe filters", () => {
         expect(existsSync(join(s.tmp, "state/123.json"))).toBe(false);
         const target = (await s.api("GET", "/api/target/123?finish=1")).body;
         expect(target.projects.find((p) => p.project === "compact-mantine").decided).toBe(1);
-        expect(target.finish).toMatchObject({ accepts: 1, approvedBefore: 1 });
+        expect(target.finish).toMatchObject({
+            accepts: 1,
+            approvedBefore: 1,
+            approvedBeforeItems: [{ project: "compact-mantine", file: "button--primary.dark.png", pr: 77 }],
+        });
         // Any decision the owner takes replaces it.
         const reject = { id: "123", project: "compact-mantine", file: "button--primary.dark.png" };
         expect((await s.api("POST", "/api/decide", { ...reject, decision: "reject", reason: "no" })).status).toBe(200);
@@ -1258,10 +1262,90 @@ describe("serve: safe filters", () => {
         const name = git(s.repo, "diff", "--name-only", s.master, "origin/feature", "--", "visual-baselines/reviews/");
         const committed = JSON.parse(git(s.repo, "show", `origin/feature:${name}`));
         expect(committed.items).toEqual([{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null, approvedBefore }]);
-        expect(unrecordedChanges(s.master, "origin/feature", s.repo)).toEqual([]);
+        // CI gates the pull request merged into master, which holds the earlier approval.
+        git(s.repo, "checkout", "-q", "--detach", "master");
+        git(s.repo, "merge", "-q", "--no-edit", "origin/feature");
+        expect(unrecordedChanges("master", "HEAD", s.repo)).toEqual([]);
+        git(s.repo, "checkout", "-q", "master");
         // What Finish published stays shown as published.
         ({ body } = await s.api("GET", "/api/pr/123/compact-mantine"));
         expect(body.decisions["button--primary.dark.png"]).toMatchObject({ approvedBefore, posted: true });
+    });
+
+    /**
+     * Pull request #77 whose head, reachable only as refs/pull/77/head on origin (a fork's branch),
+     * holds a record for #77 approving the button's capture; origin also has an unrelated branch of
+     * the name GitHub gives for it. #123 shows that capture.
+     * @param {{ key?: object | null }} [o] a passkey put on master, which signs #77's record
+     * @returns {Promise<object>} the started app
+     */
+    async function withFork({ key = null } = {}) {
+        const r = makeRepo();
+        if (key) {
+            mkdirSync(join(r.repo, "visual-review"), { recursive: true });
+            writeFileSync(join(r.repo, "visual-review/passkeys.json"), passkeysJson(key));
+            git(r.repo, "add", "-A");
+            git(r.repo, "commit", "-q", "-m", "keys");
+            git(r.repo, "push", "-q", "origin", "master");
+        }
+        // Made in another clone, so this repository has to fetch it.
+        const clone = join(r.dir, "fork");
+        git(r.dir, "clone", "-q", r.remote, clone);
+        git(clone, "config", "user.name", "Fork");
+        git(clone, "config", "user.email", "fork@example.com");
+        const record = {
+            version: 2,
+            pr: 77,
+            subject: {},
+            items: [{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null }],
+            rejects: [],
+            reviewedAt: "2026-10-01T00:00:00.000Z",
+        };
+        mkdirSync(join(clone, "visual-baselines/reviews"), { recursive: true });
+        writeFileSync(
+            join(clone, RECORD),
+            JSON.stringify(key ? { ...record, approval: approve(record, key) } : record),
+        );
+        git(clone, "add", "-A");
+        git(clone, "commit", "-q", "-m", "fork's accept");
+        const head = git(clone, "rev-parse", "HEAD");
+        git(clone, "push", "-q", "origin", "HEAD:refs/pull/77/head");
+        git(clone, "checkout", "-q", "-b", "same-name", "master");
+        git(clone, "push", "-q", "origin", "same-name");
+        const s = await start({
+            ...r,
+            gh: (x) =>
+                fakeGh({
+                    prs: [
+                        { number: 123, head: x.head, branch: "feature" },
+                        { number: 77, head, branch: "same-name" },
+                    ],
+                    runs: { [x.head]: { id: 1000, head: x.head, attempt: 1 } },
+                    jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+                    results: {
+                        "visual-compact-mantine-1": { commit: x.head, headSha: x.head },
+                        "visual-graphty-element-1": { commit: x.head, headSha: x.head },
+                    },
+                }),
+        });
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        return { head, decision: body.decisions["button--primary.dark.png"] ?? null };
+    }
+
+    it("reads a pull request's records at its head, a fork's too, once a passkey signs them", async () => {
+        const key = makeKey();
+        const { head, decision } = await withFork({ key });
+        expect(decision).toEqual({
+            decision: "accept",
+            reason: null,
+            approvedBefore: { pr: 77, commit: head, record: RECORD, reviewedAt: "2026-10-01T00:00:00.000Z" },
+        });
+    });
+
+    it("never reuses an unsigned record from a pull request's branch before a passkey is registered", async () => {
+        expect((await withFork()).decision).toBeNull();
     });
 
     it("labels a story that changed on two pull requests touching nothing of its package, and lists it", async () => {

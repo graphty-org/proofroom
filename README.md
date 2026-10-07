@@ -526,12 +526,15 @@ downloading captures nobody has opened yet) is said in the status row and never 
 Three filters on the grid save time without hiding a change:
 
 - **Approved before.** A capture that is byte for byte an image you already accepted for the same
-  story and mode (in a review record on the default branch or on an open pull request's branch) is
-  accepted again, marked "Approved before (#1356, 2026-10-06)", and listed in a collapsed group at
-  the top of the grid, still openable. Reject or Exclude replaces it. Finish's record names the
-  earlier record and its commit, and the gate accepts the item only when that record approves exactly
-  this image for this story (with its own passkey approval, once passkeys are enforced). Nothing is
-  taken on the page's word.
+  story and mode is accepted again, marked "Approved before (#1356, 2026-10-06)", and listed in a
+  collapsed group at the top of the grid, still openable. Reject or Exclude replaces it. The earlier
+  approval must be a review record on the default branch, or, once a passkey is registered, a signed
+  one at an open pull request's head (a fork's included), and it must still be the newest decision
+  on that file there: a later accept of another image or a reject replaces it. Finish's sheet counts
+  these and lists each, one tap from opening it. Finish's record names the earlier record and its
+  commit, and the gate accepts the item only when that record approves exactly this image for this
+  story, with its own passkey approval once passkeys are enforced, and before that only from a
+  commit on the base branch. Nothing is taken on the page's word.
 - **Known capture noise.** A story that changed on two or more pull requests touching none of its
   package's files, or whose capture flips between the same two images, is labeled "known capture
   noise (seen on #a, #b)" and listed in a group of its own, on a pull request that does not touch its
@@ -784,7 +787,8 @@ For each review record a pull request adds, with `node:crypto` alone:
   with user verification (Face ID, Touch ID or the device's passcode).
 
 An item marked `approvedBefore` counts only when the review record it names, at the commit it
-names, approves exactly that image for that path and (once enforced) carries its own valid approval.
+names, approves exactly that image for that path and carries its own valid approval (before
+enforcement: when that commit is on the base branch).
 
 A record that fails counts for nothing. Then every changed baseline PNG, every added or changed
 settings file and any change to `visual-review/passkeys.json` must be accounted for: the records'

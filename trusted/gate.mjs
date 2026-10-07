@@ -400,7 +400,7 @@ export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
             }
             // An accept the page took because the owner approved the same image before: it moves
             // the file only when that earlier approval is there and holds, never on the page's word.
-            const why = approvedBeforeProblem(item, cwd, baselines, approvals.keys ?? null);
+            const why = approvedBeforeProblem(item, cwd, baselines, approvals.keys ?? null, base);
             if (why) {
                 problems.push(`${path}: ${item.path} is marked approved before, but ${why}`);
             }
@@ -428,19 +428,14 @@ export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
  * `path` (one story in one mode of one project), or null when it does. The review server offers an
  * "approved before" accept only from a record that passes this, and the gate checks it again.
  * @param {any} earlier the earlier record, parsed (untrusted)
- * @param {{ path: string, to: string | null, pr: number | null }} claim the baseline, the image,
- *     and the pull request the earlier record is said to be for
+ * @param {{ path: string, to: string | null }} claim the baseline and the image
  * @param {object[] | null} keys the base branch's keys once approvals are enforced: then the
  *     earlier record must carry a valid passkey approval itself
  * @returns {string | null} why not, or null
  */
-export function earlierApprovalProblem(earlier, { path, to, pr }, keys) {
+export function earlierApprovalProblem(earlier, { path, to }, keys) {
     if (typeof earlier !== "object" || earlier === null || !Array.isArray(earlier.items)) {
         return "the earlier record is not a review record";
-    }
-    if ((earlier.pr ?? null) !== pr) {
-        const name = (n) => (n === null ? "a seed" : `#${n}`);
-        return `the earlier record is for ${name(earlier.pr ?? null)}, not ${name(pr)}`;
     }
     // A direct decision only: an approval never chains through another "approved before".
     const approves = (i) => i?.path === path && i.to === to && i.approvedBefore === undefined;
@@ -457,9 +452,11 @@ export function earlierApprovalProblem(earlier, { path, to, pr }, keys) {
  * @param {string} cwd the repository
  * @param {string} baselines the baselines directory
  * @param {object[] | null} keys as in earlierApprovalProblem
+ * @param {string} base the base branch tip: before approvals are enforced, an unsigned earlier record
+ *     counts only when its commit is on it (a pull request the owner finished, merged)
  * @returns {string | null} why not, or null
  */
-function approvedBeforeProblem(item, cwd, baselines, keys) {
+function approvedBeforeProblem(item, cwd, baselines, keys, base) {
     const ref = item.approvedBefore;
     const commit = typeof ref?.commit === "string" && /^[0-9a-f]{40}$/.test(ref.commit) ? ref.commit : null;
     const record = typeof ref?.record === "string" ? ref.record : "";
@@ -476,7 +473,14 @@ function approvedBeforeProblem(item, cwd, baselines, keys) {
     } catch {
         return `${record} is not at ${commit}`;
     }
-    return earlierApprovalProblem(earlier, { path: item.path, to: item.to ?? null, pr: ref.pr ?? null }, keys);
+    if (!keys) {
+        try {
+            gitOut(cwd, ["merge-base", "--is-ancestor", commit, base]);
+        } catch {
+            return `its commit ${commit} is not on the base branch, and an unsigned record counts only there`;
+        }
+    }
+    return earlierApprovalProblem(earlier, { path: item.path, to: item.to ?? null }, keys);
 }
 
 /**

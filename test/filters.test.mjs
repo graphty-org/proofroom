@@ -140,34 +140,58 @@ describe("approved before", () => {
     const signed = (r) => ({ ...r, approval: approve(r, KEY) });
     const item = (to, extra = {}) => ({ path: PATH, from: "a", to, reason: null, ...extra });
 
+    // A record read at tip `ref` (every one of these at its own tip, unless given).
+    const row = (n, rec, main, ref = n.repeat(40)) => ({
+        ref,
+        commit: n.repeat(40),
+        path: `r/${n}.json`,
+        record: rec,
+        main,
+    });
+    const entry = (pr, n) => ({
+        pr,
+        commit: n.repeat(40),
+        record: `r/${n}.json`,
+        reviewedAt: "2026-10-01T00:00:00.000Z",
+    });
+
     it("indexes the images of records the gate would accept, the default branch's first", () => {
         const index = approvalIndex(
             [
-                { commit: "1".repeat(40), path: "r/a.json", record: signed(record(5, [item("h1")])), main: false },
-                { commit: "2".repeat(40), path: "r/b.json", record: signed(record(6, [item("h1")])), main: true },
+                row("1", signed(record(5, [item("h1")])), false),
+                row("2", signed(record(6, [item("h1")])), true),
                 // Unsigned once keys exist: never an approval.
-                { commit: "3".repeat(40), path: "r/c.json", record: record(7, [item("h2")]), main: true },
+                row("3", record(7, [item("h2")]), true),
                 // An approval taken as approved before is not itself a source.
-                {
-                    commit: "4".repeat(40),
-                    path: "r/d.json",
-                    record: signed(record(8, [item("h3", { approvedBefore: {} })])),
-                    main: true,
-                },
+                row("4", signed(record(8, [item("h3", { approvedBefore: {} })])), true),
             ],
             [KEY.entry],
         );
-        expect([...index]).toEqual([
-            [
-                `${PATH} h1`,
-                { pr: 6, commit: "2".repeat(40), record: "r/b.json", reviewedAt: "2026-10-01T00:00:00.000Z" },
-            ],
-        ]);
+        expect([...index]).toEqual([[`${PATH} h1`, entry(6, "2")]]);
     });
 
-    it("takes unsigned records only while no passkey is registered", () => {
-        const rows = [{ commit: "1".repeat(40), path: "r/a.json", record: record(5, [item("h1")]), main: true }];
-        expect(approvalIndex(rows, null).size).toBe(1);
-        expect(approvalIndex(rows, [KEY.entry]).size).toBe(0);
+    it("before a passkey is registered, takes unsigned records only from the default branch", () => {
+        const onMaster = [row("1", record(5, [item("h1")]), true)];
+        expect([...approvalIndex(onMaster, null)]).toEqual([[`${PATH} h1`, entry(5, "1")]]);
+        // A record anyone with push access could put on a pull request's branch counts for nothing.
+        expect(approvalIndex([row("2", record(6, [item("h1")]), false)], null).size).toBe(0);
+        expect(approvalIndex(onMaster, [KEY.entry]).size).toBe(0);
+        // Signed, a pull request's record counts once passkeys are registered.
+        expect(approvalIndex([row("2", signed(record(6, [item("h1")])), false)], [KEY.entry]).size).toBe(1);
+    });
+
+    it("drops an approval the owner later replaced or rejected for that path where it lives", () => {
+        const tip = "9".repeat(40);
+        const at = (n, rec) => row(n, signed(rec), false, tip);
+        const first = at("1", record(5, [item("h1")]));
+        expect(approvalIndex([first], [KEY.entry]).size).toBe(1);
+        // A later record on the same branch accepting another image for the path replaces it.
+        const replaced = approvalIndex([first, at("2", record(5, [item("h2")]))], [KEY.entry]);
+        expect([...replaced.keys()]).toEqual([`${PATH} h2`]);
+        // A later reject of the path leaves nothing approved there.
+        const rejected = { ...record(5, []), rejects: [{ path: PATH, capture: "h1", reason: "no" }] };
+        expect(approvalIndex([first, at("2", rejected)], [KEY.entry]).size).toBe(0);
+        // A record elsewhere (another branch) does not replace it.
+        expect(approvalIndex([first, row("3", signed(rejected), false)], [KEY.entry]).size).toBe(1);
     });
 });

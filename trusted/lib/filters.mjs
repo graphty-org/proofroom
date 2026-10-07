@@ -18,33 +18,65 @@ import { earlierApprovalProblem } from "../gate.mjs";
 
 /**
  * The images the owner approved, by baseline path and image hash, from review records.
- * @param {{ commit: string, path: string, record: any, main: boolean }[]} records review records,
- *     each with the commit it was read at, its path there, and whether that is the default branch
- * @param {object[] | null} keys the default branch's passkeys (null when none): a record must then
- *     carry a valid approval of its own, as the gate requires
+ *
+ * A record counts only where it cannot have been planted: before a passkey is registered, only on
+ * the default branch (a pull request the owner finished and merged); once one is, anywhere, with
+ * a valid approval of its own. And an approval counts only while it is still the newest decision on
+ * that path where it lives: a later record that accepts another image for the path, or rejects one,
+ * replaces it.
+ * @param {{ ref: string, commit: string, path: string, record: any, main: boolean }[]} records
+ *     review records: the tip they were read at (`ref`), the commit to name for them (the gate
+ *     fetches it), their path, and whether `ref` is the default branch
+ * @param {object[] | null} keys the default branch's passkeys (null when none)
  * @returns {Map<string, { pr: number | null, commit: string, record: string, reviewedAt: string }>}
  *     by `<path> <hash>`; a default branch record wins over a pull request's, then the newest
  */
 export function approvalIndex(records, keys) {
     const index = new Map();
-    for (const { commit, path, record, main } of records) {
-        const items = Array.isArray(record?.items) ? record.items : [];
-        const direct = items.filter(
-            (i) => typeof i?.path === "string" && typeof i.to === "string" && i.approvedBefore === undefined,
-        );
-        // One check per record: its pull request and its own approval hold for every item.
-        if (
-            direct.length === 0 ||
-            earlierApprovalProblem(record, { path: direct[0].path, to: direct[0].to, pr: record.pr ?? null }, keys)
-        ) {
-            continue;
+    const byRef = new Map();
+    for (const r of records) {
+        byRef.set(r.ref, [...(byRef.get(r.ref) ?? []), r]);
+    }
+    const verdicts = new Map();
+    for (const list of byRef.values()) {
+        // Record names start with their UTC time, so the name orders them as reviewedAt does.
+        const sorted = [...list].sort((a, b) => (a.path < b.path ? -1 : 1));
+        const newest = new Map();
+        for (const r of sorted) {
+            const items = Array.isArray(r.record?.items) ? r.record.items : [];
+            const rejects = Array.isArray(r.record?.rejects) ? r.record.rejects : [];
+            for (const i of [...items, ...rejects]) {
+                if (typeof i?.path === "string") {
+                    newest.set(i.path, r);
+                }
+            }
         }
-        const at = String(record.reviewedAt ?? "");
-        for (const i of direct) {
-            const key = `${i.path} ${i.to}`;
-            const was = index.get(key);
-            if (!was || (main && !was.main) || (main === was.main && at > was.reviewedAt)) {
-                index.set(key, { pr: record.pr ?? null, commit, record: path, reviewedAt: at, main });
+        for (const r of sorted) {
+            const { commit, path, record, main } = r;
+            const direct = (Array.isArray(record?.items) ? record.items : []).filter(
+                (i) =>
+                    typeof i?.path === "string" &&
+                    typeof i.to === "string" &&
+                    i.approvedBefore === undefined &&
+                    newest.get(i.path) === r,
+            );
+            if (direct.length === 0 || (!keys && !main)) {
+                continue;
+            }
+            // One check per record: its own approval holds for every item.
+            if (!verdicts.has(record)) {
+                verdicts.set(record, earlierApprovalProblem(record, { path: direct[0].path, to: direct[0].to }, keys));
+            }
+            if (verdicts.get(record)) {
+                continue;
+            }
+            const at = String(record.reviewedAt ?? "");
+            for (const i of direct) {
+                const key = `${i.path} ${i.to}`;
+                const was = index.get(key);
+                if (!was || (main && !was.main) || (main === was.main && at > was.reviewedAt)) {
+                    index.set(key, { pr: record.pr ?? null, commit, record: path, reviewedAt: at, main });
+                }
             }
         }
     }

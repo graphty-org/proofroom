@@ -4317,6 +4317,7 @@ function sheet(t, f, prepared, notice) {
         el("h2", { id: "sheet-title" }, `Finish ${label}, every project:`),
         notice ? el("p", { class: "error" }, notice) : null,
         ...lines.map((l) => el("p", {}, l)),
+        approvedList(t, f.approvedBeforeItems ?? []),
         f.notes.length > 0
             ? [
                   el("p", {}, "Notes to publish:"),
@@ -4337,6 +4338,31 @@ function sheet(t, f, prepared, notice) {
             : null,
         passkeySentence(f, prepared),
     ].filter(Boolean);
+}
+
+// The accepts approved before, each a link that cancels the sheet and opens that item.
+function approvedList(t, items) {
+    if (items.length === 0) {
+        return null;
+    }
+    const link = (x) => {
+        const p = new URLSearchParams({ token, target: t.id, project: x.project, filter: "all", item: x.file });
+        return el(
+            "a",
+            { href: `#${p}`, onclick: (e) => e.currentTarget.closest("dialog")?.close("no") },
+            `${x.project}/${x.file} (${prName(x.pr)})`,
+        );
+    };
+    return el(
+        "details",
+        { class: "approved-list" },
+        el("summary", {}, `The ${plural(items.length, "image")} approved before`),
+        el(
+            "ul",
+            {},
+            items.map((x) => el("li", {}, link(x))),
+        ),
+    );
 }
 
 // What the passkey does for this Finish, from POST /api/finish-prepare: once a passkey is known it
