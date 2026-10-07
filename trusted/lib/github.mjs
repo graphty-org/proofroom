@@ -418,3 +418,43 @@ export async function createPullRequest(gh, { title, head, base, body }) {
     const input = JSON.stringify({ title, head, base, body });
     return JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls", "--input", "-"], input)).html_url;
 }
+
+/**
+ * A pull request's title, description and comments, oldest comment first, for the review page's
+ * context panel: one call for the pull request and one for its comments (the first 100). Every
+ * text in it is untrusted, written by whoever opened or commented on the pull request.
+ * @param {Function} gh the gh runner
+ * @param {number} pr the pull request
+ * @param {string | null} reviewer the login of the person reviewing (gh's own login, `GET /user`),
+ *     taken as the owner when the repository belongs to an organization
+ * @returns {Promise<{ title: string, body: string, author: string | null, owner: string | null,
+ *     createdAt: string | null, comments: { author: string | null, at: string | null, body: string,
+ *     byOwner: boolean }[] }>} the context; `owner` is the repository owner's login
+ */
+export async function pullRequestContext(gh, pr, reviewer) {
+    const p = await api(gh, `repos/{owner}/{repo}/pulls/${pr}`);
+    const comments = await api(gh, `repos/{owner}/{repo}/issues/${pr}/comments?per_page=100`);
+    const repoOwner = p.base?.repo?.owner;
+    const owner = repoOwner?.type === "User" ? (repoOwner.login ?? null) : reviewer;
+    const text = (v) => (typeof v === "string" ? v : "");
+    return {
+        title: text(p.title),
+        body: text(p.body),
+        author: p.user?.login ?? null,
+        owner,
+        createdAt: p.created_at ?? null,
+        comments: (Array.isArray(comments) ? comments : []).map((c) => ({
+            author: c.user?.login ?? null,
+            at: c.created_at ?? null,
+            body: text(c.body),
+            byOwner: owner !== null && c.user?.login === owner,
+        })),
+    };
+}
+
+/**
+ * The login gh is signed in as.
+ * @param {Function} gh the gh runner
+ * @returns {Promise<string | null>} the login
+ */
+export const reviewerLogin = async (gh) => (await api(gh, "user")).login ?? null;

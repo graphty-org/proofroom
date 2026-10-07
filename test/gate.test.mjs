@@ -619,6 +619,85 @@ describe("passkey approvals", () => {
         expect(check(s, 6)[0]).toBe("visual-baselines/reviews/r.json: the record is for pull request #5, not #6");
     });
 
+    describe("an item approved before", () => {
+        const RECORD = "visual-baselines/reviews/20261001T000000Z-pr5.json";
+        /**
+         * The earlier approval: a record for #5 on branch `other`, pushed so the gate can fetch it.
+         * @param {object} r the repository, on branch `pr`
+         * @param {object} earlier the record
+         * @returns {string} the commit holding it
+         */
+        function earlierOn(r, earlier) {
+            git(r.repo, "checkout", "-q", "-b", "other", "master");
+            commit(r, { [RECORD]: earlier });
+            const sha = git(r.repo, "rev-parse", "HEAD");
+            git(r.repo, "push", "-q", "origin", "other");
+            git(r.repo, "checkout", "-q", "pr");
+            return sha;
+        }
+        const reused = (sha, extra = {}) => {
+            const record = v2();
+            record.items = [{ ...record.items[0], approvedBefore: { pr: 5, commit: sha, record: RECORD, ...extra } }];
+            return record;
+        };
+
+        it("moves the file when the named record approves exactly this image for this story", () => {
+            const r = repoWith(passkeysJson(KEY));
+            const sha = earlierOn(r, signed(v2(5)));
+            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(reused(sha)) });
+            expect(check(r)).toEqual([]);
+        });
+
+        it("moves nothing on the page's word: a record for another image, an unsigned one, a missing one or a chain", () => {
+            const unrecorded = `${PATH}: changed with no review record taking it from its base branch contents to these`;
+            const cases = [
+                [signed(v2(5, "f".repeat(64))), {}, "the earlier record does not approve this image for this story"],
+                [v2(5), {}, "the record has no passkey approval"],
+                [signed(v2(5)), { pr: 6 }, "the earlier record is for #5, not #6"],
+                [
+                    signed(v2(5)),
+                    { record: "visual-baselines/reviews/nothing.json" },
+                    "visual-baselines/reviews/nothing.json is not at",
+                ],
+                [
+                    signed(v2(5)),
+                    { record: "visual-baselines/../passkeys.json" },
+                    "it names no commit and review record",
+                ],
+            ];
+            for (const [earlier, extra, why] of cases) {
+                const r = repoWith(passkeysJson(KEY));
+                const sha = earlierOn(r, earlier);
+                commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(reused(sha, extra)) });
+                const lines = check(r);
+                expect(lines[0]).toContain(
+                    `visual-baselines/reviews/r.json: ${PATH} is marked approved before, but ${why}`,
+                );
+                expect(lines.at(-1)).toBe(unrecorded);
+            }
+            // An earlier record whose own item was approved before approves nothing further.
+            const r = repoWith(passkeysJson(KEY));
+            const first = earlierOn(r, signed({ ...reused("1".repeat(40)), pr: 5 }));
+            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(reused(first)) });
+            expect(check(r)[0]).toContain("does not approve this image");
+        });
+
+        it("checks the earlier record even before passkeys are enforced", () => {
+            const r = repoWith(undefined);
+            const sha = earlierOn(r, {
+                version: 1,
+                unproven: true,
+                pr: 5,
+                items: [{ path: PATH, from: LEGACY, to: TO }],
+            });
+            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused(sha) });
+            expect(unrecordedChanges("master", "pr", r.repo)).toEqual([]);
+            const s = repoWith(undefined);
+            commit(s, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused("9".repeat(40)) });
+            expect(unrecordedChanges("master", "pr", s.repo)[0]).toContain("cannot be fetched");
+        });
+    });
+
     it("never takes keys from the pull request", () => {
         const k2 = makeKey();
         const r = repoWith(passkeysJson(KEY));

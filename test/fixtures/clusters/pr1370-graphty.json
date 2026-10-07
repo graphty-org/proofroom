@@ -1,0 +1,1006 @@
+{
+    "source": "CI run 37611751328, graphty: [file, status, size, baselineSize, changedPixels, bbox] of every changed item",
+    "items": [
+        ["workspace-canvas--finished.dark.png", "changed", [2400, 1800], [2400, 1800], 49803, [749, 226, 1032, 1383]],
+        ["workspace-canvas--finished.light.png", "changed", [2400, 1800], [2400, 1800], 49803, [749, 226, 1032, 1383]],
+        [
+            "workspace-canvas--hidden-by-your-layer.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            49598,
+            [749, 226, 1032, 1358]
+        ],
+        [
+            "workspace-canvas--hidden-by-your-layer.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            49598,
+            [749, 226, 1032, 1358]
+        ],
+        ["workspace-canvas--karate.dark.png", "changed", [2400, 1800], [2400, 1800], 49759, [749, 226, 1032, 1383]],
+        ["workspace-canvas--karate.light.png", "changed", [2400, 1800], [2400, 1800], 49759, [749, 226, 1032, 1383]],
+        ["workspace-canvas--legend-off.dark.png", "changed", [2400, 1800], [2400, 1800], 49803, [749, 226, 1032, 1383]],
+        [
+            "workspace-canvas--legend-off.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            49803,
+            [749, 226, 1032, 1383]
+        ],
+        [
+            "workspace-canvas--louvain-open.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            49802,
+            [749, 226, 1032, 1383]
+        ],
+        [
+            "workspace-canvas--louvain-open.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            49802,
+            [749, 226, 1032, 1383]
+        ],
+        [
+            "workspace-canvas--painted-size.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            37442,
+            [751, 226, 1030, 1378]
+        ],
+        [
+            "workspace-canvas--painted-size.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            37442,
+            [751, 226, 1030, 1378]
+        ],
+        [
+            "workspace-data-place--attribute-menu.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        [
+            "workspace-data-place--attribute-menu.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        [
+            "workspace-data-place--attribute-picked.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        [
+            "workspace-data-place--attribute-picked.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        [
+            "workspace-data-place--graph-file.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        [
+            "workspace-data-place--graph-file.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        [
+            "workspace-data-place--many-attributes.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            17047,
+            [673, 298, 1133, 1250]
+        ],
+        [
+            "workspace-data-place--many-attributes.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            17047,
+            [673, 298, 1133, 1250]
+        ],
+        [
+            "workspace-data-place--plain-json.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            19174,
+            [690, 372, 1134, 1136]
+        ],
+        [
+            "workspace-data-place--plain-json.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            19174,
+            [690, 372, 1134, 1136]
+        ],
+        [
+            "workspace-data-place--source-menu.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        [
+            "workspace-data-place--source-menu.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            41140,
+            [687, 380, 1147, 1114]
+        ],
+        ["workspace-export--image.dark.png", "changed", [2400, 1800], [2400, 1800], 782, [1261, 996, 238, 241]],
+        ["workspace-export--image.light.png", "changed", [2400, 1800], [2400, 1800], 782, [1261, 996, 238, 241]],
+        ["workspace-frame--at-rest.dark.png", "changed", [2400, 1800], [2400, 1800], 26600, [680, 362, 1154, 1156]],
+        ["workspace-frame--at-rest.light.png", "changed", [2400, 1800], [2400, 1800], 26600, [680, 362, 1154, 1156]],
+        ["workspace-frame--data-place.dark.png", "changed", [2400, 1800], [2400, 1800], 26600, [680, 362, 1154, 1156]],
+        ["workspace-frame--data-place.light.png", "changed", [2400, 1800], [2400, 1800], 26600, [680, 362, 1154, 1156]],
+        [
+            "workspace-frame--keyboard-shortcuts.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            21400,
+            [680, 362, 1154, 955]
+        ],
+        [
+            "workspace-frame--keyboard-shortcuts.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            21400,
+            [680, 362, 1154, 955]
+        ],
+        [
+            "workspace-frame--main-menu-open.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26600,
+            [680, 362, 1154, 1156]
+        ],
+        [
+            "workspace-frame--main-menu-open.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26600,
+            [680, 362, 1154, 1156]
+        ],
+        [
+            "workspace-frame--project-menu-open.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26600,
+            [680, 362, 1154, 1156]
+        ],
+        [
+            "workspace-frame--project-menu-open.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26600,
+            [680, 362, 1154, 1156]
+        ],
+        ["workspace-frame--renaming.dark.png", "changed", [2400, 1800], [2400, 1800], 26600, [680, 362, 1154, 1156]],
+        ["workspace-frame--renaming.light.png", "changed", [2400, 1800], [2400, 1800], 26600, [680, 362, 1154, 1156]],
+        ["workspace-frame--table-open.dark.png", "changed", [2400, 1800], [2400, 1800], 23058, [717, 160, 1080, 1040]],
+        ["workspace-frame--table-open.light.png", "changed", [2400, 1800], [2400, 1800], 23012, [717, 160, 1080, 1039]],
+        [
+            "workspace-graph-place--at-rest.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--at-rest.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        ["workspace-graph-place--failed.dark.png", "changed", [2400, 1800], [2400, 1800], 10674, [685, 734, 1144, 412]],
+        [
+            "workspace-graph-place--failed.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--file-loaded.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--file-loaded.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--find-no-match.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--find-no-match.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        ["workspace-graph-place--find.dark.png", "changed", [2400, 1800], [2400, 1800], 10674, [685, 734, 1144, 412]],
+        ["workspace-graph-place--find.light.png", "changed", [2400, 1800], [2400, 1800], 10674, [685, 734, 1144, 412]],
+        [
+            "workspace-graph-place--finished.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10673,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--finished.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10673,
+            [685, 734, 1144, 412]
+        ],
+        ["workspace-graph-place--hidden.dark.png", "changed", [2400, 1800], [2400, 1800], 10674, [685, 734, 1144, 412]],
+        [
+            "workspace-graph-place--hidden.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10674,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--louvain-open.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-graph-place--louvain-open.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 734, 1144, 412]
+        ],
+        [
+            "workspace-inspector--attribute-and-filter-step-field.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--attribute-and-filter-step-field.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--edge-data.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--edge-data.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--group-set-path-row-community.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--group-set-path-row-community.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--measure-row-data.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11259,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--measure-row-data.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11259,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--node-data.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11222,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--node-data.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11222,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--node-why-this-look.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11226,
+            [684, 742, 1147, 397]
+        ],
+        [
+            "workspace-inspector--node-why-this-look.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11226,
+            [684, 742, 1147, 397]
+        ],
+        [
+            "workspace-inspector--nothing-selected-canvas.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--nothing-selected-canvas.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--nothing-selected-overview.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--nothing-selected-overview.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--run-row-data.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--run-row-data.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--run-row-settings-changed.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11259,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--run-row-settings-changed.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11259,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--selection-and-everything-everything.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--selection-and-everything-everything.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--selection-and-everything-selection.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--selection-and-everything-selection.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11258,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--several-elements-neighborhood.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11148,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--several-elements-neighborhood.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11148,
+            [683, 742, 1148, 397]
+        ],
+        [
+            "workspace-inspector--several-elements-summary.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11177,
+            [683, 742, 1147, 397]
+        ],
+        [
+            "workspace-inspector--several-elements-summary.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            11177,
+            [683, 742, 1147, 397]
+        ],
+        [
+            "workspace-project--discard-changes.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            21715,
+            [680, 362, 1154, 1156]
+        ],
+        [
+            "workspace-project--discard-changes.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            21710,
+            [680, 362, 1154, 1156]
+        ],
+        ["workspace-project--save-as.dark.png", "changed", [2400, 1800], [2400, 1800], 21008, [680, 362, 1154, 1156]],
+        ["workspace-project--save-as.light.png", "changed", [2400, 1800], [2400, 1800], 21014, [680, 362, 1154, 1156]],
+        [
+            "workspace-style-tab--bind-size.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--bind-size.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--binding-popover.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--binding-popover.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--binding-unknown-path.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--binding-unknown-path.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--color-popover.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--color-popover.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        ["workspace-style-tab--edges.dark.png", "changed", [2400, 1800], [2400, 1800], 26296, [748, 430, 1018, 1020]],
+        ["workspace-style-tab--edges.light.png", "changed", [2400, 1800], [2400, 1800], 26296, [748, 430, 1018, 1020]],
+        [
+            "workspace-style-tab--everything.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--everything.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--label-bound.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--label-bound.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--label-empty.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--label-empty.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--label-new-line.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--label-new-line.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--measure-row.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26300,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--measure-row.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26300,
+            [748, 430, 1018, 1020]
+        ],
+        ["workspace-style-tab--palette.dark.png", "changed", [2400, 1800], [2400, 1800], 26296, [748, 430, 1018, 1020]],
+        [
+            "workspace-style-tab--palette.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--plus-menu.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26300,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--plus-menu.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26300,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--shape-popover.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        [
+            "workspace-style-tab--shape-popover.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            26296,
+            [748, 430, 1018, 1020]
+        ],
+        ["workspace-table-dock--closed.dark.png", "changed", [2400, 1800], [2400, 1800], 10674, [685, 734, 1144, 412]],
+        ["workspace-table-dock--closed.light.png", "changed", [2400, 1800], [2400, 1800], 10674, [685, 734, 1144, 412]],
+        ["workspace-table-dock--columns.dark.png", "changed", [2400, 1800], [2400, 1800], 10667, [685, 414, 1144, 412]],
+        [
+            "workspace-table-dock--columns.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        [
+            "workspace-table-dock--communities.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        [
+            "workspace-table-dock--communities.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        ["workspace-table-dock--edges.dark.png", "changed", [2400, 1800], [2400, 1800], 10667, [685, 414, 1144, 412]],
+        ["workspace-table-dock--edges.light.png", "changed", [2400, 1800], [2400, 1800], 10667, [685, 414, 1144, 412]],
+        [
+            "workspace-table-dock--members-of-row.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        [
+            "workspace-table-dock--members-of-row.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        ["workspace-table-dock--nodes.dark.png", "changed", [2400, 1800], [2400, 1800], 10667, [685, 414, 1144, 412]],
+        ["workspace-table-dock--nodes.light.png", "changed", [2400, 1800], [2400, 1800], 10667, [685, 414, 1144, 412]],
+        [
+            "workspace-table-dock--sorted-by-result.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        [
+            "workspace-table-dock--sorted-by-result.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        [
+            "workspace-table-dock--table-options.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        [
+            "workspace-table-dock--table-options.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            10667,
+            [685, 414, 1144, 412]
+        ],
+        [
+            "workspace-toolbar--after-louvain.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--after-louvain.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--analyze-essentials.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--analyze-essentials.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--analyze-filtered.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--analyze-filtered.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--analyze-open.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--analyze-open.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--analyze-revise.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            29858,
+            [676, 359, 1162, 1115]
+        ],
+        [
+            "workspace-toolbar--analyze-revise.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            29843,
+            [676, 359, 1162, 1115]
+        ],
+        ["workspace-toolbar--at-rest.dark.png", "changed", [2400, 1800], [2400, 1800], 32225, [676, 359, 1162, 1162]],
+        ["workspace-toolbar--at-rest.light.png", "changed", [2400, 1800], [2400, 1800], 32225, [676, 359, 1162, 1162]],
+        [
+            "workspace-toolbar--layout-open.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--layout-open.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--legend-off.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--legend-off.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32225,
+            [676, 359, 1162, 1162]
+        ],
+        [
+            "workspace-toolbar--quick-actions.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            23436,
+            [676, 359, 1162, 1033]
+        ],
+        [
+            "workspace-toolbar--quick-actions.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            23439,
+            [676, 359, 1162, 1033]
+        ],
+        [
+            "workspace-toolbar--selection-bar.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32201,
+            [676, 359, 1161, 1162]
+        ],
+        [
+            "workspace-toolbar--selection-bar.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            32201,
+            [676, 359, 1161, 1162]
+        ],
+        [
+            "workspace-toolbar--view-flyout-2-d.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            30364,
+            [676, 359, 1162, 1117]
+        ],
+        [
+            "workspace-toolbar--view-flyout-2-d.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            30357,
+            [676, 359, 1162, 1117]
+        ],
+        [
+            "workspace-toolbar--view-flyout-3-d.dark.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            13831,
+            [848, 467, 893, 777]
+        ],
+        [
+            "workspace-toolbar--view-flyout-3-d.light.png",
+            "changed",
+            [2400, 1800],
+            [2400, 1800],
+            13830,
+            [848, 467, 893, 776]
+        ]
+    ]
+}

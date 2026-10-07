@@ -40,6 +40,7 @@ const finishSlot = document.getElementById("finish-slot");
 const crumbs = document.getElementById("crumbs");
 const toGridCrumb = document.getElementById("to-grid");
 const toItemCrumb = document.getElementById("to-item");
+const titleCrumb = document.getElementById("target-title");
 
 const REVIEWABLE = ["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"];
 const ACCEPTABLE = ["changed", "moved", "new", "unseeded", "removed"];
@@ -105,6 +106,9 @@ const state = {
     blink: saved.blink ?? false, // blink the changed pixels Highlight lays over the images (L)
     spotFlash: saved.spotFlash ?? false, // Spotlight flashes baseline and new (F in Spotlight)
     shortcuts: saved.shortcuts ?? true, // single-letter keys on
+    grouped: saved.grouped ?? true, // the grid shows similar changes as one cluster each
+    gridSpot: saved.gridSpot ?? false, // every grid tile shows its change spotlighted
+    gridZoom: saved.gridZoom ?? false, // every grid tile is cropped toward its change
     // Flash, Blink and Spotlight flash run; a page load or a deep link opens them stopped.
     motion: true,
     held: null, // the view to return to when Space is released
@@ -520,7 +524,7 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null,
 // The reason a Reject or Exclude needs, asked in a box with the cursor already in its field, so a
 // hardware keyboard types straight into it. Resolves the reason, or null for Cancel or Escape. What
 // is typed stays with the item (drafts) until its decision is saved, cancelled or not.
-function askReason(item, decision) {
+function askReason(item, decision, label = null) {
     const key = draftKey(item);
     const verb = decision === "reject" ? "Reject" : "Exclude";
     const field = el("input", {
@@ -553,8 +557,8 @@ function askReason(item, decision) {
         el(
             "label",
             { id: "reason-label", for: "reason" },
-            `Reason to ${decision} #${numberOf(item)}`,
-            decision === "exclude" ? ": Exclude stops capturing every mode of this story." : "",
+            label ?? `Reason to ${decision} #${numberOf(item)}`,
+            decision === "exclude" ? `: Exclude stops capturing every mode of ${label ? "each" : "this"} story.` : "",
         ),
         field,
         alert,
@@ -651,6 +655,10 @@ const itemName = (item) => (item.mode ? `${item.id} (${item.mode})` : item.id);
 const movedFrom = (item) => (item.from ? `moved from ${item.from}` : "");
 const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
+// A decision the owner took, not an accept the server took because the image was approved before.
+const firmDecision = (item) => (decisionOf(item)?.approvedBefore ? null : decisionOf(item));
+const day = (iso) => (iso ? String(iso).slice(0, 10) : "");
+const approvedText = (a) => `Approved before (${a.pr === null ? "seed" : `#${a.pr}`}, ${day(a.reviewedAt)})`;
 // The image a decision is about, as the server checks it: a decision on an image another run
 // replaced since this page loaded is refused.
 const imageHash = (item) => item.capture ?? item.baseline ?? null;
@@ -778,6 +786,9 @@ function saveOptions(extra = {}) {
                 blink: state.blink,
                 spotFlash: state.spotFlash,
                 shortcuts: state.shortcuts,
+                grouped: state.grouped,
+                gridSpot: state.gridSpot,
+                gridZoom: state.gridZoom,
                 ...extra,
             }),
         );
@@ -832,6 +843,10 @@ function drawHeader() {
         return;
     }
     toGridCrumb.hidden = state.screen !== "story";
+    // The pull request's title (untrusted text), which opens its description and comments.
+    titleCrumb.hidden = state.target.pr === null || isLocal();
+    titleCrumb.textContent = state.target.title ?? "";
+    titleCrumb.title = `${state.target.title ?? ""}: the description and comments`;
     const last = state.screen === "grid" && state.data?.items.find((i) => i.file === state.lastFile);
     toItemCrumb.hidden = !last;
     if (last) {
@@ -920,6 +935,7 @@ pickTarget.addEventListener("change", () => openTarget(pickTarget.value, false))
 pickProject.addEventListener("change", () => openProject(state.target.id, pickProject.value));
 toGridCrumb.addEventListener("click", () => toGrid());
 toItemCrumb.addEventListener("click", () => backToItem());
+titleCrumb.addEventListener("click", () => showContext());
 document.getElementById("prev-project").addEventListener("click", () => stepProject(-1));
 document.getElementById("next-project").addEventListener("click", () => stepProject(1));
 
@@ -1814,11 +1830,15 @@ function pumpThumbs() {
         thumbsLoading++;
         const { kind, file, hash } = img.dataset;
         const wait = img.previousElementSibling;
-        image(kind, file, hash, "thumb")
+        const item = (state.gridSpot || state.gridZoom) && state.data.items.find((i) => i.file === file);
+        const spot = item?.baseline && item.capture && item.baseline !== item.capture;
+        (spot ? spotThumb(item, state.gridSpot, state.gridZoom) : image(kind, file, hash, "thumb"))
             .then(
                 (url) => {
                     img.src = url;
                     img.hidden = false;
+                    img.classList.toggle("spot", Boolean(spot && state.gridSpot));
+                    img.classList.toggle("zoomed", Boolean(spot && state.gridZoom));
                     wait?.remove();
                     delete img.closest(".tile").dataset.failed;
                 },
@@ -1834,6 +1854,36 @@ function pumpThumbs() {
                 pumpThumbs();
             });
     }
+}
+
+// The grid's Spotlight all and Zoom to changes, two switches either of which can be on: a tile's
+// new image with the story screen's Spotlight (spotlight(), over the same diff), and/or cropped
+// toward the changed areas so a small change is large enough to see. The crop keeps the image's
+// shape and shows at least a quarter of each side.
+// ponytail: each tile decodes both full images, six at a time; a server-made thumbnail if slow.
+let spotUrls = [];
+async function spotThumb(item, lit, zoom) {
+    const diff = await diffOf(item);
+    let source = lit ? spotlight(diff) : null;
+    if (!source) {
+        source = new OffscreenCanvas(diff.w, diff.h);
+        source.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(diff.b), diff.w, diff.h), 0, 0);
+    }
+    const boxes = diff.boxes.length > 0 ? diff.boxes : [[0, 0, diff.w, diff.h]];
+    const x0 = Math.min(...boxes.map((b) => b[0]));
+    const y0 = Math.min(...boxes.map((b) => b[1]));
+    const x1 = Math.max(...boxes.map((b) => b[0] + b[2]));
+    const y1 = Math.max(...boxes.map((b) => b[1] + b[3]));
+    const f = zoom ? Math.min(1, Math.max(0.25, (2 * (x1 - x0)) / diff.w, (2 * (y1 - y0)) / diff.h)) : 1;
+    const [cw, ch] = [diff.w * f, diff.h * f];
+    const clamp = (v, max) => Math.min(Math.max(0, v), max);
+    const cx = clamp((x0 + x1) / 2 - cw / 2, diff.w - cw);
+    const cy = clamp((y0 + y1) / 2 - ch / 2, diff.h - ch);
+    const out = new OffscreenCanvas(400, Math.round((400 * diff.h) / diff.w));
+    out.getContext("2d").drawImage(source, cx, cy, cw, ch, 0, 0, out.width, out.height);
+    const url = URL.createObjectURL(await out.convertToBlob());
+    spotUrls.push(url);
+    return url;
 }
 
 // Opens the item `file` of the grid, and freezes what the grid shows as the pass Next and
@@ -1910,6 +1960,7 @@ function tile(item) {
         el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
         item.from ? el("span", { class: "moved-from" }, movedFrom(item)) : null,
         item.reReview ? el("span", { class: "badge warn" }, "re-review") : null,
+        item.noise ? el("span", { class: "badge warn" }, "known noise") : null,
     );
     if (img) {
         // The tile, not its image: an image not shown yet has no box to come near the screen.
@@ -1932,22 +1983,26 @@ function decisionLine(item) {
     if (!d) {
         return null;
     }
-    const text = `${DECISIONS[d.decision]}${d.bulk ? " (not opened)" : ""}${d.reason ? `: ${d.reason}` : ""}`;
+    const text = d.approvedBefore
+        ? approvedText(d.approvedBefore)
+        : `${DECISIONS[d.decision]}${d.bulk ? " (not opened)" : ""}${d.reason ? `: ${d.reason}` : ""}`;
     return el(
         "div",
         { class: `decision ${d.decision}`, "data-file": item.file },
         el("span", { class: "what" }, text),
-        d.posted
-            ? el("span", { class: "meta" }, postedText(d))
-            : el(
-                  "button",
-                  {
-                      type: "button",
-                      "aria-label": `Undo the ${d.decision} of ${itemName(item)}`,
-                      onclick: () => undo([item.file], `#${numberOf(item)}`, true),
-                  },
-                  "Undo",
-              ),
+        d.approvedBefore && !d.posted
+            ? null
+            : d.posted
+              ? el("span", { class: "meta" }, postedText(d))
+              : el(
+                    "button",
+                    {
+                        type: "button",
+                        "aria-label": `Undo the ${d.decision} of ${itemName(item)}`,
+                        onclick: () => undo([item.file], `#${numberOf(item)}`, true),
+                    },
+                    "Undo",
+                ),
     );
 }
 
@@ -2007,7 +2062,7 @@ function acceptShownButton() {
 // decision not yet posted by Finish.
 const undoableIn = (component) =>
     state.data.items
-        .filter((i) => decisionOf(i) && !decisionOf(i).posted && (!component || componentOf(i.id) === component))
+        .filter((i) => firmDecision(i) && !firmDecision(i).posted && (!component || componentOf(i.id) === component))
         .map((i) => i.file);
 
 // The project whose grid is on screen, so a redraw of the same grid keeps its place.
@@ -2030,7 +2085,16 @@ function showGrid() {
     app.classList.remove("story-screen");
     drawHeader();
     setBar(gridBar());
-    const items = visibleItems();
+    for (const url of spotUrls) {
+        URL.revokeObjectURL(url);
+    }
+    spotUrls = [];
+    // Approved before and known noise have groups of their own; similar changes are clusters.
+    const approvedItems = ordered(reviewable().filter((i) => decisionOf(i)?.approvedBefore));
+    const visible = visibleItems().filter((i) => !decisionOf(i)?.approvedBefore);
+    const noiseItems = visible.filter((i) => i.noise);
+    const { shown: clustered, rest } = clustersOf(visible.filter((i) => !i.noise));
+    const items = rest;
     const errors = [];
     const groups = new Map(); // component -> story id -> [tile]
     for (const item of items) {
@@ -2112,7 +2176,28 @@ function showGrid() {
                   el("ol", { class: "error-list" }, errors),
               )
             : null,
-        ...(items.length === 0 ? [el("p", { class: "empty" }, ...[empty].flat())] : sections),
+        approvedItems.length > 0
+            ? el(
+                  "details",
+                  { class: "group approved-before" },
+                  el(
+                      "summary",
+                      {},
+                      `Approved before (${approvedItems.length}): the same image you accepted for the same story on another pull request`,
+                  ),
+                  el("div", { class: "modes" }, approvedItems.map(tile)),
+              )
+            : null,
+        noiseItems.length > 0 ? noiseGroup(noiseItems) : null,
+        ...(items.length + clustered.length + noiseItems.length === 0
+            ? [el("p", { class: "empty" }, ...[empty].flat())]
+            : [
+                  ...sections,
+                  clustered.length > 0 && items.length > 0
+                      ? el("h3", { class: "clusters-head" }, `Similar changes, ${plural(clustered.length, "group")}`)
+                      : null,
+                  ...clustered.map(clusterSection),
+              ]),
     );
     applyFind();
     remember();
@@ -2122,6 +2207,208 @@ function showGrid() {
     }
     // Back from a story: show where it is in the grid.
     app.querySelector(".current")?.scrollIntoView({ block: "center" });
+}
+
+// The clusters of the grouped review as the grid shows them now: those with two or more items the
+// filter shows, and every other item (the outliers, shown first, one by one).
+function clustersOf(items) {
+    if (!state.grouped) {
+        return { shown: [], rest: items };
+    }
+    const byFile = new Map(items.map((i) => [i.file, i]));
+    const shown = [];
+    const taken = new Set();
+    for (const c of state.data.clusters ?? []) {
+        const members = ordered(c.files.filter((f) => byFile.has(f)).map((f) => byFile.get(f)));
+        if (members.length >= 2) {
+            const rep = byFile.get(c.representative) ?? members[0];
+            shown.push({ ...c, members, rep });
+            members.forEach((m) => taken.add(m.file));
+        }
+    }
+    return { shown, rest: items.filter((i) => !taken.has(i.file)) };
+}
+
+const KINDS = { pixels: "changes", speck: "specks (under 50 pixels)", size: "size changes" };
+const clusterName = (c) => {
+    const [kind, region, extent] = c.signature.split(" ");
+    const where =
+        region === "whole" ? "" : ` in a ${extent === "any" ? "" : `${extent} area, `}${region.replace("-", " ")}`;
+    const px = c.pixels[0] === c.pixels[1] ? `${c.pixels[0]}` : `${c.pixels[0]} to ${c.pixels[1]}`;
+    return `${c.members.length} similar ${KINDS[kind] ?? kind}${where}, ${px} pixels each`;
+};
+
+// One cluster: its representative (the member with the most changed pixels), its count, one
+// decision for every undecided member, and every member under Show all.
+function clusterSection(c) {
+    const open = c.members.filter((i) => !decisionOf(i));
+    const can = state.data.acceptable && !isLocal() && open.length > 0;
+    const button = (decision, label) =>
+        el(
+            "button",
+            {
+                type: "button",
+                class: decision,
+                "aria-disabled": String(decision === "reject" ? isLocal() || open.length === 0 : !can),
+                onclick: () => decideMany(open, decision, `this group of ${open.length}`),
+            },
+            label,
+        );
+    return el(
+        "section",
+        { class: "cluster", "data-signature": c.signature },
+        el(
+            "h3",
+            {},
+            clusterName(c),
+            button("accept", `Accept ${open.length}`),
+            button("reject", `Reject ${open.length}...`),
+            button("exclude", `Exclude ${open.length}...`),
+        ),
+        el(
+            "div",
+            { class: "modes" },
+            tile(c.rep),
+            el("p", { class: "meta" }, `and ${plural(c.members.length - 1, "more")} like it`),
+        ),
+        el(
+            "details",
+            {},
+            el("summary", {}, `Show all ${c.members.length}`),
+            el("div", { class: "modes" }, c.members.map(tile)),
+        ),
+    );
+}
+
+// Known capture noise: labeled, never accepted for the owner, and decided at once from here.
+function noiseGroup(items) {
+    const prs = [...new Set(items.flatMap((i) => i.noise.prs))].sort((a, b) => a - b);
+    const open = items.filter((i) => !decisionOf(i));
+    return el(
+        "details",
+        { class: "group noise", open: true },
+        el(
+            "summary",
+            {},
+            `Known capture noise (seen on ${prList(prs)}): ${plural(items.length, "story", "stories")} that change on pull requests touching nothing they render`,
+        ),
+        el(
+            "p",
+            {},
+            state.data.acceptable && !isLocal() && open.length > 0
+                ? el(
+                      "button",
+                      { type: "button", class: "accept", onclick: () => decideMany(open, "accept", "the known noise") },
+                      `Accept ${open.length}`,
+                  )
+                : null,
+        ),
+        el("div", { class: "modes" }, items.map(tile)),
+    );
+}
+
+// One decision on many items (a cluster, the known noise), asked first, stored per item.
+async function decideMany(items, decision, what) {
+    if (items.length === 0 || isLocal() || (decision !== "reject" && !state.data.acceptable)) {
+        say(isLocal() ? "Local preview: look only. Nothing is decided on it." : "Nothing undecided here to decide.");
+        return;
+    }
+    let reason = null;
+    if (decision === "accept") {
+        if (
+            !(await ask(
+                `Accept ${plural(items.length, "item")} of ${what} without opening them?`,
+                `Accept ${items.length}`,
+            ))
+        ) {
+            return;
+        }
+    } else {
+        reason = await askReason(
+            items[0],
+            decision,
+            `Reason to ${decision} ${plural(items.length, "item")} of ${what}`,
+        );
+        if (reason === null) {
+            say(`Cancelled: ${what} is still undecided.`);
+            return;
+        }
+    }
+    let answer;
+    try {
+        answer = await api(groupRoute("/api/accept-all"), {
+            id: state.target.id,
+            project: state.project,
+            runId: state.data.target.runId,
+            runAttempt: state.data.target.runAttempt,
+            files: items.map((i) => i.file),
+            decision,
+            reason,
+        });
+    } catch (err) {
+        say(err.message, true);
+        return;
+    }
+    for (const file of answer.files) {
+        state.data.decisions[file] = { decision, reason, ...(decision === "accept" && { bulk: true }) };
+    }
+    const p = state.target.projects.find((x) => x.project === state.project);
+    if (p) {
+        p.decided += answer.files.length;
+        p.undecided -= answer.files.length;
+    }
+    state.target.unpublished = answer.unpublished;
+    showGrid();
+    say(`${DECISIONS[decision]} ${plural(answer.accepted, "item")} of ${what}${alsoOn(answer)}.`);
+}
+
+// The pull request's title, description and comments, in a box over the page. All of it is
+// written by whoever opened or commented on the pull request: shown as text, never as HTML.
+async function showContext() {
+    const t = state.target;
+    if (!t || t.pr === null || t.local) {
+        say("Only a pull request has a description and comments.");
+        return;
+    }
+    let c;
+    try {
+        sayBusy(`Reading #${t.pr}'s description and comments...`);
+        c = await api(`/api/pr-context/${encodeURIComponent(t.id)}`);
+        say("");
+    } catch (err) {
+        say(err.message, true);
+        return;
+    }
+    const when = (at) => (at ? new Date(at).toLocaleString() : "");
+    const who = (login, byOwner) => [
+        el("strong", {}, login ?? "unknown"),
+        byOwner ? null : el("span", { class: "badge warn" }, "not the repository owner"),
+    ];
+    const dialog = el(
+        "dialog",
+        { class: "context", "aria-labelledby": "context-title", tabindex: "-1" },
+        el("h2", { id: "context-title" }, `#${t.pr} `, c.title),
+        el("p", { class: "meta" }, "Opened by ", who(c.author, c.author === c.owner), ` ${when(c.createdAt)}`),
+        el("pre", { class: "context-text" }, c.body || "(no description)"),
+        el("h3", {}, `Comments (${c.comments.length})`),
+        el(
+            "ol",
+            { class: "comments" },
+            c.comments.map((m) =>
+                el(
+                    "li",
+                    {},
+                    el("p", { class: "meta" }, who(m.author, m.byOwner), ` ${when(m.at)}`),
+                    el("pre", { class: "context-text" }, m.body),
+                ),
+            ),
+        ),
+        el("p", { class: "actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Close")),
+    );
+    dialog.addEventListener("close", () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.focus();
 }
 
 // The grid's bar: the counts, the filters, Find story and Accept all undecided.
@@ -2227,6 +2514,51 @@ function gridBar() {
             { class: "row" },
             el("label", { for: "find" }, "Find story", find),
             acceptable ? acceptShownButton() : null,
+            el(
+                "button",
+                {
+                    type: "button",
+                    id: "group-similar",
+                    "aria-pressed": String(state.grouped),
+                    onclick: () => {
+                        state.grouped = !state.grouped;
+                        saveOptions();
+                        showGrid();
+                    },
+                },
+                "Group similar",
+            ),
+            el(
+                "button",
+                {
+                    type: "button",
+                    id: "spot-all",
+                    "aria-pressed": String(state.gridSpot),
+                    onclick: () => {
+                        state.gridSpot = !state.gridSpot;
+                        saveOptions();
+                        showGrid();
+                    },
+                },
+                "Spotlight all",
+            ),
+            el(
+                "button",
+                {
+                    type: "button",
+                    id: "zoom-all",
+                    "aria-pressed": String(state.gridZoom),
+                    onclick: () => {
+                        state.gridZoom = !state.gridZoom;
+                        saveOptions();
+                        showGrid();
+                    },
+                },
+                "Zoom to changes",
+            ),
+            state.target.pr !== null && !isLocal()
+                ? el("button", { type: "button", id: "about-pr", onclick: showContext }, `About #${state.target.pr}`)
+                : null,
             el(
                 "details",
                 { class: "menu" },
@@ -2349,11 +2681,13 @@ const onlyExclude = (item) => item.status === "unstable" || item.status === "fai
 function available(item, d) {
     const open = !isLocal() && !state.ended;
     const acceptable = state.data.acceptable;
+    // Approved before: Reject or Exclude replaces it; there is nothing to undo.
+    const firm = d && !(d.approvedBefore && !d.posted);
     return {
         accept: open && acceptable && !onlyExclude(item) && !d,
-        reject: open && !onlyExclude(item) && !d,
-        exclude: open && acceptable && !d,
-        undo: open && Boolean(d) && !d.posted,
+        reject: open && !onlyExclude(item) && !firm,
+        exclude: open && acceptable && !firm,
+        undo: open && Boolean(d) && !d.posted && !d.approvedBefore,
     };
 }
 
@@ -2368,6 +2702,15 @@ function explanation(item, d) {
     }
     if (d?.posted) {
         return postedText(d);
+    }
+    if (d?.approvedBefore) {
+        return (
+            `${approvedText(d.approvedBefore)}: you accepted this exact image for this story there, so it is ` +
+            "accepted again, and the CI gate checks that approval. Reject or Exclude replaces it."
+        );
+    }
+    if (item.noise) {
+        return `Known capture noise: this story changed on ${prList(item.noise.prs)} too, which touch none of its package's files. Decide it as any change.`;
     }
     if (item.status === "unstable") {
         return UNSTABLE;
@@ -2583,6 +2926,9 @@ function itemLine(item, d) {
                   )
                 : null,
             item.flaky ? el("span", { class: "badge" }, "flaky") : null,
+            item.noise
+                ? el("span", { class: "badge warn" }, `known capture noise (seen on ${prList(item.noise.prs)})`)
+                : null,
             item.reReview
                 ? el(
                       "span",
@@ -3493,9 +3839,10 @@ async function decide(decision) {
         return;
     }
     const before = decisionOf(item);
+    const firm = firmDecision(item);
     let reason = null;
     if (decision === null) {
-        if (!before) {
+        if (!firm) {
             say("Nothing to undo.");
             return;
         }
@@ -3509,7 +3856,7 @@ async function decide(decision) {
             say(postedText(before));
             return;
         }
-        if (before) {
+        if (firm || (before && decision === "accept")) {
             say(`Already ${DONE[before.decision]}. Undo it to change it.`);
             return;
         }
@@ -3932,6 +4279,11 @@ function sheet(t, f, prepared, notice) {
     lines.push(`Then set the commit status 'Visual review' to ${f.status.state}${why}.`);
     if (f.notOpened > 0) {
         lines.push(`Accepted without opening: ${f.notOpened}.`);
+    }
+    if (f.approvedBefore > 0) {
+        lines.push(
+            `Approved before: ${f.approvedBefore}, the same images you accepted for the same stories elsewhere; the record names each earlier approval and the CI gate checks it.`,
+        );
     }
     if (f.undecided.length > 0) {
         lines.push(

@@ -1072,7 +1072,10 @@ async function planWrites(repo, base, writes, baselines) {
         files.push({ path, bytes: w.bytes ?? null });
         counts.accept++;
         if (!w.item.from) {
-            items.push({ path, from: w.item.baseline, to: w.item.capture, reason: w.reason });
+            // An image the owner approved before for this story: the record names where, and the
+            // gate checks that earlier approval before the item counts.
+            const before = w.approvedBefore ? { approvedBefore: w.approvedBefore } : {};
+            items.push({ path, from: w.item.baseline, to: w.item.capture, reason: w.reason, ...before });
             continue;
         }
         // A rename: the old id's baseline (of this mode) goes, the new one takes its place. For a

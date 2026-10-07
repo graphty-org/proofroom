@@ -32,7 +32,10 @@
  * review records added in the pull request (<baselines>/reviews/*.json) taking that path from its
  * contents on the base branch to its new ones: each record item moves a path `from` one hash `to`
  * another, replayed in `reviewedAt` order, so a record approved for other contents (an old seed,
- * a decision a later one replaced) moves nothing. Without that, committing the captured PNGs
+ * a decision a later one replaced) moves nothing. An item marked `approvedBefore` (the page took it
+ * because the owner approved the identical image for the same story on another pull request) moves
+ * its path only when the review record it names, at the commit it names, approves exactly that
+ * image for that path, with its own passkey approval once approvals are enforced. Without that, committing the captured PNGs
  * straight into the baselines directory would turn the capture check green with no review at all.
  *
  * Once visual-review/passkeys.json on the base branch holds a key, every record the pull request
@@ -391,8 +394,19 @@ export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
                 continue;
             }
         }
-        const items = record?.items;
-        entries.push({ at: String(record?.reviewedAt ?? ""), items: Array.isArray(items) ? items : [] });
+        const items = (Array.isArray(record?.items) ? record.items : []).filter((item) => {
+            if (item?.approvedBefore === undefined) {
+                return true;
+            }
+            // An accept the page took because the owner approved the same image before: it moves
+            // the file only when that earlier approval is there and holds, never on the page's word.
+            const why = approvedBeforeProblem(item, cwd, baselines, approvals.keys ?? null);
+            if (why) {
+                problems.push(`${path}: ${item.path} is marked approved before, but ${why}`);
+            }
+            return !why;
+        });
+        entries.push({ at: String(record?.reviewedAt ?? ""), items });
     }
     entries.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
     const missing = changed.filter((c) => {
@@ -407,6 +421,62 @@ export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
         return now !== c.to;
     });
     return { problems, refused, missing };
+}
+
+/**
+ * Why an earlier review record does not show that the owner approved image `to` for the baseline
+ * `path` (one story in one mode of one project), or null when it does. The review server offers an
+ * "approved before" accept only from a record that passes this, and the gate checks it again.
+ * @param {any} earlier the earlier record, parsed (untrusted)
+ * @param {{ path: string, to: string | null, pr: number | null }} claim the baseline, the image,
+ *     and the pull request the earlier record is said to be for
+ * @param {object[] | null} keys the base branch's keys once approvals are enforced: then the
+ *     earlier record must carry a valid passkey approval itself
+ * @returns {string | null} why not, or null
+ */
+export function earlierApprovalProblem(earlier, { path, to, pr }, keys) {
+    if (typeof earlier !== "object" || earlier === null || !Array.isArray(earlier.items)) {
+        return "the earlier record is not a review record";
+    }
+    if ((earlier.pr ?? null) !== pr) {
+        const name = (n) => (n === null ? "a seed" : `#${n}`);
+        return `the earlier record is for ${name(earlier.pr ?? null)}, not ${name(pr)}`;
+    }
+    // A direct decision only: an approval never chains through another "approved before".
+    const approves = (i) => i?.path === path && i.to === to && i.approvedBefore === undefined;
+    if (typeof to !== "string" || !earlier.items.some(approves)) {
+        return "the earlier record does not approve this image for this story";
+    }
+    return keys ? verifyRecord(earlier, keys, { pr: earlier.pr ?? null }) : null;
+}
+
+/**
+ * Why an "approved before" record item does not stand, or null when it does: its `approvedBefore`
+ * names a commit and a review record there, which must approve exactly this image for this path.
+ * @param {any} item the record item, with `approvedBefore: { pr, commit, record }`
+ * @param {string} cwd the repository
+ * @param {string} baselines the baselines directory
+ * @param {object[] | null} keys as in earlierApprovalProblem
+ * @returns {string | null} why not, or null
+ */
+function approvedBeforeProblem(item, cwd, baselines, keys) {
+    const ref = item.approvedBefore;
+    const commit = typeof ref?.commit === "string" && /^[0-9a-f]{40}$/.test(ref.commit) ? ref.commit : null;
+    const record = typeof ref?.record === "string" ? ref.record : "";
+    const name = record.slice(`${baselines}/reviews/`.length);
+    if (!commit || !record.startsWith(`${baselines}/reviews/`) || !/^[\w.-]+\.json$/.test(name)) {
+        return "it names no commit and review record";
+    }
+    if (!haveCommit(commit, cwd)) {
+        return `its commit ${commit} cannot be fetched`;
+    }
+    let earlier = null;
+    try {
+        earlier = parseOr(gitOut(cwd, ["show", `${commit}:${record}`]));
+    } catch {
+        return `${record} is not at ${commit}`;
+    }
+    return earlierApprovalProblem(earlier, { path: item.path, to: item.to ?? null, pr: ref.pr ?? null }, keys);
 }
 
 /**

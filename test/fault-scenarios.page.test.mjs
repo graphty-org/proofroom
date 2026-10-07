@@ -101,7 +101,8 @@ async function open(r, w, { gh = w.gh, hash = "" } = {}) {
  */
 async function review(n = 0, p = page) {
     await p.getByRole("button", { name: "Review", exact: true }).nth(n).click();
-    await p.locator(".component").first().waitFor();
+    // A grid of identical changes shows them as one cluster of similar changes, with no component.
+    await p.locator(".component, .cluster").first().waitFor();
 }
 
 // Item numbers: 1 menu--open (failed), 2 button--primary.dark (changed), 3 slider--sizes
