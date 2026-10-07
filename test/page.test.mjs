@@ -1690,7 +1690,7 @@ describe("review page: waits that say what they wait for", () => {
         expect(await downloading.count()).toBe(0);
     }, 30000);
 
-    it("says what a slow project or a slow save waits for", async () => {
+    it("says what a slow project waits for", async () => {
         await open((r) => ({ gh: onePr()(r) }), { review: false });
         let release;
         const held = new Promise((resolve) => (release = resolve));
@@ -1704,7 +1704,10 @@ describe("review page: waits that say what they wait for", () => {
         release();
         await page.locator(".component").first().waitFor();
         expect(await box()).toBeNull();
-        await page.unroute("**/api/pr/123/compact-mantine");
+    });
+
+    it("says what a slow save waits for", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
