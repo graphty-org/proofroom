@@ -47,7 +47,6 @@
  * `<tmp>/state/groups.jsonl`, to count approvals per group.
  */
 
-import { execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
     appendFileSync,
@@ -964,6 +963,16 @@ export function createApp({
         }
     }
 
+    // One project of the kept list with its results read again; listed as downloading when they
+    // are gone.
+    async function restoredProject(p) {
+        const there = p.dir && (existsSync(join(p.dir, "results.json")) || existsSync(join(p.dir, SKIPPED_FILE)));
+        const loaded = there ? await project(p.project, p.dir, p.problem) : null;
+        return p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
+            ? { ...p, dir: null, results: null, problem: null, downloading: true }
+            : { ...p, results: loaded?.results ?? null };
+    }
+
     /**
      * The list a previous run of this server kept, shown until the first refresh replaces it. A
      * capture whose directory is gone is listed as downloading: that refresh downloads it again.
@@ -980,14 +989,7 @@ export function createApp({
             for (const t of saved.targets) {
                 const list = [];
                 for (const p of t.projects) {
-                    const there =
-                        p.dir && (existsSync(join(p.dir, "results.json")) || existsSync(join(p.dir, SKIPPED_FILE)));
-                    const loaded = there ? await project(p.project, p.dir, p.problem) : null;
-                    list.push(
-                        p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
-                            ? { ...p, dir: null, results: null, problem: null, downloading: true }
-                            : { ...p, results: loaded?.results ?? null },
-                    );
+                    list.push(await restoredProject(p));
                 }
                 const downloading = t.downloading === true || list.some((p) => p.downloading);
                 next.set(t.id, {
@@ -1000,6 +1002,7 @@ export function createApp({
             }
             signer = await signingIdentity(repo);
             await readPasskeys();
+            await readTips();
             if (!loadedOnce) {
                 targets = next;
                 loadedOnce = true;
@@ -1404,13 +1407,9 @@ export function createApp({
         if (t.local || t.pr === null || !t.headSha) {
             return null;
         }
-        // The tip the last refresh read; only before the first one does this ask git itself.
-        let tip = tips.get(defaultBranch);
-        try {
-            tip ??= execFileSync("git", ["rev-parse", `refs/remotes/origin/${defaultBranch}`], { cwd: repo })
-                .toString("utf8")
-                .trim();
-        } catch {
+        // The tip the last refresh (or the restore of a kept list) read.
+        const tip = tips.get(defaultBranch);
+        if (tip === undefined) {
             return null;
         }
         const key = `${t.headSha}:${tip}`;

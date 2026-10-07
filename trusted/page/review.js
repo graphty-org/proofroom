@@ -3264,6 +3264,7 @@ async function fillEnd(card, seq) {
             offer(`Next: ${labelOf(after)} (${undecidedOf(after)} undecided)`, () => openTarget(after.id, true)),
         );
     }
+    const verdict = left ? `${left}.` : `Every project of ${labelOf(t)} is decided.`;
     card.replaceChildren(
         ...[
             el(
@@ -3271,7 +3272,7 @@ async function fillEnd(card, seq) {
                 { id: "end-heading", tabindex: "-1" },
                 `End of ${state.project}: ${here.decided} of ${here.reviewable} decided, ${here.undecided} undecided.`,
             ),
-            isLocal() ? null : el("p", {}, left ? `${left}.` : `Every project of ${labelOf(t)} is decided.`),
+            isLocal() ? null : el("p", {}, verdict),
             el("div", { class: "offers" }, offers),
             waitingFor.length > 0
                 ? el(
