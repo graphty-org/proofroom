@@ -1,3 +1,23 @@
+## 0.2.12 (2026-10-06)
+
+### 🚀 Features
+
+- **visual-review:** let the gate accept a not-affected marker in place of a capture ([0f2118f90](https://github.com/graphty-org/graphty-monorepo/commit/0f2118f90))
+- **visual-review:** group coupled pull requests in the review inbox ([b7f48e3e2](https://github.com/graphty-org/graphty-monorepo/commit/b7f48e3e2))
+
+### 🩹 Fixes
+
+- **tools:** run every test's git without the developer's own git config ([e4840e0f2](https://github.com/graphty-org/graphty-monorepo/commit/e4840e0f2))
+- **visual-review:** show a skipped Storybook as not affected and keep renamed root files ([279601c8a](https://github.com/graphty-org/graphty-monorepo/commit/279601c8a))
+- **visual-review:** pin member captures in group accept-all and mark group decisions not opened ([e420cc50a](https://github.com/graphty-org/graphty-monorepo/commit/e420cc50a))
+- **visual-review:** keep request interception on in the page tests ([#2](https://github.com/graphty-org/graphty-monorepo/issues/2))
+- **visual-review:** hold a pull request with a failed story out of the inbox ([d5d8e80df](https://github.com/graphty-org/graphty-monorepo/commit/d5d8e80df))
+- **visual-review:** open a target's first project from a link that names no project ([4dcc68437](https://github.com/graphty-org/graphty-monorepo/commit/4dcc68437))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.11 (2026-10-05)
 
 ### 🚀 Features
