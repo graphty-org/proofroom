@@ -1616,6 +1616,32 @@ function projectAt(step) {
     return null;
 }
 
+// A project whose capture did not load: still downloading, or missing for a reason other than the
+// run leaving it out (the server's NOT_AFFECTED, lib/results.mjs) or having no job for it.
+const unloaded = (p) =>
+    p.downloading ||
+    (p.problem !== null && Object.keys(p.counts).length === 0 && !["not affected", "no capture"].includes(p.problem));
+
+// What is left of target `t` to review, and where: "graphty-element done; compact-mantine has 6
+// undecided stories". Null once every project is decided and loaded: only then is Finish suggested.
+function leftToReview(t, project) {
+    const left = t.projects.filter((p) => p.undecided > 0 || unloaded(p));
+    if (left.length === 0) {
+        return null;
+    }
+    const lines = left.map((p) => {
+        if (p.downloading) {
+            return `${p.project} is still downloading`;
+        }
+        if (p.undecided === 0) {
+            return `${p.project} did not load (${p.problem})`;
+        }
+        return `${p.project} has ${plural(p.undecided, "undecided story", "undecided stories")}`;
+    });
+    const here = t.projects.find((p) => p.project === project);
+    return [...(here && !left.includes(here) ? [`${project} done`] : []), ...lines].join("; ");
+}
+
 // [ and ] (and the header's < and >): the previous or next project with undecided items, on the
 // same screen: its grid from the grid, its first undecided item from a story.
 function stepProject(step) {
@@ -2042,8 +2068,22 @@ function showGrid() {
         ),
     );
     let empty = "No stories match this filter.";
+    const left = isLocal() ? null : leftToReview(state.target, state.project);
+    const next = left ? projectAt(1) : null;
     if (state.filter === "undecided") {
         empty = isLocal() ? "Nothing here." : `Everything is decided. Finish ${labelOf(state.target)} when ready.`;
+        if (left) {
+            empty = [
+                `${left}.`,
+                next
+                    ? el(
+                          "button",
+                          { type: "button", onclick: () => openProject(state.target.id, next.project) },
+                          `Next project: ${next.project} (${next.undecided} undecided)`,
+                      )
+                    : null,
+            ];
+        }
     }
     render(
         isLocal()
@@ -2072,7 +2112,7 @@ function showGrid() {
                   el("ol", { class: "error-list" }, errors),
               )
             : null,
-        ...(items.length === 0 ? [el("p", { class: "empty" }, empty)] : sections),
+        ...(items.length === 0 ? [el("p", { class: "empty" }, ...[empty].flat())] : sections),
     );
     applyFind();
     remember();
@@ -3171,7 +3211,7 @@ async function fillEnd(card, seq) {
     const others = [...t.projects.slice(at + 1), ...t.projects.slice(0, at)];
     const next = others.find((p) => p.undecided > 0 && !p.downloading && !p.problem);
     const waitingFor = others.filter((p) => p.downloading);
-    const everything = t.projects.every((p) => p.undecided === 0 && !p.downloading);
+    const left = leftToReview(t, state.project);
     const offer = (label, onclick, cls = null) =>
         el("button", { type: "button", class: cls, onclick, "aria-describedby": "end-heading" }, label);
     const offers = [];
@@ -3209,7 +3249,7 @@ async function fillEnd(card, seq) {
             ),
         );
     }
-    const finishFirst = !next && here.undecided === 0;
+    const finishFirst = !left;
     if (finishFirst && finish && t.unpublished > 0) {
         offers.unshift(finish);
     }
@@ -3231,7 +3271,7 @@ async function fillEnd(card, seq) {
                 { id: "end-heading", tabindex: "-1" },
                 `End of ${state.project}: ${here.decided} of ${here.reviewable} decided, ${here.undecided} undecided.`,
             ),
-            everything && !isLocal() ? el("p", {}, `Every project of ${labelOf(t)} is decided.`) : null,
+            isLocal() ? null : el("p", {}, left ? `${left}.` : `Every project of ${labelOf(t)} is decided.`),
             el("div", { class: "offers" }, offers),
             waitingFor.length > 0
                 ? el(
