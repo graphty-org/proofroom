@@ -38,51 +38,65 @@ export function approvalIndex(records, keys) {
         byRef.set(r.ref, [...(byRef.get(r.ref) ?? []), r]);
     }
     const verdicts = new Map();
+    const holds = (record, first) => {
+        if (!verdicts.has(record)) {
+            verdicts.set(record, earlierApprovalProblem(record, first, keys) === null);
+        }
+        return verdicts.get(record);
+    };
     for (const list of byRef.values()) {
         // Record names start with their UTC time, so the name orders them as reviewedAt does.
         const sorted = [...list].sort((a, b) => (a.path < b.path ? -1 : 1));
-        const newest = new Map();
+        const newest = newestByPath(sorted);
         for (const r of sorted) {
-            const items = Array.isArray(r.record?.items) ? r.record.items : [];
-            const rejects = Array.isArray(r.record?.rejects) ? r.record.rejects : [];
-            for (const i of [...items, ...rejects]) {
-                if (typeof i?.path === "string") {
-                    newest.set(i.path, r);
-                }
-            }
-        }
-        for (const r of sorted) {
-            const { commit, path, record, main } = r;
-            const direct = (Array.isArray(record?.items) ? record.items : []).filter(
-                (i) =>
-                    typeof i?.path === "string" &&
-                    typeof i.to === "string" &&
-                    i.approvedBefore === undefined &&
-                    newest.get(i.path) === r,
+            const direct = listOf(r.record, "items").filter(
+                (i) => typeof i.to === "string" && i.approvedBefore === undefined && newest.get(i.path) === r,
             );
-            if (direct.length === 0 || (!keys && !main)) {
-                continue;
-            }
             // One check per record: its own approval holds for every item.
-            if (!verdicts.has(record)) {
-                verdicts.set(record, earlierApprovalProblem(record, { path: direct[0].path, to: direct[0].to }, keys));
-            }
-            if (verdicts.get(record)) {
-                continue;
-            }
-            const at = String(record.reviewedAt ?? "");
-            for (const i of direct) {
-                const key = `${i.path} ${i.to}`;
-                const was = index.get(key);
-                if (!was || (main && !was.main) || (main === was.main && at > was.reviewedAt)) {
-                    index.set(key, { pr: record.pr ?? null, commit, record: path, reviewedAt: at, main });
-                }
+            if (direct.length > 0 && (keys || r.main) && holds(r.record, direct[0])) {
+                direct.forEach((i) => keep(index, `${i.path} ${i.to}`, r));
             }
         }
     }
     return new Map(
-        [...index].map(([k, v]) => [k, { pr: v.pr, commit: v.commit, record: v.record, reviewedAt: v.reviewedAt }]),
+        [...index].map(([k, v]) => [
+            k,
+            {
+                pr: v.record.pr ?? null,
+                commit: v.commit,
+                record: v.path,
+                reviewedAt: String(v.record.reviewedAt ?? ""),
+            },
+        ]),
     );
+}
+
+// The record items (or rejects) that name a path.
+const listOf = (record, key) =>
+    (Array.isArray(record?.[key]) ? record[key] : []).filter((i) => typeof i?.path === "string");
+
+/**
+ * The newest record of one tip that decides each path: accepts it, excludes it or rejects it.
+ * @param {{ record: any }[]} sorted the tip's records, oldest first
+ * @returns {Map<string, object>} the record row by path
+ */
+function newestByPath(sorted) {
+    const newest = new Map();
+    for (const r of sorted) {
+        for (const i of [...listOf(r.record, "items"), ...listOf(r.record, "rejects")]) {
+            newest.set(i.path, r);
+        }
+    }
+    return newest;
+}
+
+// Indexes a record row for a key: the default branch's wins, then the newest.
+function keep(index, key, r) {
+    const was = index.get(key);
+    const at = (x) => String(x.record.reviewedAt ?? "");
+    if (!was || (r.main && !was.main) || (r.main === was.main && at(r) > at(was))) {
+        index.set(key, r);
+    }
 }
 
 /**

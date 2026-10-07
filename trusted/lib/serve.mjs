@@ -613,50 +613,67 @@ export function createApp({
             approved = new Map();
             return;
         }
-        const git = (args) => exec("git", args, { cwd: repo });
-        const has = (sha) =>
-            git(["cat-file", "-e", `${sha}^{commit}`]).then(
-                () => true,
-                () => false,
-            );
         const records = [];
-        // The default branch's tip, and each pull request's head as GitHub names it: a fork's too,
-        // fetched from refs/pull/<n>/head, never a branch of the same name on origin.
-        const refs = [{ sha: tips.get(defaultBranch), main: true }];
+        for (const { sha, main } of await approvalRefs(list)) {
+            records.push(...(await reviewRecordsAt(sha, main)));
+        }
+        approved = approvalIndex(records, passkeyState.main.length > 0 ? passkeyState.main : null);
+    }
+
+    const gitIn = (args) => exec("git", args, { cwd: repo });
+    const haveCommit = (sha) =>
+        gitIn(["cat-file", "-e", `${sha}^{commit}`]).then(
+            () => true,
+            () => false,
+        );
+
+    /**
+     * Where earlier approvals are read: the default branch's tip, and each pull request's head as
+     * GitHub names it, a fork's too, fetched from refs/pull/<n>/head (never a branch of the same
+     * name on origin).
+     * @param {object[]} list the targets
+     * @returns {Promise<{ sha: string, main: boolean }[]>} the commits
+     */
+    async function approvalRefs(list) {
+        const refs = tips.get(defaultBranch) ? [{ sha: tips.get(defaultBranch), main: true }] : [];
         for (const t of list.filter((x) => x.pr !== null && /^[0-9a-f]{40}$/.test(x.head ?? ""))) {
-            if (!(await has(t.head))) {
-                await git(["fetch", "-q", "origin", `+refs/pull/${t.pr}/head:refs/visual-review/pull/${t.pr}`]).catch(
-                    () => {},
-                );
+            if (!(await haveCommit(t.head))) {
+                const ref = `+refs/pull/${t.pr}/head:refs/visual-review/pull/${t.pr}`;
+                await gitIn(["fetch", "-q", "origin", ref]).catch(() => {});
             }
-            if (await has(t.head)) {
+            if (await haveCommit(t.head)) {
                 refs.push({ sha: t.head, main: false });
             }
         }
-        for (const { sha, main } of refs.filter((r) => r.sha)) {
-            const listing = await git(["ls-tree", sha, "--", `${config.baselines}/reviews/`]).catch(() => "");
-            for (const line of listing.split("\n")) {
-                const [meta, path] = line.split("\t");
-                const blob = meta.split(" ")[2];
-                if (!path?.endsWith(".json")) {
-                    continue;
-                }
-                if (!recordBlobs.has(blob)) {
-                    recordBlobs.set(blob, await git(["cat-file", "blob", blob]).then(JSON.parse, () => null));
-                }
-                // On the default branch, the commit that added the record: the gate finds it on
-                // the base of every pull request that branched after it.
-                let commit = sha;
-                if (main) {
-                    if (!addedIn.has(blob)) {
-                        addedIn.set(blob, await git(["log", "-1", "--format=%H", "--diff-filter=A", sha, "--", path]));
-                    }
-                    commit = addedIn.get(blob) || sha;
-                }
-                records.push({ ref: sha, commit, path, record: recordBlobs.get(blob), main });
+        return refs;
+    }
+
+    /**
+     * The review records at a commit, each blob read once. On the default branch each names the
+     * commit that added it, which the gate finds on the base of every pull request branched later.
+     * @param {string} sha the commit
+     * @param {boolean} main whether it is the default branch's tip
+     * @returns {Promise<{ ref: string, commit: string, path: string, record: any, main: boolean }[]>} them
+     */
+    async function reviewRecordsAt(sha, main) {
+        const out = [];
+        const listing = await gitIn(["ls-tree", sha, "--", `${config.baselines}/reviews/`]).catch(() => "");
+        for (const line of listing.split("\n")) {
+            const [meta, path] = line.split("\t");
+            const blob = meta.split(" ")[2];
+            if (!path?.endsWith(".json")) {
+                continue;
             }
+            if (!recordBlobs.has(blob)) {
+                recordBlobs.set(blob, await gitIn(["cat-file", "blob", blob]).then(JSON.parse, () => null));
+            }
+            if (main && !addedIn.has(blob)) {
+                addedIn.set(blob, await gitIn(["log", "-1", "--format=%H", "--diff-filter=A", sha, "--", path]));
+            }
+            const commit = (main && addedIn.get(blob)) || sha;
+            out.push({ ref: sha, commit, path, record: recordBlobs.get(blob), main });
         }
-        approved = approvalIndex(records, passkeyState.main.length > 0 ? passkeyState.main : null);
+        return out;
     }
 
     /**
