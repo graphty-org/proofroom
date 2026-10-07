@@ -1,3 +1,19 @@
+## 0.2.14 (2026-10-07)
+
+### 🩹 Fixes
+
+- **visual-review:** treat a decision as published only while the branch holds it ([#1006](https://github.com/graphty-org/graphty-monorepo/issues/1006))
+- **visual-review:** suggest Finish only when every project is reviewed ([#888](https://github.com/graphty-org/graphty-monorepo/issues/888))
+
+### 🔥 Performance
+
+- **visual-review:** take the default branch tip from the last refresh ([a7bdfcbea](https://github.com/graphty-org/graphty-monorepo/commit/a7bdfcbea))
+- **visual-review:** read the branch tips once per refresh ([72b1eaefd](https://github.com/graphty-org/graphty-monorepo/commit/72b1eaefd))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.13 (2026-10-07)
 
 ### 🩹 Fixes
