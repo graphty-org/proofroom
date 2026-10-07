@@ -1083,8 +1083,9 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   registers it first, then review again.
 - **The gate says a record has no passkey approval** on a pull request Finished before your
   passkey was registered. Revert its accept commit (which takes the record and the baselines out
-  of the diff), let CI capture again, and review it again with Face ID. Never edit a record by
-  hand: the gate only accepts what your device approved.
+  of the diff), let CI capture again, and review it again with Face ID: the page keeps your
+  decisions on unchanged images but no longer counts them as published, so Finish publishes them
+  again. Never edit a record by hand: the gate only accepts what your device approved.
 - **Opening the seed issue fails.** Every label in `issueLabels` must exist in the repository.
 - **The pnpm setup step fails in CI.** `pnpm/action-setup` reads the pnpm version from the
   `packageManager` field of your root `package.json`; add one.

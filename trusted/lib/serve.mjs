@@ -194,6 +194,27 @@ async function earlierAccepts(repo, head, pr, baselines) {
 }
 
 /**
+ * What this pull request's review records on its branch, as fetched, publish: the newest `to` per
+ * path (earlierAccepts at the branch's tip). Null when the branch was never fetched, so nothing is
+ * known about it.
+ * @param {string} repo the repository
+ * @param {string | null} branch the pull request's branch
+ * @param {number | null} pr the pull request
+ * @param {string} baselines the baselines directory
+ * @returns {Promise<Map<string, string | null> | null>} `to` by baseline path, or null
+ */
+async function publishedOn(repo, branch, pr, baselines) {
+    const tip = branch && `refs/remotes/origin/${branch}`;
+    const known =
+        tip &&
+        (await exec("git", ["rev-parse", "--verify", "-q", `${tip}^{commit}`], { cwd: repo }).then(
+            () => true,
+            () => false,
+        ));
+    return known ? earlierAccepts(repo, tip, pr, baselines) : null;
+}
+
+/**
  * Who Finish's commit will be signed by: the git configuration of the server's own environment.
  * An agent that starts the server passes on its GIT_CONFIG_* overrides, and with them its own
  * signing key, so the page shows this before every Finish, with where git found the key.
@@ -489,12 +510,35 @@ export function createApp({
     };
 
     /**
+     * Whether the branch still holds what Finish published for a decision: its review record
+     * there names the baseline (or the exclusion's settings file) with what Finish wrote. A
+     * reject's comment is not on the branch, and with the branch unknown `posted` is trusted.
+     * @param {object} t the target
+     * @param {string} project the project
+     * @param {object} item the results.json item
+     * @param {string} decision the decision
+     * @returns {boolean} whether it is still published
+     */
+    const onBranch = (t, project, item, decision) => {
+        if (decision === "reject" || !t.published) {
+            return true;
+        }
+        const dir = `${config.baselines}/${project}`;
+        if (decision === "exclude") {
+            return (t.published.get(`${dir}/${item.id}.json`) ?? null) !== null;
+        }
+        const to = t.published.get(`${dir}/${item.file}`);
+        return to !== undefined && to === (item.status === "removed" ? null : item.capture);
+    };
+
+    /**
      * The decisions that apply to this run: those whose item is in it, with the image the decision
      * was taken on and the baseline it was compared with (`base`; a decision saved before it was
      * kept matches any), and still decidable that way. The others stay in the file. So after the
      * branch is updated from the default branch and captured again, a story whose capture and
      * baseline are both unchanged keeps its decision, and one whose baseline moved comes back
-     * undecided.
+     * undecided. An accept or exclusion an earlier Finish published counts as published (`posted`)
+     * only while the branch still holds it: after its commit is reverted, Finish publishes it again.
      * @param {object} t the target
      * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true }>}
      *     by `<project>/<file>`
@@ -511,7 +555,8 @@ export function createApp({
                 !decisionProblem(item, d.decision, d.reason ?? null) &&
                 (d.decision === "reject" || acceptable(t, project))
             ) {
-                mine.set(k, d);
+                const { posted, ...rest } = d;
+                mine.set(k, posted && !onBranch(t, project, item, d.decision) ? rest : d);
             }
         }
         return mine;
@@ -921,6 +966,7 @@ export function createApp({
                 targets: [...targets.values()].map((t) => ({
                     ...t,
                     earlier: [...(t.earlier ?? [])],
+                    published: t.published ? [...t.published] : null,
                     projects: t.projects.map((p) => ({ ...p, results: undefined })),
                 })),
             });
@@ -959,7 +1005,13 @@ export function createApp({
                     );
                 }
                 const downloading = t.downloading === true || list.some((p) => p.downloading);
-                next.set(t.id, { ...t, earlier: new Map(t.earlier), projects: list, downloading });
+                next.set(t.id, {
+                    ...t,
+                    earlier: new Map(t.earlier),
+                    published: t.published ? new Map(t.published) : null,
+                    projects: list,
+                    downloading,
+                });
             }
             signer = await signingIdentity(repo);
             await readPasskeys();
@@ -980,6 +1032,7 @@ export function createApp({
         t.headSha = first?.headSha ?? null;
         const base = t.pr === null ? t.commit : t.headSha;
         t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config.baselines);
+        t.published = await publishedOn(repo, t.branch, t.pr, config.baselines);
         // null: unknown, when the captured head was never fetched or git fails.
         const known =
             base !== null &&
@@ -2088,6 +2141,10 @@ export function createApp({
                     }
                 }
             });
+        // The commit Finish pushed is the branch's tip now, before a refresh fetches it.
+        const pushed = async (commit) => {
+            t.published = await earlierAccepts(repo, commit, t.pr, config.baselines);
+        };
         try {
             j.result = await finish({
                 ...input,
@@ -2096,6 +2153,9 @@ export function createApp({
                     persist(j);
                 },
             });
+            if (j.result.commit) {
+                await pushed(j.result.commit);
+            }
             try {
                 clear(true);
             } catch (err) {
@@ -2111,6 +2171,7 @@ export function createApp({
         } catch (err) {
             if (err instanceof AcceptError && err.committed && !err.pullRequestMissing) {
                 // The accepts are on the branch; keep only the rejects, so Finish again only comments.
+                await pushed(err.committed);
                 try {
                     clear(false);
                 } catch (e) {
