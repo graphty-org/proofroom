@@ -47,7 +47,6 @@
  * `<tmp>/state/groups.jsonl`, to count approvals per group.
  */
 
-import { execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
     appendFileSync,
@@ -313,6 +312,11 @@ export function createApp({
     const names = Object.keys(projects);
     /** @type {Map<string, object>} targets by id: a pull request number, or "master" */
     let targets = new Map();
+    // Each pull request branch's fetched tip, read once per refresh, and the review records at a
+    // tip (by tip and pull request, kept while the tip is current) for decisionsOf's "still on
+    // the branch" check.
+    let tips = new Map();
+    let recordsAt = new Map();
     /** What the last refresh could not read from GitHub (the pull request list, a git fetch). */
     let listWarnings = [];
     /** Why a target's saved decisions were set aside, by target id. */
@@ -492,12 +496,35 @@ export function createApp({
     };
 
     /**
+     * Whether the branch still holds what Finish published for a decision: its review record
+     * there names the baseline (or the exclusion's settings file) with what Finish wrote. A
+     * reject's comment is not on the branch, and with the branch unknown `posted` is trusted.
+     * @param {object} t the target
+     * @param {string} project the project
+     * @param {object} item the results.json item
+     * @param {string} decision the decision
+     * @returns {boolean} whether it is still published
+     */
+    const onBranch = (t, project, item, decision) => {
+        if (decision === "reject" || !t.published) {
+            return true;
+        }
+        const dir = `${config.baselines}/${project}`;
+        if (decision === "exclude") {
+            return (t.published.get(`${dir}/${item.id}.json`) ?? null) !== null;
+        }
+        const to = t.published.get(`${dir}/${item.file}`);
+        return to !== undefined && to === (item.status === "removed" ? null : item.capture);
+    };
+
+    /**
      * The decisions that apply to this run: those whose item is in it, with the image the decision
      * was taken on and the baseline it was compared with (`base`; a decision saved before it was
      * kept matches any), and still decidable that way. The others stay in the file. So after the
      * branch is updated from the default branch and captured again, a story whose capture and
      * baseline are both unchanged keeps its decision, and one whose baseline moved comes back
-     * undecided.
+     * undecided. An accept or exclusion an earlier Finish published counts as published (`posted`)
+     * only while the branch still holds it: after its commit is reverted, Finish publishes it again.
      * @param {object} t the target
      * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true }>}
      *     by `<project>/<file>`
@@ -514,7 +541,8 @@ export function createApp({
                 !decisionProblem(item, d.decision, d.reason ?? null) &&
                 (d.decision === "reject" || acceptable(t, project))
             ) {
-                mine.set(k, d);
+                const { posted, ...rest } = d;
+                mine.set(k, posted && !onBranch(t, project, item, d.decision) ? rest : d);
             }
         }
         return mine;
@@ -866,6 +894,7 @@ export function createApp({
                 );
             }
         }
+        await readTips();
         step("checking the baselines", 0, next.size);
         let checked = 0;
         for (const t of next.values()) {
@@ -923,6 +952,7 @@ export function createApp({
                 targets: [...targets.values()].map((t) => ({
                     ...t,
                     earlier: [...(t.earlier ?? [])],
+                    published: t.published ? [...t.published] : null,
                     projects: t.projects.map((p) => ({ ...p, results: undefined })),
                 })),
             });
@@ -933,6 +963,16 @@ export function createApp({
                 listWarnings.push(warning);
             }
         }
+    }
+
+    // One project of the kept list with its results read again; listed as downloading when they
+    // are gone.
+    async function restoredProject(p) {
+        const there = p.dir && (existsSync(join(p.dir, "results.json")) || existsSync(join(p.dir, SKIPPED_FILE)));
+        const loaded = there ? await project(p.project, p.dir, p.problem) : null;
+        return p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
+            ? { ...p, dir: null, results: null, problem: null, downloading: true }
+            : { ...p, results: loaded?.results ?? null };
     }
 
     /**
@@ -951,20 +991,20 @@ export function createApp({
             for (const t of saved.targets) {
                 const list = [];
                 for (const p of t.projects) {
-                    const there =
-                        p.dir && (existsSync(join(p.dir, "results.json")) || existsSync(join(p.dir, SKIPPED_FILE)));
-                    const loaded = there ? await project(p.project, p.dir, p.problem) : null;
-                    list.push(
-                        p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
-                            ? { ...p, dir: null, results: null, problem: null, downloading: true }
-                            : { ...p, results: loaded?.results ?? null },
-                    );
+                    list.push(await restoredProject(p));
                 }
                 const downloading = t.downloading === true || list.some((p) => p.downloading);
-                next.set(t.id, { ...t, earlier: new Map(t.earlier), projects: list, downloading });
+                next.set(t.id, {
+                    ...t,
+                    earlier: new Map(t.earlier),
+                    published: t.published ? new Map(t.published) : null,
+                    projects: list,
+                    downloading,
+                });
             }
             signer = await signingIdentity(repo);
             await readPasskeys();
+            await readTips();
             if (!loadedOnce) {
                 targets = next;
                 loadedOnce = true;
@@ -975,6 +1015,42 @@ export function createApp({
         }
     }
 
+    // Every fetched branch tip in one git call, once per refresh.
+    async function readTips() {
+        const out = await exec(
+            "git",
+            ["for-each-ref", "--format=%(objectname) %(refname:lstrip=3)", "refs/remotes/origin/"],
+            { cwd: repo },
+        ).catch(() => "");
+        tips = new Map(
+            out
+                .split("\n")
+                .filter(Boolean)
+                .map((l) => [l.slice(l.indexOf(" ") + 1), l.slice(0, l.indexOf(" "))]),
+        );
+        // A commit's records never change: keep those of tips still current.
+        const current = new Set(tips.values());
+        recordsAt = new Map([...recordsAt].filter(([key]) => current.has(key.split(" ")[0])));
+    }
+
+    // What this pull request's review records at its branch's fetched tip publish: the newest `to`
+    // per path. The captured head's (`earlier`) when the tip is that head, so the usual case reads
+    // nothing more; null when the branch was never fetched, so nothing is known about it.
+    async function publishedOn(t) {
+        const tip = t.branch ? tips.get(t.branch) : undefined;
+        if (tip === undefined) {
+            return null;
+        }
+        if (tip === t.headSha) {
+            return t.earlier;
+        }
+        const key = `${tip} ${t.pr}`;
+        if (!recordsAt.has(key)) {
+            recordsAt.set(key, await earlierAccepts(repo, tip, t.pr, config.baselines));
+        }
+        return recordsAt.get(key);
+    }
+
     // A target's captured commits, its earlier accepts and whether it is behind the default branch.
     async function decorate(t) {
         const first = t.projects.find((p) => p.results)?.results;
@@ -982,6 +1058,7 @@ export function createApp({
         t.headSha = first?.headSha ?? null;
         const base = t.pr === null ? t.commit : t.headSha;
         t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config.baselines);
+        t.published = await publishedOn(t);
         // null: unknown, when the captured head was never fetched or git fails.
         const known =
             base !== null &&
@@ -1332,11 +1409,9 @@ export function createApp({
         if (t.local || t.pr === null || !t.headSha) {
             return null;
         }
-        const base = `refs/remotes/origin/${defaultBranch}`;
-        let tip;
-        try {
-            tip = execFileSync("git", ["rev-parse", base], { cwd: repo }).toString("utf8").trim();
-        } catch {
+        // The tip the last refresh (or the restore of a kept list) read.
+        const tip = tips.get(defaultBranch);
+        if (tip === undefined) {
             return null;
         }
         const key = `${t.headSha}:${tip}`;
@@ -2090,6 +2165,10 @@ export function createApp({
                     }
                 }
             });
+        // The commit Finish pushed is the branch's tip now, before a refresh fetches it.
+        const pushed = async (commit) => {
+            t.published = await earlierAccepts(repo, commit, t.pr, config.baselines);
+        };
         try {
             j.result = await finish({
                 ...input,
@@ -2098,6 +2177,9 @@ export function createApp({
                     persist(j);
                 },
             });
+            if (j.result.commit) {
+                await pushed(j.result.commit);
+            }
             try {
                 clear(true);
             } catch (err) {
@@ -2113,6 +2195,7 @@ export function createApp({
         } catch (err) {
             if (err instanceof AcceptError && err.committed && !err.pullRequestMissing) {
                 // The accepts are on the branch; keep only the rejects, so Finish again only comments.
+                await pushed(err.committed);
                 try {
                     clear(false);
                 } catch (e) {

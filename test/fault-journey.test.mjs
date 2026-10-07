@@ -8,9 +8,14 @@
  *   FAULT_SEED=7 pnpm exec vitest run test/fault-journey.test.mjs
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { withRetries } from "../trusted/lib/github.mjs";
+import { hooks } from "./fault-hooks.mjs";
 import {
     assertDecisionsKept,
     assertOneCommitOrNone,
@@ -37,6 +42,76 @@ const REVIEWABLE = new Set(["changed", "moved", "new", "removed", "unstable", "f
 const DECIDABLE = new Set(["changed", "moved", "new", "removed"]);
 const PROJECTS = ["compact-mantine", "graphty-element"];
 const OTHER = "4".repeat(40);
+// The git reads whose answer cannot change during a journey: git's config, which no journey
+// changes, and what a commit named by its full sha holds (every other argument an option or a
+// path, never a ref name). A failed one (a commit not fetched yet) holds only until git next
+// writes. The injector never fails a read, so answering a repeat from memory changes no fault and
+// no answer; it only saves a git process.
+const SHA = /^[0-9a-f]{40}(\^\{commit\}|:.*)?$/;
+const REF = /^(refs\/|HEAD|[\w.-]+$)/;
+const settled = (args) => {
+    // Finish's git runs with `-c core.hooksPath=/dev/null` first.
+    const [command, ...rest] = args.filter((a, i) => a !== "-c" && args[i - 1] !== "-c");
+    return (
+        (command === "config" && rest.includes("--get")) ||
+        (["ls-tree", "show", "cat-file", "merge-base"].includes(command) &&
+            rest.some((a) => SHA.test(a)) &&
+            rest.every((a) => a.startsWith("-") || SHA.test(a) || !REF.test(a)))
+    );
+};
+const WRITES = new Set(["fetch", "push", "commit", "merge", "worktree", "update-ref", "lfs", "add", "rm"]);
+
+/**
+ * `exec` with the settled git reads answered from memory after the first time.
+ * @param {Map<string, { out?: string, err?: Error }>} memory the answers, by working directory
+ *     and arguments
+ * @returns {(real: Function, cmd: string, args: string[], options: object) => Promise<string>} it
+ */
+const remembering =
+    (memory) =>
+    (real, cmd, args, options = {}) => {
+        if (cmd !== "git" || !settled(args)) {
+            if (cmd === "git" && args.some((a) => WRITES.has(a))) {
+                for (const [key, answer] of memory) {
+                    if (answer.err && !answer.config) {
+                        memory.delete(key);
+                    }
+                }
+            }
+            return real(cmd, args, options);
+        }
+        const key = `${options.cwd}\0${args.join("\0")}`;
+        const known = memory.get(key);
+        if (known) {
+            return known.err ? Promise.reject(known.err) : Promise.resolve(known.out);
+        }
+        return real(cmd, args, options).then(
+            (out) => {
+                memory.set(key, { out });
+                return out;
+            },
+            (err) => {
+                memory.set(key, { err, config: args.includes("config") });
+                throw err;
+            },
+        );
+    };
+
+// One repository for every journey, copied for each: making it costs more git processes than a
+// journey's reads. Its two directories hold one absolute path, the remote's in the clone's config.
+let template;
+beforeAll(() => {
+    template = makeRepo();
+    git(template.repo, "push", "-q", "origin", "feature:refs/heads/other");
+});
+function freshRepo() {
+    const dir = mkdtempSync(join(tmpdir(), "vr-journey-"));
+    cpSync(template.dir, dir, { recursive: true });
+    const config = join(dir, "repo/.git/config");
+    writeFileSync(config, readFileSync(config, "utf8").replaceAll(template.remote, join(dir, "remote.git")));
+    return { ...template, dir, repo: join(dir, "repo"), remote: join(dir, "remote.git") };
+}
+
 const RANDOM_STEPS = ["load", "open", "decide", "decide", "decide", "undo", "acceptAll", "restart"];
 
 /**
@@ -81,8 +156,7 @@ afterEach(async () => {
 async function walk(run, seed, faults = {}, length = 9) {
     const pick = random(seed);
     const choose = (list) => (list.length === 0 ? undefined : list[Math.floor(pick() * list.length)]);
-    const r = makeRepo();
-    git(r.repo, "push", "-q", "origin", "feature:refs/heads/other");
+    const r = freshRepo();
     const w = world(r);
     w.data.prs.push({ number: 124, head: OTHER, branch: "other" });
     w.data.runs[OTHER] = { id: 1001, attempt: 1 };
@@ -104,6 +178,9 @@ async function walk(run, seed, faults = {}, length = 9) {
                 .replace(/\.part-\w+/g, ".part-*")
                 .replace(/\b(?!4{40}\b)[0-9a-f]{40}\b/g, "<sha>"),
     }).install();
+    const injected = hooks.exec;
+    const remember = remembering(new Map());
+    hooks.exec = (real, cmd, args, options) => injected((c, a, o) => remember(real, c, a, o), cmd, args, options);
     const log = captureLog(vi);
     // A page load waits for the captures to download, however long that takes: with the server's
     // one second, a download slowed by a busy machine went on after its step had been checked,

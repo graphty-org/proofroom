@@ -718,6 +718,43 @@ describe("serve: decisions and Finish", () => {
         expect(err.mock.calls.map(([line]) => line)).toEqual(["visual-review: Finish of #123 failed: nothing decided"]);
     });
 
+    it("treats a finished accept as published only while the branch holds it", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const decide = (file, decision, reason) =>
+            s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
+        await decide("badge--default.light.png", "accept");
+        await decide("slider--sizes.png", "reject", "thumb moved");
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        const decisions = async () => (await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions;
+        const unpublished = async () => (await s.api("GET", "/api/target/123")).body.unpublished;
+        await s.api("GET", "/api/prs");
+        expect((await decisions())["badge--default.light.png"]).toEqual({
+            decision: "accept",
+            reason: null,
+            posted: true,
+        });
+        expect(await unpublished()).toBe(0);
+        // The accept commit is reverted on the branch, and CI captures the same images again.
+        const clone = join(s.dir, "reverter");
+        git(s.dir, "clone", "-q", "-b", "feature", s.remote, clone);
+        git(clone, "config", "user.name", "Other");
+        git(clone, "config", "user.email", "other@example.com");
+        git(clone, "revert", "--no-edit", job.result.commit);
+        git(clone, "push", "-q", "origin", "feature");
+        await s.api("GET", "/api/prs");
+        // Decided, but no longer published: the next Finish publishes it again. The reject's
+        // comment is not on the branch, so the revert leaves it posted.
+        expect(await decisions()).toEqual({
+            "badge--default.light.png": { decision: "accept", reason: null },
+            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true },
+        });
+        expect(await unpublished()).toBe(1);
+    });
+
     it("runs Finish in the background, reports its step, and refuses a second one and new decisions", async () => {
         let release;
         const gate = new Promise((resolve) => (release = resolve));

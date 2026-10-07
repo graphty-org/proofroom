@@ -1700,7 +1700,7 @@ describe("review page: waits that say what they wait for", () => {
         expect(await downloading.count()).toBe(0);
     }, 30000);
 
-    it("says what a slow project or a slow save waits for", async () => {
+    it("says what a slow project waits for", async () => {
         await open((r) => ({ gh: onePr()(r) }), { review: false });
         let release;
         const held = new Promise((resolve) => (release = resolve));
@@ -1714,7 +1714,10 @@ describe("review page: waits that say what they wait for", () => {
         release();
         await page.locator(".component").first().waitFor();
         expect(await box()).toBeNull();
-        await page.unroute("**/api/pr/123/compact-mantine");
+    });
+
+    it("says what a slow save waits for", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -1965,6 +1968,51 @@ describe("review page: moving on", () => {
         await page.getByRole("button", { name: "Next: #124 (7 undecided)" }).click();
         await expect.poll(() => page.locator("#pick-target").inputValue()).toBe("124");
         await expect.poll(position).toMatch(/^1 of 6 /);
+    }, 30000);
+
+    it("suggests Finish only once every project of the target is decided, and says what is left where", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator(".component").first().waitFor();
+        await page.locator("#pick-project").selectOption("graphty-element");
+        await page.locator(".component").first().waitFor();
+        await page.locator("#review-undecided").click();
+        await ready();
+        await page.keyboard.press("a");
+        await expect
+            .poll(() => page.locator("#end-heading").textContent())
+            .toBe("End of graphty-element: 1 of 1 decided, 0 undecided.");
+        const end = await page.locator("#endcard").textContent();
+        expect(end).toContain("graphty-element done; compact-mantine has 6 undecided stories.");
+        expect(end).not.toContain("Every project");
+        expect(await page.locator("#endcard .offers button").first().textContent()).toBe(
+            "Next project: compact-mantine (6 undecided)",
+        );
+        // The grid of a decided project says the same, never "Finish when ready".
+        await page.getByRole("button", { name: "Back to the grid" }).click();
+        await expect
+            .poll(() => page.locator(".empty").textContent())
+            .toBe(
+                "graphty-element done; compact-mantine has 6 undecided stories.Next project: compact-mantine (6 undecided)",
+            );
+        await page.getByRole("button", { name: "Next project: compact-mantine (6 undecided)" }).click();
+        await expect.poll(() => page.locator("#pick-project").inputValue()).toBe("compact-mantine");
+        await page.locator(".component").first().waitFor();
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("4 of 6 decided");
+        for (const n of [1, 5]) {
+            await openStory(n);
+            await ready();
+            await page.keyboard.press("e");
+            await page.keyboard.type("flaky");
+            await page.keyboard.press("Enter");
+            await expect.poll(status).toMatch(/^Excluded #/);
+            await page.keyboard.press("Escape");
+        }
+        // The last item decided: now, and only now, Finish is suggested.
+        await page.getByRole("button", { name: "Needs a decision (0)" }).click();
+        await expect
+            .poll(() => page.locator(".empty").textContent())
+            .toBe("Everything is decided. Finish #123 when ready.");
     }, 30000);
 
     it("jumps to another target and project from the header's pickers", async () => {
