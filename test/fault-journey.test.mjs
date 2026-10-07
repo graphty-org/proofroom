@@ -40,7 +40,37 @@ const OTHER = "4".repeat(40);
 const RANDOM_STEPS = ["load", "open", "decide", "decide", "decide", "undo", "acceptAll", "restart"];
 
 /**
+ * The journey running now. A test that times out leaves its journey running, and that journey's
+ * faults, server log and teardown landed in the next test's (a "failure invisible" there), so
+ * afterEach stops it at its next step and waits for it to end.
+ * @type {{ stopped: boolean, done: Promise<unknown> } | null}
+ */
+let current = null;
+
+/**
+ * One journey, which afterEach can stop: see `walk`.
+ * @param {...any} args walk's, after the first
+ * @returns {ReturnType<typeof walk>} walk's
+ */
+function journey(...args) {
+    const run = { stopped: false, done: null };
+    run.done = walk(run, ...args);
+    current = run;
+    return run.done;
+}
+
+afterEach(async () => {
+    if (current) {
+        current.stopped = true;
+        await current.done.catch(() => {});
+        current = null;
+    }
+    vi.restoreAllMocks();
+});
+
+/**
  * One journey: two pull requests (#123 is finished at the end, #124 is only reviewed).
+ * @param {{ stopped: boolean }} run set `stopped` to end it before its next step
  * @param {number} seed picks the steps and the faults
  * @param {object} [faults] the injector's random faults: `rate`, `where`, `kinds`; `quiet` looks
  *     past failures that are shown but not logged, or swallowed, to the other invariants
@@ -48,7 +78,7 @@ const RANDOM_STEPS = ["load", "open", "decide", "decide", "decide", "undo", "acc
  * @returns {Promise<{ violation: string | null, steps: string[], faults: string[], log: string[] }>}
  *     the first broken invariant, what each step answered, the faults met (sorted) and the log
  */
-async function journey(seed, faults = {}, length = 9) {
+async function walk(run, seed, faults = {}, length = 9) {
     const pick = random(seed);
     const choose = (list) => (list.length === 0 ? undefined : list[Math.floor(pick() * list.length)]);
     const r = makeRepo();
@@ -75,8 +105,11 @@ async function journey(seed, faults = {}, length = 9) {
                 .replace(/\b(?!4{40}\b)[0-9a-f]{40}\b/g, "<sha>"),
     }).install();
     const log = captureLog(vi);
-    const gh = withRetries(inj.gh(w.gh), [0, 0, 0]);
-    let s = await startApp(r, { gh });
+    // A page load waits for the captures to download, however long that takes: with the server's
+    // one second, a download slowed by a busy machine went on after its step had been checked,
+    // and the failure it met was logged in the next step's window.
+    const options = { gh: withRetries(inj.gh(w.gh), [0, 0, 0]), patience: Infinity };
+    let s = await startApp(r, options);
 
     /** Decisions the API accepted, by `<target>|<project>|<file>`. */
     const model = new Map();
@@ -214,7 +247,7 @@ async function journey(seed, faults = {}, length = 9) {
         },
         async restart() {
             await s.close();
-            s = await startApp(r, { gh });
+            s = await startApp(r, options);
             return "restarted";
         },
     };
@@ -247,14 +280,22 @@ async function journey(seed, faults = {}, length = 9) {
         return { status: res.status, error: j.error };
     }
 
+    const halt = () => {
+        if (run.stopped) {
+            throw new Error("stopped: its test ended");
+        }
+    };
+
     try {
         steps.push(`load ${await act.load()}`);
         await check();
         for (let i = 0; i < length; i++) {
+            halt();
             const name = choose(RANDOM_STEPS);
             steps.push(`${name} ${await act[name]()}`);
             await check();
         }
+        halt();
         if ([...model.keys()].some((k) => k.startsWith("123|"))) {
             let out = await finishOnce();
             steps.push(`finish ${out.status} ${(out.error ?? "").replaceAll(r.dir, "<dir>")}`.trim());
@@ -263,6 +304,7 @@ async function journey(seed, faults = {}, length = 9) {
                 steps.push(`finish again ${out.status} ${(out.error ?? "").replaceAll(r.dir, "<dir>")}`.trim());
             }
         }
+        halt();
         steps.push(`load ${await act.load()}`);
         await check();
         return { violation: null, steps, faults: inj.trace().split("\n").filter(Boolean).sort(), log: log.lines };
@@ -282,8 +324,6 @@ async function journey(seed, faults = {}, length = 9) {
         await s.close();
     }
 }
-
-afterEach(() => vi.restoreAllMocks());
 
 const only = process.env.FAULT_SEED ? [Number(process.env.FAULT_SEED)] : null;
 const report = (out) => {
@@ -314,7 +354,10 @@ describe("random journeys", () => {
 
     it("replays a seed exactly: the same faults, the same answers", async () => {
         const all = { rate: 0.15, where: () => true };
-        const [a, b] = [await journey(11, all), await journey(11, all)];
+        // Three random steps, then Finish twice over a failing push: every kind of call a journey
+        // makes, at a third of the git processes of a full one.
+        const [a, b] = [await journey(22, all, 3), await journey(22, all, 3)];
+        expect(a.steps.filter((x) => x.startsWith("finish"))).toHaveLength(2);
         expect(a.faults.length).toBeGreaterThan(0);
         expect(b.faults).toEqual(a.faults);
         expect(b.steps).toEqual(a.steps);

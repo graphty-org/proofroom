@@ -650,21 +650,23 @@ describe("passkey approvals", () => {
     });
 
     it("fails closed on an invalid base file, on switching enforcement off, and without --pr", () => {
-        const bad = repoWith('{ "version": 1, "keys": [{ "id": "x" }] }');
-        expect(approvalKeys("master", "pr", 7, bad.repo).problems[0]).toMatch(
-            /^visual-review\/passkeys.json on the base branch is invalid: keys\[0\]\.rpId/,
-        );
-        for (const change of ['{ "version": 1, "keys": [] }', null, "{"]) {
-            const r = repoWith(passkeysJson(KEY));
-            commit(r, { [PASSKEYS_FILE]: change });
-            expect(approvalKeys("master", "pr", 7, r.repo).problems).toEqual([
-                "this pull request would switch approval enforcement off: its visual-review/passkeys.json is missing, invalid or holds no key",
-            ]);
-        }
+        // One repository, a branch per case: master holds a key, `bad` an invalid file.
         const r = repoWith(passkeysJson(KEY));
         expect(approvalKeys("master", "pr", undefined, r.repo).problems).toEqual([
             "approvals are enforced (visual-review/passkeys.json on the base branch holds a key), so the gate needs --pr <number>",
         ]);
+        for (const [i, change] of ['{ "version": 1, "keys": [] }', null, "{"].entries()) {
+            git(r.repo, "checkout", "-q", "-b", `off-${i}`, "master");
+            commit(r, { [PASSKEYS_FILE]: change });
+            expect(approvalKeys("master", `off-${i}`, 7, r.repo).problems).toEqual([
+                "this pull request would switch approval enforcement off: its visual-review/passkeys.json is missing, invalid or holds no key",
+            ]);
+        }
+        git(r.repo, "checkout", "-q", "-b", "bad", "master");
+        commit(r, { [PASSKEYS_FILE]: '{ "version": 1, "keys": [{ "id": "x" }] }' });
+        expect(approvalKeys("bad", "pr", 7, r.repo).problems[0]).toMatch(
+            /^visual-review\/passkeys.json on the base branch is invalid: keys\[0\]\.rpId/,
+        );
     });
 
     describe("records count only from the base branch's contents", () => {
