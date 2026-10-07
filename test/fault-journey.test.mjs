@@ -429,16 +429,26 @@ describe("random journeys", () => {
         },
     );
 
-    it("replays a seed exactly: the same faults, the same answers", async () => {
+    // Three random steps, then Finish twice over a failing push: every kind of call a journey
+    // makes, at a third of the git processes of a full one. Each run is a test of its own, so a
+    // test holds one journey's work, not two.
+    describe("replays a seed exactly", () => {
         const all = { rate: 0.15, where: () => true };
-        // Three random steps, then Finish twice over a failing push: every kind of call a journey
-        // makes, at a third of the git processes of a full one.
-        const [a, b] = [await journey(22, all, 3), await journey(22, all, 3)];
-        expect(a.steps.filter((x) => x.startsWith("finish"))).toHaveLength(2);
-        expect(a.faults.length).toBeGreaterThan(0);
-        expect(b.faults).toEqual(a.faults);
-        expect(b.steps).toEqual(a.steps);
-        expect(b.violation).toBe(a.violation);
+        let first = null;
+
+        it("runs seed 22 once, through Finish twice and gh, git and state-file faults", async () => {
+            first = await journey(22, all, 3);
+            expect(first.steps.filter((x) => x.startsWith("finish"))).toHaveLength(2);
+            expect(new Set(first.faults.map((f) => f.trim().split(" ")[2]))).toEqual(new Set(["gh", "git", "fs"]));
+        });
+
+        it("runs it again: the same faults, the same answers", async () => {
+            expect(first, "the first run did not finish").not.toBeNull();
+            const again = await journey(22, all, 3);
+            expect(again.faults).toEqual(first.faults);
+            expect(again.steps).toEqual(first.steps);
+            expect(again.violation).toBe(first.violation);
+        });
     });
 
     const SEEDS = only ?? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
