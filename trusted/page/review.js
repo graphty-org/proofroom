@@ -524,8 +524,9 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null,
 // The reason a Reject or Exclude needs, asked in a box with the cursor already in its field, so a
 // hardware keyboard types straight into it. Resolves the reason, or null for Cancel or Escape. What
 // is typed stays with the item (drafts) until its decision is saved, cancelled or not.
-const EACH = "each";
 function askReason(item, decision, label = null) {
+    // A group's reason covers each of its stories.
+    const which = label ? "each" : "this";
     const key = draftKey(item);
     const verb = decision === "reject" ? "Reject" : "Exclude";
     const field = el("input", {
@@ -559,7 +560,7 @@ function askReason(item, decision, label = null) {
             "label",
             { id: "reason-label", for: "reason" },
             label ?? `Reason to ${decision} #${numberOf(item)}`,
-            decision === "exclude" ? `: Exclude stops capturing every mode of ${label ? EACH : "this"} story.` : "",
+            decision === "exclude" ? `: Exclude stops capturing every mode of ${which} story.` : "",
         ),
         field,
         alert,
