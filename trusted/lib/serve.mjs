@@ -1404,10 +1404,12 @@ export function createApp({
         if (t.local || t.pr === null || !t.headSha) {
             return null;
         }
-        const base = `refs/remotes/origin/${defaultBranch}`;
-        let tip;
+        // The tip the last refresh read; only before the first one does this ask git itself.
+        let tip = tips.get(defaultBranch);
         try {
-            tip = execFileSync("git", ["rev-parse", base], { cwd: repo }).toString("utf8").trim();
+            tip ??= execFileSync("git", ["rev-parse", `refs/remotes/origin/${defaultBranch}`], { cwd: repo })
+                .toString("utf8")
+                .trim();
         } catch {
             return null;
         }
