@@ -151,7 +151,14 @@ export function signature(item) {
     const region = `${["top", "middle", "bottom"][third(y + bh / 2, h)]}-${["left", "center", "right"][third(x + bw / 2, w)]}`;
     const share = (bw * bh) / (w * h);
     // A speck is a speck however far apart its few pixels lie.
-    const extent = kind === "speck" ? "any" : share < 0.01 ? "small" : share < 0.2 ? "medium" : "large";
+    let extent = "large";
+    if (kind === "speck") {
+        extent = "any";
+    } else if (share < 0.01) {
+        extent = "small";
+    } else if (share < 0.2) {
+        extent = "medium";
+    }
     return `${kind} ${region} ${extent}`;
 }
 

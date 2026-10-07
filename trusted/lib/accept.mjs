@@ -1072,10 +1072,7 @@ async function planWrites(repo, base, writes, baselines) {
         files.push({ path, bytes: w.bytes ?? null });
         counts.accept++;
         if (!w.item.from) {
-            // An image the owner approved before for this story: the record names where, and the
-            // gate checks that earlier approval before the item counts.
-            const before = w.approvedBefore ? { approvedBefore: w.approvedBefore } : {};
-            items.push({ path, from: w.item.baseline, to: w.item.capture, reason: w.reason, ...before });
+            items.push({ path, from: w.item.baseline, to: w.item.capture, reason: w.reason, ...provenance(w) });
             continue;
         }
         // A rename: the old id's baseline (of this mode) goes, the new one takes its place. For a
@@ -1106,6 +1103,10 @@ const blobAt = (repo, ref, path) =>
 
 // The results.json a Finish with nothing decided reports on: its first loaded project's.
 const firstCapture = (projects) => Object.values(projects).find((p) => p?.results)?.results ?? null;
+
+// An image the owner approved before for this story: the record item names where, and the gate
+// checks that earlier approval before the item counts.
+const provenance = (w) => (w.approvedBefore ? { approvedBefore: w.approvedBefore } : {});
 
 // Two modes of one story excluded together write one settings file: keep one record item.
 const dedupe = (items) => [...new Map(items.map((i) => [i.path, i])).values()];

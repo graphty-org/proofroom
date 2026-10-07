@@ -649,37 +649,39 @@ describe("passkey approvals", () => {
         });
 
         it("moves nothing on the page's word: a record for another image, an unsigned one, a missing one or a chain", () => {
-            const unrecorded = `${PATH}: changed with no review record taking it from its base branch contents to these`;
-            const cases = [
-                [signed(v2(5, "f".repeat(64))), {}, "the earlier record does not approve this image for this story"],
-                [v2(5), {}, "the record has no passkey approval"],
-                [signed(v2(5)), { pr: 6 }, "the earlier record is for #5, not #6"],
-                [
-                    signed(v2(5)),
-                    { record: "visual-baselines/reviews/nothing.json" },
-                    "visual-baselines/reviews/nothing.json is not at",
-                ],
-                [
-                    signed(v2(5)),
-                    { record: "visual-baselines/../passkeys.json" },
-                    "it names no commit and review record",
-                ],
-            ];
-            for (const [earlier, extra, why] of cases) {
-                const r = repoWith(passkeysJson(KEY));
-                const sha = earlierOn(r, earlier);
-                commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(reused(sha, extra)) });
-                const lines = check(r);
-                expect(lines[0]).toContain(
-                    `visual-baselines/reviews/r.json: ${PATH} is marked approved before, but ${why}`,
-                );
-                expect(lines.at(-1)).toBe(unrecorded);
-            }
-            // An earlier record whose own item was approved before approves nothing further.
             const r = repoWith(passkeysJson(KEY));
-            const first = earlierOn(r, signed({ ...reused("1".repeat(40)), pr: 5 }));
-            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(reused(first)) });
-            expect(check(r)[0]).toContain("does not approve this image");
+            // Every earlier record in one commit, and one item per case in one record of this pull request.
+            const at = (name) => `visual-baselines/reviews/${name}.json`;
+            git(r.repo, "checkout", "-q", "-b", "other", "master");
+            commit(r, {
+                [at("other-image")]: signed(v2(5, "f".repeat(64))),
+                [at("unsigned")]: v2(5),
+                [at("for-5")]: signed(v2(5)),
+                [at("chained")]: signed({ ...reused("1".repeat(40)), pr: 5 }),
+            });
+            const sha = git(r.repo, "rev-parse", "HEAD");
+            git(r.repo, "push", "-q", "origin", "other");
+            git(r.repo, "checkout", "-q", "pr");
+            const cases = [
+                [{ record: at("other-image") }, "the earlier record does not approve this image for this story"],
+                [{ record: at("unsigned") }, "the record has no passkey approval"],
+                [{ record: at("for-5"), pr: 6 }, "the earlier record is for #5, not #6"],
+                [{ record: at("nothing") }, `${at("nothing")} is not at ${sha}`],
+                [{ record: "visual-baselines/../passkeys.json" }, "it names no commit and review record"],
+                [{ record: at("chained") }, "the earlier record does not approve this image for this story"],
+            ];
+            const record = v2();
+            record.items = cases.map(([extra]) => ({
+                ...record.items[0],
+                approvedBefore: { pr: 5, commit: sha, record: RECORD, ...extra },
+            }));
+            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(record) });
+            expect(check(r)).toEqual([
+                ...cases.map(
+                    ([, why]) => `visual-baselines/reviews/r.json: ${PATH} is marked approved before, but ${why}`,
+                ),
+                `${PATH}: changed with no review record taking it from its base branch contents to these`,
+            ]);
         });
 
         it("checks the earlier record even before passkeys are enforced", () => {

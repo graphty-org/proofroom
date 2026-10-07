@@ -524,6 +524,7 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null,
 // The reason a Reject or Exclude needs, asked in a box with the cursor already in its field, so a
 // hardware keyboard types straight into it. Resolves the reason, or null for Cancel or Escape. What
 // is typed stays with the item (drafts) until its decision is saved, cancelled or not.
+const EACH = "each";
 function askReason(item, decision, label = null) {
     const key = draftKey(item);
     const verb = decision === "reject" ? "Reject" : "Exclude";
@@ -558,7 +559,7 @@ function askReason(item, decision, label = null) {
             "label",
             { id: "reason-label", for: "reason" },
             label ?? `Reason to ${decision} #${numberOf(item)}`,
-            decision === "exclude" ? `: Exclude stops capturing every mode of ${label ? "each" : "this"} story.` : "",
+            decision === "exclude" ? `: Exclude stops capturing every mode of ${label ? EACH : "this"} story.` : "",
         ),
         field,
         alert,
@@ -658,7 +659,8 @@ const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
 // A decision the owner took, not an accept the server took because the image was approved before.
 const firmDecision = (item) => (decisionOf(item)?.approvedBefore ? null : decisionOf(item));
 const day = (iso) => (iso ? String(iso).slice(0, 10) : "");
-const approvedText = (a) => `Approved before (${a.pr === null ? "seed" : `#${a.pr}`}, ${day(a.reviewedAt)})`;
+const prName = (pr) => (pr === null ? "seed" : "#" + pr);
+const approvedText = (a) => `Approved before (${prName(a.pr)}, ${day(a.reviewedAt)})`;
 // The image a decision is about, as the server checks it: a decision on an image another run
 // replaced since this page loaded is refused.
 const imageHash = (item) => item.capture ?? item.baseline ?? null;
@@ -1983,26 +1985,37 @@ function decisionLine(item) {
     if (!d) {
         return null;
     }
-    const text = d.approvedBefore
-        ? approvedText(d.approvedBefore)
-        : `${DECISIONS[d.decision]}${d.bulk ? " (not opened)" : ""}${d.reason ? `: ${d.reason}` : ""}`;
+    const text = d.approvedBefore ? approvedText(d.approvedBefore) : decisionText(d);
+    // An accept taken as approved before has nothing to undo: Reject or Exclude replaces it.
+    const fixed = d.approvedBefore && !d.posted;
+    let after = null;
+    if (d.posted) {
+        after = el("span", { class: "meta" }, postedText(d));
+    } else if (!fixed) {
+        after = undoButton(item, d);
+    }
     return el(
         "div",
         { class: `decision ${d.decision}`, "data-file": item.file },
         el("span", { class: "what" }, text),
-        d.approvedBefore && !d.posted
-            ? null
-            : d.posted
-              ? el("span", { class: "meta" }, postedText(d))
-              : el(
-                    "button",
-                    {
-                        type: "button",
-                        "aria-label": `Undo the ${d.decision} of ${itemName(item)}`,
-                        onclick: () => undo([item.file], `#${numberOf(item)}`, true),
-                    },
-                    "Undo",
-                ),
+        after,
+    );
+}
+
+const decisionText = (d) => {
+    const reason = d.reason ? ": " + d.reason : "";
+    return `${DECISIONS[d.decision]}${d.bulk ? " (not opened)" : ""}${reason}`;
+};
+
+function undoButton(item, d) {
+    return el(
+        "button",
+        {
+            type: "button",
+            "aria-label": `Undo the ${d.decision} of ${itemName(item)}`,
+            onclick: () => undo([item.file], `#${numberOf(item)}`, true),
+        },
+        "Undo",
     );
 }
 
@@ -2232,8 +2245,8 @@ function clustersOf(items) {
 const KINDS = { pixels: "changes", speck: "specks (under 50 pixels)", size: "size changes" };
 const clusterName = (c) => {
     const [kind, region, extent] = c.signature.split(" ");
-    const where =
-        region === "whole" ? "" : ` in a ${extent === "any" ? "" : `${extent} area, `}${region.replace("-", " ")}`;
+    const area = extent === "any" ? "" : extent + " area, ";
+    const where = region === "whole" ? "" : ` in a ${area}${region.replace("-", " ")}`;
     const px = c.pixels[0] === c.pixels[1] ? `${c.pixels[0]}` : `${c.pixels[0]} to ${c.pixels[1]}`;
     return `${c.members.length} similar ${KINDS[kind] ?? kind}${where}, ${px} pixels each`;
 };
