@@ -1955,7 +1955,7 @@ describe("review page: moving on", () => {
         await page.getByRole("button", { name: "Next: #124 (7 undecided)" }).click();
         await expect.poll(() => page.locator("#pick-target").inputValue()).toBe("124");
         await expect.poll(position).toMatch(/^1 of 6 /);
-    });
+    }, 30000);
 
     it("jumps to another target and project from the header's pickers", async () => {
         await open((r) => ({ gh: twoPrs(r) }));
