@@ -649,22 +649,29 @@ describe("passkey approvals", () => {
         expect(check(r)).toContain("visual-baselines/reviews/junk.json: not valid JSON");
     });
 
-    it("fails closed on an invalid base file, on switching enforcement off, and without --pr", () => {
-        // One repository, a branch per case: master holds a key, `bad` an invalid file.
+    // One case per test: each builds its own repository, and a test holds one case's git work.
+    it("fails closed without --pr when the base branch holds a key", () => {
         const r = repoWith(passkeysJson(KEY));
         expect(approvalKeys("master", "pr", undefined, r.repo).problems).toEqual([
             "approvals are enforced (visual-review/passkeys.json on the base branch holds a key), so the gate needs --pr <number>",
         ]);
-        for (const [i, change] of ['{ "version": 1, "keys": [] }', null, "{"].entries()) {
-            git(r.repo, "checkout", "-q", "-b", `off-${i}`, "master");
-            commit(r, { [PASSKEYS_FILE]: change });
-            expect(approvalKeys("master", `off-${i}`, 7, r.repo).problems).toEqual([
-                "this pull request would switch approval enforcement off: its visual-review/passkeys.json is missing, invalid or holds no key",
-            ]);
-        }
-        git(r.repo, "checkout", "-q", "-b", "bad", "master");
-        commit(r, { [PASSKEYS_FILE]: '{ "version": 1, "keys": [{ "id": "x" }] }' });
-        expect(approvalKeys("bad", "pr", 7, r.repo).problems[0]).toMatch(
+    });
+
+    it.each([
+        ["emptied", '{ "version": 1, "keys": [] }'],
+        ["deleted", null],
+        ["broken", "{"],
+    ])("fails closed on switching enforcement off: passkeys.json %s", (_, change) => {
+        const r = repoWith(passkeysJson(KEY));
+        commit(r, { [PASSKEYS_FILE]: change });
+        expect(approvalKeys("master", "pr", 7, r.repo).problems).toEqual([
+            "this pull request would switch approval enforcement off: its visual-review/passkeys.json is missing, invalid or holds no key",
+        ]);
+    });
+
+    it("fails closed on an invalid base file", () => {
+        const bad = repoWith('{ "version": 1, "keys": [{ "id": "x" }] }');
+        expect(approvalKeys("master", "pr", 7, bad.repo).problems[0]).toMatch(
             /^visual-review\/passkeys.json on the base branch is invalid: keys\[0\]\.rpId/,
         );
     });
