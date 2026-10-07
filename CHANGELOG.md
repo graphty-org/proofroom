@@ -1,3 +1,13 @@
+## 0.2.13 (2026-10-07)
+
+### 🩹 Fixes
+
+- **visual-review:** compare a merge-queue batch with the commit it sits on ([2752fc86d](https://github.com/graphty-org/graphty-monorepo/commit/2752fc86d))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.12 (2026-10-06)
 
 ### 🚀 Features
