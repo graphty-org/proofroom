@@ -194,27 +194,6 @@ async function earlierAccepts(repo, head, pr, baselines) {
 }
 
 /**
- * What this pull request's review records on its branch, as fetched, publish: the newest `to` per
- * path (earlierAccepts at the branch's tip). Null when the branch was never fetched, so nothing is
- * known about it.
- * @param {string} repo the repository
- * @param {string | null} branch the pull request's branch
- * @param {number | null} pr the pull request
- * @param {string} baselines the baselines directory
- * @returns {Promise<Map<string, string | null> | null>} `to` by baseline path, or null
- */
-async function publishedOn(repo, branch, pr, baselines) {
-    const tip = branch && `refs/remotes/origin/${branch}`;
-    const known =
-        tip &&
-        (await exec("git", ["rev-parse", "--verify", "-q", `${tip}^{commit}`], { cwd: repo }).then(
-            () => true,
-            () => false,
-        ));
-    return known ? earlierAccepts(repo, tip, pr, baselines) : null;
-}
-
-/**
  * Who Finish's commit will be signed by: the git configuration of the server's own environment.
  * An agent that starts the server passes on its GIT_CONFIG_* overrides, and with them its own
  * signing key, so the page shows this before every Finish, with where git found the key.
@@ -331,6 +310,11 @@ export function createApp({
     const names = Object.keys(projects);
     /** @type {Map<string, object>} targets by id: a pull request number, or "master" */
     let targets = new Map();
+    // Each pull request branch's fetched tip, read once per refresh, and the review records at a
+    // tip (by tip and pull request, kept while the tip is current) for decisionsOf's "still on
+    // the branch" check.
+    let tips = new Map();
+    let recordsAt = new Map();
     /** What the last refresh could not read from GitHub (the pull request list, a git fetch). */
     let listWarnings = [];
     /** Why a target's saved decisions were set aside, by target id. */
@@ -909,6 +893,7 @@ export function createApp({
                 );
             }
         }
+        await readTips();
         step("checking the baselines", 0, next.size);
         let checked = 0;
         for (const t of next.values()) {
@@ -1025,6 +1010,42 @@ export function createApp({
         }
     }
 
+    // Every fetched branch tip in one git call, once per refresh.
+    async function readTips() {
+        const out = await exec(
+            "git",
+            ["for-each-ref", "--format=%(objectname) %(refname:lstrip=3)", "refs/remotes/origin/"],
+            { cwd: repo },
+        ).catch(() => "");
+        tips = new Map(
+            out
+                .split("\n")
+                .filter(Boolean)
+                .map((l) => [l.slice(l.indexOf(" ") + 1), l.slice(0, l.indexOf(" "))]),
+        );
+        // A commit's records never change: keep those of tips still current.
+        const current = new Set(tips.values());
+        recordsAt = new Map([...recordsAt].filter(([key]) => current.has(key.split(" ")[0])));
+    }
+
+    // What this pull request's review records at its branch's fetched tip publish: the newest `to`
+    // per path. The captured head's (`earlier`) when the tip is that head, so the usual case reads
+    // nothing more; null when the branch was never fetched, so nothing is known about it.
+    async function publishedOn(t) {
+        const tip = t.branch ? tips.get(t.branch) : undefined;
+        if (tip === undefined) {
+            return null;
+        }
+        if (tip === t.headSha) {
+            return t.earlier;
+        }
+        const key = `${tip} ${t.pr}`;
+        if (!recordsAt.has(key)) {
+            recordsAt.set(key, await earlierAccepts(repo, tip, t.pr, config.baselines));
+        }
+        return recordsAt.get(key);
+    }
+
     // A target's captured commits, its earlier accepts and whether it is behind the default branch.
     async function decorate(t) {
         const first = t.projects.find((p) => p.results)?.results;
@@ -1032,7 +1053,7 @@ export function createApp({
         t.headSha = first?.headSha ?? null;
         const base = t.pr === null ? t.commit : t.headSha;
         t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config.baselines);
-        t.published = await publishedOn(repo, t.branch, t.pr, config.baselines);
+        t.published = await publishedOn(t);
         // null: unknown, when the captured head was never fetched or git fails.
         const known =
             base !== null &&
