@@ -3215,18 +3215,7 @@ async function fillEnd(card, seq) {
     const offer = (label, onclick, cls = null) =>
         el("button", { type: "button", class: cls, onclick, "aria-describedby": "end-heading" }, label);
     const offers = [];
-    const finish = isLocal()
-        ? null
-        : el(
-              "button",
-              {
-                  type: "button",
-                  class: next ? null : "primary",
-                  "aria-describedby": "end-heading",
-                  onclick: (e) => finishTarget(t.id, e.currentTarget),
-              },
-              `Finish ${labelOf(t)} (${t.unpublished})`,
-          );
+    const finish = isLocal() ? null : endFinish(t, !next);
     // The next project comes first (focused, so Enter takes it): moving on is the usual step. The
     // items of this project left undecided (a skim with J) come next, or first when no project is.
     if (next) {
@@ -3274,24 +3263,33 @@ async function fillEnd(card, seq) {
             ),
             isLocal() ? null : el("p", {}, verdict),
             el("div", { class: "offers" }, offers),
-            waitingFor.length > 0
-                ? el(
-                      "ul",
-                      { class: "meta" },
-                      waitingFor.map((p) =>
-                          el(
-                              "li",
-                              {},
-                              t.download
-                                  ? `${p.project}: downloading (${t.download.done} of ${plural(t.download.total, "artifact")} done)`
-                                  : `${p.project}: downloading`,
-                          ),
-                      ),
-                  )
-                : null,
+            waitingFor.length > 0 ? downloadingList(t, waitingFor) : null,
         ].filter(Boolean),
     );
     offers[0].focus();
+}
+
+// The end card's Finish, primary when no next project comes first.
+const endFinish = (t, primary) =>
+    el(
+        "button",
+        {
+            type: "button",
+            class: primary ? "primary" : null,
+            "aria-describedby": "end-heading",
+            onclick: (e) => finishTarget(t.id, e.currentTarget),
+        },
+        `Finish ${labelOf(t)} (${t.unpublished})`,
+    );
+
+// The end card's projects still downloading, with the download's progress when known.
+function downloadingList(t, projects) {
+    const progress = t.download ? ` (${t.download.done} of ${plural(t.download.total, "artifact")} done)` : "";
+    return el(
+        "ul",
+        { class: "meta" },
+        projects.map((p) => el("li", {}, `${p.project}: downloading${progress}`)),
+    );
 }
 
 function showEnd(message) {
