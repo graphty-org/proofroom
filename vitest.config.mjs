@@ -9,7 +9,7 @@ export default defineConfig({
         // No test runs git with the developer's own config (signing, hooks) or a hook's GIT_DIR.
         setupFiles: ["test/isolate-git.setup.mjs"],
         // The repository every test's makeRepo copies.
-        globalSetup: ["test/repo-template.setup.mjs"],
+        globalSetup: ["test/repo-template.setup.mjs", "../tools/test-slots.mjs"],
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "json", "lcov", "html"],

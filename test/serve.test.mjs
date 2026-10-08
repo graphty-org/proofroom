@@ -1,6 +1,16 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { createServer, request } from "node:http";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { parsePasskeys, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
@@ -250,6 +260,46 @@ describe("serve: pull requests", () => {
         expect(body.targets[0].projects.find((p) => p.project === "compact-mantine").problem).toBe(
             "incomplete: 7 of 20 stories",
         );
+    });
+
+    it("answers other requests while a git call of the list's refresh is held", async () => {
+        // A git that holds the default branch's passkeys.json read (legacyApprovals' first call)
+        // until the test releases it. Run on the server's own thread, as it once was, that read
+        // blocked every request, and a git that stalled for seconds timed out the list (#1496).
+        // On such a server the test cannot release it, so the hold ends by itself after 10 s and
+        // the test fails on its timeout instead of hanging.
+        const bin = mkdtempSync(join(tmpdir(), "vr-git-"));
+        const real = process.env.PATH.split(delimiter)
+            .map((d) => join(d, "git"))
+            .find((f) => existsSync(f));
+        const gate = { held: join(bin, "held"), release: join(bin, "release") };
+        writeFileSync(
+            join(bin, "git"),
+            [
+                "#!/bin/sh",
+                'case "$*" in "show "*":visual-review/passkeys.json")',
+                `  : > '${gate.held}'; i=0`,
+                `  while [ ! -e '${gate.release}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done ;;`,
+                "esac",
+                `exec '${real}' "$@"`,
+                "",
+            ].join("\n"),
+        );
+        chmodSync(join(bin, "git"), 0o755);
+        const path = process.env.PATH;
+        process.env.PATH = `${bin}${delimiter}${path}`;
+        onTestFinished(() => {
+            process.env.PATH = path;
+            rmSync(bin, { recursive: true, force: true });
+        });
+        const s = await start({ gh: onePr() });
+        const list = s.api("GET", "/api/prs");
+        while (!existsSync(gate.held)) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect((await s.api("GET", "/api/inbox")).status).toBe(200);
+        writeFileSync(gate.release, "");
+        expect((await list).status).toBe(200);
     });
 
     it("shows the newest attempt's artifact", async () => {
@@ -935,7 +985,12 @@ describe("serve: local previews of a pull request", () => {
         const r = makeRepo();
         const previews = join(r.dir, "previews");
         preview(previews, "compact-mantine", r.head);
-        // CI's run holds only graphty-element, and its download takes longer than the page waits.
+        // CI's run holds only graphty-element, and its download lasts until the test has looked: a
+        // download that merely sleeps longer than the page waits can land while a slow response is
+        // still being built, and its row is filled in place before the page sees it.
+        let land;
+        const landing = new Promise((resolve) => (land = resolve));
+        onTestFinished(() => land());
         const s = await start({
             ...r,
             previews,
@@ -943,7 +998,7 @@ describe("serve: local previews of a pull request", () => {
                 const ci = onePr({ artifacts: { 1000: ["visual-graphty-element-1"] } })(repo);
                 return async (args, input) => {
                     if (args[0] === "run" && args[1] === "download") {
-                        await new Promise((resolve) => setTimeout(resolve, 1500));
+                        await landing;
                     }
                     return ci(args, input);
                 };
@@ -1262,11 +1317,11 @@ describe("serve: safe filters", () => {
         const name = git(s.repo, "diff", "--name-only", s.master, "origin/feature", "--", "visual-baselines/reviews/");
         const committed = JSON.parse(git(s.repo, "show", `origin/feature:${name}`));
         expect(committed.items).toEqual([{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null, approvedBefore }]);
-        // CI gates the pull request merged into master, which holds the earlier approval.
-        git(s.repo, "checkout", "-q", "--detach", "master");
-        git(s.repo, "merge", "-q", "--no-edit", "origin/feature");
-        expect(unrecordedChanges("master", "HEAD", s.repo)).toEqual([]);
-        git(s.repo, "checkout", "-q", "master");
+        // CI gates the pull request merged into master, which holds the earlier approval. Merged as
+        // objects only: a checkout and a merge in the working tree run the Git LFS hooks and filter.
+        const tree = git(s.repo, "merge-tree", "--write-tree", "master", "origin/feature");
+        const merged = git(s.repo, "commit-tree", tree, "-p", "master", "-p", "origin/feature", "-m", "merge");
+        expect(unrecordedChanges("master", merged, s.repo)).toEqual([]);
         // What Finish published stays shown as published.
         ({ body } = await s.api("GET", "/api/pr/123/compact-mantine"));
         expect(body.decisions["button--primary.dark.png"]).toMatchObject({ approvedBefore, posted: true });
@@ -1551,6 +1606,43 @@ describe("serve: what the page waits on", () => {
         expect(PNG.sync.read(thumb.body).width).toBeLessThanOrEqual(400);
         expect(thumbs()).toHaveLength(6);
         expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
+    });
+
+    it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const spots = () => (existsSync(join(s.tmp, "spots")) ? readdirSync(join(s.tmp, "spots")).sort() : []);
+        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three tiles each.
+        await until(() => spots().filter((f) => f.endsWith(".png")).length === 9);
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const button = body.items.find((i) => i.file === "button--primary.dark.png");
+        expect(spots()).toContain(`${button.baseline}-${button.capture}-0.063-0-both.png`);
+        expect(spots().filter((f) => f.startsWith(`${button.baseline}-${button.capture}-`))).toEqual(
+            ["both", "spot", "zoom"].map((k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`),
+        );
+        const tiles = {};
+        for (const kind of ["spot", "zoom", "both"]) {
+            const tile = await s.api("GET", `/api/spot/123/compact-mantine/${kind}/button--primary.dark.png`);
+            expect(tile.type).toBe("image/png");
+            tiles[kind] = PNG.sync.read(tile.body);
+            // The page's tile size: 400 pixels across, the capture's shape.
+            expect([tiles[kind].width, tiles[kind].height]).toEqual([400, 250]);
+        }
+        // The changed area [160, 80, 40, 40] is lit; a corner far from it is dimmed, not cropped.
+        const at = (png, x, y) => [...png.data.slice((y * png.width + x) * 4, (y * png.width + x) * 4 + 4)];
+        const plain = PNG.sync.read(
+            (await s.api("GET", "/api/thumb/123/compact-mantine/capture/button--primary.dark.png")).body,
+        );
+        expect(at(tiles.spot, 2, 2)[3]).toBeGreaterThanOrEqual(190);
+        expect(at(tiles.spot, 2, 2).slice(0, 3)).not.toEqual(at(plain, 1, 1).slice(0, 3));
+        expect(tiles.zoom.data.equals(tiles.both.data)).toBe(false);
+        expect(spots()).toHaveLength(9);
+        // A slider of another height is padded, as the page pads it.
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/slider--sizes.png")).status).toBe(200);
+        // An unchanged story and a new one have no change to light; an unknown kind is no tile.
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/input--default.png")).status).toBe(404);
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/badge--default.light.png")).status).toBe(404);
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/blur/button--primary.dark.png")).status).toBe(404);
     });
 
     it("states what Finish would do, and refuses a Finish whose decisions changed since", async () => {

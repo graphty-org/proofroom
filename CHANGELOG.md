@@ -1,3 +1,17 @@
+## 0.2.15 (2026-10-08)
+
+### 🚀 Features
+
+- **visual-review:** safe filters, grouped review and pull request context in the review page ([fe6dd3bba](https://github.com/graphty-org/graphty-monorepo/commit/fe6dd3bba))
+
+### 🩹 Fixes
+
+- **visual-review:** reuse an earlier approval only where it cannot be planted ([73463ef6a](https://github.com/graphty-org/graphty-monorepo/commit/73463ef6a))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.14 (2026-10-07)
 
 ### 🩹 Fixes
