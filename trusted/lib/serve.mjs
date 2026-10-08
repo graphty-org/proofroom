@@ -288,6 +288,8 @@ async function loadResults(dir, name) {
  *     (`<previews>/<pr>/<project>/results.json`): a complete preview of a pull request's current
  *     head stands in for each project CI has not captured yet, marked "CI pending", and is decided
  *     and finished like a CI capture. CI's capture replaces it project by project as it lands.
+ * @param {number} [options.patience] how long, in milliseconds, a page load waits for a run's
+ *     captures before listing the target as downloading; Infinity waits for them
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void}
  *     the handler, for node:https in the CLI and node:http in the tests
  */
@@ -303,6 +305,7 @@ export function createApp({
     startCommand = null,
     warm,
     previews = null,
+    patience = PATIENCE,
 }) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
@@ -625,11 +628,10 @@ export function createApp({
                 download.bytes = Object.values(planned).reduce((a, b) => a + b, 0);
             },
         );
-        downloads.catch(() => {}); // A download still running after PATIENCE fails on a later refresh.
-        const downloaded = await Promise.race([
-            downloads,
-            new Promise((resolve) => setTimeout(resolve, PATIENCE, null).unref()),
-        ]);
+        downloads.catch(() => {}); // A download still running after `patience` fails on a later refresh.
+        const downloaded = await (patience === Infinity
+            ? downloads
+            : Promise.race([downloads, new Promise((resolve) => setTimeout(resolve, patience, null).unref())]));
         if (!downloaded) {
             // Listed as downloading, and rebuilt in the cache when the download lands, so the page
             // (which asks again every few seconds) fills the rows in without a refresh.

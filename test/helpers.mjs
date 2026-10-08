@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { inject } from "vitest";
+
 import { isolateGit } from "../../tools/isolated-git-env.mjs";
 import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
 
@@ -70,10 +72,27 @@ function put(path, data) {
  * removed and unstable items, as Git LFS pointers the way the monorepo stores them (the same
  * .gitattributes line, `git lfs install --local`, and the bare remote as its LFS store); the
  * branch `feature` adds one commit on top of it.
+ *
+ * A copy of the one repo-template.setup.mjs builds before the tests start: building it runs about
+ * twenty git and git-lfs processes, which on a busy machine took seconds of a test's five.
  * @returns {{ dir: string, repo: string, remote: string, master: string, head: string }} shas of
  *     master and of the feature branch's head
  */
 export function makeRepo() {
+    const template = inject("repoTemplate");
+    const dir = mkdtempSync(join(tmpdir(), "vr-repo-"));
+    cpSync(template.dir, dir, { recursive: true });
+    const repo = join(dir, "repo");
+    const remote = join(dir, "remote.git");
+    git(repo, "remote", "set-url", "origin", remote);
+    return { ...template, dir, repo, remote };
+}
+
+/**
+ * Builds the repository makeRepo copies.
+ * @returns {{ dir: string, repo: string, remote: string, master: string, head: string }} it
+ */
+export function buildRepo() {
     const dir = mkdtempSync(join(tmpdir(), "vr-repo-"));
     const remote = join(dir, "remote.git");
     const repo = join(dir, "repo");

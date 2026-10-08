@@ -68,10 +68,11 @@ const twoPrs = (r, items) =>
     });
 
 // `host` localhost: WebAuthn needs a host name (an IP address is never a passkey's site).
-// `touch`: a touch screen (an iPad), where `pointer: coarse` matches.
+// `touch`: a touch screen (an iPad), where `pointer: coarse` matches. `clock`: the page's timers
+// and clocks are Playwright's, which a test can pause.
 async function open(
     options,
-    { viewport = { width: 1000, height: 800 }, review = true, host = "127.0.0.1", touch = false } = {},
+    { viewport = { width: 1000, height: 800 }, review = true, host = "127.0.0.1", touch = false, clock = false } = {},
 ) {
     const r = makeRepo();
     server = createServer();
@@ -112,6 +113,9 @@ async function open(
         dialogs.push(`browser dialog: ${d.message()}`);
         return d.dismiss();
     });
+    if (clock) {
+        await page.clock.install();
+    }
     await page.goto(`${origin}/#token=${TOKEN}`);
     if (review) {
         await page.getByRole("button", { name: "Review", exact: true }).first().click();
@@ -1595,11 +1599,16 @@ describe("review page: the decision bar", () => {
         await expect.poll(status).toBe("Accepted #3. Now #4, 4 of 6: badge--default (light), new.");
     });
 
+    // The page's clock stops once the item is ready, so the second press lands within the quarter
+    // second of the next image however long the press takes to arrive.
+    const stopClock = () => page.clock.pauseAt(Date.now() + 1000);
+
     it("keeps focus on a decision button it was on: Tab to Accept, Space twice", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ gh: onePr()(r) }), { clock: true });
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
+        await stopClock();
         await page.locator("#accept").focus();
         await page.keyboard.press(" ");
         await expect.poll(position).toMatch(/^3 of /);
@@ -1614,10 +1623,11 @@ describe("review page: the decision bar", () => {
     });
 
     it("ignores the second tap of a double tap, which lands on the next item's Accept", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ gh: onePr()(r) }), { clock: true });
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
+        await stopClock();
         await page.locator("#accept").click();
         await page.locator("#accept").click();
         await expect.poll(position).toMatch(/^3 of /);
