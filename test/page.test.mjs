@@ -1880,7 +1880,13 @@ describe("review page: the wait box", () => {
         }
         // The targets stay usable meanwhile.
         expect(await page.getByRole("button", { name: "Review", exact: true }).first().isEnabled()).toBe(true);
+        // After the release the server still fetches the branches and checks the baselines, and
+        // the page asks again only every 700 ms: wait for the answer that the refresh is over.
+        const over = page.waitForResponse(
+            async (res) => res.url().includes("/api/prs?") && !(await res.json()).refreshing,
+        );
         release();
+        await over;
         await expect.poll(status).toBe("");
     }, 30000);
 });
@@ -2438,6 +2444,39 @@ describe("review page: Finish", () => {
                 .getByRole("button", { name: /^Finish #123/ })
                 .getAttribute("aria-disabled"),
         ).toBe("true");
+    }, 60000);
+
+    it("says a step is retrying after a network error", async () => {
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        let failed = false;
+        // The first commit status fails on DNS; the retry waits until the test releases it.
+        await open((r) => {
+            const gh = twoPrs(r);
+            return {
+                gh: async (args, input) => {
+                    if (args[1]?.includes("/statuses/")) {
+                        if (!failed) {
+                            failed = true;
+                            throw new Error("error connecting to api.github.com");
+                        }
+                        await gate;
+                    }
+                    return gh(args, input);
+                },
+            };
+        });
+        await page.locator(".component").first().waitFor();
+        confirmFinish = true;
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("4 of 6 decided");
+        await page.getByRole("button", { name: /^Finish/ }).click();
+        const slow = { timeout: 30000 };
+        await expect.poll(() => box("net"), slow).toBe("Retrying after a network error, attempt 2 of 4");
+        expect(await page.locator("#wait #finish-panel li.now").textContent()).toBe("Posting the status: in progress");
+        release();
+        await expect.poll(() => page.locator(".finish-outcome").textContent(), slow).toMatch(/^Finished #123\./);
+        expect(await page.locator(".finish-outcome").textContent()).not.toContain("status not posted");
     }, 60000);
 });
 
