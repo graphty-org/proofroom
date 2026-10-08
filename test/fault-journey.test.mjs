@@ -439,7 +439,10 @@ describe("random journeys", () => {
         it("runs seed 22 once, through Finish twice and gh, git and state-file faults", async () => {
             first = await journey(22, all, 3);
             expect(first.steps.filter((x) => x.startsWith("finish"))).toHaveLength(2);
-            expect(new Set(first.faults.map((f) => f.trim().split(" ")[2]))).toEqual(new Set(["gh", "git", "fs"]));
+            // A trace line is "<kind> <- <on> <label>", and a kind can be two words ("partial write").
+            expect(new Set(first.faults.map((f) => f.split(" <- ")[1].split(" ")[0]))).toEqual(
+                new Set(["gh", "git", "fs"]),
+            );
         });
 
         it("runs it again: the same faults, the same answers", async () => {
