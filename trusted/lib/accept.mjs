@@ -79,6 +79,13 @@ const git = (cwd, args, input) =>
         env: { ...process.env, HUSKY: "0", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0" },
     });
 
+/**
+ * git's options for work that moves LFS pointer files between commits and never reads an image
+ * (update from master): no LFS filter, so a pointer stays a pointer, and no checkout, merge, diff
+ * or commit starts git-lfs, which starts eight git processes of its own every time.
+ */
+const NO_LFS = ["process=", "smudge=", "clean=", "required=false"].flatMap((v) => ["-c", `filter.lfs.${v}`]);
+
 /** Images per `git lfs push --object-id`, so a large seed reports its upload as it goes. */
 const LFS_BATCH = 50;
 
@@ -1037,14 +1044,14 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
         }
         const tree = join(repo, config.workDir, "worktrees", `update-${pr}`);
         await removeWorktree(repo, tree);
-        await git(repo, ["worktree", "add", "-q", "--detach", tree, head]);
+        await git(repo, [...NO_LFS, "worktree", "add", "-q", "--detach", tree, head]);
+        const work = (args, input) => git(tree, [...NO_LFS, ...args], input);
+        const workOk = (args) => gitOk(tree, [...NO_LFS, ...args]);
         try {
             progress("merging");
             let conflicts = [];
-            await git(tree, ["merge", "-q", "--no-ff", "--no-commit", master]).catch(async (err) => {
-                conflicts = (await git(tree, ["diff", "--name-only", "-z", "--diff-filter=U"]))
-                    .split("\0")
-                    .filter(Boolean);
+            await work(["merge", "-q", "--no-ff", "--no-commit", master]).catch(async (err) => {
+                conflicts = (await work(["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
                 if (conflicts.length === 0) {
                     throw err;
                 }
@@ -1057,11 +1064,11 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
                 );
             }
             for (const path of conflicts) {
-                await ((await gitOk(tree, ["cat-file", "-e", `${master}:${path}`]))
-                    ? git(tree, ["checkout", master, "--", path])
-                    : git(tree, ["rm", "-q", "--", path]));
+                await ((await workOk(["cat-file", "-e", `${master}:${path}`]))
+                    ? work(["checkout", master, "--", path])
+                    : work(["rm", "-q", "--", path]));
             }
-            const recapture = (await git(tree, ["diff", "--cached", "--name-only", "-z", head, "--", `${baselines}/`]))
+            const recapture = (await work(["diff", "--cached", "--name-only", "-z", head, "--", `${baselines}/`]))
                 .split("\0")
                 .filter((p) => p && !p.startsWith(`${baselines}/reviews/`));
             progress("committing");
@@ -1081,14 +1088,14 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
                 ...taken,
                 "",
             ].join("\n");
-            await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
+            await work(["commit", "-q", "--no-verify", "-F", "-"], message);
             progress("pushing");
-            await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]).catch((err) => {
+            await work(["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]).catch((err) => {
                 throw /\[rejected\].*\((fetch first|non-fast-forward)\)/.test(err.message)
                     ? new AcceptError(`${branch} moved while it was being updated; nothing was pushed: update again`)
                     : err;
             });
-            return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, taken: conflicts, recapture };
+            return { commit: await work(["rev-parse", "HEAD"]), branch, taken: conflicts, recapture };
         } finally {
             await removeWorktree(repo, tree).catch((err) =>
                 console.error(`visual-review: could not remove the update worktree ${tree}: ${err.message}`),
