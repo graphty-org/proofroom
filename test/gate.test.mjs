@@ -718,20 +718,31 @@ describe("passkey approvals", () => {
             ]);
         });
 
-        it("follows two sessions of one pull request, and refuses the decision a later one replaced", () => {
-            const r = history();
-            const NEXT = sha256("next image");
+        // One case per test: each builds its own repository, and a test holds one case's git work.
+        const NEXT = sha256("next image");
+        const twoSessions = (r) =>
             commit(r, {
                 [PATH]: "next image",
                 "visual-baselines/reviews/a.json": signed(rec(8, NOW, OLD, "22")),
                 "visual-baselines/reviews/b.json": signed(rec(8, OLD, NEXT, "23")),
             });
+
+        it("follows two sessions of one pull request", () => {
+            const r = history();
+            twoSessions(r);
             expect(check(r, 8)).toEqual([]);
+        });
+
+        it("refuses the decision a later session of the pull request replaced", () => {
+            const r = history();
+            twoSessions(r);
             commit(r, { [PATH]: "old image" });
             expect(check(r, 8)).toEqual([
                 `${PATH}: changed with no review record taking it from its base branch contents to these`,
             ]);
-            // A cycle that never starts at the base counts for nothing.
+        });
+
+        it("counts nothing for a cycle of records that never starts at the base", () => {
             const c = history();
             commit(c, {
                 [PATH]: "next image",
