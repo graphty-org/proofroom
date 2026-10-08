@@ -138,6 +138,27 @@ header h1 {
     flex: none;
 }
 
+/* The pull request's title takes only the room the menus leave, and none on a narrow window. */
+#target-title {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    color: var(--muted);
+}
+
+#target-title[hidden] {
+    display: none;
+}
+
+@media (max-width: 1049.98px) {
+    #target-title {
+        display: none;
+    }
+}
+
 /* The pickers shrink first when the window is narrow; a native menu truncates its own label. */
 .picker {
     display: flex;
@@ -1576,4 +1597,45 @@ details.menu > div {
 
 .all-heading {
     margin: 24px 0 8px;
+}
+
+/* The grid's own groups: approved before (collapsed), known capture noise, and the clusters of
+   similar changes, each a representative tile, its count and one decision for all of it. */
+.group,
+.cluster {
+    margin: 12px 0;
+    padding: 8px;
+    border: 1px solid var(--muted);
+    border-radius: 6px;
+}
+
+.group .modes,
+.cluster .modes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.cluster h3 {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+dialog.context {
+    max-width: min(900px, 95vw);
+    max-height: 90vh;
+    overflow: auto;
+}
+
+.context-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: inherit;
+}
+
+.comments {
+    padding-left: 1.5em;
 }

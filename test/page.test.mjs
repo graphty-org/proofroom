@@ -1880,7 +1880,13 @@ describe("review page: the wait box", () => {
         }
         // The targets stay usable meanwhile.
         expect(await page.getByRole("button", { name: "Review", exact: true }).first().isEnabled()).toBe(true);
+        // After the release the server still fetches the branches and checks the baselines, and
+        // the page asks again only every 700 ms: wait for the answer that the refresh is over.
+        const over = page.waitForResponse(
+            async (res) => res.url().includes("/api/prs?") && !(await res.json()).refreshing,
+        );
         release();
+        await over;
         await expect.poll(status).toBe("");
     }, 30000);
 });
@@ -2980,5 +2986,134 @@ describe("review page: the inbox", () => {
         expect(await page.locator('.tile[data-file="menu--open.png"] img').count()).toBe(0);
         expect(await page.locator("body").textContent()).not.toContain("damaged");
         expect(await status()).not.toContain("damaged");
+    });
+});
+
+describe("review page: safe filters and the pull request's context", () => {
+    // The fixture with slider--sizes changed exactly as button--primary.dark is: one cluster of two.
+    const similar = (r) => {
+        const items = capturedItems().map((i) =>
+            i.file === "slider--sizes.png"
+                ? { ...i, size: [320, 200], baselineSize: [320, 200], changedPixels: 900, bbox: [160, 80, 40, 40] }
+                : i,
+        );
+        const at = { commit: r.head, headSha: r.head };
+        return onePr({ results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at } })(r);
+    };
+
+    it("renders a hostile description and comments as inert text, and marks who is not the owner", async () => {
+        const hostile = '<script>window.pwned = 1</script><img src=x onerror="window.pwned = 2">';
+        await open((r) => {
+            const rest = onePr()(r);
+            return {
+                gh: async (args, input) => {
+                    const path = args[1];
+                    if (path === "repos/{owner}/{repo}/pulls/123") {
+                        return JSON.stringify({
+                            title: '<b onmouseover="window.pwned = 3">bold</b>',
+                            body: hostile,
+                            user: { login: "mallory" },
+                            created_at: "2026-10-07T00:00:00Z",
+                            base: { repo: { owner: { login: "org", type: "Organization" } } },
+                        });
+                    }
+                    if (path === "user") {
+                        return JSON.stringify({ login: "owner" });
+                    }
+                    if (path?.includes("issues/123/comments")) {
+                        return JSON.stringify([
+                            { user: { login: "owner" }, created_at: "2026-10-07T01:00:00Z", body: "intended" },
+                            { user: { login: "mallory" }, created_at: "2026-10-07T02:00:00Z", body: hostile },
+                        ]);
+                    }
+                    return rest(args, input);
+                },
+            };
+        });
+        await page.locator("#about-pr").click();
+        const dialog = page.locator("dialog.context");
+        await dialog.waitFor();
+        expect(await dialog.locator("#context-title").textContent()).toBe(
+            '#123 <b onmouseover="window.pwned = 3">bold</b>',
+        );
+        expect(await dialog.locator(".context-text").allTextContents()).toEqual([hostile, "intended", hostile]);
+        // Nothing in it became markup: no script, image, bold or link element, and nothing ran.
+        expect(await dialog.locator("script, img, b, a").count()).toBe(0);
+        await dialog.locator("#context-title").hover();
+        expect(await page.evaluate(() => globalThis.pwned)).toBeUndefined();
+        // The description's author and the second comment are not the owner; the first comment is.
+        expect(await dialog.getByText("not the repository owner").count()).toBe(2);
+        expect(await dialog.locator(".comments li").first().getByText("not the repository owner").count()).toBe(0);
+    });
+
+    it("shows similar changes as one cluster, decided at once, with outliers first", async () => {
+        await open((r) => ({ gh: similar(r) }));
+        const cluster = page.locator(".cluster");
+        await cluster.waitFor();
+        expect(await cluster.locator("h3").textContent()).toMatch(
+            /^2 similar changes in a medium area, middle center, 880 to 900 pixels each/,
+        );
+        // The representative is the member with the most changed pixels; the others sit under Show all.
+        expect(await cluster.locator(":scope > .modes .tile").getAttribute("data-file")).toBe("slider--sizes.png");
+        // Outliers (the new story, the removal) come before the cluster.
+        const order = await page.locator(".component, .cluster").evaluateAll((n) => n.map((x) => x.className));
+        expect(order.at(-1)).toBe("cluster");
+        // Spotlight all lights the representative as it lights any tile.
+        await page.locator("#spot-all").click();
+        await page.locator(".cluster").scrollIntoViewIfNeeded();
+        await expect
+            .poll(() => page.locator(".cluster > .modes .tile img").evaluate((n) => n.classList.contains("spot")))
+            .toBe(true);
+        await page.locator(".cluster").getByRole("button", { name: "Accept 2" }).click();
+        await expect.poll(() => page.locator(".cluster").count()).toBe(0);
+        expect(dialogs.at(-1)).toBe("Accept 2 items of this group of 2 without opening them?");
+        // Grouping off shows them one by one again.
+        await page.locator("#group-similar").click();
+        expect(await page.locator("#group-similar").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("spotlights and zooms every tile from two switches, each remembered in this browser and off at first", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        const tile = page.locator('.tile[data-file="button--primary.dark.png"] img');
+        await tile.waitFor({ state: "visible" });
+        const look = async () => [
+            await tile.evaluate((n) => n.classList.contains("spot")),
+            await tile.evaluate((n) => n.classList.contains("zoomed")),
+        ];
+        // The tile's picture drawn at one small size, so pictures of any size compare.
+        const pixels = () =>
+            tile.evaluate(async (img) => {
+                await img.decode();
+                const c = new globalThis.OffscreenCanvas(64, 40);
+                c.getContext("2d").drawImage(img, 0, 0, 64, 40);
+                return Array.from(c.getContext("2d").getImageData(0, 0, 64, 40).data);
+            });
+        const shown = async (spot, zoomed) => {
+            await expect.poll(look).toEqual([spot, zoomed]);
+            await expect.poll(() => tile.getAttribute("src")).toMatch(/^blob:/);
+            return pixels();
+        };
+        expect(await page.locator("#spot-all").getAttribute("aria-pressed")).toBe("false");
+        expect(await page.locator("#zoom-all").getAttribute("aria-pressed")).toBe("false");
+        const plain = await shown(false, false);
+        await page.locator("#spot-all").click();
+        const spotOnly = await shown(true, false);
+        await page.locator("#zoom-all").click();
+        const both = await shown(true, true);
+        await page.locator("#spot-all").click();
+        const zoomOnly = await shown(false, true);
+        // Spotlight dims the frame without moving it; zoom crops toward the change; each alone.
+        expect(spotOnly).not.toEqual(plain);
+        expect(zoomOnly).not.toEqual(plain);
+        expect(zoomOnly).not.toEqual(spotOnly);
+        expect(both).not.toEqual(zoomOnly);
+        expect(
+            await page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:options"))),
+        ).toMatchObject({ gridSpot: false, gridZoom: true });
+        await page.reload();
+        await tile.waitFor({ state: "visible" });
+        expect(await page.locator("#spot-all").getAttribute("aria-pressed")).toBe("false");
+        expect(await page.locator("#zoom-all").getAttribute("aria-pressed")).toBe("true");
+        expect(await look()).toEqual([false, true]);
     });
 });

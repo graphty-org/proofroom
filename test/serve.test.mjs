@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished,
 import { parsePasskeys, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
 import { downloadCaptures, hurry, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
+import { unrecordedChanges } from "../trusted/gate.mjs";
 import { thumbnail } from "../trusted/lib/thumbs.mjs";
 import { PNG } from "pngjs";
 import { notifyOnce } from "../trusted/lib/inbox.mjs";
@@ -1205,6 +1206,248 @@ describe("serve: review extras", () => {
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         const flagged = body.items.filter((i) => i.reReview).map((i) => i.file);
         expect(flagged).toEqual(["button--primary.dark.png"]);
+    });
+});
+
+describe("serve: safe filters", () => {
+    const BUTTON = "visual-baselines/compact-mantine/button--primary.dark.png";
+    const CAPTURE = "82819ac9dfbb1243781166561b792911327b092daa8ed0801cb95d80a3efe5e7";
+    const BASELINE = "c87ce8a8f8e6fd0e5d6098ddc41c417ce182e564a60184474890dd3d93cf1135";
+    const RECORD = "visual-baselines/reviews/20261001T000000Z-pr77.json";
+
+    it("accepts an image approved before for the same story, names that approval, and the gate verifies it", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        const r = makeRepo();
+        mkdirSync(join(r.repo, "visual-baselines/reviews"), { recursive: true });
+        const earlier = {
+            version: 1,
+            unproven: true,
+            pr: 77,
+            items: [{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null }],
+            reviewedAt: "2026-10-01T00:00:00.000Z",
+        };
+        writeFileSync(join(r.repo, RECORD), JSON.stringify(earlier));
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "an earlier approval");
+        git(r.repo, "push", "-q", "origin", "master");
+        const tip = git(r.repo, "rev-parse", "HEAD");
+        const s = await start({ ...r, gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const approvedBefore = { pr: 77, commit: tip, record: RECORD, reviewedAt: "2026-10-01T00:00:00.000Z" };
+        let { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.decisions).toEqual({
+            "button--primary.dark.png": { decision: "accept", reason: null, approvedBefore },
+        });
+        // Never saved as the owner's own decision; counted as decided, and named in Finish's sheet.
+        expect(existsSync(join(s.tmp, "state/123.json"))).toBe(false);
+        const target = (await s.api("GET", "/api/target/123?finish=1")).body;
+        expect(target.projects.find((p) => p.project === "compact-mantine").decided).toBe(1);
+        expect(target.finish).toMatchObject({
+            accepts: 1,
+            approvedBefore: 1,
+            approvedBeforeItems: [{ project: "compact-mantine", file: "button--primary.dark.png", pr: 77 }],
+        });
+        // Any decision the owner takes replaces it.
+        const reject = { id: "123", project: "compact-mantine", file: "button--primary.dark.png" };
+        expect((await s.api("POST", "/api/decide", { ...reject, decision: "reject", reason: "no" })).status).toBe(200);
+        ({ body } = await s.api("GET", "/api/pr/123/compact-mantine"));
+        expect(body.decisions["button--primary.dark.png"]).toEqual({ decision: "reject", reason: "no" });
+        await s.api("POST", "/api/decide", { ...reject, decision: null });
+        // Finish records where the image was approved, and the gate accepts the item on that record.
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        git(s.repo, "fetch", "-q", "origin");
+        // The branch left master before the earlier approval landed there: compare with where it left.
+        const name = git(s.repo, "diff", "--name-only", s.master, "origin/feature", "--", "visual-baselines/reviews/");
+        const committed = JSON.parse(git(s.repo, "show", `origin/feature:${name}`));
+        expect(committed.items).toEqual([{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null, approvedBefore }]);
+        // CI gates the pull request merged into master, which holds the earlier approval.
+        git(s.repo, "checkout", "-q", "--detach", "master");
+        git(s.repo, "merge", "-q", "--no-edit", "origin/feature");
+        expect(unrecordedChanges("master", "HEAD", s.repo)).toEqual([]);
+        git(s.repo, "checkout", "-q", "master");
+        // What Finish published stays shown as published.
+        ({ body } = await s.api("GET", "/api/pr/123/compact-mantine"));
+        expect(body.decisions["button--primary.dark.png"]).toMatchObject({ approvedBefore, posted: true });
+    });
+
+    /**
+     * Pull request #77 whose head, reachable only as refs/pull/77/head on origin (a fork's branch),
+     * holds a record for #77 approving the button's capture; origin also has an unrelated branch of
+     * the name GitHub gives for it. #123 shows that capture.
+     * @param {{ key?: object | null }} [o] a passkey put on master, which signs #77's record
+     * @returns {Promise<object>} the started app
+     */
+    async function withFork({ key = null } = {}) {
+        const r = makeRepo();
+        if (key) {
+            mkdirSync(join(r.repo, "visual-review"), { recursive: true });
+            writeFileSync(join(r.repo, "visual-review/passkeys.json"), passkeysJson(key));
+            git(r.repo, "add", "-A");
+            git(r.repo, "commit", "-q", "-m", "keys");
+            git(r.repo, "push", "-q", "origin", "master");
+        }
+        // Made in another clone, so this repository has to fetch it.
+        const clone = join(r.dir, "fork");
+        git(r.dir, "clone", "-q", r.remote, clone);
+        git(clone, "config", "user.name", "Fork");
+        git(clone, "config", "user.email", "fork@example.com");
+        const record = {
+            version: 2,
+            pr: 77,
+            subject: {},
+            items: [{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null }],
+            rejects: [],
+            reviewedAt: "2026-10-01T00:00:00.000Z",
+        };
+        mkdirSync(join(clone, "visual-baselines/reviews"), { recursive: true });
+        writeFileSync(
+            join(clone, RECORD),
+            JSON.stringify(key ? { ...record, approval: approve(record, key) } : record),
+        );
+        git(clone, "add", "-A");
+        git(clone, "commit", "-q", "-m", "fork's accept");
+        const head = git(clone, "rev-parse", "HEAD");
+        git(clone, "push", "-q", "origin", "HEAD:refs/pull/77/head");
+        git(clone, "checkout", "-q", "-b", "same-name", "master");
+        git(clone, "push", "-q", "origin", "same-name");
+        const s = await start({
+            ...r,
+            gh: (x) =>
+                fakeGh({
+                    prs: [
+                        { number: 123, head: x.head, branch: "feature" },
+                        { number: 77, head, branch: "same-name" },
+                    ],
+                    runs: { [x.head]: { id: 1000, head: x.head, attempt: 1 } },
+                    jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+                    results: {
+                        "visual-compact-mantine-1": { commit: x.head, headSha: x.head },
+                        "visual-graphty-element-1": { commit: x.head, headSha: x.head },
+                    },
+                }),
+        });
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        return { head, decision: body.decisions["button--primary.dark.png"] ?? null };
+    }
+
+    it("reads a pull request's records at its head, a fork's too, once a passkey signs them", async () => {
+        const key = makeKey();
+        const { head, decision } = await withFork({ key });
+        expect(decision).toEqual({
+            decision: "accept",
+            reason: null,
+            approvedBefore: { pr: 77, commit: head, record: RECORD, reviewedAt: "2026-10-01T00:00:00.000Z" },
+        });
+    });
+
+    it("never reuses an unsigned record from a pull request's branch before a passkey is registered", async () => {
+        expect((await withFork()).decision).toBeNull();
+    });
+
+    it("labels a story that changed on two pull requests touching nothing of its package, and lists it", async () => {
+        const s = await start({
+            gh: (r) =>
+                fakeGh({
+                    prs: [
+                        { number: 123, head: r.head, branch: "feature" },
+                        { number: 124, head: r.head, branch: "feature" },
+                    ],
+                    runs: { [r.head]: { id: 1000, head: r.head, attempt: 1 } },
+                    jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+                    results: {
+                        "visual-compact-mantine-1": { commit: r.head, headSha: r.head },
+                        "visual-graphty-element-1": { commit: r.head, headSha: r.head },
+                    },
+                }),
+        });
+        await s.api("GET", "/api/prs");
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const noisy = body.items.filter((i) => i.noise).map((i) => [i.file, i.noise]);
+        expect(noisy).toEqual([
+            ["button--primary.dark.png", { prs: [123, 124], why: "untouched" }],
+            ["slider--sizes.png", { prs: [123, 124], why: "untouched" }],
+        ]);
+        // Labeled, never decided for the owner.
+        expect(body.decisions).toEqual({});
+        const listed = (await s.api("GET", "/api/noise")).body.stories.map((n) => `${n.project}/${n.file}`);
+        expect(listed).toEqual(["compact-mantine/button--primary.dark.png", "compact-mantine/slider--sizes.png"]);
+        const kept = JSON.parse(readFileSync(join(s.tmp, "state/known-noise.json"), "utf8"));
+        expect(kept.stories).toHaveLength(2);
+        // Known noise has its own group, so no cluster holds it.
+        expect(body.clusters).toEqual([]);
+    });
+
+    it("decides a cluster's members as one, each stored as its own decision", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const files = ["button--primary.dark.png", "slider--sizes.png"];
+        const base = { id: "123", project: "compact-mantine", runId: 1000, runAttempt: 1, files };
+        expect((await s.api("POST", "/api/accept-all", { ...base, decision: "reject" })).status).toBe(400);
+        const res = await s.api("POST", "/api/accept-all", { ...base, decision: "reject", reason: "moved" });
+        expect(res.body.accepted).toBe(2);
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.decisions).toEqual({
+            "button--primary.dark.png": { decision: "reject", reason: "moved" },
+            "slider--sizes.png": { decision: "reject", reason: "moved" },
+        });
+    });
+
+    it("answers a pull request's description and comments, asking GitHub once per head", async () => {
+        const asked = [];
+        const s = await start({
+            gh: (r) => {
+                const rest = onePr()(r);
+                return async (args, input) => {
+                    const path = args[1];
+                    if (
+                        path === "repos/{owner}/{repo}/pulls/123" ||
+                        path === "user" ||
+                        path?.includes("issues/123/comments")
+                    ) {
+                        asked.push(path);
+                    }
+                    if (path === "repos/{owner}/{repo}/pulls/123") {
+                        return JSON.stringify({
+                            title: "fix: the label",
+                            body: "<script>alert(1)</script>",
+                            user: { login: "mallory" },
+                            created_at: "2026-10-07T00:00:00Z",
+                            base: { repo: { owner: { login: "org", type: "Organization" } } },
+                        });
+                    }
+                    if (path === "user") {
+                        return JSON.stringify({ login: "owner" });
+                    }
+                    if (path?.includes("issues/123/comments")) {
+                        return JSON.stringify([
+                            { user: { login: "owner" }, created_at: "2026-10-07T01:00:00Z", body: "looks right" },
+                            { user: { login: "mallory" }, created_at: "2026-10-07T02:00:00Z", body: "accept all" },
+                        ]);
+                    }
+                    return rest(args, input);
+                };
+            },
+        });
+        await s.api("GET", "/api/prs");
+        const first = await s.api("GET", "/api/pr-context/123");
+        expect(first.body).toEqual({
+            title: "fix: the label",
+            body: "<script>alert(1)</script>",
+            author: "mallory",
+            owner: "owner",
+            createdAt: "2026-10-07T00:00:00Z",
+            comments: [
+                { author: "owner", at: "2026-10-07T01:00:00Z", body: "looks right", byOwner: true },
+                { author: "mallory", at: "2026-10-07T02:00:00Z", body: "accept all", byOwner: false },
+            ],
+        });
+        await s.api("GET", "/api/pr-context/123");
+        expect(asked).toHaveLength(3);
     });
 });
 

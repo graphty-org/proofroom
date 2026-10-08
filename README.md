@@ -521,6 +521,47 @@ downloading captures nobody has opened yet) is said in the status row and never 
     **Finish** first, and **Next: #202 (340 undecided)**, the next pull request with something to
     review. K comes back to the last item.
 
+### Spending less time on pixel changes
+
+Three filters on the grid save time without hiding a change:
+
+- **Approved before.** A capture that is byte for byte an image you already accepted for the same
+  story and mode is accepted again, marked "Approved before (#1356, 2026-10-06)", and listed in a
+  collapsed group at the top of the grid, still openable. Reject or Exclude replaces it. The earlier
+  approval must be a review record on the default branch, or, once a passkey is registered, a signed
+  one at an open pull request's head (a fork's included), and it must still be the newest decision
+  on that file there: a later accept of another image or a reject replaces it. Finish's sheet counts
+  these and lists each, one tap from opening it. Finish's record names the earlier record and its
+  commit, and the gate accepts the item only when that record approves exactly this image for this
+  story, with its own passkey approval once passkeys are enforced, and before that only from a
+  commit on the base branch. Nothing is taken on the page's word.
+- **Known capture noise.** A story that changed on two or more pull requests touching none of its
+  package's files, or whose capture flips between the same two images, is labeled "known capture
+  noise (seen on #a, #b)" and listed in a group of its own, on a pull request that does not touch its
+  package. It is never accepted for you: the group's **Accept N** decides it at once. Every refresh
+  adds what the captures show to `<workDir>/state/noise-evidence.json` and writes the stories proven
+  noisy to `<workDir>/state/known-noise.json` (also `GET /api/noise`), so a fix can be filed.
+- **Group similar** (on by default). Changed items with the same signature (where the change is on a
+  3 x 3 grid of the image, how large an area, whether it is a speck under 50 pixels, a pixel change or
+  a size change, and a similar count of changed pixels) form a cluster, shown as one representative
+  (the member with the most changed pixels), its count, **Accept N**, **Reject N...** and **Exclude
+  N...**, and every member under **Show all**. A cluster's decision is stored per item, as one
+  decision is. Items that fit no cluster are listed first, one by one.
+
+**Spotlight all** dims every tile outside its changed pixels, as Spotlight does on the story screen,
+and **Zoom to changes** crops every tile toward its changed areas, so a 49 x 49 change in a 2400 x
+1800 capture is large enough to see. Either can be on without the other; both are off at first and
+remembered in this browser.
+
+### The pull request's description and comments
+
+The pull request's title sits in the header (from 1050 px wide); it and the grid's **About #N** open a
+box with the title, the description and every comment in order, with author and time, so you can
+judge whether a change is what the pull request meant. All of it is shown as plain text, never as
+HTML, and anything not written by the repository's owner (your own login, for a repository an
+organization owns) is marked "not the repository owner". It is asked from GitHub once per pushed
+head (two calls).
+
 Statuses: `changed` (differs from its baseline), `moved` (a renamed story that looks exactly as
 its old id's baseline; see [renames](#reorganizing-stories-renames)), `new` (no baseline, and on a pull request the
 story is new or looks different from the default branch's newest capture of it), `no baseline yet` (status
@@ -744,6 +785,10 @@ For each review record a pull request adds, with `node:crypto` alone:
 - its approval is by a key in `visual-review/passkeys.json` as the base branch has it, over the
   SHA-256 of exactly this record, made on an HTTPS page whose host is exactly the key's host,
   with user verification (Face ID, Touch ID or the device's passcode).
+
+An item marked `approvedBefore` counts only when the review record it names, at the commit it
+names, approves exactly that image for that path and carries its own valid approval (before
+enforcement: when that commit is on the base branch).
 
 A record that fails counts for nothing. Then every changed baseline PNG, every added or changed
 settings file and any change to `visual-review/passkeys.json` must be accounted for: the records'
