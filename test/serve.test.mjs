@@ -985,7 +985,12 @@ describe("serve: local previews of a pull request", () => {
         const r = makeRepo();
         const previews = join(r.dir, "previews");
         preview(previews, "compact-mantine", r.head);
-        // CI's run holds only graphty-element, and its download takes longer than the page waits.
+        // CI's run holds only graphty-element, and its download lasts until the test has looked: a
+        // download that merely sleeps longer than the page waits can land while a slow response is
+        // still being built, and its row is filled in place before the page sees it.
+        let land;
+        const landing = new Promise((resolve) => (land = resolve));
+        onTestFinished(() => land());
         const s = await start({
             ...r,
             previews,
@@ -993,7 +998,7 @@ describe("serve: local previews of a pull request", () => {
                 const ci = onePr({ artifacts: { 1000: ["visual-graphty-element-1"] } })(repo);
                 return async (args, input) => {
                     if (args[0] === "run" && args[1] === "download") {
-                        await new Promise((resolve) => setTimeout(resolve, 1500));
+                        await landing;
                     }
                     return ci(args, input);
                 };
