@@ -490,6 +490,22 @@ export function legacyApprovals({ repo, pr, head, base, config }) {
     return items.length + drop.length > 0 ? { items, drop } : null;
 }
 
+// The child legacyApprovalsAsync runs: this module's legacyApprovals on its input, as JSON.
+const LEGACY_CHILD =
+    "import(process.argv[1]).then((m) => process.stdout.write(JSON.stringify(m.legacyApprovals(JSON.parse(process.argv[2])))))";
+
+/**
+ * legacyApprovals in a child process. It runs a git call per changed baseline, synchronously: a
+ * pull request changing hundreds of baselines takes seconds, and the server's own thread would
+ * answer no request meanwhile.
+ * @param {Parameters<typeof legacyApprovals>[0]} input as in legacyApprovals
+ * @returns {Promise<ReturnType<typeof legacyApprovals>>} what legacyApprovals returns
+ */
+export async function legacyApprovalsAsync(input) {
+    const out = await exec(process.execPath, ["-e", LEGACY_CHILD, import.meta.url, JSON.stringify(input)]);
+    return JSON.parse(out);
+}
+
 /**
  * A Finish's record items with the legacy ones added: a file decided in this Finish too keeps its
  * decision, taken from the base branch's contents (what the gate compares) rather than from the
