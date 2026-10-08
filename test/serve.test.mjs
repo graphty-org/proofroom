@@ -1,6 +1,16 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { createServer, request } from "node:http";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { parsePasskeys, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
@@ -250,6 +260,46 @@ describe("serve: pull requests", () => {
         expect(body.targets[0].projects.find((p) => p.project === "compact-mantine").problem).toBe(
             "incomplete: 7 of 20 stories",
         );
+    });
+
+    it("answers other requests while a git call of the list's refresh is held", async () => {
+        // A git that holds the default branch's passkeys.json read (legacyApprovals' first call)
+        // until the test releases it. Run on the server's own thread, as it once was, that read
+        // blocked every request, and a git that stalled for seconds timed out the list (#1496).
+        // On such a server the test cannot release it, so the hold ends by itself after 10 s and
+        // the test fails on its timeout instead of hanging.
+        const bin = mkdtempSync(join(tmpdir(), "vr-git-"));
+        const real = process.env.PATH.split(delimiter)
+            .map((d) => join(d, "git"))
+            .find((f) => existsSync(f));
+        const gate = { held: join(bin, "held"), release: join(bin, "release") };
+        writeFileSync(
+            join(bin, "git"),
+            [
+                "#!/bin/sh",
+                'case "$*" in "show "*":visual-review/passkeys.json")',
+                `  : > '${gate.held}'; i=0`,
+                `  while [ ! -e '${gate.release}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done ;;`,
+                "esac",
+                `exec '${real}' "$@"`,
+                "",
+            ].join("\n"),
+        );
+        chmodSync(join(bin, "git"), 0o755);
+        const path = process.env.PATH;
+        process.env.PATH = `${bin}${delimiter}${path}`;
+        onTestFinished(() => {
+            process.env.PATH = path;
+            rmSync(bin, { recursive: true, force: true });
+        });
+        const s = await start({ gh: onePr() });
+        const list = s.api("GET", "/api/prs");
+        while (!existsSync(gate.held)) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect((await s.api("GET", "/api/inbox")).status).toBe(200);
+        writeFileSync(gate.release, "");
+        expect((await list).status).toBe(200);
     });
 
     it("shows the newest attempt's artifact", async () => {
