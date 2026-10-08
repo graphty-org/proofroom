@@ -1,3 +1,14 @@
+## 0.2.16 (2026-10-08)
+
+### 🩹 Fixes
+
+- **visual-review:** retry Finish's network steps after a transient failure ([f631fdb1d](https://github.com/graphty-org/graphty-monorepo/commit/f631fdb1d))
+- **visual-review:** read approvals from before passkeys off the list request ([34abb97b4](https://github.com/graphty-org/graphty-monorepo/commit/34abb97b4))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.15 (2026-10-08)
 
 ### 🚀 Features
