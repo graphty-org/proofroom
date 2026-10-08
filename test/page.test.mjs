@@ -3149,4 +3149,43 @@ describe("review page: safe filters and the pull request's context", () => {
         expect(await page.locator("#zoom-all").getAttribute("aria-pressed")).toBe("true");
         expect(await look()).toEqual([false, true]);
     });
+
+    it("loads spotlit tiles the server made, and makes the same tile itself when the server cannot", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        const tile = page.locator('.tile[data-file="button--primary.dark.png"] img');
+        await tile.waitFor({ state: "visible" });
+        const lit = () => tile.evaluate((n) => n.classList.contains("spot") && n.classList.contains("zoomed"));
+        // The tile's picture at its own size.
+        const pixels = () =>
+            tile.evaluate(async (img) => {
+                await img.decode();
+                const c = new globalThis.OffscreenCanvas(img.naturalWidth, img.naturalHeight);
+                c.getContext("2d").drawImage(img, 0, 0);
+                return Array.from(c.getContext("2d").getImageData(0, 0, c.width, c.height).data);
+            });
+        let refused = 0;
+        await page.route("**/api/spot/**", (route) => {
+            refused++;
+            return route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+        });
+        await page.locator("#spot-all").click();
+        await page.locator("#zoom-all").click();
+        await expect.poll(lit).toBe(true);
+        expect(refused).toBeGreaterThan(0);
+        const own = await pixels();
+        await page.unroute("**/api/spot/**");
+        // Off and on again: the tile asks the server again, which answers this time.
+        await page.locator("#zoom-all").click();
+        const answered = page.waitForResponse(
+            (res) => res.url().includes("/api/spot/123/compact-mantine/both/button--primary.dark.png") && res.ok(),
+        );
+        await page.locator("#zoom-all").click();
+        await answered;
+        await expect.poll(lit).toBe(true);
+        const served = await pixels();
+        expect(served).toHaveLength(own.length);
+        // The same picture, scaled by another filter: on average within 1 of 255 per channel.
+        const mean = served.reduce((sum, v, i) => sum + Math.abs(v - own[i]), 0) / own.length;
+        expect(mean).toBeLessThan(1);
+    });
 });

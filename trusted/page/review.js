@@ -11,6 +11,7 @@
 
 import { approve, prepareRegistration, registerPasskey } from "/passkey.js";
 import pixelmatch from "/pixelmatch.mjs";
+import { cropOf, dimmed, grow, regions } from "./spot.js";
 
 // The session token, from the address, or kept in this browser from an earlier visit: the
 // notifier's link carries no token (it goes through a push service), and still opens here.
@@ -66,8 +67,6 @@ const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles
 // size; 1 is real size: one CSS pixel per CSS pixel the story was drawn at, scrolling when larger.
 const ZOOMS = ["fit", 1, 2, 4, 8];
 const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
-const GROW = 10; // image pixels the spotlight and the changed boxes grow each changed pixel by
-const SPOT_ALPHA = 190; // the spotlight's dimming, out of 255, as Chromatic's focus mask
 // A decision this soon after its item's images appeared is the second tap of a double tap, not a
 // decision on an image the reader saw.
 const GUARD_MS = 250;
@@ -623,7 +622,8 @@ function cached(map, key, limit, make, drop = () => {}) {
 
 // Loads an image through the API (it needs the token header) and returns an object URL. Keyed by
 // the image's hash too, so a newer CI run's image is never answered with an older one. `route`
-// is "img" for the image itself, "thumb" for the grid's small copy.
+// is "img" for the image itself, "thumb" for the grid's small copy, "spot" for its spotlit or
+// zoomed copy (`kind` then "spot", "zoom" or "both", and `hash` both images' hashes).
 function image(kind, file, hash, route = "img") {
     return cached(
         route === "img" ? images : thumbs,
@@ -1835,16 +1835,25 @@ function pumpThumbs() {
         const wait = img.previousElementSibling;
         const item = (state.gridSpot || state.gridZoom) && state.data.items.find((i) => i.file === file);
         const spot = item?.baseline && item.capture && item.baseline !== item.capture;
-        (spot ? spotThumb(item, state.gridSpot, state.gridZoom) : image(kind, file, hash, "thumb"))
+        const show = (url, lit) => {
+            img.src = url;
+            img.hidden = false;
+            img.classList.toggle("spot", lit && state.gridSpot);
+            img.classList.toggle("zoomed", lit && state.gridZoom);
+            wait?.remove();
+            delete img.closest(".tile").dataset.failed;
+        };
+        const plain = image(kind, file, hash, "thumb");
+        // A spotlit tile shows the plain thumbnail until the server's spotlit one comes.
+        const shown = spot
+            ? plain.then((url) => {
+                  show(url, false);
+                  return spotTile(item);
+              })
+            : plain;
+        shown
             .then(
-                (url) => {
-                    img.src = url;
-                    img.hidden = false;
-                    img.classList.toggle("spot", Boolean(spot && state.gridSpot));
-                    img.classList.toggle("zoomed", Boolean(spot && state.gridZoom));
-                    wait?.remove();
-                    delete img.closest(".tile").dataset.failed;
-                },
+                (url) => show(url, Boolean(spot)),
                 () => {
                     if (wait) {
                         wait.textContent = "Failed -- tap to retry";
@@ -1861,9 +1870,17 @@ function pumpThumbs() {
 
 // The grid's Spotlight all and Zoom to changes, two switches either of which can be on: a tile's
 // new image with the story screen's Spotlight (spotlight(), over the same diff), and/or cropped
-// toward the changed areas so a small change is large enough to see. The crop keeps the image's
-// shape and shows at least a quarter of each side.
-// ponytail: each tile decodes both full images, six at a time; a server-made thumbnail if slow.
+// toward the changed areas so a small change is large enough to see (cropOf()). The server makes
+// these tiles, in advance; when it cannot, the page makes it from both full images, as a fallback.
+function spotTile(item) {
+    let kind = state.gridSpot ? "spot" : "zoom";
+    if (state.gridSpot && state.gridZoom) {
+        kind = "both";
+    }
+    const pair = `${item.baseline}-${item.capture}`;
+    return image(kind, item.file, pair, "spot").catch(() => spotThumb(item, state.gridSpot, state.gridZoom));
+}
+
 let spotUrls = [];
 async function spotThumb(item, lit, zoom) {
     const diff = await diffOf(item);
@@ -1872,16 +1889,7 @@ async function spotThumb(item, lit, zoom) {
         source = new OffscreenCanvas(diff.w, diff.h);
         source.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(diff.b), diff.w, diff.h), 0, 0);
     }
-    const boxes = diff.boxes.length > 0 ? diff.boxes : [[0, 0, diff.w, diff.h]];
-    const x0 = Math.min(...boxes.map((b) => b[0]));
-    const y0 = Math.min(...boxes.map((b) => b[1]));
-    const x1 = Math.max(...boxes.map((b) => b[0] + b[2]));
-    const y1 = Math.max(...boxes.map((b) => b[1] + b[3]));
-    const f = zoom ? Math.min(1, Math.max(0.25, (2 * (x1 - x0)) / diff.w, (2 * (y1 - y0)) / diff.h)) : 1;
-    const [cw, ch] = [diff.w * f, diff.h * f];
-    const clamp = (v, max) => Math.min(Math.max(0, v), max);
-    const cx = clamp((x0 + x1) / 2 - cw / 2, diff.w - cw);
-    const cy = clamp((y0 + y1) / 2 - ch / 2, diff.h - ch);
+    const [cx, cy, cw, ch] = zoom ? cropOf(diff.boxes, diff.w, diff.h) : [0, 0, diff.w, diff.h];
     const out = new OffscreenCanvas(400, Math.round((400 * diff.h) / diff.w));
     out.getContext("2d").drawImage(source, cx, cy, cw, ch, 0, 0, out.width, out.height);
     const url = URL.createObjectURL(await out.convertToBlob());
@@ -3689,73 +3697,6 @@ async function diffOf(item) {
     });
 }
 
-// A square dilation by GROW pixels, as two passes (rows, then columns) of a sliding window.
-function grow(mask, w, h) {
-    const on = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-        on[i] = mask[i * 4 + 3] !== 0 ? 1 : 0;
-    }
-    const pass = (src, count, length, at) => {
-        const out = new Uint8Array(w * h);
-        for (let line = 0; line < count; line++) {
-            let last = -Infinity;
-            // Forward then backward: distance to the nearest set pixel along the line.
-            for (let k = 0; k < length; k++) {
-                if (src[at(line, k)]) {
-                    last = k;
-                }
-                if (k - last <= GROW) {
-                    out[at(line, k)] = 1;
-                }
-            }
-            last = Infinity;
-            for (let k = length - 1; k >= 0; k--) {
-                if (src[at(line, k)]) {
-                    last = k;
-                }
-                if (last - k <= GROW) {
-                    out[at(line, k)] = 1;
-                }
-            }
-        }
-        return out;
-    };
-    const rows = pass(on, h, w, (y, x) => y * w + x);
-    return pass(rows, w, h, (x, y) => y * w + x);
-}
-
-// The bounding boxes [x, y, width, height] of the separate regions of a grown mask, largest first.
-function regions(grown, w, h) {
-    const seen = new Uint8Array(w * h);
-    const boxes = [];
-    const stack = [];
-    for (let start = 0; start < w * h; start++) {
-        if (!grown[start] || seen[start]) {
-            continue;
-        }
-        let [x0, y0, x1, y1] = [w, h, -1, -1];
-        seen[start] = 1;
-        stack.push(start);
-        while (stack.length > 0) {
-            const p = stack.pop();
-            const x = p % w;
-            const y = (p - x) / w;
-            x0 = Math.min(x0, x);
-            x1 = Math.max(x1, x);
-            y0 = Math.min(y0, y);
-            y1 = Math.max(y1, y);
-            for (const q of [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, p - w, p + w]) {
-                if (q >= 0 && q < w * h && grown[q] && !seen[q]) {
-                    seen[q] = 1;
-                    stack.push(q);
-                }
-            }
-        }
-        boxes.push([x0, y0, x1 - x0 + 1, y1 - y0 + 1]);
-    }
-    return boxes.sort((p, q) => q[2] * q[3] - p[2] * p[3]);
-}
-
 // The changed pixels alone, in solid red, transparent everywhere else: laid over an image in the
 // same grid cell, so it lines up with the image at every zoom.
 function overlay(diff) {
@@ -3775,17 +3716,7 @@ function overlay(diff) {
 // An image (the new one unless given) with everything dimmed except the changed pixels grown by GROW pixels.
 function spotlight(diff, px = diff.b) {
     const canvas = el("canvas", { width: String(diff.w), height: String(diff.h) });
-    const ctx = canvas.getContext("2d");
-    const out = ctx.createImageData(diff.w, diff.h);
-    const keep = 1 - SPOT_ALPHA / 255;
-    for (let i = 0; i < diff.w * diff.h; i++) {
-        const lit = diff.grown[i] === 1;
-        for (let c = 0; c < 3; c++) {
-            out.data[i * 4 + c] = lit ? px[i * 4 + c] : px[i * 4 + c] * keep;
-        }
-        out.data[i * 4 + 3] = lit ? px[i * 4 + 3] : Math.max(px[i * 4 + 3], SPOT_ALPHA);
-    }
-    ctx.putImageData(out, 0, 0);
+    canvas.getContext("2d").putImageData(new ImageData(dimmed(px, diff.grown), diff.w, diff.h), 0, 0);
     return canvas;
 }
 

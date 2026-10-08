@@ -1608,6 +1608,43 @@ describe("serve: what the page waits on", () => {
         expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
     });
 
+    it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const spots = () => (existsSync(join(s.tmp, "spots")) ? readdirSync(join(s.tmp, "spots")).sort() : []);
+        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three tiles each.
+        await until(() => spots().filter((f) => f.endsWith(".png")).length === 9);
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const button = body.items.find((i) => i.file === "button--primary.dark.png");
+        expect(spots()).toContain(`${button.baseline}-${button.capture}-0.063-0-both.png`);
+        expect(spots().filter((f) => f.startsWith(`${button.baseline}-${button.capture}-`))).toEqual(
+            ["both", "spot", "zoom"].map((k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`),
+        );
+        const tiles = {};
+        for (const kind of ["spot", "zoom", "both"]) {
+            const tile = await s.api("GET", `/api/spot/123/compact-mantine/${kind}/button--primary.dark.png`);
+            expect(tile.type).toBe("image/png");
+            tiles[kind] = PNG.sync.read(tile.body);
+            // The page's tile size: 400 pixels across, the capture's shape.
+            expect([tiles[kind].width, tiles[kind].height]).toEqual([400, 250]);
+        }
+        // The changed area [160, 80, 40, 40] is lit; a corner far from it is dimmed, not cropped.
+        const at = (png, x, y) => [...png.data.slice((y * png.width + x) * 4, (y * png.width + x) * 4 + 4)];
+        const plain = PNG.sync.read(
+            (await s.api("GET", "/api/thumb/123/compact-mantine/capture/button--primary.dark.png")).body,
+        );
+        expect(at(tiles.spot, 2, 2)[3]).toBeGreaterThanOrEqual(190);
+        expect(at(tiles.spot, 2, 2).slice(0, 3)).not.toEqual(at(plain, 1, 1).slice(0, 3));
+        expect(tiles.zoom.data.equals(tiles.both.data)).toBe(false);
+        expect(spots()).toHaveLength(9);
+        // A slider of another height is padded, as the page pads it.
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/slider--sizes.png")).status).toBe(200);
+        // An unchanged story and a new one have no change to light; an unknown kind is no tile.
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/input--default.png")).status).toBe(404);
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/badge--default.light.png")).status).toBe(404);
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/blur/button--primary.dark.png")).status).toBe(404);
+    });
+
     it("states what Finish would do, and refuses a Finish whose decisions changed since", async () => {
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
