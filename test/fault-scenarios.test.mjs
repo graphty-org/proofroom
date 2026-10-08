@@ -55,7 +55,7 @@ afterEach(async () => {
  * @returns {Promise<object>} the started server
  */
 async function serve(r, w, options = {}) {
-    const s = await startApp(r, { gh: withRetries(w.gh, [0, 0, 0]), ...options });
+    const s = await startApp(r, { gh: withRetries(w.gh, [0, 0, 0]), retryDelays: [0, 0, 0], ...options });
     servers.push(s);
     return s;
 }
@@ -554,6 +554,123 @@ describe("stalls", () => {
     });
 });
 
+describe("Finish over a failing network", () => {
+    /**
+     * A pull request's Finish of one accept and one reject, with a fake gh that fails each call
+     * `ghFails` matches with `ghError`.
+     * @param {object} [options] what fails
+     * @param {(args: string[], calls: string[]) => boolean} [options.ghFails] which gh calls fail
+     * @param {string} [options.ghError] their error
+     * @returns {object} the repository, the steps told, gh's calls and a `run`
+     */
+    function setup({ ghFails = () => false, ghError = "error connecting to api.github.com" } = {}) {
+        const r = makeRepo();
+        const at = { commit: r.head, headSha: r.head };
+        const projects = { "compact-mantine": copyFixture("compact-mantine", join(r.dir, "a/compact-mantine"), at) };
+        const steps = [];
+        const calls = [];
+        const gh = async (args) => {
+            calls.push(args.join(" "));
+            if (ghFails(args, calls)) {
+                throw new Error(ghError);
+            }
+            return JSON.stringify({ html_url: "https://gh/x" });
+        };
+        const run = () =>
+            finish({
+                repo: r.repo,
+                gh,
+                target: { pr: 123, branch: "feature" },
+                projects,
+                decisions: [
+                    accept("badge--default.light.png"),
+                    { ...accept("button--primary.dark.png"), decision: "reject", reason: "too wide" },
+                ],
+                now: NOW,
+                progress: (step) => steps.push(step),
+                config: CONFIG,
+                retryDelays: [0, 0, 0],
+            });
+        return { ...r, steps, calls, run };
+    }
+    const pushes = (inj) => inj.log.filter((e) => /^git push /.test(e.label));
+
+    it("A DNS failure on the fetch is retried, and the page's step says so", async () => {
+        const s = setup();
+        injector({ rules: [{ on: "git", match: /^git fetch /, nth: 1, kind: "network" }] }).install();
+        const out = await s.run();
+        expect(git(s.remote, "rev-parse", "feature")).toBe(out.commit);
+        expect(s.steps).toContain("checking (retrying after a network error, attempt 2 of 4)");
+    });
+
+    it("A push whose connection failed before it landed is pushed again, once", async () => {
+        const s = setup();
+        const inj = injector({ rules: [{ on: "git", match: /^git push /, nth: 1, kind: "timeout" }] });
+        inj.install();
+        const out = await s.run();
+        expect(git(s.remote, "rev-parse", "feature")).toBe(out.commit);
+        expect(pushes(inj).map((e) => e.kind)).toEqual(["timeout", null]);
+        expect(s.steps).toContain("pushing (retrying after a network error, attempt 2 of 4)");
+    });
+
+    it("A push that landed before its connection dropped is checked, not pushed again", async () => {
+        const s = setup();
+        const tree = join(s.repo, "tmp/visual-review/worktrees/accept-123");
+        const land = () => git(tree, "push", "-q", "--no-verify", "origin", "HEAD:refs/heads/feature");
+        const inj = injector({ rules: [{ on: "git", match: /^git push /, nth: 1, kind: "5xx", before: land }] });
+        inj.install();
+        const out = await s.run();
+        expect(git(s.remote, "rev-parse", "feature")).toBe(out.commit);
+        expect(pushes(inj)).toHaveLength(1);
+        expect(inj.log.some((e) => /^git ls-remote origin refs\/heads\/feature/.test(e.label))).toBe(true);
+    });
+
+    it("A refused push is never retried", async () => {
+        const s = setup();
+        const inj = injector({ rules: [{ on: "git", match: /^git push /, kind: "4xx" }] });
+        inj.install();
+        await expect(s.run()).rejects.toThrow(/403/);
+        expect(pushes(inj)).toHaveLength(1);
+        expect(s.steps.some((step) => step.includes("retrying"))).toBe(false);
+    });
+
+    it("A network failure that gives up after four tries fails the Finish", async () => {
+        const s = setup();
+        const inj = injector({ rules: [{ on: "git", match: /^git fetch /, kind: "network" }] });
+        inj.install();
+        await expect(s.run()).rejects.toThrow(/Could not resolve host/);
+        expect(inj.log.filter((e) => /^git fetch /.test(e.label))).toHaveLength(4);
+        expect(s.steps.at(-1)).toBe("checking (retrying after a network error, attempt 4 of 4)");
+    });
+
+    it("The comment is posted again after a DNS failure, which never reached GitHub", async () => {
+        let failed = 0;
+        const s = setup({ ghFails: (args) => args[1].endsWith("/comments") && failed++ === 0 });
+        const out = await s.run();
+        expect(out.rejects).toBe(1);
+        expect(s.calls.filter((c) => c.includes("/comments"))).toHaveLength(2);
+        expect(s.steps).toContain("posting the comment (retrying after a network error, attempt 2 of 4)");
+    });
+
+    it("The comment is not posted again after a server error, which GitHub may have applied", async () => {
+        const s = setup({ ghFails: (args) => args[1].endsWith("/comments"), ghError: "HTTP 502: Bad Gateway" });
+        const err = await s.run().catch((e) => e);
+        expect(err.message).toMatch(/comment with the rejects failed: HTTP 502/);
+        expect(s.calls.filter((c) => c.includes("/comments"))).toHaveLength(1);
+    });
+
+    it("The status is posted again after a server error, since posting it twice is harmless", async () => {
+        let failed = 0;
+        const s = setup({
+            ghFails: (args) => args[1].includes("/statuses/") && failed++ === 0,
+            ghError: "HTTP 502: Bad Gateway",
+        });
+        const out = await s.run();
+        expect(out.statusError).toBeNull();
+        expect(s.calls.filter((c) => c.includes("/statuses/"))).toHaveLength(2);
+    });
+});
+
 describe("Finish", () => {
     it("Master seed: the branch is pushed but opening its pull request fails, and every retry is refused with 'already exists on origin'", async () => {
         const r = makeRepo();
@@ -579,6 +696,7 @@ describe("Finish", () => {
                 decisions: [accept("badge--default.light.png")],
                 now: NOW,
                 config: CONFIG,
+                retryDelays: [0, 0, 0],
             });
         const branch = "visual/seed-2026-09-27";
         const err = await run().catch((e) => e);

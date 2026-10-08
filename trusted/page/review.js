@@ -4651,6 +4651,8 @@ function drawFinishPanel() {
             : "Publishing your decisions. Closing or reloading this page does not stop it.",
         body: panel,
         detail: `${Math.max(now, 0)} of ${plural(steps.length, "step")} done`,
+        // The server's step ends "(retrying after a network error, attempt 2 of 4)" while it retries.
+        net: /\((retrying after a network error[^)]*)\)$/.exec(step)?.[1].replace(/^r/, "R") ?? "",
         done: Math.max(now, 0),
         total: steps.length,
         since: state.finishSeen ?? performance.now(),
