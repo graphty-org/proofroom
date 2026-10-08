@@ -39,15 +39,19 @@ function put(path, data) {
  */
 function conflicted({ code = false } = {}) {
     const r = makeRepo();
+    // Without the repository's git-lfs hooks: post-checkout, post-commit and pre-push each start
+    // git-lfs, which starts eight git processes, and nothing here reads an image from the remote.
+    // The LFS filter still turns the images into pointers, as an accept commits them.
+    const run = (...args) => git(r.repo, "-c", "core.hooksPath=/dev/null", ...args);
     const commit = (branch, message, files) => {
-        git(r.repo, "checkout", "-q", branch);
+        run("checkout", "-q", branch);
         for (const [path, data] of Object.entries(files)) {
             put(join(r.repo, path), data);
         }
-        git(r.repo, "add", "-A");
-        git(r.repo, "commit", "-q", "-m", message);
-        git(r.repo, "push", "-q", "origin", branch);
-        return git(r.repo, "rev-parse", "HEAD");
+        run("add", "-A");
+        run("commit", "-q", "-m", message);
+        run("push", "-q", "origin", branch);
+        return run("rev-parse", "HEAD");
     };
     const before = contentHash(Buffer.from(git(r.repo, "show", `master:${PATH}`) + "\n"));
     const record = {
