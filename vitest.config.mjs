@@ -8,6 +8,8 @@ export default defineConfig({
         include: ["test/**/*.test.mjs"],
         // No test runs git with the developer's own config (signing, hooks) or a hook's GIT_DIR.
         setupFiles: ["test/isolate-git.setup.mjs"],
+        // The repository every test's makeRepo copies.
+        globalSetup: ["test/repo-template.setup.mjs"],
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "json", "lcov", "html"],
