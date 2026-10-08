@@ -8,9 +8,14 @@
  *   FAULT_SEED=7 pnpm exec vitest run test/fault-journey.test.mjs
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { withRetries } from "../trusted/lib/github.mjs";
+import { hooks } from "./fault-hooks.mjs";
 import {
     assertDecisionsKept,
     assertOneCommitOrNone,
@@ -37,10 +42,110 @@ const REVIEWABLE = new Set(["changed", "moved", "new", "removed", "unstable", "f
 const DECIDABLE = new Set(["changed", "moved", "new", "removed"]);
 const PROJECTS = ["compact-mantine", "graphty-element"];
 const OTHER = "4".repeat(40);
+// The git reads whose answer cannot change during a journey: git's config, which no journey
+// changes, and what a commit named by its full sha holds (every other argument an option or a
+// path, never a ref name). A failed one (a commit not fetched yet) holds only until git next
+// writes. The injector never fails a read, so answering a repeat from memory changes no fault and
+// no answer; it only saves a git process.
+const SHA = /^[0-9a-f]{40}(\^\{commit\}|:.*)?$/;
+const REF = /^(refs\/|HEAD|[\w.-]+$)/;
+const settled = (args) => {
+    // Finish's git runs with `-c core.hooksPath=/dev/null` first.
+    const [command, ...rest] = args.filter((a, i) => a !== "-c" && args[i - 1] !== "-c");
+    return (
+        (command === "config" && rest.includes("--get")) ||
+        (["ls-tree", "show", "cat-file", "merge-base"].includes(command) &&
+            rest.some((a) => SHA.test(a)) &&
+            rest.every((a) => a.startsWith("-") || SHA.test(a) || !REF.test(a)))
+    );
+};
+const WRITES = new Set(["fetch", "push", "commit", "merge", "worktree", "update-ref", "lfs", "add", "rm"]);
+
+/**
+ * `exec` with the settled git reads answered from memory after the first time.
+ * @param {Map<string, { out?: string, err?: Error }>} memory the answers, by working directory
+ *     and arguments
+ * @returns {(real: Function, cmd: string, args: string[], options: object) => Promise<string>} it
+ */
+const remembering =
+    (memory) =>
+    (real, cmd, args, options = {}) => {
+        if (cmd !== "git" || !settled(args)) {
+            if (cmd === "git" && args.some((a) => WRITES.has(a))) {
+                for (const [key, answer] of memory) {
+                    if (answer.err && !answer.config) {
+                        memory.delete(key);
+                    }
+                }
+            }
+            return real(cmd, args, options);
+        }
+        const key = `${options.cwd}\0${args.join("\0")}`;
+        const known = memory.get(key);
+        if (known) {
+            return known.err ? Promise.reject(known.err) : Promise.resolve(known.out);
+        }
+        return real(cmd, args, options).then(
+            (out) => {
+                memory.set(key, { out });
+                return out;
+            },
+            (err) => {
+                memory.set(key, { err, config: args.includes("config") });
+                throw err;
+            },
+        );
+    };
+
+// One repository for every journey, copied for each: making it costs more git processes than a
+// journey's reads. Its two directories hold one absolute path, the remote's in the clone's config.
+let template;
+beforeAll(() => {
+    template = makeRepo();
+    git(template.repo, "push", "-q", "origin", "feature:refs/heads/other");
+});
+function freshRepo() {
+    const dir = mkdtempSync(join(tmpdir(), "vr-journey-"));
+    cpSync(template.dir, dir, { recursive: true });
+    const config = join(dir, "repo/.git/config");
+    writeFileSync(config, readFileSync(config, "utf8").replaceAll(template.remote, join(dir, "remote.git")));
+    return { ...template, dir, repo: join(dir, "repo"), remote: join(dir, "remote.git") };
+}
+
 const RANDOM_STEPS = ["load", "open", "decide", "decide", "decide", "undo", "acceptAll", "restart"];
 
 /**
+ * The journey running now. A test that times out leaves its journey running, and that journey's
+ * faults, server log and teardown landed in the next test's (a "failure invisible" there), so
+ * afterEach stops it at its next step and waits for it to end.
+ * @type {{ stopped: boolean, done: Promise<unknown> } | null}
+ */
+let current = null;
+
+/**
+ * One journey, which afterEach can stop: see `walk`.
+ * @param {...any} args walk's, after the first
+ * @returns {ReturnType<typeof walk>} walk's
+ */
+function journey(...args) {
+    const run = { stopped: false, done: null };
+    run.done = walk(run, ...args);
+    current = run;
+    return run.done;
+}
+
+afterEach(async () => {
+    if (current) {
+        current.stopped = true;
+        await current.done.catch(() => {});
+        current = null;
+    }
+    vi.restoreAllMocks();
+});
+
+/**
  * One journey: two pull requests (#123 is finished at the end, #124 is only reviewed).
+ * @param {{ stopped: boolean }} run set `stopped` to end it before its next step
  * @param {number} seed picks the steps and the faults
  * @param {object} [faults] the injector's random faults: `rate`, `where`, `kinds`; `quiet` looks
  *     past failures that are shown but not logged, or swallowed, to the other invariants
@@ -48,11 +153,10 @@ const RANDOM_STEPS = ["load", "open", "decide", "decide", "decide", "undo", "acc
  * @returns {Promise<{ violation: string | null, steps: string[], faults: string[], log: string[] }>}
  *     the first broken invariant, what each step answered, the faults met (sorted) and the log
  */
-async function journey(seed, faults = {}, length = 9) {
+async function walk(run, seed, faults = {}, length = 9) {
     const pick = random(seed);
     const choose = (list) => (list.length === 0 ? undefined : list[Math.floor(pick() * list.length)]);
-    const r = makeRepo();
-    git(r.repo, "push", "-q", "origin", "feature:refs/heads/other");
+    const r = freshRepo();
     const w = world(r);
     w.data.prs.push({ number: 124, head: OTHER, branch: "other" });
     w.data.runs[OTHER] = { id: 1001, attempt: 1 };
@@ -74,9 +178,15 @@ async function journey(seed, faults = {}, length = 9) {
                 .replace(/\.part-\w+/g, ".part-*")
                 .replace(/\b(?!4{40}\b)[0-9a-f]{40}\b/g, "<sha>"),
     }).install();
+    const injected = hooks.exec;
+    const remember = remembering(new Map());
+    hooks.exec = (real, cmd, args, options) => injected((c, a, o) => remember(real, c, a, o), cmd, args, options);
     const log = captureLog(vi);
-    const gh = withRetries(inj.gh(w.gh), [0, 0, 0]);
-    let s = await startApp(r, { gh });
+    // A page load waits for the captures to download, however long that takes: with the server's
+    // one second, a download slowed by a busy machine went on after its step had been checked,
+    // and the failure it met was logged in the next step's window.
+    const options = { gh: withRetries(inj.gh(w.gh), [0, 0, 0]), patience: Infinity };
+    let s = await startApp(r, options);
 
     /** Decisions the API accepted, by `<target>|<project>|<file>`. */
     const model = new Map();
@@ -214,7 +324,7 @@ async function journey(seed, faults = {}, length = 9) {
         },
         async restart() {
             await s.close();
-            s = await startApp(r, { gh });
+            s = await startApp(r, options);
             return "restarted";
         },
     };
@@ -247,14 +357,22 @@ async function journey(seed, faults = {}, length = 9) {
         return { status: res.status, error: j.error };
     }
 
+    const halt = () => {
+        if (run.stopped) {
+            throw new Error("stopped: its test ended");
+        }
+    };
+
     try {
         steps.push(`load ${await act.load()}`);
         await check();
         for (let i = 0; i < length; i++) {
+            halt();
             const name = choose(RANDOM_STEPS);
             steps.push(`${name} ${await act[name]()}`);
             await check();
         }
+        halt();
         if ([...model.keys()].some((k) => k.startsWith("123|"))) {
             let out = await finishOnce();
             steps.push(`finish ${out.status} ${(out.error ?? "").replaceAll(r.dir, "<dir>")}`.trim());
@@ -263,6 +381,7 @@ async function journey(seed, faults = {}, length = 9) {
                 steps.push(`finish again ${out.status} ${(out.error ?? "").replaceAll(r.dir, "<dir>")}`.trim());
             }
         }
+        halt();
         steps.push(`load ${await act.load()}`);
         await check();
         return { violation: null, steps, faults: inj.trace().split("\n").filter(Boolean).sort(), log: log.lines };
@@ -282,8 +401,6 @@ async function journey(seed, faults = {}, length = 9) {
         await s.close();
     }
 }
-
-afterEach(() => vi.restoreAllMocks());
 
 const only = process.env.FAULT_SEED ? [Number(process.env.FAULT_SEED)] : null;
 const report = (out) => {
@@ -312,13 +429,29 @@ describe("random journeys", () => {
         },
     );
 
-    it("replays a seed exactly: the same faults, the same answers", async () => {
+    // Three random steps, then Finish twice over a failing push: every kind of call a journey
+    // makes, at a third of the git processes of a full one. Each run is a test of its own, so a
+    // test holds one journey's work, not two.
+    describe("replays a seed exactly", () => {
         const all = { rate: 0.15, where: () => true };
-        const [a, b] = [await journey(11, all), await journey(11, all)];
-        expect(a.faults.length).toBeGreaterThan(0);
-        expect(b.faults).toEqual(a.faults);
-        expect(b.steps).toEqual(a.steps);
-        expect(b.violation).toBe(a.violation);
+        let first = null;
+
+        it("runs seed 22 once, through Finish twice and gh, git and state-file faults", async () => {
+            first = await journey(22, all, 3);
+            expect(first.steps.filter((x) => x.startsWith("finish"))).toHaveLength(2);
+            // A trace line is "<kind> <- <on> <label>", and a kind can be two words ("partial write").
+            expect(new Set(first.faults.map((f) => f.split(" <- ")[1].split(" ")[0]))).toEqual(
+                new Set(["gh", "git", "fs"]),
+            );
+        });
+
+        it("runs it again: the same faults, the same answers", async () => {
+            expect(first, "the first run did not finish").not.toBeNull();
+            const again = await journey(22, all, 3);
+            expect(again.faults).toEqual(first.faults);
+            expect(again.steps).toEqual(first.steps);
+            expect(again.violation).toBe(first.violation);
+        });
     });
 
     const SEEDS = only ?? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];

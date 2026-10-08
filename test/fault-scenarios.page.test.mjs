@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import { withRetries } from "../trusted/lib/github.mjs";
 import { startApp, world } from "./faults.mjs";
-import { FIXTURE, isolateGit, job, makeRepo } from "./helpers.mjs";
+import { FIXTURE, interceptedPage, isolateGit, job, makeRepo } from "./helpers.mjs";
 
 const TOKEN = "t".repeat(43);
 const OTHER = "4".repeat(40);
@@ -56,7 +56,7 @@ afterEach(async () => {
  * @returns {Promise<import("playwright").Page>} the tab
  */
 async function tab(hash = "") {
-    const p = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+    const p = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
     pages.push(p);
     await p.exposeFunction("asked", (message) => {
         dialogs.push(message);
@@ -101,7 +101,8 @@ async function open(r, w, { gh = w.gh, hash = "" } = {}) {
  */
 async function review(n = 0, p = page) {
     await p.getByRole("button", { name: "Review", exact: true }).nth(n).click();
-    await p.locator(".component").first().waitFor();
+    // A grid of identical changes shows them as one cluster of similar changes, with no component.
+    await p.locator(".component, .cluster").first().waitFor();
 }
 
 // Item numbers: 1 menu--open (failed), 2 button--primary.dark (changed), 3 slider--sizes
@@ -224,7 +225,7 @@ describe("review page: stale caches", () => {
         );
         s = await startApp(r, { gh: w.gh, token: TOKEN });
         dialogs = [];
-        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+        page = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
         pages.push(page);
         // Counts the object URLs the page holds: created and not yet revoked.
         await page.addInitScript(() => {
@@ -466,7 +467,7 @@ describe("review page: rendering and routing", () => {
         const w = world(r);
         s = await startApp(r, { gh: w.gh, token: TOKEN });
         dialogs = [];
-        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+        page = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
         pages.push(page);
         let calls = 0;
         const running = {

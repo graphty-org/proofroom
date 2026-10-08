@@ -477,8 +477,9 @@ describe("refreshing the targets", () => {
         const s = await startApp(r, { gh });
         servers.push(s);
         try {
-            const res = await within(1500, s.api("GET", "/api/prs"));
-            expect(res, "GET /api/prs waited for #124's download").not.toBeNull();
+            // #124's download is held until `release()` below, so an answer at all shows the list
+            // did not wait for it. A server that waits never answers, and the test times out.
+            const res = await s.api("GET", "/api/prs");
             expect(res.body.targets.map((t) => t.id)).toContain("123");
             expect(JSON.stringify(res.body.targets.find((t) => t.id === "124"))).toMatch(/download/i);
         } finally {

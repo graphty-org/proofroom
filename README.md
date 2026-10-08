@@ -197,8 +197,10 @@ changes every capture with text, which is one re-baseline.
   passkey check needs (see [Approving with a passkey](#approving-with-a-passkey)). Make it a
   required check. In a Mergify merge-queue run, pass `--queue-event "$GITHUB_EVENT_PATH"` instead
   of `--pr`: the gate reads the batch's pull requests from the queue's draft pull request and
-  accepts a review record for any of them. Every capture must still equal a baseline, so a batch
-  passes only on images already approved on its pull requests.
+  accepts a review record for any of them. It compares baseline changes with the commit the batch
+  sits on (its `checking_base_sha`), so a batch stacked on another is not charged with that
+  batch's changes. Every capture must still equal a baseline, so a batch passes only on images
+  already approved on its pull requests.
 
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
@@ -279,6 +281,19 @@ pull request follow, as before. The number ready is in the tab's title ("(3) Vis
 on its icon, and, on a home-screen web app where the browser allows it, on the app icon. The page
 asks the server again every few seconds while it is shown, and at once when you come back to it.
 `GET /api/inbox` (with the token) answers the same list as JSON.
+
+Pull requests that change the same baseline files are **coupled**: once the first merges, the
+others conflict and need another review. The inbox shows them first, as one group, oldest first
+(not a merge order: the merge queue decides that), with how many baselines they share and how many
+images the group holds once an image shown identically on several of them is counted once. **Review together** opens the
+first; while you review it, each accept, reject, exclude or undo (and Accept all) is also taken on
+every other pull request of the group whose image and baseline are the same, so the next one opens
+on only what is its own. An image a member already decided otherwise is never changed; the status
+line names it. A decision taken this way on another pull request counts there as not opened, as
+an Accept all does, so its Finish still says which images you looked at on it. When every member touches the same top-level directory and none is breaking (`!`
+in its title), the group also shows "fold #B into #A" as a suggestion for whoever maintains those
+branches; the page never folds anything. The groups are in `GET /api/inbox` as `groups`, and every
+group decision is logged to `<workDir>/state/groups.jsonl`.
 
 To keep it on an iPad's home screen, use **Add to Home Screen** in Safari: the page has a web app
 manifest and opens full screen, always on this list. A home-screen app keeps its own storage, apart
@@ -510,6 +525,47 @@ downloading captures nobody has opened yet) is said in the status row and never 
     **Finish** first, and **Next: #202 (340 undecided)**, the next pull request with something to
     review. K comes back to the last item.
 
+### Spending less time on pixel changes
+
+Three filters on the grid save time without hiding a change:
+
+- **Approved before.** A capture that is byte for byte an image you already accepted for the same
+  story and mode is accepted again, marked "Approved before (#1356, 2026-10-06)", and listed in a
+  collapsed group at the top of the grid, still openable. Reject or Exclude replaces it. The earlier
+  approval must be a review record on the default branch, or, once a passkey is registered, a signed
+  one at an open pull request's head (a fork's included), and it must still be the newest decision
+  on that file there: a later accept of another image or a reject replaces it. Finish's sheet counts
+  these and lists each, one tap from opening it. Finish's record names the earlier record and its
+  commit, and the gate accepts the item only when that record approves exactly this image for this
+  story, with its own passkey approval once passkeys are enforced, and before that only from a
+  commit on the base branch. Nothing is taken on the page's word.
+- **Known capture noise.** A story that changed on two or more pull requests touching none of its
+  package's files, or whose capture flips between the same two images, is labeled "known capture
+  noise (seen on #a, #b)" and listed in a group of its own, on a pull request that does not touch its
+  package. It is never accepted for you: the group's **Accept N** decides it at once. Every refresh
+  adds what the captures show to `<workDir>/state/noise-evidence.json` and writes the stories proven
+  noisy to `<workDir>/state/known-noise.json` (also `GET /api/noise`), so a fix can be filed.
+- **Group similar** (on by default). Changed items with the same signature (where the change is on a
+  3 x 3 grid of the image, how large an area, whether it is a speck under 50 pixels, a pixel change or
+  a size change, and a similar count of changed pixels) form a cluster, shown as one representative
+  (the member with the most changed pixels), its count, **Accept N**, **Reject N...** and **Exclude
+  N...**, and every member under **Show all**. A cluster's decision is stored per item, as one
+  decision is. Items that fit no cluster are listed first, one by one.
+
+**Spotlight all** dims every tile outside its changed pixels, as Spotlight does on the story screen,
+and **Zoom to changes** crops every tile toward its changed areas, so a 49 x 49 change in a 2400 x
+1800 capture is large enough to see. Either can be on without the other; both are off at first and
+remembered in this browser.
+
+### The pull request's description and comments
+
+The pull request's title sits in the header (from 1050 px wide); it and the grid's **About #N** open a
+box with the title, the description and every comment in order, with author and time, so you can
+judge whether a change is what the pull request meant. All of it is shown as plain text, never as
+HTML, and anything not written by the repository's owner (your own login, for a repository an
+organization owns) is marked "not the repository owner". It is asked from GitHub once per pushed
+head (two calls).
+
 Statuses: `changed` (differs from its baseline), `moved` (a renamed story that looks exactly as
 its old id's baseline; see [renames](#reorganizing-stories-renames)), `new` (no baseline, and on a pull request the
 story is new or looks different from the default branch's newest capture of it), `no baseline yet` (status
@@ -734,6 +790,10 @@ For each review record a pull request adds, with `node:crypto` alone:
   SHA-256 of exactly this record, made on an HTTPS page whose host is exactly the key's host,
   with user verification (Face ID, Touch ID or the device's passcode).
 
+An item marked `approvedBefore` counts only when the review record it names, at the commit it
+names, approves exactly that image for that path and carries its own valid approval (before
+enforcement: when that commit is on the base branch).
+
 A record that fails counts for nothing. Then every changed baseline PNG, every added or changed
 settings file and any change to `visual-review/passkeys.json` must be accounted for: the records'
 items, oldest first, must take the file from its contents on the base branch to its contents in
@@ -941,6 +1001,15 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   `unchanged` or `excluded` items, including after "Re-run failed jobs" (the
   highest attempt's artifact counts); a missing, unfinished or invalid capture blocks it too. A
   rejected item stays blocking until a code change makes it match the baseline.
+- One exception: a project whose artifact holds, instead of `results.json`, the file
+  `skipped.json` with exactly `{"skipped": "not affected", "project": "<project>"}` passes without
+  a capture. A workflow that captures only the Storybooks a pull request can affect writes it for
+  the others. The gate accepts it only on a pull request's own run (never with `--queue-event`),
+  only for a project with baselines on the base branch, and only when the pull request changes
+  none of that project's baselines; anywhere else it counts as a missing capture. Which projects
+  are left out is decided by the pull request's own workflow, so the guarantee comes from the
+  merge queue, which captures every project before anything merges. The review page shows such a
+  project as "no capture".
 - A story with no baseline always blocks. `new` and `no baseline yet` only tell the reviewer
   whether the pull request changed it, measured against the default branch's newest complete
   capture, which may be a few merges older than the pull request's base.
@@ -1063,8 +1132,9 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
   registers it first, then review again.
 - **The gate says a record has no passkey approval** on a pull request Finished before your
   passkey was registered. Revert its accept commit (which takes the record and the baselines out
-  of the diff), let CI capture again, and review it again with Face ID. Never edit a record by
-  hand: the gate only accepts what your device approved.
+  of the diff), let CI capture again, and review it again with Face ID: the page keeps your
+  decisions on unchanged images but no longer counts them as published, so Finish publishes them
+  again. Never edit a record by hand: the gate only accepts what your device approved.
 - **Opening the seed issue fails.** Every label in `issueLabels` must exist in the repository.
 - **The pnpm setup step fails in CI.** `pnpm/action-setup` reads the pnpm version from the
   `packageManager` field of your root `package.json`; add one.

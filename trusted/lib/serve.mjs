@@ -39,11 +39,36 @@
  * (its jobs and artifacts) is asked once and kept beside its downloads. Grid tiles load
  * thumbnails (`GET /api/thumb/...`), scaled down in worker threads as soon as a capture lands and
  * kept on disk.
+ *
+ * Safe filters (filters.mjs): an item whose capture is an image the owner already approved for the
+ * same story and mode, in a review record on the default branch or an open pull request's branch,
+ * counts as accepted ("approved before", never saved in the decisions file, and replaced by any
+ * decision the owner takes on it), and Finish names that record in the new one, where the gate
+ * checks it. Every refresh adds what the captures show about capture noise to
+ * `<tmp>/state/noise-evidence.json` and writes the stories proven noisy to
+ * `<tmp>/state/known-noise.json` (also `GET /api/noise`); they are labeled, never accepted. `GET
+ * /api/pr` groups each project's changed items into clusters the page can decide as one.
+ * `GET /api/pr-context/<id>` answers a pull request's title, description and comments (untrusted
+ * text), asked from GitHub once per head.
+ *
+ * Coupled pull requests (inbox.mjs coupledGroups) change the same baseline files. POST
+ * /api/decide-group and /api/accept-all-group do what /api/decide and /api/accept-all do, then the
+ * same on every other member of the target's group whose item shows the same image against the
+ * same baseline, so the owner reviews a shared image once. Each call is logged to
+ * `<tmp>/state/groups.jsonl`, to count approvals per group.
  */
 
-import { execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+    appendFileSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,12 +96,15 @@ import {
     hurry,
     newestCiRun,
     openPullRequests,
+    pullRequestContext,
     retrying,
+    reviewerLogin,
     visualJobs,
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
-import { inboxOf, readyKey, writeJson } from "./inbox.mjs";
-import { validateResults } from "./results.mjs";
+import { approvalIndex, clusters, isNoise, knownNoise, observations } from "./filters.mjs";
+import { coupledGroups, inboxOf, readyKey, writeJson } from "./inbox.mjs";
+import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { scaled } from "./thumbs.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -105,7 +133,20 @@ const HEADERS = {
 const componentOf = (id) => id.split("--")[0];
 
 const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"]);
-const WRITES = new Set(["decide", "accept-all", "finish", "finish-prepare", "passkey-challenge", "register", "update"]);
+// The statuses whose accept changes the baseline file: two pull requests with one of these on the
+// same file conflict once the first merges.
+const CHANGES = new Set(["changed", "moved", "new", "unseeded", "removed"]);
+const WRITES = new Set([
+    "decide",
+    "decide-group",
+    "accept-all",
+    "accept-all-group",
+    "finish",
+    "finish-prepare",
+    "passkey-challenge",
+    "register",
+    "update",
+]);
 // A registration challenge is good for one use within this long; a prepared approval for this long.
 const CHALLENGE_MS = 5 * 60000;
 const APPROVAL_MS = 10 * 60000;
@@ -211,15 +252,25 @@ export function sessionToken(stateDir) {
 }
 
 /**
- * Reads and validates one project's results.json.
+ * Reads and validates one project's results.json. An artifact holding the not-affected marker
+ * instead is "not affected": the run left the project out, so there is nothing to decide.
  * @param {string} dir the capture directory
+ * @param {string} name the project
  * @returns {Promise<{ results: object | null, problem: string | null }>} the results, or why not
  */
-async function loadResults(dir) {
+async function loadResults(dir, name) {
     let results;
     try {
         results = JSON.parse(await readFile(join(dir, "results.json"), "utf8"));
     } catch {
+        if (!existsSync(join(dir, "results.json"))) {
+            const marker = await readFile(join(dir, SKIPPED_FILE), "utf8")
+                .then((t) => JSON.parse(t))
+                .catch(() => null);
+            if (isSkipMarker(marker, name)) {
+                return { results: null, problem: NOT_AFFECTED };
+            }
+        }
         return { results: null, problem: "capture failed" };
     }
     const problems = validateResults(results);
@@ -251,6 +302,8 @@ async function loadResults(dir) {
  *     (`<previews>/<pr>/<project>/results.json`): a complete preview of a pull request's current
  *     head stands in for each project CI has not captured yet, marked "CI pending", and is decided
  *     and finished like a CI capture. CI's capture replaces it project by project as it lands.
+ * @param {number} [options.patience] how long, in milliseconds, a page load waits for a run's
+ *     captures before listing the target as downloading; Infinity waits for them
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void}
  *     the handler, for node:https in the CLI and node:http in the tests
  */
@@ -266,14 +319,33 @@ export function createApp({
     startCommand = null,
     warm,
     previews = null,
+    patience = PATIENCE,
 }) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
     const names = Object.keys(projects);
     /** @type {Map<string, object>} targets by id: a pull request number, or "master" */
     let targets = new Map();
+    // Each pull request branch's fetched tip, read once per refresh, and the review records at a
+    // tip (by tip and pull request, kept while the tip is current) for decisionsOf's "still on
+    // the branch" check.
+    let tips = new Map();
+    let recordsAt = new Map();
     /** What the last refresh could not read from GitHub (the pull request list, a git fetch). */
     let listWarnings = [];
+    /** The images the owner approved, by `<baseline path> <hash>` (filters.mjs approvalIndex). */
+    let approved = new Map();
+    /** Review records by blob id: a blob never changes, so each is read once. */
+    const recordBlobs = new Map();
+    /** The default branch's commit that added each review record blob. */
+    const addedIn = new Map();
+    /** The stories proven to be capture noise, by `<project>/<file>` (filters.mjs knownNoise). */
+    let noise = new Map();
+    const evidenceFile = join(stateDir, "noise-evidence.json");
+    const noiseFile = join(stateDir, "known-noise.json");
+    /** Pull request context by `<pr> <head>`, and the reviewer's login, each asked once. */
+    const contexts = new Map();
+    let reviewer = null;
     /** Why a target's saved decisions were set aside, by target id. */
     const stateProblems = new Map();
     let finishing = false;
@@ -451,14 +523,38 @@ export function createApp({
     };
 
     /**
+     * Whether the branch still holds what Finish published for a decision: its review record
+     * there names the baseline (or the exclusion's settings file) with what Finish wrote. A
+     * reject's comment is not on the branch, and with the branch unknown `posted` is trusted.
+     * @param {object} t the target
+     * @param {string} project the project
+     * @param {object} item the results.json item
+     * @param {string} decision the decision
+     * @returns {boolean} whether it is still published
+     */
+    const onBranch = (t, project, item, decision) => {
+        if (decision === "reject" || !t.published) {
+            return true;
+        }
+        const dir = `${config.baselines}/${project}`;
+        if (decision === "exclude") {
+            return (t.published.get(`${dir}/${item.id}.json`) ?? null) !== null;
+        }
+        const to = t.published.get(`${dir}/${item.file}`);
+        return to !== undefined && to === (item.status === "removed" ? null : item.capture);
+    };
+
+    /**
      * The decisions that apply to this run: those whose item is in it, with the image the decision
      * was taken on and the baseline it was compared with (`base`; a decision saved before it was
      * kept matches any), and still decidable that way. The others stay in the file. So after the
      * branch is updated from the default branch and captured again, a story whose capture and
      * baseline are both unchanged keeps its decision, and one whose baseline moved comes back
-     * undecided.
+     * undecided. An accept or exclusion an earlier Finish published counts as published (`posted`)
+     * only while the branch still holds it: after its commit is reverted, Finish publishes it again.
      * @param {object} t the target
-     * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true }>}
+     * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true,
+     *     approvedBefore?: object }>}
      *     by `<project>/<file>`
      */
     const decisionsOf = (t) => {
@@ -473,15 +569,172 @@ export function createApp({
                 !decisionProblem(item, d.decision, d.reason ?? null) &&
                 (d.decision === "reject" || acceptable(t, project))
             ) {
-                mine.set(k, d);
+                const { posted, ...rest } = d;
+                mine.set(k, posted && !onBranch(t, project, item, d.decision) ? rest : d);
+            }
+        }
+        for (const p of t.projects) {
+            for (const item of p.results?.items ?? []) {
+                const k = `${p.project}/${item.file}`;
+                const before = mine.has(k) ? null : approvedBefore(t, p.project, item);
+                if (before) {
+                    // Published once the branch's own record takes the file to this image.
+                    const posted = t.published?.get(`${config.baselines}/${k}`) === item.capture;
+                    mine.set(k, {
+                        decision: "accept",
+                        reason: null,
+                        approvedBefore: before,
+                        ...(posted && { posted }),
+                    });
+                }
             }
         }
         return mine;
     };
 
+    /**
+     * The earlier approval of exactly this image for this story, when the item can be accepted on
+     * it: a change, a new story or one with no baseline yet, never a rename or a removal.
+     * @param {object} t the target
+     * @param {string} project the project
+     * @param {object} item the results.json item
+     * @returns {{ pr: number | null, commit: string, record: string, reviewedAt: string } | null} it
+     */
+    const approvedBefore = (t, project, item) =>
+        ["changed", "new", "unseeded"].includes(item.status) && !item.from && item.capture && acceptable(t, project)
+            ? (approved.get(`${config.baselines}/${project}/${item.file} ${item.capture}`) ?? null)
+            : null;
+
+    /**
+     * Reads the review records on the default branch and on every listed pull request's branch,
+     * each blob once, into the index of approved images. Records verify as the gate verifies them;
+     * with the keys unreadable, nothing counts as approved before.
+     * @param {object[]} list the targets
+     */
+    async function readApprovals(list) {
+        if (passkeyState.problem !== null) {
+            approved = new Map();
+            return;
+        }
+        const records = [];
+        for (const { sha, main } of await approvalRefs(list)) {
+            records.push(...(await reviewRecordsAt(sha, main)));
+        }
+        approved = approvalIndex(records, passkeyState.main.length > 0 ? passkeyState.main : null);
+    }
+
+    const gitIn = (args) => exec("git", args, { cwd: repo });
+    const haveCommit = (sha) =>
+        gitIn(["cat-file", "-e", `${sha}^{commit}`]).then(
+            () => true,
+            () => false,
+        );
+
+    /**
+     * Where earlier approvals are read: the default branch's tip, and each pull request's head as
+     * GitHub names it, a fork's too, fetched from refs/pull/<n>/head (never a branch of the same
+     * name on origin).
+     * @param {object[]} list the targets
+     * @returns {Promise<{ sha: string, main: boolean }[]>} the commits
+     */
+    async function approvalRefs(list) {
+        const refs = tips.get(defaultBranch) ? [{ sha: tips.get(defaultBranch), main: true }] : [];
+        for (const t of list.filter((x) => x.pr !== null && /^[0-9a-f]{40}$/.test(x.head ?? ""))) {
+            if (!(await haveCommit(t.head))) {
+                const ref = `+refs/pull/${t.pr}/head:refs/visual-review/pull/${t.pr}`;
+                await gitIn(["fetch", "-q", "origin", ref]).catch(() => {});
+            }
+            if (await haveCommit(t.head)) {
+                refs.push({ sha: t.head, main: false });
+            }
+        }
+        return refs;
+    }
+
+    /**
+     * The review records at a commit, each blob read once. On the default branch each names the
+     * commit that added it, which the gate finds on the base of every pull request branched later.
+     * @param {string} sha the commit
+     * @param {boolean} main whether it is the default branch's tip
+     * @returns {Promise<{ ref: string, commit: string, path: string, record: any, main: boolean }[]>} them
+     */
+    async function reviewRecordsAt(sha, main) {
+        const out = [];
+        const listing = await gitIn(["ls-tree", sha, "--", `${config.baselines}/reviews/`]).catch(() => "");
+        for (const line of listing.split("\n")) {
+            const [meta, path] = line.split("\t");
+            const blob = meta.split(" ")[2];
+            if (!path?.endsWith(".json")) {
+                continue;
+            }
+            if (!recordBlobs.has(blob)) {
+                recordBlobs.set(blob, await gitIn(["cat-file", "blob", blob]).then(JSON.parse, () => null));
+            }
+            if (main && !addedIn.has(blob)) {
+                addedIn.set(blob, await gitIn(["log", "-1", "--format=%H", "--diff-filter=A", sha, "--", path]));
+            }
+            const commit = (main && addedIn.get(blob)) || sha;
+            out.push({ ref: sha, commit, path, record: recordBlobs.get(blob), main });
+        }
+        return out;
+    }
+
+    /**
+     * The directory of a project's package: its Storybook directory's parent.
+     * @param {string} name the project
+     * @returns {string} the directory, relative to the repository
+     */
+    const packageOf = (name) => dirname(projects[name]?.storybook ?? name);
+    // Whether a target's pull request changes no file of a project's package.
+    const untouched = (t, name) =>
+        Array.isArray(t.changedFiles) && !t.changedFiles.some((f) => f.startsWith(`${packageOf(name)}/`));
+
+    /**
+     * Adds what these targets' captures show about capture noise to the evidence kept on disk,
+     * and writes the stories it proves noisy where `GET /api/noise` and githerd read them.
+     * ponytail: keeps the newest 20,000 observations; a real store if that ever forgets too soon.
+     * @param {object[]} list the targets
+     */
+    function recordNoise(list) {
+        let evidence = [];
+        try {
+            evidence = JSON.parse(readFileSync(evidenceFile, "utf8"));
+        } catch {
+            // None kept yet, or unreadable: start again.
+        }
+        const id = (o) => `${o.key} ${o.pr} ${o.baseline} ${o.capture}`;
+        const have = new Set(evidence.map(id));
+        for (const t of list) {
+            for (const o of observations(t, packageOf)) {
+                if (!have.has(id(o))) {
+                    have.add(id(o));
+                    evidence.push(o);
+                }
+            }
+        }
+        evidence = evidence.slice(-20000);
+        noise = knownNoise(evidence);
+        try {
+            writeJson(evidenceFile, evidence);
+            writeJson(noiseFile, noiseReport());
+        } catch (err) {
+            const warning = `could not keep the capture noise evidence (${noiseFile} is not current): ${err.message}`;
+            console.error(`visual-review: ${warning}`);
+            listWarnings.push(warning);
+        }
+    }
+    const noiseReport = () => ({
+        at: Date.now(),
+        stories: [...noise].map(([key, n]) => ({
+            project: key.slice(0, key.indexOf("/")),
+            file: key.slice(key.indexOf("/") + 1),
+            ...n,
+        })),
+    });
+
     // `problem` is what CI said (the job failed, or no artifact); results.json can add its own.
     async function project(name, dir, problem) {
-        const loaded = dir ? await loadResults(dir) : { results: null, problem: null };
+        const loaded = dir ? await loadResults(dir, name) : { results: null, problem: null };
         if (loaded.results) {
             prewarm(dir, loaded.results);
         }
@@ -559,11 +812,10 @@ export function createApp({
                 download.bytes = Object.values(planned).reduce((a, b) => a + b, 0);
             },
         );
-        downloads.catch(() => {}); // A download still running after PATIENCE fails on a later refresh.
-        const downloaded = await Promise.race([
-            downloads,
-            new Promise((resolve) => setTimeout(resolve, PATIENCE, null).unref()),
-        ]);
+        downloads.catch(() => {}); // A download still running after `patience` fails on a later refresh.
+        const downloaded = await (patience === Infinity
+            ? downloads
+            : Promise.race([downloads, new Promise((resolve) => setTimeout(resolve, patience, null).unref())]));
         if (!downloaded) {
             // Listed as downloading, and rebuilt in the cache when the download lands, so the page
             // (which asks again every few seconds) fills the rows in without a refresh.
@@ -826,11 +1078,17 @@ export function createApp({
                 );
             }
         }
+        await readTips();
         step("checking the baselines", 0, next.size);
         let checked = 0;
         for (const t of next.values()) {
             await decorate(t);
             step("checking the baselines", ++checked, next.size);
+        }
+        if (!results) {
+            step("reading earlier approvals");
+            await readApprovals([...next.values()]);
+            recordNoise([...next.values()]);
         }
         signer = await signingIdentity(repo);
         targets = next;
@@ -855,7 +1113,7 @@ export function createApp({
      */
     const inbox = (summaries = [...targets.values()].map(summary)) => {
         const now = Date.now();
-        const box = inboxOf(summaries, { now, since: readySince });
+        const box = inboxOf(summaries, { now, since: readySince, coupling: couplings() });
         readySince = new Map(box.ready.map((r) => [readyKey(r), r.since]));
         return box;
     };
@@ -883,6 +1141,7 @@ export function createApp({
                 targets: [...targets.values()].map((t) => ({
                     ...t,
                     earlier: [...(t.earlier ?? [])],
+                    published: t.published ? [...t.published] : null,
                     projects: t.projects.map((p) => ({ ...p, results: undefined })),
                 })),
             });
@@ -893,6 +1152,16 @@ export function createApp({
                 listWarnings.push(warning);
             }
         }
+    }
+
+    // One project of the kept list with its results read again; listed as downloading when they
+    // are gone.
+    async function restoredProject(p) {
+        const there = p.dir && (existsSync(join(p.dir, "results.json")) || existsSync(join(p.dir, SKIPPED_FILE)));
+        const loaded = there ? await project(p.project, p.dir, p.problem) : null;
+        return p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
+            ? { ...p, dir: null, results: null, problem: null, downloading: true }
+            : { ...p, results: loaded?.results ?? null };
     }
 
     /**
@@ -911,19 +1180,20 @@ export function createApp({
             for (const t of saved.targets) {
                 const list = [];
                 for (const p of t.projects) {
-                    const there = p.dir && existsSync(join(p.dir, "results.json"));
-                    const loaded = there ? await project(p.project, p.dir, p.problem) : null;
-                    list.push(
-                        p.dir && !loaded?.results
-                            ? { ...p, dir: null, results: null, problem: null, downloading: true }
-                            : { ...p, results: loaded?.results ?? null },
-                    );
+                    list.push(await restoredProject(p));
                 }
                 const downloading = t.downloading === true || list.some((p) => p.downloading);
-                next.set(t.id, { ...t, earlier: new Map(t.earlier), projects: list, downloading });
+                next.set(t.id, {
+                    ...t,
+                    earlier: new Map(t.earlier),
+                    published: t.published ? new Map(t.published) : null,
+                    projects: list,
+                    downloading,
+                });
             }
             signer = await signingIdentity(repo);
             await readPasskeys();
+            await readTips();
             if (!loadedOnce) {
                 targets = next;
                 loadedOnce = true;
@@ -934,6 +1204,42 @@ export function createApp({
         }
     }
 
+    // Every fetched branch tip in one git call, once per refresh.
+    async function readTips() {
+        const out = await exec(
+            "git",
+            ["for-each-ref", "--format=%(objectname) %(refname:lstrip=3)", "refs/remotes/origin/"],
+            { cwd: repo },
+        ).catch(() => "");
+        tips = new Map(
+            out
+                .split("\n")
+                .filter(Boolean)
+                .map((l) => [l.slice(l.indexOf(" ") + 1), l.slice(0, l.indexOf(" "))]),
+        );
+        // A commit's records never change: keep those of tips still current.
+        const current = new Set(tips.values());
+        recordsAt = new Map([...recordsAt].filter(([key]) => current.has(key.split(" ")[0])));
+    }
+
+    // What this pull request's review records at its branch's fetched tip publish: the newest `to`
+    // per path. The captured head's (`earlier`) when the tip is that head, so the usual case reads
+    // nothing more; null when the branch was never fetched, so nothing is known about it.
+    async function publishedOn(t) {
+        const tip = t.branch ? tips.get(t.branch) : undefined;
+        if (tip === undefined) {
+            return null;
+        }
+        if (tip === t.headSha) {
+            return t.earlier;
+        }
+        const key = `${tip} ${t.pr}`;
+        if (!recordsAt.has(key)) {
+            recordsAt.set(key, await earlierAccepts(repo, tip, t.pr, config.baselines));
+        }
+        return recordsAt.get(key);
+    }
+
     // A target's captured commits, its earlier accepts and whether it is behind the default branch.
     async function decorate(t) {
         const first = t.projects.find((p) => p.results)?.results;
@@ -941,6 +1247,7 @@ export function createApp({
         t.headSha = first?.headSha ?? null;
         const base = t.pr === null ? t.commit : t.headSha;
         t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config.baselines);
+        t.published = await publishedOn(t);
         // null: unknown, when the captured head was never fetched or git fails.
         const known =
             base !== null &&
@@ -948,6 +1255,20 @@ export function createApp({
                 () => true,
                 () => false,
             ));
+        // Every file the pull request changes, for the inbox's coupled groups (null: unknown).
+        t.changedFiles =
+            known && t.pr !== null && !t.local
+                ? await exec(
+                      "git",
+                      ["diff", "--name-only", "--no-renames", `refs/remotes/origin/${defaultBranch}...${base}`],
+                      {
+                          cwd: repo,
+                      },
+                  ).then(
+                      (out) => out.split("\n").filter(Boolean),
+                      () => null,
+                  )
+                : null;
         t.mergeMasterFirst = false;
         for (const p of t.projects) {
             p.newer = [];
@@ -1076,6 +1397,86 @@ export function createApp({
         };
     };
 
+    /**
+     * What the inbox groups a pull request by: the baseline files it changes (`<project>/<file>`,
+     * from its captures and from its own commits under the baselines directory), its undecided
+     * images, and the top-level directories of its other files.
+     * @param {object} t the target
+     * @returns {{ paths: string[], images: string[], packages: string[] | null }} its coupling
+     */
+    const couplingOf = (t) => {
+        const prefix = `${config.baselines}/`;
+        const files = t.changedFiles ?? [];
+        const paths = new Set(
+            files.filter((f) => f.startsWith(prefix) && f.endsWith(".png")).map((f) => f.slice(prefix.length)),
+        );
+        let decided = new Map();
+        try {
+            decided = decisionsOf(t);
+        } catch {
+            // summary() reports an unreadable decisions file; here every image counts as undecided.
+        }
+        const images = [];
+        for (const p of t.projects) {
+            for (const item of p.results?.items ?? []) {
+                const key = `${p.project}/${item.file}`;
+                if (CHANGES.has(item.status)) {
+                    paths.add(key);
+                }
+                if (REVIEWABLE.has(item.status) && !decided.has(key)) {
+                    images.push(`${key} ${imageHash(item)} ${item.baseline ?? ""}`);
+                }
+            }
+        }
+        const top = (f) => (f.includes("/") ? f.slice(0, f.indexOf("/")) : ".");
+        return {
+            paths: [...paths],
+            images,
+            packages: t.changedFiles ? [...new Set(files.filter((f) => !f.startsWith(prefix)).map(top))] : null,
+        };
+    };
+    const couplings = () =>
+        new Map([...targets.values()].filter((t) => t.pr !== null && !t.local).map((t) => [t.id, couplingOf(t)]));
+
+    /**
+     * The coupled group `t` is in, and for an item of it, the other members whose item of the same
+     * file shows the same image against the same baseline.
+     * @param {object} t the target
+     * @returns {{ prs: number[], sharing: (project: string, item: object) => object[] }} the group's
+     *     pull requests (none: not in a group) and the members sharing an item
+     */
+    const groupOf = (t) => {
+        const c = couplings();
+        const group = coupledGroups(
+            [...targets.values()].filter((x) => c.has(x.id)).map((x) => ({ ...x, ...c.get(x.id) })),
+        ).find((g) => g.ids.includes(t.id));
+        const others = (group?.ids ?? []).filter((id) => id !== t.id).map((id) => targets.get(id));
+        const sharing = (project, item) =>
+            others.filter((o) => {
+                const same = itemOf(o, `${project}/${item.file}`);
+                return (
+                    same && imageHash(same) === imageHash(item) && (same.baseline ?? null) === (item.baseline ?? null)
+                );
+            });
+        return { prs: group?.prs ?? [], sharing };
+    };
+
+    /**
+     * Keeps one line per group decision, so approvals per coupled group can be counted.
+     * @param {object} entry what was decided, on which pull requests
+     */
+    const logGroup = (entry) => {
+        if (entry.group.length === 0) {
+            return;
+        }
+        try {
+            mkdirSync(join(tmp, "state"), { recursive: true });
+            appendFileSync(join(tmp, "state", "groups.jsonl"), `${JSON.stringify({ at: Date.now(), ...entry })}\n`);
+        } catch (err) {
+            warnOnce(`could not log a group decision: ${err.message}`);
+        }
+    };
+
     // A local capture (--results, or any capture not made by CI) is only looked at: no decision is
     // taken on it and it has no Finish. The exception is a preview of this pull request's head
     // (tools/visual-preview.sh): Finish accepts it, and the gate checks CI's capture against it.
@@ -1119,7 +1520,8 @@ export function createApp({
      * The decisions a Finish of `t` would apply now: every one but the rejects an earlier Finish
      * already posted, in a fixed order, and a digest of them that changes when any of them does.
      * @param {object} t the target
-     * @returns {{ list: { project: string, file: string, decision: string, reason: string | null }[],
+     * @returns {{ list: { project: string, file: string, decision: string, reason: string | null,
+     *     approvedBefore?: object }[],
      *     digest: string }} the decisions and their digest
      */
     const finishList = (t) => {
@@ -1128,7 +1530,13 @@ export function createApp({
             .sort(([a], [b]) => (a < b ? -1 : 1))
             .map(([k, v]) => {
                 const at = k.indexOf("/");
-                return { project: k.slice(0, at), file: k.slice(at + 1), decision: v.decision, reason: v.reason };
+                return {
+                    project: k.slice(0, at),
+                    file: k.slice(at + 1),
+                    decision: v.decision,
+                    reason: v.reason,
+                    ...(v.approvedBefore && { approvedBefore: v.approvedBefore }),
+                };
             });
         return { list, digest: sha256(JSON.stringify(list)) };
     };
@@ -1140,7 +1548,7 @@ export function createApp({
         const { list, digest } = finishList(t);
         const s = summary(t);
         const count = (d) => list.filter((x) => x.decision === d).length;
-        const unloaded = t.projects.filter((p) => !p.results).map((p) => p.project);
+        const unloaded = t.projects.filter((p) => !p.results && p.problem !== NOT_AFFECTED).map((p) => p.project);
         const undecided = s.projects.reduce((n, p) => n + p.undecided, 0);
         const notes = list
             .filter((x) => x.reason !== null && x.decision !== "exclude")
@@ -1151,6 +1559,12 @@ export function createApp({
             rejects: count("reject"),
             acceptNotes: notes.filter((n) => n.decision === "accept").length,
             notes,
+            // Accepts taken because the owner approved the same image before; the gate checks each.
+            approvedBefore: list.filter((x) => x.approvedBefore).length,
+            // Each of them, so the sheet lists them and opens any one: none is included unseen.
+            approvedBeforeItems: list
+                .filter((x) => x.approvedBefore)
+                .map((x) => ({ project: x.project, file: x.file, pr: x.approvedBefore.pr })),
             notOpened: s.projects.reduce((n, p) => n + p.notOpened, 0),
             undecided: s.projects
                 .filter((p) => p.undecided > 0)
@@ -1184,7 +1598,7 @@ export function createApp({
         ...finishList(t),
         captures: capturesOf(t),
         undecided: summary(t).projects.reduce((n, p) => n + p.undecided, 0),
-        unloaded: t.projects.filter((p) => !p.results).map((p) => p.project),
+        unloaded: t.projects.filter((p) => !p.results && p.problem !== NOT_AFFECTED).map((p) => p.project),
     });
 
     /**
@@ -1197,11 +1611,9 @@ export function createApp({
         if (t.local || t.pr === null || !t.headSha) {
             return null;
         }
-        const base = `refs/remotes/origin/${defaultBranch}`;
-        let tip;
-        try {
-            tip = execFileSync("git", ["rev-parse", base], { cwd: repo }).toString("utf8").trim();
-        } catch {
+        // The tip the last refresh (or the restore of a kept list) read.
+        const tip = tips.get(defaultBranch);
+        if (tip === undefined) {
             return null;
         }
         const key = `${t.headSha}:${tip}`;
@@ -1354,6 +1766,17 @@ export function createApp({
         return [200, bytes, "image/png"];
     }
 
+    /**
+     * Runs a write route from another route, as the router would.
+     * @param {string} route the route
+     * @param {object} body its body
+     * @returns {Promise<[number, { error?: string, files?: string[], accepted?: number }]>} its status
+     *     and answer
+     */
+    const call = async (route, body) => {
+        const [status, answer] = await routes[route]([], body);
+        return [/** @type {number} */ (status), /** @type {{ error?: string, files?: string[] }} */ (answer)];
+    };
     const routes = {
         "GET /api/prs": async (_, __, query) => {
             // ?cached=1 answers at once (starting the first load if there is none); ?refresh=1
@@ -1414,6 +1837,21 @@ export function createApp({
             const { items, ...meta } = p.results;
             const prefix = `${name}/`;
             const mine = [...decisionsOf(t)].filter(([k]) => k.startsWith(prefix));
+            const quiet = untouched(t, name);
+            const shown = items.map((i) => {
+                const to = t.earlier.get(`${config.baselines}/${name}/${i.file}`);
+                const n = noise.get(`${prefix}${i.file}`);
+                return {
+                    ...i,
+                    ...(to !== undefined && to !== i.baseline && { reReview: true }),
+                    ...(isNoise(n, i, quiet) && { noise: { prs: n.prs, why: n.why } }),
+                };
+            });
+            const decided = new Map(mine.map(([k, v]) => [k.slice(prefix.length), v]));
+            // The clusters leave out what has a group of its own: known noise and approved before.
+            const grouped = clusters(
+                shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !decided.get(i.file)?.approvedBefore),
+            );
             return [
                 200,
                 {
@@ -1421,13 +1859,37 @@ export function createApp({
                     project: name,
                     acceptable: acceptable(t, name),
                     results: meta,
-                    items: items.map((i) => {
-                        const to = t.earlier.get(`${config.baselines}/${name}/${i.file}`);
-                        return to !== undefined && to !== i.baseline ? { ...i, reReview: true } : i;
-                    }),
-                    decisions: Object.fromEntries(mine.map(([k, v]) => [k.slice(prefix.length), v])),
+                    items: shown,
+                    decisions: Object.fromEntries(decided),
+                    clusters: grouped.clusters,
                 },
             ];
+        },
+        // The stories proven to be capture noise, for filing fixes.
+        "GET /api/noise": async () => [200, noiseReport()],
+        // A pull request's title, description and comments: untrusted text, shown as text.
+        "GET /api/pr-context": async ([id]) => {
+            const t = await targetOf(id);
+            if (!t) {
+                return gone(id);
+            }
+            if (t.pr === null || t.local) {
+                return [404, { error: "only a pull request has a description and comments" }];
+            }
+            const key = `${t.pr} ${t.head ?? t.headSha}`;
+            if (!contexts.has(key)) {
+                reviewer ??= reviewerLogin(gh).catch(() => null);
+                contexts.set(
+                    key,
+                    reviewer.then((login) => pullRequestContext(gh, t.pr, login)),
+                );
+            }
+            try {
+                return [200, await contexts.get(key)];
+            } catch (err) {
+                contexts.delete(key);
+                return [502, { error: `GitHub did not give the pull request's description: ${err.message}` }];
+            }
         },
         "GET /api/img": async ([id, name, kind, file]) => {
             const where = await imageOf(id, name, kind, file);
@@ -1491,8 +1953,9 @@ export function createApp({
             }
             // Nothing silently reverses a decision: changing one takes an explicit Undo first. The
             // same decision again is allowed (opening an item Accept all decided re-sends it).
+            // An accept taken because the image was approved before is replaced by any decision.
             const before = decisionsOf(t).get(key);
-            if (before && (before.decision !== body.decision || before.reason !== reason)) {
+            if (before && !before.approvedBefore && (before.decision !== body.decision || before.reason !== reason)) {
                 const done = { accept: "accepted", reject: "rejected", exclude: "excluded" }[before.decision];
                 return [409, { error: `${body.file} is already ${done}: Undo it first to change it` }];
             }
@@ -1515,13 +1978,26 @@ export function createApp({
             if (busy(t)) {
                 return [409, { error: BUSY }];
             }
-            if (!acceptable(t, body.project)) {
+            // `decision` (accept when absent) and `reason`: a cluster of the grouped review rejected
+            // or excluded as one, stored per item exactly as one decision is.
+            const decision = body.decision ?? "accept";
+            const reason = cleanReason(body.reason);
+            if (!["accept", "reject", "exclude"].includes(decision) || (decision !== "accept" && reason === null)) {
+                return [
+                    400,
+                    { error: "decision must be accept, reject or exclude, and reject and exclude need a reason" },
+                ];
+            }
+            if (decision !== "reject" && !acceptable(t, body.project)) {
                 return [
                     403,
                     {
                         error: `${body.project} cannot be accepted here (a local preview, or not seeded from ${defaultBranch})`,
                     },
                 ];
+            }
+            if (isLocal(t, body.project)) {
+                return [403, { error: `${body.project} ${LOCAL}` }];
             }
             // With `files`, only those: what the page's filter shows. Each is stored as any bulk accept.
             if (
@@ -1541,11 +2017,14 @@ export function createApp({
             update(t, (saved) => {
                 for (const item of p.results.items) {
                     const key = `${body.project}/${item.file}`;
-                    if (inScope(item) && !mine.has(key) && !decisionProblem(item, "accept", null)) {
+                    const was = mine.get(key);
+                    // An accept taken as approved before is replaced only by a reject or exclusion.
+                    const open = !was || (was.approvedBefore && decision !== "accept");
+                    if (inScope(item) && open && !decisionProblem(item, decision, reason)) {
                         saved[key] = {
-                            decision: "accept",
-                            reason: null,
-                            bulk: true,
+                            decision,
+                            reason: decision === "accept" ? null : reason,
+                            ...(decision === "accept" && { bulk: true }),
                             hash: imageHash(item),
                             base: item.baseline ?? null,
                         };
@@ -1554,6 +2033,88 @@ export function createApp({
                 }
             });
             return [200, { accepted: files.length, files, unpublished: unpublishedOf(t) }];
+        },
+        // /api/decide, then the same decision on the coupled pull requests showing the same image.
+        // An Undo there undoes only the same decision; one decided otherwise is listed in `failed`.
+        "POST /api/decide-group": async (_, body) => {
+            const { t, p } = await projectOf(String(body.id), body.project);
+            const item = p?.results.items.find((i) => i.file === body.file);
+            const key = `${body.project}/${body.file}`;
+            const before = t && item ? decisionsOf(t).get(key) : undefined;
+            const [status, answer] = await call("POST /api/decide", body);
+            if (status !== 200 || body.opened === true) {
+                return [status, answer];
+            }
+            const group = groupOf(t);
+            const also = [];
+            const failed = [];
+            for (const o of group.sharing(body.project, item)) {
+                const theirs = decisionsOf(o).get(key);
+                if (body.decision === null && theirs?.decision !== (before?.decision ?? null)) {
+                    continue;
+                }
+                const [s, a] = await call("POST /api/decide", { ...body, id: o.id, hash: imageHash(item) });
+                if (s === 200) {
+                    // Decided here, not opened there: its Finish counts it as not opened, as Accept all.
+                    if (!theirs && body.decision !== null) {
+                        update(o, (saved) => {
+                            if (saved[key]) {
+                                saved[key].bulk = true;
+                            }
+                        });
+                    }
+                    also.push(o.pr);
+                } else {
+                    failed.push({ pr: o.pr, error: a.error });
+                }
+            }
+            logGroup({ group: group.prs, pr: t.pr, action: "decide", decision: body.decision, files: 1, also });
+            return [200, { ...answer, also, failed }];
+        },
+        // /api/accept-all, then the same accepts on the coupled pull requests showing the same images.
+        "POST /api/accept-all-group": async (_, body) => {
+            const [status, answer] = await call("POST /api/accept-all", body);
+            if (status !== 200) {
+                return [status, answer];
+            }
+            const { t } = await projectOf(String(body.id), body.project);
+            const group = groupOf(t);
+            const saved = readState(t);
+            // Each member with the capture it had when it was found sharing an image: its accept-all
+            // is refused if a refresh replaced that capture meanwhile.
+            const byMember = new Map();
+            for (const file of answer.files) {
+                // What was accepted here, not what the capture shows now: it may have been replaced.
+                const d = saved[`${body.project}/${file}`];
+                if (!d) {
+                    continue;
+                }
+                for (const o of group.sharing(body.project, { file, capture: d.hash, baseline: d.base })) {
+                    const m = byMember.get(o.id) ?? { o, runId: o.runId, runAttempt: o.runAttempt, files: [] };
+                    m.files.push(file);
+                    byMember.set(o.id, m);
+                }
+            }
+            const also = [];
+            const failed = [];
+            for (const { o, runId, runAttempt, files } of byMember.values()) {
+                const [s, a] = await call("POST /api/accept-all", {
+                    id: o.id,
+                    project: body.project,
+                    decision: body.decision,
+                    reason: body.reason,
+                    files,
+                    runId,
+                    runAttempt,
+                });
+                if (s === 200) {
+                    also.push(o.pr);
+                } else {
+                    failed.push({ pr: o.pr, error: a.error });
+                }
+            }
+            logGroup({ group: group.prs, pr: t.pr, action: "accept-all", files: answer.files.length, also });
+            return [200, { ...answer, also, failed }];
         },
         "GET /api/passkeys": async () => {
             const { main, pending } = await knownKeys();
@@ -1607,7 +2168,7 @@ export function createApp({
             if (finishing) {
                 return [409, { error: "a Finish is running: register when it ends" }];
             }
-            const label = typeof body.label === "string" ? body.label.replace(/\s+/g, " ").trim().slice(0, 60) : "";
+            const label = typeof body.label === "string" ? body.label.replaceAll(/\s+/g, " ").trim().slice(0, 60) : "";
             const entry = {
                 id: body.credentialId,
                 publicKey: body.publicKey,
@@ -1864,6 +2425,10 @@ export function createApp({
                     }
                 }
             });
+        // The commit Finish pushed is the branch's tip now, before a refresh fetches it.
+        const pushed = async (commit) => {
+            t.published = await earlierAccepts(repo, commit, t.pr, config.baselines);
+        };
         try {
             j.result = await finish({
                 ...input,
@@ -1872,6 +2437,9 @@ export function createApp({
                     persist(j);
                 },
             });
+            if (j.result.commit) {
+                await pushed(j.result.commit);
+            }
             try {
                 clear(true);
             } catch (err) {
@@ -1887,6 +2455,7 @@ export function createApp({
         } catch (err) {
             if (err instanceof AcceptError && err.committed && !err.pullRequestMissing) {
                 // The accepts are on the branch; keep only the rejects, so Finish again only comments.
+                await pushed(err.committed);
                 try {
                     clear(false);
                 } catch (e) {

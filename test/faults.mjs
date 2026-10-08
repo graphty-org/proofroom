@@ -462,7 +462,11 @@ export async function assertDecisionsKept(s, model, id, projects) {
             continue;
         }
         const shown = Object.fromEntries(
-            Object.entries(res.body.decisions).map(([f, d]) => [f, `${d.decision}:${d.reason}`]),
+            Object.entries(res.body.decisions)
+                // An accept the server takes because the owner approved the image on another pull
+                // request is not a decision of this one, and is never saved.
+                .filter(([, d]) => !d.approvedBefore)
+                .map(([f, d]) => [f, `${d.decision}:${d.reason}`]),
         );
         const expected = Object.fromEntries(
             want

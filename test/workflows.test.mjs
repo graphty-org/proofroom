@@ -34,8 +34,12 @@ describe("the monorepo's workflows", () => {
             .map((l) => l.trim());
         expect(lines).toHaveLength(4);
         for (const line of lines) {
+            // install-browser's apt step comes from the monorepo's cached playwright-system-deps action.
+            if (line.includes("install-browser")) continue;
             expect(ci).toContain(line);
         }
+        expect(ci).toContain("uses: ./.github/actions/playwright-system-deps");
+        expect(ci).toContain("run: pnpm exec playwright install chromium\n");
         expect(ci).toContain("name: visual (${{ matrix.project }})");
     });
 
@@ -55,7 +59,7 @@ describe("the monorepo's workflows", () => {
         const ci = job(workflow("ci.yml"), "visual", "all-checks");
         const swap = ci.indexOf("git archive HEAD^1 visual-review/capture visual-review/trusted | tar -x");
         expect(swap).toBeGreaterThan(0);
-        expect(ci.indexOf("visual-review install-browser")).toBeGreaterThan(swap);
+        expect(ci.indexOf("playwright-system-deps")).toBeGreaterThan(swap);
         expect(ci).toContain("fetch-depth: 2");
     });
 });

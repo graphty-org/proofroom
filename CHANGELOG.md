@@ -1,3 +1,49 @@
+## 0.2.14 (2026-10-07)
+
+### 🩹 Fixes
+
+- **visual-review:** treat a decision as published only while the branch holds it ([#1006](https://github.com/graphty-org/graphty-monorepo/issues/1006))
+- **visual-review:** suggest Finish only when every project is reviewed ([#888](https://github.com/graphty-org/graphty-monorepo/issues/888))
+
+### 🔥 Performance
+
+- **visual-review:** take the default branch tip from the last refresh ([a7bdfcbea](https://github.com/graphty-org/graphty-monorepo/commit/a7bdfcbea))
+- **visual-review:** read the branch tips once per refresh ([72b1eaefd](https://github.com/graphty-org/graphty-monorepo/commit/72b1eaefd))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
+## 0.2.13 (2026-10-07)
+
+### 🩹 Fixes
+
+- **visual-review:** compare a merge-queue batch with the commit it sits on ([2752fc86d](https://github.com/graphty-org/graphty-monorepo/commit/2752fc86d))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
+## 0.2.12 (2026-10-06)
+
+### 🚀 Features
+
+- **visual-review:** let the gate accept a not-affected marker in place of a capture ([0f2118f90](https://github.com/graphty-org/graphty-monorepo/commit/0f2118f90))
+- **visual-review:** group coupled pull requests in the review inbox ([b7f48e3e2](https://github.com/graphty-org/graphty-monorepo/commit/b7f48e3e2))
+
+### 🩹 Fixes
+
+- **tools:** run every test's git without the developer's own git config ([e4840e0f2](https://github.com/graphty-org/graphty-monorepo/commit/e4840e0f2))
+- **visual-review:** show a skipped Storybook as not affected and keep renamed root files ([279601c8a](https://github.com/graphty-org/graphty-monorepo/commit/279601c8a))
+- **visual-review:** pin member captures in group accept-all and mark group decisions not opened ([e420cc50a](https://github.com/graphty-org/graphty-monorepo/commit/e420cc50a))
+- **visual-review:** keep request interception on in the page tests ([#2](https://github.com/graphty-org/graphty-monorepo/issues/2))
+- **visual-review:** hold a pull request with a failed story out of the inbox ([d5d8e80df](https://github.com/graphty-org/graphty-monorepo/commit/d5d8e80df))
+- **visual-review:** open a target's first project from a link that names no project ([4dcc68437](https://github.com/graphty-org/graphty-monorepo/commit/4dcc68437))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.11 (2026-10-05)
 
 ### 🚀 Features
@@ -159,12 +205,12 @@ This was a version bump only for visual-review to align it with other projects, 
 ### 🩹 Fixes
 
 - **visual-review:** an unseeded reference item counts as captured, so status stops alternating ([#632](https://github.com/graphty-org/graphty-monorepo/issues/632))
-- ⚠️  **visual-review:** every story needs an approved baseline before a merge ([a7f350b1](https://github.com/graphty-org/graphty-monorepo/commit/a7f350b1))
+- ⚠️ **visual-review:** every story needs an approved baseline before a merge ([a7f350b1](https://github.com/graphty-org/graphty-monorepo/commit/a7f350b1))
 - **visual-review:** fail closed on projects with no baselines ([6e413454](https://github.com/graphty-org/graphty-monorepo/commit/6e413454))
 
-### ⚠️  Breaking Changes
+### ⚠️ Breaking Changes
 
-- **visual-review:** every story needs an approved baseline before a merge  ([a7f350b1](https://github.com/graphty-org/graphty-monorepo/commit/a7f350b1))
+- **visual-review:** every story needs an approved baseline before a merge ([a7f350b1](https://github.com/graphty-org/graphty-monorepo/commit/a7f350b1))
   the gate fails every story without an approved baseline,
   and visual-review.config.json refuses the removed "gate" project setting.
 

@@ -747,7 +747,7 @@ async function commitAccepts({
             }
             await rm(join(tree, path), { force: true });
         }
-        const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+        const stamp = now.toISOString().replaceAll(/[-:]/g, "").replace(/\.\d+/, "");
         const record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
         if (approval) {
             // The gate's own check, on the bytes about to be committed, with the default branch's
@@ -832,7 +832,7 @@ async function commitAccepts({
 export async function proposeKey({ repo, gh, entry, now = new Date(), config }) {
     const { defaultBranch } = config;
     const tracking = `refs/visual-review/origin/${defaultBranch}`;
-    const branch = `visual/passkey-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "")}`;
+    const branch = `visual/passkey-${now.toISOString().replaceAll(/[-:]/g, "").replace(/\.\d+/, "")}`;
     const tree = join(repo, config.workDir, "worktrees", "passkey");
     let keys;
     try {
@@ -1072,7 +1072,7 @@ async function planWrites(repo, base, writes, baselines) {
         files.push({ path, bytes: w.bytes ?? null });
         counts.accept++;
         if (!w.item.from) {
-            items.push({ path, from: w.item.baseline, to: w.item.capture, reason: w.reason });
+            items.push({ path, from: w.item.baseline, to: w.item.capture, reason: w.reason, ...provenance(w) });
             continue;
         }
         // A rename: the old id's baseline (of this mode) goes, the new one takes its place. For a
@@ -1104,6 +1104,10 @@ const blobAt = (repo, ref, path) =>
 // The results.json a Finish with nothing decided reports on: its first loaded project's.
 const firstCapture = (projects) => Object.values(projects).find((p) => p?.results)?.results ?? null;
 
+// An image the owner approved before for this story: the record item names where, and the gate
+// checks that earlier approval before the item counts.
+const provenance = (w) => (w.approvedBefore ? { approvedBefore: w.approvedBefore } : {});
+
 // Two modes of one story excluded together write one settings file: keep one record item.
 const dedupe = (items) => [...new Map(items.map((i) => [i.path, i])).values()];
 
@@ -1121,7 +1125,7 @@ async function removeWorktree(repo, tree) {
 }
 
 // Reasons are untrusted text: one line each, and shown as quoted data.
-const oneLine = (s) => s.replace(/\s+/g, " ").slice(0, 2000);
+const oneLine = (s) => s.replaceAll(/\s+/g, " ").slice(0, 2000);
 
 /**
  * The one comment (on master, the one issue) a Finish posts: the rejects, then the accept notes.

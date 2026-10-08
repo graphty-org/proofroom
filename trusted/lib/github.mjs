@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import { validateResults } from "./results.mjs";
+import { SKIPPED_FILE, validateResults } from "./results.mjs";
 
 /**
  * Runs a program and resolves with its trimmed stdout. A program that runs longer than
@@ -197,11 +197,15 @@ export function hurry(wanted) {
     queued.splice(0, queued.length, ...first, ...queued.filter((q) => !wanted(q.dir)));
 }
 
+// An artifact directory that holds a capture's results.json or the not-affected marker.
+const whole = (d) => existsSync(join(d, "results.json")) || existsSync(join(d, SKIPPED_FILE));
+
 /**
  * Downloads one artifact into `dir`, unless it is already there. It is extracted into a sibling
  * temporary directory and renamed into place only once its results.json is there, so `dir` either
  * does not exist or holds a whole artifact; a failed or interrupted download leaves nothing behind.
- * An artifact without results.json is discarded, and its readers report the capture as failed.
+ * An artifact with neither results.json nor the not-affected marker (skipped.json, written for a
+ * project the run left out) is discarded, and its readers report the capture as failed.
  * @param {Function} gh the gh runner
  * @param {number} runId the run
  * @param {string} name the artifact
@@ -209,6 +213,9 @@ export function hurry(wanted) {
  * @returns {Promise<void>} settles when `dir` is complete, or the artifact had no results.json
  */
 function download(gh, runId, name, dir) {
+    if (!downloading.has(dir) && !existsSync(join(dir, "results.json")) && whole(dir)) {
+        return Promise.resolve(); // The not-affected marker: nothing to validate.
+    }
     if (!downloading.has(dir) && existsSync(join(dir, "results.json"))) {
         try {
             JSON.parse(readFileSync(join(dir, "results.json"), "utf8"));
@@ -238,7 +245,7 @@ function download(gh, runId, name, dir) {
             const part = mkdtempSync(`${dir}.part-`);
             try {
                 await gh(["run", "download", String(runId), "-n", name, "-D", part]);
-                if (existsSync(join(part, "results.json"))) {
+                if (whole(part)) {
                     renameSync(part, dir);
                 }
             } finally {
@@ -308,9 +315,7 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
                 const dir = join(tmp, `${run.id}-${a.attempt}`, project);
                 const got = { attempt: a.attempt, bytes: a.bytes };
                 if (a.expired) {
-                    out[project] = existsSync(join(dir, "results.json"))
-                        ? { dir, ...got }
-                        : { dir: null, ...got, expired: true };
+                    out[project] = whole(dir) ? { dir, ...got } : { dir: null, ...got, expired: true };
                 } else {
                     try {
                         await download(gh, run.id, a.name, dir);
@@ -413,3 +418,43 @@ export async function createPullRequest(gh, { title, head, base, body }) {
     const input = JSON.stringify({ title, head, base, body });
     return JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls", "--input", "-"], input)).html_url;
 }
+
+/**
+ * A pull request's title, description and comments, oldest comment first, for the review page's
+ * context panel: one call for the pull request and one for its comments (the first 100). Every
+ * text in it is untrusted, written by whoever opened or commented on the pull request.
+ * @param {Function} gh the gh runner
+ * @param {number} pr the pull request
+ * @param {string | null} reviewer the login of the person reviewing (gh's own login, `GET /user`),
+ *     taken as the owner when the repository belongs to an organization
+ * @returns {Promise<{ title: string, body: string, author: string | null, owner: string | null,
+ *     createdAt: string | null, comments: { author: string | null, at: string | null, body: string,
+ *     byOwner: boolean }[] }>} the context; `owner` is the repository owner's login
+ */
+export async function pullRequestContext(gh, pr, reviewer) {
+    const p = await api(gh, `repos/{owner}/{repo}/pulls/${pr}`);
+    const comments = await api(gh, `repos/{owner}/{repo}/issues/${pr}/comments?per_page=100`);
+    const repoOwner = p.base?.repo?.owner;
+    const owner = repoOwner?.type === "User" ? (repoOwner.login ?? null) : reviewer;
+    const text = (v) => (typeof v === "string" ? v : "");
+    return {
+        title: text(p.title),
+        body: text(p.body),
+        author: p.user?.login ?? null,
+        owner,
+        createdAt: p.created_at ?? null,
+        comments: (Array.isArray(comments) ? comments : []).map((c) => ({
+            author: c.user?.login ?? null,
+            at: c.created_at ?? null,
+            body: text(c.body),
+            byOwner: owner !== null && c.user?.login === owner,
+        })),
+    };
+}
+
+/**
+ * The login gh is signed in as.
+ * @param {Function} gh the gh runner
+ * @returns {Promise<string | null>} the login
+ */
+export const reviewerLogin = async (gh) => (await api(gh, "user")).login ?? null;
