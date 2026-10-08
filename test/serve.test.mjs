@@ -1317,11 +1317,11 @@ describe("serve: safe filters", () => {
         const name = git(s.repo, "diff", "--name-only", s.master, "origin/feature", "--", "visual-baselines/reviews/");
         const committed = JSON.parse(git(s.repo, "show", `origin/feature:${name}`));
         expect(committed.items).toEqual([{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null, approvedBefore }]);
-        // CI gates the pull request merged into master, which holds the earlier approval.
-        git(s.repo, "checkout", "-q", "--detach", "master");
-        git(s.repo, "merge", "-q", "--no-edit", "origin/feature");
-        expect(unrecordedChanges("master", "HEAD", s.repo)).toEqual([]);
-        git(s.repo, "checkout", "-q", "master");
+        // CI gates the pull request merged into master, which holds the earlier approval. Merged as
+        // objects only: a checkout and a merge in the working tree run the Git LFS hooks and filter.
+        const tree = git(s.repo, "merge-tree", "--write-tree", "master", "origin/feature");
+        const merged = git(s.repo, "commit-tree", tree, "-p", "master", "-p", "origin/feature", "-m", "merge");
+        expect(unrecordedChanges("master", merged, s.repo)).toEqual([]);
         // What Finish published stays shown as published.
         ({ body } = await s.api("GET", "/api/pr/123/compact-mantine"));
         expect(body.decisions["button--primary.dark.png"]).toMatchObject({ approvedBefore, posted: true });
