@@ -3155,14 +3155,15 @@ describe("review page: safe filters and the pull request's context", () => {
         const tile = page.locator('.tile[data-file="button--primary.dark.png"] img');
         await tile.waitFor({ state: "visible" });
         const lit = () => tile.evaluate((n) => n.classList.contains("spot") && n.classList.contains("zoomed"));
-        // The tile's picture at its own size.
-        const pixels = () =>
-            tile.evaluate(async (img) => {
+        // The tile's picture at its own size, kept in the page under `name`: 400 x 250 RGBA is
+        // 400,000 numbers, about a second to carry out of the browser as JSON.
+        const pixels = (name) =>
+            tile.evaluate(async (img, key) => {
                 await img.decode();
                 const c = new globalThis.OffscreenCanvas(img.naturalWidth, img.naturalHeight);
                 c.getContext("2d").drawImage(img, 0, 0);
-                return Array.from(c.getContext("2d").getImageData(0, 0, c.width, c.height).data);
-            });
+                globalThis[key] = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+            }, name);
         let refused = 0;
         await page.route("**/api/spot/**", (route) => {
             refused++;
@@ -3172,7 +3173,7 @@ describe("review page: safe filters and the pull request's context", () => {
         await page.locator("#zoom-all").click();
         await expect.poll(lit).toBe(true);
         expect(refused).toBeGreaterThan(0);
-        const own = await pixels();
+        await pixels("own");
         await page.unroute("**/api/spot/**");
         // Off and on again: the tile asks the server again, which answers this time.
         await page.locator("#zoom-all").click();
@@ -3182,10 +3183,14 @@ describe("review page: safe filters and the pull request's context", () => {
         await page.locator("#zoom-all").click();
         await answered;
         await expect.poll(lit).toBe(true);
-        const served = await pixels();
-        expect(served).toHaveLength(own.length);
+        await pixels("served");
+        const [length, ownLength, mean] = await page.evaluate(() => {
+            const [own, served] = [globalThis.own, globalThis.served];
+            const sum = served.reduce((total, v, i) => total + Math.abs(v - own[i]), 0);
+            return [served.length, own.length, sum / own.length];
+        });
+        expect(length).toBe(ownLength);
         // The same picture, scaled by another filter: on average within 1 of 255 per channel.
-        const mean = served.reduce((sum, v, i) => sum + Math.abs(v - own[i]), 0) / own.length;
         expect(mean).toBeLessThan(1);
     });
 });
