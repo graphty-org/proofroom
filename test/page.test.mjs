@@ -1880,7 +1880,13 @@ describe("review page: the wait box", () => {
         }
         // The targets stay usable meanwhile.
         expect(await page.getByRole("button", { name: "Review", exact: true }).first().isEnabled()).toBe(true);
+        // After the release the server still fetches the branches and checks the baselines, and
+        // the page asks again only every 700 ms: wait for the answer that the refresh is over.
+        const over = page.waitForResponse(
+            async (res) => res.url().includes("/api/prs?") && !(await res.json()).refreshing,
+        );
         release();
+        await over;
         await expect.poll(status).toBe("");
     }, 30000);
 });
