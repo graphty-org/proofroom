@@ -51,54 +51,86 @@ export function exec(cmd, args, { cwd, input, env } = {}) {
  */
 export const ghRunner = (cwd) => withRetries((args, input) => exec("gh", args, { cwd, input }));
 
-// How gh reports a network that failed (DNS, a dropped or refused connection, a transfer cut
-// short, a call exec stopped) or a GitHub server error. A 4xx, a missing artifact or any other gh
-// error is real and is never retried.
-const TRANSIENT =
-    /could not resolve host|no such host|error connecting to|connection (reset|refused|timed out)|i\/o timeout|TLS handshake timeout|HTTP 5\d\d|unexpected EOF|GOAWAY|stream error|context deadline exceeded|timed out after/i;
+// How gh and git report a network that failed (DNS, a dropped or refused connection, a transfer
+// cut short) or a GitHub server error. A 4xx, an authentication failure, a rejected push, a
+// missing artifact or any other error is real and is never retried.
+export const NETWORK =
+    /could not resolve host|no such host|error connecting to|connection (reset|refused|timed out)|i\/o timeout|TLS handshake timeout|HTTP 5\d\d|returned error: 5\d\d|unexpected EOF|GOAWAY|stream error|context deadline exceeded/i;
+
+// The network failures that happen before a request reaches GitHub (gh's "error connecting to" is
+// its DNS failure), so even a write that is not safe to repeat can be sent again.
+export const UNSENT = /could not resolve host|no such host|error connecting to|connection refused/i;
+
+// A gh read is also retried after exec stopped it for running too long.
+const TRANSIENT = new RegExp(`${NETWORK.source}|timed out after`, "i");
 
 /**
- * The gh calls waiting to retry after a network failure, newest last, each with its error, which
+ * The gh and git calls waiting to retry after a network failure, newest last, each with its error, which
  * try it waits for and until when: the review page shows the newest, so a dropped DNS lookup reads
  * as "retrying" and never as a hang.
  * @type {Set<{ error: string, attempt: number, of: number, until: number }>}
  */
 export const retrying = new Set();
 
+/** Milliseconds before each retry of a call that failed on the network. */
+export const RETRY_DELAYS = [2000, 5000, 15000];
+
+/**
+ * Runs `run` again, after each delay in turn, while it fails on the network. Every failure and
+ * retry is logged to stderr, so the server's log shows what happened.
+ * @template T
+ * @param {(attempt: number) => Promise<T>} run the call; `attempt` counts from 1, so a step that
+ *     may have landed before its connection dropped can check that on a later attempt
+ * @param {object} options how
+ * @param {string} options.label the call, for the log
+ * @param {number[]} [options.delays] milliseconds before each retry
+ * @param {RegExp} [options.on] the errors to retry: gh reads' transient failures by default,
+ *     NETWORK, or UNSENT for a write that is not safe to repeat
+ * @param {(wait: { error: string, attempt: number, of: number, until: number }) => void} [options.onRetry]
+ *     told before each wait
+ * @returns {Promise<T>} what `run` returned
+ */
+export async function retryOnNetwork(run, { label, delays = RETRY_DELAYS, on = TRANSIENT, onRetry = () => {} }) {
+    for (let i = 0; ; i++) {
+        try {
+            return await run(i + 1);
+        } catch (err) {
+            const retry = i < delays.length && on.test(err.message);
+            const next = retry ? `; retrying in ${delays[i] / 1000} s` : "";
+            console.error(`visual-review: ${label} failed${next}: ${err.message}`);
+            if (!retry) {
+                throw err;
+            }
+            const wait = {
+                error: err.message.split("\n")[0],
+                attempt: i + 2,
+                of: delays.length + 1,
+                until: Date.now() + delays[i],
+            };
+            retrying.add(wait);
+            onRetry(wait);
+            await new Promise((resolve) => setTimeout(resolve, delays[i]));
+            retrying.delete(wait);
+        }
+    }
+}
+
 /**
  * Retries a gh runner's calls that failed on the network, after each delay in turn. A write
- * (`--input`) is never retried: GitHub may have applied it before the connection dropped. Every
- * failure and retry is logged to stderr, so the server's log shows what happened.
+ * (`--input`) is never retried here: GitHub may have applied it before the connection dropped
+ * (Finish retries its own writes where that is safe).
  * @param {(args: string[], input?: string) => Promise<string>} gh the gh runner
  * @param {number[]} [delays] milliseconds before each retry
  * @returns {(args: string[], input?: string) => Promise<string>} the retrying runner
  */
 export const withRetries =
-    (gh, delays = [2000, 5000, 15000]) =>
-    async (args, input) => {
-        for (let i = 0; ; i++) {
-            try {
-                return await gh(args, input);
-            } catch (err) {
-                const retry = i < delays.length && !args.includes("--input") && TRANSIENT.test(err.message);
-                // gh's arguments never hold a token (gh keeps its own login), so they are logged whole.
-                const next = retry ? `; retrying in ${delays[i] / 1000} s` : "";
-                console.error(`visual-review: gh ${args.join(" ")} failed${next}: ${err.message}`);
-                if (!retry) {
-                    throw err;
-                }
-                const wait = {
-                    error: err.message.split("\n")[0],
-                    attempt: i + 2,
-                    of: delays.length + 1,
-                    until: Date.now() + delays[i],
-                };
-                retrying.add(wait);
-                await new Promise((resolve) => setTimeout(resolve, delays[i]));
-                retrying.delete(wait);
-            }
-        }
-    };
+    (gh, delays = RETRY_DELAYS) =>
+    (args, input) =>
+        // gh's arguments never hold a token (gh keeps its own login), so they are logged whole.
+        retryOnNetwork(() => gh(args, input), {
+            label: `gh ${args.join(" ")}`,
+            delays: args.includes("--input") ? [] : delays,
+        });
 
 const api = async (gh, path) => JSON.parse(await gh(["api", path]));
 

@@ -304,6 +304,7 @@ async function loadResults(dir, name) {
  *     and finished like a CI capture. CI's capture replaces it project by project as it lands.
  * @param {number} [options.patience] how long, in milliseconds, a page load waits for a run's
  *     captures before listing the target as downloading; Infinity waits for them
+ * @param {number[]} [options.retryDelays] milliseconds before each retry of a Finish's network call
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void}
  *     the handler, for node:https in the CLI and node:http in the tests
  */
@@ -320,6 +321,7 @@ export function createApp({
     warm,
     previews = null,
     patience = PATIENCE,
+    retryDelays,
 }) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
@@ -2332,6 +2334,7 @@ export function createApp({
                 undecided,
                 unloaded: work.unloaded,
                 config,
+                retryDelays,
                 ...(approval && { approval, legacy, now: new Date(approval.record.reviewedAt) }),
             });
             return [202, { job }];

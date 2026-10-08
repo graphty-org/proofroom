@@ -185,7 +185,7 @@ async function walk(run, seed, faults = {}, length = 9) {
     // A page load waits for the captures to download, however long that takes: with the server's
     // one second, a download slowed by a busy machine went on after its step had been checked,
     // and the failure it met was logged in the next step's window.
-    const options = { gh: withRetries(inj.gh(w.gh), [0, 0, 0]), patience: Infinity };
+    const options = { gh: withRetries(inj.gh(w.gh), [0, 0, 0]), retryDelays: [0, 0, 0], patience: Infinity };
     let s = await startApp(r, options);
 
     /** Decisions the API accepted, by `<target>|<project>|<file>`. */
