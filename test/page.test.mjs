@@ -157,6 +157,8 @@ const box = (part = null) =>
         }
         return name ? globalThis.document.getElementById(`wait-${name}`).textContent : "open";
     }, part);
+// The targets screen shows the whole list: no refresh running, every capture downloaded.
+const listSettled = () => page.locator("#listline[data-settled]").waitFor();
 // The item's images have been on screen long enough for a decision to count.
 const ready = () => page.locator("#stage[data-ready]").waitFor();
 const progress = () => page.locator("#progress").textContent();
@@ -2949,9 +2951,10 @@ async function openStoryFromGrid(number) {
 describe("review page: the inbox", () => {
     it("opens on what waits, counts it in the title, opens the first undecided image, and keeps the token", async () => {
         await open((r) => ({ gh: twoPrs(r, capturedItems()) }), { review: false });
+        await listSettled();
         const rows = page.locator(".inbox-row");
-        await expect.poll(() => rows.count()).toBe(2);
-        await expect.poll(() => page.title()).toBe("(2) Visual review");
+        expect(await rows.count()).toBe(2);
+        expect(await page.title()).toBe("(2) Visual review");
         expect(await page.locator(".inbox h2").textContent()).toBe("Ready for you (2)");
         expect(await rows.first().textContent()).toMatch(/^#123 PR 123\d+ images, CI, just now$/);
         const box = await rows.first().boundingBox();
@@ -2961,7 +2964,8 @@ describe("review page: the inbox", () => {
         await page.locator("#app.story-screen").waitFor();
         // The notifier's link carries no token: a browser that used the page before still opens it.
         await page.goto(`${origin}/`);
-        await expect.poll(() => page.locator(".inbox-row").count()).toBe(2);
+        await listSettled();
+        expect(await page.locator(".inbox-row").count()).toBe(2);
     });
 
     it("shows coupled pull requests as one group, and Review together decides a shared image on both", async () => {
@@ -2986,8 +2990,9 @@ describe("review page: the inbox", () => {
 
     it("lists a pull request with a failed story under Not ready with its reason, never as ready", async () => {
         await open((r) => ({ gh: twoPrs(r) }), { review: false });
+        await listSettled();
         const bad = page.locator(".inbox-bad");
-        await expect.poll(() => bad.count()).toBe(2);
+        expect(await bad.count()).toBe(2);
         expect(await page.locator(".inbox-row").count()).toBe(0);
         expect(await page.locator(".inbox h2").textContent()).toBe("Nothing waiting for you");
         expect(await bad.first().textContent()).toContain(
