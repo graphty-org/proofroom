@@ -81,7 +81,7 @@ import {
     decisionProblem,
     finish,
     isPreviewOf,
-    legacyApprovals,
+    legacyApprovalsAsync,
     newerOnMaster,
     prepareRecord,
     proposeKey,
@@ -1090,6 +1090,9 @@ export function createApp({
             await readApprovals([...next.values()]);
             recordNoise([...next.values()]);
         }
+        for (const t of next.values()) {
+            await legacyFor(t);
+        }
         signer = await signingIdentity(repo);
         targets = next;
         save();
@@ -1604,28 +1607,48 @@ export function createApp({
     /**
      * A pull request's approvals from before passkeys (legacyApprovals): what a signed Finish
      * signs again and which unsigned records it removes. Cached per captured head and default
-     * branch tip; null when there are none or they cannot be read here.
+     * branch tip; null when there are none or they cannot be read here. Read in a child process,
+     * one at a time, never on a request: a refresh reads them before it lists the targets, and a
+     * key it missed (a restored list) is read in the background while the list shows the last
+     * value. Finish and its preview wait for the current one (legacyFor).
      */
     const legacyCache = new Map();
-    const legacyOf = (t) => {
-        if (t.local || t.pr === null || !t.headSha) {
-            return null;
-        }
+    let legacyQueue = Promise.resolve();
+    const legacyKey = (t) => {
         // The tip the last refresh (or the restore of a kept list) read.
         const tip = tips.get(defaultBranch);
-        if (tip === undefined) {
+        return t.local || t.pr === null || !t.headSha || tip === undefined ? null : { key: `${t.headSha}:${tip}`, tip };
+    };
+    const legacyFor = (t) => {
+        const k = legacyKey(t);
+        if (k === null) {
+            return Promise.resolve(null);
+        }
+        const entry = legacyCache.get(t.id);
+        if (entry?.key === k.key) {
+            return entry.pending;
+        }
+        const input = { repo, pr: t.pr, head: t.headSha, base: k.tip, config };
+        legacyQueue = legacyQueue.then(() =>
+            legacyApprovalsAsync(input).catch((err) => {
+                console.error(`visual-review: could not read the approvals of #${t.pr}: ${err.message}`);
+                return null;
+            }),
+        );
+        const pending = legacyQueue.then((value) => {
+            if (legacyCache.get(t.id)?.pending === pending) {
+                legacyCache.set(t.id, { key: k.key, pending, value });
+            }
+            return value;
+        });
+        legacyCache.set(t.id, { key: k.key, pending, value: entry?.value ?? null });
+        return pending;
+    };
+    const legacyOf = (t) => {
+        if (legacyKey(t) === null) {
             return null;
         }
-        const key = `${t.headSha}:${tip}`;
-        if (!legacyCache.has(t.id) || legacyCache.get(t.id).key !== key) {
-            let value = null;
-            try {
-                value = legacyApprovals({ repo, pr: t.pr, head: t.headSha, base: tip, config });
-            } catch (err) {
-                console.error(`visual-review: could not read the approvals of #${t.pr}: ${err.message}`);
-            }
-            legacyCache.set(t.id, { key, value });
-        }
+        legacyFor(t);
         return legacyCache.get(t.id).value;
     };
     // How many things a signed Finish of the old approvals publishes: the files it signs again,
@@ -1819,7 +1842,11 @@ export function createApp({
             if (!t) {
                 return gone(id);
             }
-            return [200, query?.get("finish") === "1" ? { ...summary(t), finish: finishPreview(t) } : summary(t)];
+            if (query?.get("finish") === "1") {
+                await legacyFor(t);
+                return [200, { ...summary(t), finish: finishPreview(t) }];
+            }
+            return [200, summary(t)];
         },
         "GET /api/pr": async ([id, name]) => {
             const { t, p } = await projectOf(id, name);
@@ -2220,8 +2247,8 @@ export function createApp({
                     },
                 ];
             }
+            const legacy = await legacyFor(t);
             const work = finishWork(t);
-            const legacy = legacyOf(t);
             let prepared;
             try {
                 prepared = await prepareRecord({

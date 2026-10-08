@@ -9,6 +9,7 @@ import {
     commitMessage,
     finish,
     legacyApprovals,
+    legacyApprovalsAsync,
     lfsProblem,
     prepareRecord,
     proposeKey,
@@ -809,6 +810,13 @@ describe("finish: approvals from before passkeys", () => {
         expect(legacy.drop).toEqual([OLD]);
         expect(legacy.items.map((i) => i.path)).toEqual([PNG]);
         expect(legacyApprovals({ repo: s.repo, pr: null, head: s.head, base: s.master, config: CONFIG })).toBeNull();
+    });
+
+    it("finds the same off the server's thread", async () => {
+        const s = legacySetup();
+        const input = { repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG };
+        expect(await legacyApprovalsAsync(input)).toEqual(legacyApprovals(input));
+        expect(await legacyApprovalsAsync({ ...input, pr: null })).toBeNull();
     });
 
     it("offers nothing while master holds no key", () => {
