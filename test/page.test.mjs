@@ -2987,7 +2987,10 @@ describe("review page: the inbox", () => {
     it("lists a pull request with a failed story under Not ready with its reason, never as ready", async () => {
         await open((r) => ({ gh: twoPrs(r) }), { review: false });
         const bad = page.locator(".inbox-bad");
-        await expect.poll(() => bad.count()).toBe(2);
+        // Wait for the inbox itself, not a fixed second: the server builds it from git and gh child
+        // processes, which took over expect.poll's 1000 ms default on a loaded machine.
+        await page.locator(".inbox h2").waitFor();
+        expect(await bad.count()).toBe(2);
         expect(await page.locator(".inbox-row").count()).toBe(0);
         expect(await page.locator(".inbox h2").textContent()).toBe("Nothing waiting for you");
         expect(await bad.first().textContent()).toContain(
