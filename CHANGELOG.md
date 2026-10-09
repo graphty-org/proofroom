@@ -1,3 +1,18 @@
+## 0.2.18 (2026-10-09)
+
+### 🩹 Fixes
+
+- **visual-review:** wait on the settled list in the inbox tests, and run the update without git-lfs ([#1601](https://github.com/graphty-org/graphty-monorepo/issues/1601), [#1580](https://github.com/graphty-org/graphty-monorepo/issues/1580), [#1613](https://github.com/graphty-org/graphty-monorepo/issues/1613))
+- **visual-review:** see a finished job and a first list load without a fixed wait ([#1530](https://github.com/graphty-org/graphty-monorepo/issues/1530))
+
+### 🔥 Performance
+
+- **visual-review:** make the grid's spotlit and zoomed tiles on the server ([04e9f5295](https://github.com/graphty-org/graphty-monorepo/commit/04e9f5295))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.17 (2026-10-08)
 
 This was a version bump only for visual-review to align it with other projects, there were no code changes.
