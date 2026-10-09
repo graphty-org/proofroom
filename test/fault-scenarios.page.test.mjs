@@ -26,6 +26,7 @@ const BUTTON_BASELINE_HASH = CM_ITEMS.find((i) => i.file === BUTTON).baseline;
 // own steps, some of which wait on purpose (3.5 s for a late render, 60 items for the image
 // cache). Measured on one CPU shared with a busy loop, the scenarios take 3 to 6 s; Vitest's
 // default 5 s is sized for unit tests.
+// eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
 vi.setConfig({ testTimeout: 20000 });
 
 let browser;
@@ -119,6 +120,7 @@ const ready = (p = page) => p.locator("#stage[data-ready]").waitFor();
 const decisions = async (project = "compact-mantine", id = "123") =>
     (await s.api("GET", `/api/pr/${id}/${project}`)).body.decisions;
 const boxCount = () => page.locator("#box-count").textContent();
+// eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -282,8 +284,10 @@ describe("review page: decisions", () => {
         const box = await page.locator("#accept").boundingBox();
         const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
         await page.mouse.click(x, y);
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await sleep(150);
         await page.mouse.click(x, y);
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await sleep(500);
         expect(await decisions()).not.toHaveProperty("slider--sizes.png");
     });
@@ -299,6 +303,7 @@ describe("review page: decisions", () => {
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
         // The key is still held: the browser repeats it.
         await page.keyboard.down("a");
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await sleep(500);
         await page.keyboard.up("a");
         expect(Object.keys(await decisions())).toEqual([BUTTON]);
@@ -320,6 +325,7 @@ describe("review page: decisions", () => {
         await expect.poll(async () => Object.keys(await decisions()).length).toBe(0);
         await other.locator(`.tile[data-file="${BUTTON}"]`).click();
         await other.locator("#position").waitFor();
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await sleep(300);
         expect(await decisions()).toEqual({});
     });
@@ -344,6 +350,7 @@ describe("review page: decisions", () => {
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
         await page.keyboard.type("too tall");
         await page.keyboard.press("Enter");
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await sleep(300);
         expect(dialogs.filter((d) => d.startsWith("Exclude"))).toEqual([]);
         expect(await decisions()).toEqual({});
@@ -381,6 +388,7 @@ describe("review page: rendering and routing", () => {
         await page.keyboard.press("j");
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^2 of /);
         // Item 3's two images arrive one after the other, a second each.
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await sleep(3500);
         expect(await boxCount()).toBe("No changed area at this threshold");
     });
@@ -430,6 +438,7 @@ describe("review page: rendering and routing", () => {
                 timeout: 8000,
             })
             .toBe(true);
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await sleep(500);
         const after = await page.evaluate(() => ({
             length: globalThis.history.length,

@@ -77,6 +77,7 @@ beforeAll(() => {
 afterAll(() => vi.unstubAllEnvs());
 
 describe("capture", () => {
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("classifies new, unchanged, excluded, failed, and a story newly excluded by its parameters", async () => {
         const sb = storybook();
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
@@ -120,6 +121,7 @@ describe("capture", () => {
         expect(second.expected).toBe(second.items.length);
     }, 120_000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("marks a story with no baseline unseeded when it looks as in master's capture", async () => {
         const sb = storybook();
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
@@ -160,6 +162,7 @@ describe("capture", () => {
         expect(tampered.items[0].status).toBe("new");
     }, 120_000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("compares a renamed story with its old id's baseline and reports a broken rename", async () => {
         const sb = storybook();
         const seedOut = mkdtempSync(join(tmpdir(), "vr-out-"));
@@ -213,6 +216,7 @@ describe("capture", () => {
         expect(r.expected).toBe(r.items.length);
     }, 120_000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("refuses a renames file that is not a list of distinct renames", async () => {
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
         writeFileSync(join(baselines, "renames.json"), JSON.stringify([{ from: "a--b", to: "a--b" }]));
@@ -229,6 +233,7 @@ describe("capture", () => {
         ).rejects.toThrow(/renames.json: entry 0 must be/);
     }, 60_000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("captures the whole canvas at scale 2, never cropped to the content", async () => {
         const sb = storybook();
         const run = async (story) => {
@@ -256,6 +261,7 @@ describe("capture", () => {
         expect([...png.data.subarray(at, at + 3)]).toEqual([255, 0, 0]);
     }, 120_000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("launches every browser with GPU rasterization off, so text renders the same each time", async () => {
         expect(CHROMIUM_ARGS).toContain("--disable-gpu-rasterization");
         const launch = vi.spyOn(chromium, "launch");
@@ -279,6 +285,7 @@ describe("capture", () => {
         }
     }, 60_000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("fails with a clear message when a baseline is a Git LFS pointer", async () => {
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
         writeFileSync(
