@@ -1,3 +1,13 @@
+## 0.2.19 (2026-10-09)
+
+### 🩹 Fixes
+
+- **visual-review:** selecting the story name no longer reflows the header ([cfafa2580](https://github.com/graphty-org/graphty-monorepo/commit/cfafa2580))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.18 (2026-10-09)
 
 ### 🩹 Fixes
