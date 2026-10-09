@@ -84,6 +84,7 @@ async function endedJob(s) {
         if (!job?.running) {
             return job;
         }
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await new Promise((resolve) => setTimeout(resolve, 20));
     }
 }
@@ -295,6 +296,7 @@ describe("serve: pull requests", () => {
         const s = await start({ gh: onePr() });
         const list = s.api("GET", "/api/prs");
         while (!existsSync(gate.held)) {
+            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
         expect((await s.api("GET", "/api/inbox")).status).toBe(200);
@@ -1515,6 +1517,7 @@ describe("serve: what the page waits on", () => {
             if (value) {
                 return value;
             }
+            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
             await new Promise((resolve) => setTimeout(resolve, 20));
         }
         throw new Error("timed out");
@@ -1608,6 +1611,43 @@ describe("serve: what the page waits on", () => {
         expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
     });
 
+    it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const spots = () => (existsSync(join(s.tmp, "spots")) ? readdirSync(join(s.tmp, "spots")).sort() : []);
+        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three tiles each.
+        await until(() => spots().filter((f) => f.endsWith(".png")).length === 9);
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const button = body.items.find((i) => i.file === "button--primary.dark.png");
+        expect(spots()).toContain(`${button.baseline}-${button.capture}-0.063-0-both.png`);
+        expect(spots().filter((f) => f.startsWith(`${button.baseline}-${button.capture}-`))).toEqual(
+            ["both", "spot", "zoom"].map((k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`),
+        );
+        const tiles = {};
+        for (const kind of ["spot", "zoom", "both"]) {
+            const tile = await s.api("GET", `/api/spot/123/compact-mantine/${kind}/button--primary.dark.png`);
+            expect(tile.type).toBe("image/png");
+            tiles[kind] = PNG.sync.read(tile.body);
+            // The page's tile size: 400 pixels across, the capture's shape.
+            expect([tiles[kind].width, tiles[kind].height]).toEqual([400, 250]);
+        }
+        // The changed area [160, 80, 40, 40] is lit; a corner far from it is dimmed, not cropped.
+        const at = (png, x, y) => [...png.data.slice((y * png.width + x) * 4, (y * png.width + x) * 4 + 4)];
+        const plain = PNG.sync.read(
+            (await s.api("GET", "/api/thumb/123/compact-mantine/capture/button--primary.dark.png")).body,
+        );
+        expect(at(tiles.spot, 2, 2)[3]).toBeGreaterThanOrEqual(190);
+        expect(at(tiles.spot, 2, 2).slice(0, 3)).not.toEqual(at(plain, 1, 1).slice(0, 3));
+        expect(tiles.zoom.data.equals(tiles.both.data)).toBe(false);
+        expect(spots()).toHaveLength(9);
+        // A slider of another height is padded, as the page pads it.
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/slider--sizes.png")).status).toBe(200);
+        // An unchanged story and a new one have no change to light; an unknown kind is no tile.
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/input--default.png")).status).toBe(404);
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/badge--default.light.png")).status).toBe(404);
+        expect((await s.api("GET", "/api/spot/123/compact-mantine/blur/button--primary.dark.png")).status).toBe(404);
+    });
+
     it("states what Finish would do, and refuses a Finish whose decisions changed since", async () => {
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
@@ -1679,6 +1719,7 @@ describe("serve: loading without waiting", () => {
             if (value) {
                 return value;
             }
+            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
             await new Promise((resolve) => setTimeout(resolve, 20));
         }
         throw new Error("timed out");
@@ -1689,6 +1730,7 @@ describe("serve: loading without waiting", () => {
         async (args, input) => {
             const kind = args[0] === "run" ? "download" : (args[1] ?? "").replace(/\?.*/, "").replace(/\d+/g, "N");
             calls.push(kind);
+            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
             await new Promise((resolve) => setTimeout(resolve, ms));
             return inner(args, input);
         };
@@ -1763,6 +1805,7 @@ describe("serve: loading without waiting", () => {
             runs.push(downloadCaptures(gh, { id }, names, tmp));
             await until(() => started.length === Math.min(8, 2 * runs.length));
         }
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await new Promise((resolve) => setTimeout(resolve, 50));
         // Both projects of a run at once, and no more than eight transfers.
         expect(started).toEqual(ids.slice(0, 4).flatMap((id) => names.map((p) => `${id}/${p}`)));
@@ -1811,6 +1854,7 @@ describe("serve: loading without waiting", () => {
         const logged = vi.spyOn(console, "error").mockImplementation(() => {});
         onTestFinished(() => logged.mockRestore());
         let fails = 1;
+        const before = Date.now();
         const s = await start({
             warm: true,
             gh: (r) => {
@@ -1828,7 +1872,8 @@ describe("serve: loading without waiting", () => {
         });
         const retry = await until(async () => (await s.api("GET", "/api/prs?cached=1")).body.network);
         expect(retry).toMatchObject({ error: "Could not resolve host: api.github.com", attempt: 2, of: 2 });
-        expect(retry.until).toBeGreaterThan(Date.now() - 1000);
+        // The retry is due 300 ms after a failure that happened during this test.
+        expect(retry.until).toBeGreaterThanOrEqual(before + 300);
         const loaded = await until(async () => {
             const b = (await s.api("GET", "/api/prs?cached=1")).body;
             return b.targets && b;
@@ -1913,6 +1958,7 @@ describe("downloadCaptures", () => {
             if (args[0] === "run") {
                 calls.push(args);
                 // Extraction takes a while: the second caller arrives while the first is mid-way.
+                // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
                 await new Promise((resolve) => setTimeout(resolve, 20));
             }
             return inner(args, input);
@@ -2043,6 +2089,7 @@ describe("network failures", () => {
                 return async (args, input) => {
                     calls.push(args.slice(0, 2).join(" "));
                     if (args[0] === "run") {
+                        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
                         await new Promise((resolve) => setTimeout(resolve, 50));
                     }
                     return inner(args, input);

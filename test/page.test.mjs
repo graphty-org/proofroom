@@ -157,6 +157,8 @@ const box = (part = null) =>
         }
         return name ? globalThis.document.getElementById(`wait-${name}`).textContent : "open";
     }, part);
+// The targets screen shows the whole list: no refresh running, every capture downloaded.
+const listSettled = () => page.locator("#listline[data-settled]").waitFor();
 // The item's images have been on screen long enough for a decision to count.
 const ready = () => page.locator("#stage[data-ready]").waitFor();
 const progress = () => page.locator("#progress").textContent();
@@ -599,6 +601,7 @@ describe("review page: the Focus point, on an iPad", () => {
         await page.keyboard.press("a");
         await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#3");
         // Give the new image time to arrive while the baseline is held.
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await page.waitForTimeout(300);
         release();
         await expect.poll(() => page.evaluate(() => globalThis.firstFramed)).toBe(true);
@@ -1536,6 +1539,7 @@ describe("review page: the decision bar", () => {
         [1180, 820],
         [768, 1024],
     ]) {
+        // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
         it(`keeps every button in one place across items, decisions, zooms and scrolling at ${w} x ${h}`, async () => {
             await open((r) => ({ gh: onePr()(r) }), { viewport: { width: w, height: h } });
             await page.locator(".component").first().waitFor();
@@ -1667,6 +1671,7 @@ describe("review page: waits that say what they wait for", () => {
         await expect.poll(() => page.locator("#listline").textContent()).toMatch(/^Updated \d+ s agoRefresh$/);
     });
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("lists captures still downloading, and fills the rows in when they land", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
@@ -1756,6 +1761,7 @@ describe("review page: the wait box", () => {
     };
     const geRow = () => page.locator('.card[data-target="123"] tr', { hasText: "graphty-element" });
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("shows a project still downloading in the middle of an iPad's screen, with its progress, and opens it when it lands", async () => {
         const { options, release } = heldDownload();
         const viewport = { width: 820, height: 1180 };
@@ -1775,6 +1781,7 @@ describe("review page: the wait box", () => {
         expect(Math.abs(at.x + at.width / 2 - viewport.width / 2)).toBeLessThan(2);
         expect(Math.abs(at.y + at.height / 2 - viewport.height / 2)).toBeLessThan(2);
         expect(at.x).toBeGreaterThanOrEqual(16);
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await new Promise((resolve) => setTimeout(resolve, 1100));
         expect(await page.locator("#wait").boundingBox()).toEqual(at);
         // Cancel closes it and leaves the targets as they were; the download goes on.
@@ -1790,6 +1797,7 @@ describe("review page: the wait box", () => {
         expect(await page.locator("#pick-project").inputValue()).toBe("graphty-element");
     }, 30000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("says in the box which GitHub call waits to retry, then turns a failure into an error with Retry", async () => {
         let fails = 1;
         let down = false;
@@ -1824,6 +1832,7 @@ describe("review page: the wait box", () => {
         expect(await box()).toBeNull();
     }, 30000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("turns the first load into an error with Retry when GitHub refuses, and Retry loads the list", async () => {
         let down = true;
         await open(
@@ -1853,6 +1862,7 @@ describe("review page: the wait box", () => {
         expect(await box()).toBeNull();
     }, 30000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("never shows the box for a refresh in the background: the status row says it", async () => {
         let release = () => {};
         let hold = false;
@@ -1876,6 +1886,7 @@ describe("review page: the wait box", () => {
         await expect.poll(status).toMatch(/^Checking GitHub for new CI runs Listing pull requests, \d+ s$/);
         for (let i = 0; i < 5; i++) {
             expect(await box()).toBeNull();
+            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
             await new Promise((resolve) => setTimeout(resolve, 200));
         }
         // The targets stay usable meanwhile.
@@ -1933,6 +1944,7 @@ describe("review page: moving on", () => {
         );
     });
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("offers Finish and the next target when every project of a target is decided", async () => {
         await open((r) => ({ gh: twoPrs(r) }));
         await page.locator(".component").first().waitFor();
@@ -1976,6 +1988,7 @@ describe("review page: moving on", () => {
         await expect.poll(position).toMatch(/^1 of 6 /);
     }, 30000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("suggests Finish only once every project of the target is decided, and says what is left where", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator(".component").first().waitFor();
@@ -2371,6 +2384,7 @@ describe("review page: Finish", () => {
         expect(r.repo).toBeTruthy();
     });
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("shows each step, survives a reload without offering a second Finish, then shows the result", async () => {
         let release;
         const gate = new Promise((resolve) => (release = resolve));
@@ -2446,6 +2460,7 @@ describe("review page: Finish", () => {
         ).toBe("true");
     }, 60000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("says a step is retrying after a network error", async () => {
         let release;
         const gate = new Promise((resolve) => (release = resolve));
@@ -2524,6 +2539,7 @@ describe("review page: update from master", () => {
 describe("review page: the passkey", () => {
     // Chromium's virtual authenticator (CDP) stands in for Face ID: a real browser makes the
     // registration and the approval, and the server's own checks verify them.
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("registers a passkey, then Finish asks for it; a refused approval changes nothing", async () => {
         const opened = [];
         const r = await open(
@@ -2610,6 +2626,7 @@ describe("review page: the passkey", () => {
         expect(new Set(await page.evaluate(() => globalThis.whileAsking))).toEqual(new Set([true]));
     }, 90000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("says plainly that accepts are not yet protected while no passkey is registered", async () => {
         const r = await open((repo) => ({ gh: onePr()(repo) }), { review: false });
         await expect
@@ -2634,6 +2651,7 @@ describe("review page: the passkey", () => {
         expect(record).toMatchObject({ version: 1, unproven: true });
     }, 60000);
 
+    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("finishes rejects alone without asking for a passkey to be registered first", async () => {
         // The passkeys file is on the default branch with no key yet: what master holds once this
         // tool's passkey support merges, before the owner registers one.
@@ -2949,9 +2967,10 @@ async function openStoryFromGrid(number) {
 describe("review page: the inbox", () => {
     it("opens on what waits, counts it in the title, opens the first undecided image, and keeps the token", async () => {
         await open((r) => ({ gh: twoPrs(r, capturedItems()) }), { review: false });
+        await listSettled();
         const rows = page.locator(".inbox-row");
-        await expect.poll(() => rows.count()).toBe(2);
-        await expect.poll(() => page.title()).toBe("(2) Visual review");
+        expect(await rows.count()).toBe(2);
+        expect(await page.title()).toBe("(2) Visual review");
         expect(await page.locator(".inbox h2").textContent()).toBe("Ready for you (2)");
         expect(await rows.first().textContent()).toMatch(/^#123 PR 123\d+ images, CI, just now$/);
         const box = await rows.first().boundingBox();
@@ -2961,7 +2980,8 @@ describe("review page: the inbox", () => {
         await page.locator("#app.story-screen").waitFor();
         // The notifier's link carries no token: a browser that used the page before still opens it.
         await page.goto(`${origin}/`);
-        await expect.poll(() => page.locator(".inbox-row").count()).toBe(2);
+        await listSettled();
+        expect(await page.locator(".inbox-row").count()).toBe(2);
     });
 
     it("shows coupled pull requests as one group, and Review together decides a shared image on both", async () => {
@@ -2986,10 +3006,8 @@ describe("review page: the inbox", () => {
 
     it("lists a pull request with a failed story under Not ready with its reason, never as ready", async () => {
         await open((r) => ({ gh: twoPrs(r) }), { review: false });
+        await listSettled();
         const bad = page.locator(".inbox-bad");
-        // Wait for the inbox itself, not a fixed second: the server builds it from git and gh child
-        // processes, which took over expect.poll's 1000 ms default on a loaded machine.
-        await page.locator(".inbox h2").waitFor();
         expect(await bad.count()).toBe(2);
         expect(await page.locator(".inbox-row").count()).toBe(0);
         expect(await page.locator(".inbox h2").textContent()).toBe("Nothing waiting for you");
@@ -3151,5 +3169,49 @@ describe("review page: safe filters and the pull request's context", () => {
         expect(await page.locator("#spot-all").getAttribute("aria-pressed")).toBe("false");
         expect(await page.locator("#zoom-all").getAttribute("aria-pressed")).toBe("true");
         expect(await look()).toEqual([false, true]);
+    });
+
+    it("loads spotlit tiles the server made, and makes the same tile itself when the server cannot", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        const tile = page.locator('.tile[data-file="button--primary.dark.png"] img');
+        await tile.waitFor({ state: "visible" });
+        const lit = () => tile.evaluate((n) => n.classList.contains("spot") && n.classList.contains("zoomed"));
+        // The tile's picture at its own size, kept in the page under `name`: 400 x 250 RGBA is
+        // 400,000 numbers, about a second to carry out of the browser as JSON.
+        const pixels = (name) =>
+            tile.evaluate(async (img, key) => {
+                await img.decode();
+                const c = new globalThis.OffscreenCanvas(img.naturalWidth, img.naturalHeight);
+                c.getContext("2d").drawImage(img, 0, 0);
+                globalThis[key] = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+            }, name);
+        let refused = 0;
+        await page.route("**/api/spot/**", (route) => {
+            refused++;
+            return route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+        });
+        await page.locator("#spot-all").click();
+        await page.locator("#zoom-all").click();
+        await expect.poll(lit).toBe(true);
+        expect(refused).toBeGreaterThan(0);
+        await pixels("own");
+        await page.unroute("**/api/spot/**");
+        // Off and on again: the tile asks the server again, which answers this time.
+        await page.locator("#zoom-all").click();
+        const answered = page.waitForResponse(
+            (res) => res.url().includes("/api/spot/123/compact-mantine/both/button--primary.dark.png") && res.ok(),
+        );
+        await page.locator("#zoom-all").click();
+        await answered;
+        await expect.poll(lit).toBe(true);
+        await pixels("served");
+        const [length, ownLength, mean] = await page.evaluate(() => {
+            const [own, served] = [globalThis.own, globalThis.served];
+            const sum = served.reduce((total, v, i) => total + Math.abs(v - own[i]), 0);
+            return [served.length, own.length, sum / own.length];
+        });
+        expect(length).toBe(ownLength);
+        // The same picture, scaled by another filter: on average within 1 of 255 per channel.
+        expect(mean).toBeLessThan(1);
     });
 });

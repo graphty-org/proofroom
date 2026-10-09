@@ -187,6 +187,7 @@ export function injector({
                     writeFileSync(join(args[6], "partial.png"), "half a PNG");
                 }
                 if (kind === "timeout") {
+                    // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
                     await new Promise((resolve) => setTimeout(resolve, 5));
                 }
                 throw new Error(MESSAGES.gh[kind]);
@@ -418,6 +419,7 @@ export async function endedJob(s) {
         if (!j?.running) {
             return j;
         }
+        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
         await new Promise((resolve) => setTimeout(resolve, 20));
     }
 }
