@@ -18,7 +18,7 @@ import { join } from "node:path";
 
 import { createApp } from "../trusted/lib/serve.mjs";
 import { hooks } from "./fault-hooks.mjs";
-import { copyFixture, FIXTURE_CONFIG, git, job } from "./helpers.mjs";
+import { copyFixture, FIXTURE_CONFIG, git, job, until } from "./helpers.mjs";
 
 // ---------------------------------------------------------------- the injector
 
@@ -185,10 +185,6 @@ export function injector({
                 if (kind === "partial write" && args[0] === "run") {
                     // Part of the artifact extracted, then the stream broke: no results.json yet.
                     writeFileSync(join(args[6], "partial.png"), "half a PNG");
-                }
-                if (kind === "timeout") {
-                    // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-                    await new Promise((resolve) => setTimeout(resolve, 5));
                 }
                 throw new Error(MESSAGES.gh[kind]);
             };
@@ -414,14 +410,13 @@ export async function startApp(r, options) {
  * @returns {Promise<object | null>} the ended job
  */
 export async function endedJob(s) {
-    for (;;) {
+    let ended;
+    await until(async () => {
         const { job: j } = (await s.api("GET", "/api/finish-status")).body;
-        if (!j?.running) {
-            return j;
-        }
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+        ended = j;
+        return !j?.running;
+    });
+    return ended;
 }
 
 /**

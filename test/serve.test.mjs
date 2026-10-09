@@ -32,6 +32,7 @@ import {
     makeRepo,
     onePr,
     pushCommit,
+    until,
     withMoved,
 } from "./helpers.mjs";
 import { approve, makeKey, passkeysJson, register } from "./passkey-vectors.mjs";
@@ -79,14 +80,12 @@ async function start(options = {}) {
  * @returns {Promise<object | null>} the ended job
  */
 async function endedJob(s) {
-    for (;;) {
-        const { job } = (await s.api("GET", "/api/finish-status")).body;
-        if (!job?.running) {
-            return job;
-        }
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+    let ended;
+    await until(async () => {
+        ({ job: ended } = (await s.api("GET", "/api/finish-status")).body);
+        return !ended?.running;
+    });
+    return ended;
 }
 
 /**
@@ -295,10 +294,7 @@ describe("serve: pull requests", () => {
         });
         const s = await start({ gh: onePr() });
         const list = s.api("GET", "/api/prs");
-        while (!existsSync(gate.held)) {
-            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-            await new Promise((resolve) => setTimeout(resolve, 10));
-        }
+        await until(() => existsSync(gate.held));
         expect((await s.api("GET", "/api/inbox")).status).toBe(200);
         writeFileSync(gate.release, "");
         expect((await list).status).toBe(200);
@@ -1511,18 +1507,6 @@ describe("serve: safe filters", () => {
 describe("serve: what the page waits on", () => {
     const decide = (s, file, decision, reason, project = "compact-mantine") =>
         s.api("POST", "/api/decide", { id: "123", project, file, decision, reason });
-    const until = async (check) => {
-        for (let i = 0; i < 300; i++) {
-            const value = await check();
-            if (value) {
-                return value;
-            }
-            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-            await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        throw new Error("timed out");
-    };
-
     it("answers the cached list at once, with the refresh's step while one runs", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
@@ -1713,27 +1697,12 @@ describe("serve: what the page waits on", () => {
 });
 
 describe("serve: loading without waiting", () => {
-    const until = async (check, ms = 6000) => {
-        for (const end = Date.now() + ms; Date.now() < end;) {
-            const value = await check();
-            if (value) {
-                return value;
-            }
-            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-            await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        throw new Error("timed out");
+    // GitHub with every call counted by kind.
+    const counted = (inner, calls) => (args, input) => {
+        const kind = args[0] === "run" ? "download" : (args[1] ?? "").replace(/\?.*/, "").replace(/\d+/g, "N");
+        calls.push(kind);
+        return inner(args, input);
     };
-    // A slow GitHub: every call takes `ms`, and the calls are counted by kind.
-    const slow =
-        (inner, calls, ms = 30) =>
-        async (args, input) => {
-            const kind = args[0] === "run" ? "download" : (args[1] ?? "").replace(/\?.*/, "").replace(/\d+/g, "N");
-            calls.push(kind);
-            // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-            await new Promise((resolve) => setTimeout(resolve, ms));
-            return inner(args, input);
-        };
 
     it("shows the list a restarted server kept at once, and refreshes it behind", async () => {
         const first = await start({ warm: true, gh: onePr() });
@@ -1772,7 +1741,7 @@ describe("serve: loading without waiting", () => {
 
     it("asks GitHub about a finished run's jobs and artifacts once, and keeps the answers with its downloads", async () => {
         const calls = [];
-        const s = await start({ gh: (r) => slow(onePr()(r), calls, 0) });
+        const s = await start({ gh: (r) => counted(onePr()(r), calls) });
         await s.api("GET", "/api/prs");
         await s.api("GET", "/api/prs");
         const count = (kind) => calls.filter((c) => c === kind).length;
@@ -1793,20 +1762,25 @@ describe("serve: loading without waiting", () => {
         const inner = fakeGh({ artifacts: Object.fromEntries(ids.map((id) => [id, both(1)])) });
         const started = [];
         const releases = [];
+        let listed = 0;
         const gh = async (args, input) => {
             if (args[0] === "run") {
                 started.push(`${args[2]}/${/^visual-(.+)-\d+$/.exec(args[4])[1]}`);
                 await new Promise((resolve) => releases.push(resolve));
             }
-            return inner(args, input);
+            const answer = await inner(args, input);
+            listed += args[0] === "run" ? 0 : 1;
+            return answer;
         };
         const runs = [];
         for (const id of ids) {
             runs.push(downloadCaptures(gh, { id }, names, tmp));
             await until(() => started.length === Math.min(8, 2 * runs.length));
         }
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        // Every run has its artifact list, so every transfer is queued (one more turn of the event
+        // loop takes each from its list to the queue): a ninth would have started by now.
+        await until(() => listed === ids.length);
+        await new Promise((resolve) => setImmediate(resolve));
         // Both projects of a run at once, and no more than eight transfers.
         expect(started).toEqual(ids.slice(0, 4).flatMap((id) => names.map((p) => `${id}/${p}`)));
         hurry((dir) => dir.endsWith(join("1004-1", "graphty-element")));
@@ -1954,14 +1928,22 @@ describe("downloadCaptures", () => {
 
     it("downloads a run once when two refreshes ask for it at the same time", async () => {
         const { inner, calls, tmp, run } = setup();
+        // The first caller's extraction lasts until the second caller has its artifact list and
+        // (one turn of the event loop later) has asked for the same download, mid-way through it.
+        let listed = 0;
+        let bothAsked;
+        const asked = new Promise((resolve) => (bothAsked = resolve));
         const gh = async (args, input) => {
             if (args[0] === "run") {
                 calls.push(args);
-                // Extraction takes a while: the second caller arrives while the first is mid-way.
-                // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-                await new Promise((resolve) => setTimeout(resolve, 20));
+                await asked;
+                return inner(args, input);
             }
-            return inner(args, input);
+            const answer = await inner(args, input);
+            if (++listed === 2) {
+                setImmediate(bothAsked);
+            }
+            return answer;
         };
         const [a, b] = await Promise.all([
             downloadCaptures(gh, run, ["compact-mantine"], tmp),
@@ -2082,6 +2064,8 @@ describe("network failures", () => {
 
     it("starts downloading at startup, and a request during it shares that refresh", async () => {
         const calls = [];
+        let arrived;
+        const requested = new Promise((resolve) => (arrived = resolve));
         const s = await start({
             warm: true,
             gh: (r) => {
@@ -2089,13 +2073,16 @@ describe("network failures", () => {
                 return async (args, input) => {
                     calls.push(args.slice(0, 2).join(" "));
                     if (args[0] === "run") {
-                        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-                        await new Promise((resolve) => setTimeout(resolve, 50));
+                        // The startup refresh downloads until the request below has arrived.
+                        await requested;
                     }
                     return inner(args, input);
                 };
             },
         });
+        // The request's handler runs as it arrives; one turn of the event loop later it waits on
+        // the refresh, and the downloads go on.
+        server.once("request", () => setImmediate(arrived));
         const { body } = await s.api("GET", "/api/prs");
         expect(body.targets.map((t) => t.id)).toEqual(["123"]);
         expect(calls.filter((c) => c === "run download")).toHaveLength(2);
