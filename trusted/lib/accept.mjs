@@ -857,10 +857,12 @@ async function commitAccepts({
                 );
             }
         }
-        // git lfs push reports progress only to a terminal, so the new images go up in batches the
-        // page can count; the push of HEAD after them uploads whatever else the commit needs.
+        // git lfs push reports progress only to a terminal, so the new images of a large Finish go
+        // up in batches the page can count; the push of HEAD after them uploads whatever else the
+        // commit needs. Images that fit one batch go up with that push alone: a batch of its own
+        // would only start git-lfs, and its round trip to the LFS server, twice.
         const oids = [...new Set(writes.filter((w) => w.bytes).map((w) => w.item.capture))];
-        for (let i = 0; i < oids.length; i += LFS_BATCH) {
+        for (let i = 0; oids.length > LFS_BATCH && i < oids.length; i += LFS_BATCH) {
             progress(`uploading images to LFS (${i} of ${oids.length} done)`);
             const batch = oids.slice(i, i + LFS_BATCH);
             await net("git lfs push", () => git(tree, ["lfs", "push", "--object-id", "origin", ...batch]));

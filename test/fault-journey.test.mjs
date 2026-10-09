@@ -42,42 +42,51 @@ const REVIEWABLE = new Set(["changed", "moved", "new", "removed", "unstable", "f
 const DECIDABLE = new Set(["changed", "moved", "new", "removed"]);
 const PROJECTS = ["compact-mantine", "graphty-element"];
 const OTHER = "4".repeat(40);
-// The git reads whose answer cannot change during a journey: git's config, which no journey
-// changes, and what a commit named by its full sha holds (every other argument an option or a
-// path, never a ref name). A failed one (a commit not fetched yet) holds only until git next
-// writes. The injector never fails a read, so answering a repeat from memory changes no fault and
-// no answer; it only saves a git process.
-const SHA = /^[0-9a-f]{40}(\^\{commit\}|:.*)?$/;
-const REF = /^(refs\/|HEAD|[\w.-]+$)/;
-const settled = (args) => {
+// The git commands whose answer is the same until git next writes: reads of refs, objects and
+// git's config (git-lfs's too), a diff between two commits (no working tree), and a fetch, since
+// the remote changes only when this journey pushes. Every other git command is a write, and
+// forgets every answer but the config's. A fetch git runs and that succeeds changes refs, so it
+// forgets the reads, but no other fetch: one fetch's refspecs are not another's. The injector
+// decides its faults before this, so remembering changes no fault and no answer; it only saves
+// git processes. On a busy machine each costs tens of milliseconds, and a journey's page loads
+// repeated about a hundred of them, most of its five seconds.
+const READS = new Set(["ls-tree", "show", "cat-file", "merge-base", "rev-parse", "rev-list", "log", "for-each-ref"]);
+const kindOf = (args) => {
     // Finish's git runs with `-c core.hooksPath=/dev/null` first.
     const [command, ...rest] = args.filter((a, i) => a !== "-c" && args[i - 1] !== "-c");
-    return (
+    if (
         (command === "config" && rest.includes("--get")) ||
-        (["ls-tree", "show", "cat-file", "merge-base"].includes(command) &&
-            rest.some((a) => SHA.test(a)) &&
-            rest.every((a) => a.startsWith("-") || SHA.test(a) || !REF.test(a)))
-    );
+        (command === "lfs" && rest[0] === "env") ||
+        command === "check-ref-format"
+    ) {
+        return "config";
+    }
+    if (command === "fetch") {
+        return "fetch";
+    }
+    return READS.has(command) || (command === "diff" && rest.some((a) => a.includes("..."))) ? "read" : "write";
 };
-const WRITES = new Set(["fetch", "push", "commit", "merge", "worktree", "update-ref", "lfs", "add", "rm"]);
 
 /**
- * `exec` with the settled git reads answered from memory after the first time.
- * @param {Map<string, { out?: string, err?: Error }>} memory the answers, by working directory
- *     and arguments
+ * `exec` with every git read and fetch answered from memory after the first time, until git next
+ * writes.
+ * @param {Map<string, { out?: string, err?: Error, kind: string }>} memory the answers, by working
+ *     directory and arguments
  * @returns {(real: Function, cmd: string, args: string[], options: object) => Promise<string>} it
  */
-const remembering =
-    (memory) =>
-    (real, cmd, args, options = {}) => {
-        if (cmd !== "git" || !settled(args)) {
-            if (cmd === "git" && args.some((a) => WRITES.has(a))) {
-                for (const [key, answer] of memory) {
-                    if (answer.err && !answer.config) {
-                        memory.delete(key);
-                    }
-                }
+const remembering = (memory) => {
+    // Writes running now: an answer read while one runs may be from before it, so none is kept.
+    let writing = 0;
+    const forget = (kinds) => {
+        for (const [key, answer] of memory) {
+            if (kinds.includes(answer.kind)) {
+                memory.delete(key);
             }
+        }
+    };
+    return (real, cmd, args, options = {}) => {
+        const kind = cmd === "git" ? kindOf(args) : null;
+        if (kind === null) {
             return real(cmd, args, options);
         }
         const key = `${options.cwd}\0${args.join("\0")}`;
@@ -85,17 +94,36 @@ const remembering =
         if (known) {
             return known.err ? Promise.reject(known.err) : Promise.resolve(known.out);
         }
+        const forgets = kind === "write" ? ["read", "fetch"] : kind === "fetch" ? ["read"] : [];
+        const changes = forgets.length > 0;
+        if (kind === "write") {
+            forget(forgets);
+        }
+        writing += changes ? 1 : 0;
+        const settle = (answer) => {
+            if (changes) {
+                writing--;
+                // A fetch that failed changed no ref (a pull request head GitHub does not have).
+                if (kind === "write" || !answer.err) {
+                    forget(forgets);
+                }
+            }
+            if (kind !== "write" && writing === 0) {
+                memory.set(key, { ...answer, kind });
+            }
+        };
         return real(cmd, args, options).then(
             (out) => {
-                memory.set(key, { out });
+                settle({ out });
                 return out;
             },
             (err) => {
-                memory.set(key, { err, config: args.includes("config") });
+                settle({ err });
                 throw err;
             },
         );
     };
+};
 
 // One repository for every journey, copied for each: making it costs more git processes than a
 // journey's reads. Its two directories hold one absolute path, the remote's in the clone's config.

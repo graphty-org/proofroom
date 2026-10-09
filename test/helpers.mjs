@@ -70,7 +70,7 @@ function put(path, data) {
 /**
  * A repository cloned from a bare remote. master holds the fixture's baselines for the changed,
  * removed and unstable items, as Git LFS pointers the way the monorepo stores them (the same
- * .gitattributes line, `git lfs install --local`, and the bare remote as its LFS store); the
+ * .gitattributes line, git-lfs's filter, and the bare remote as its LFS store); the
  * branch `feature` adds one commit on top of it.
  *
  * A copy of the one repo-template.setup.mjs builds before the tests start: building it runs about
@@ -102,7 +102,12 @@ export function buildRepo() {
     git(repo, "remote", "add", "origin", remote);
     git(repo, "config", "user.name", "Owner");
     git(repo, "config", "user.email", "owner@example.com");
-    git(repo, "lfs", "install", "--local");
+    // The LFS filter, so images commit as pointers, and none of git-lfs's hooks: each one starts
+    // git-lfs, which starts about eight git processes, on every checkout, commit and push a test
+    // makes. Nothing under test needs them: Finish uploads with `git lfs push` itself. The clean
+    // filter writes the hooks back on the first `git add` unless core.hooksPath leads nowhere.
+    git(repo, "config", "core.hooksPath", "/dev/null");
+    git(repo, "lfs", "install", "--local", "--skip-repo");
     put(join(repo, ".gitattributes"), `${LFS_ATTRIBUTES}\n`);
     put(join(repo, "README.md"), "test\n");
     put(join(repo, CONFIG_FILE), CONFIG_TEXT);
