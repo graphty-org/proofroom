@@ -2933,13 +2933,22 @@ function itemLine(item, d) {
         "div",
         {
             class: "itemline",
-            onclick: (e) => e.currentTarget.classList.toggle("open"),
+            // A click on the name, or one that ends a text selection, is someone copying text:
+            // opening the row would rewrap it and move the buttons under the pointer.
+            onclick: (e) => {
+                if (e.target.closest(".name") || !getSelection().isCollapsed) {
+                    return;
+                }
+                e.currentTarget.classList.toggle("open");
+            },
         },
         el(
             "h2",
             {},
             el("span", { class: "number" }, `#${numberOf(item)}`),
-            ` ${itemName(item)} `,
+            " ",
+            el("span", { class: "name" }, itemName(item)),
+            " ",
             el("span", { class: `badge ${item.status}` }, statusLabel(item.status)),
             item.from ? el("span", { class: "badge moved" }, movedFrom(item)) : null,
             d

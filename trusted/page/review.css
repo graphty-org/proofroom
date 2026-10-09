@@ -1226,6 +1226,12 @@ details.menu > div {
     text-overflow: ellipsis;
 }
 
+/* One click selects the whole name, ready to copy. */
+.itemline .name {
+    cursor: text;
+    user-select: all;
+}
+
 .itemline p {
     flex: 1 1 0;
     min-width: 0;

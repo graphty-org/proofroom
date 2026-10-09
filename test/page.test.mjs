@@ -2872,6 +2872,34 @@ describe("review page: narrow windows, touch and wording", () => {
         await openStory(2);
         await expect.poll(() => page.locator(".itemline").textContent()).toContain("1 pixel changed");
     });
+
+    it("selects the story name to copy without moving the buttons", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await openStory(2);
+        const name = page.locator(".itemline .name");
+        const box = () => page.locator(".viewbar").boundingBox();
+        const before = await box();
+        // A click selects the whole name, a drag across it selects text: neither opens the row.
+        await name.click();
+        expect(await page.evaluate(() => globalThis.getSelection().toString())).toBe(await name.textContent());
+        const b = await name.boundingBox();
+        await page.mouse.move(b.x + 2, b.y + b.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(b.x + b.width - 2, b.y + b.height / 2, { steps: 5 });
+        await page.mouse.up();
+        // A drag that ends a selection outside the name does not open it either.
+        const p = await page.locator("#explain").boundingBox();
+        await page.mouse.move(p.x + 2, p.y + p.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(p.x + 60, p.y + p.height / 2, { steps: 5 });
+        await page.mouse.up();
+        expect(await page.locator(".itemline").getAttribute("class")).toBe("itemline");
+        expect(await box()).toEqual(before);
+        // A plain tap on the explanation still shows it all.
+        await page.evaluate(() => globalThis.getSelection().removeAllRanges());
+        await page.locator("#explain").click();
+        expect(await page.locator(".itemline").getAttribute("class")).toBe("itemline open");
+    });
 });
 
 describe("review page: renamed stories", () => {
