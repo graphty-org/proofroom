@@ -1,3 +1,23 @@
+## 0.2.20 (2026-10-10)
+
+### 🩹 Fixes
+
+- **visual-review:** start fewer processes in the journey, gate and commitlint tests ([#1719](https://github.com/graphty-org/graphty-monorepo/issues/1719), [#1720](https://github.com/graphty-org/graphty-monorepo/issues/1720), [#1744](https://github.com/graphty-org/graphty-monorepo/issues/1744), [#1745](https://github.com/graphty-org/graphty-monorepo/issues/1745))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
+## 0.2.19 (2026-10-09)
+
+### 🩹 Fixes
+
+- **visual-review:** selecting the story name no longer reflows the header ([cfafa2580](https://github.com/graphty-org/graphty-monorepo/commit/cfafa2580))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.18 (2026-10-09)
 
 ### 🩹 Fixes

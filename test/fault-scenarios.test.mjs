@@ -474,7 +474,8 @@ describe("refreshing the targets", () => {
             }
             return w.gh(args, input);
         };
-        const s = await startApp(r, { gh });
+        // The list waits a fifth of a second for #124's download, not the default second.
+        const s = await startApp(r, { gh, patience: 200 });
         servers.push(s);
         try {
             // #124's download is held until `release()` below, so an answer at all shows the list
