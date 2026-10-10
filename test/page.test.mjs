@@ -47,6 +47,9 @@ let requested;
 let confirmFinish = false;
 // The fixture's grid tiles, made once (keepTiles) and put in every server's tmp directory.
 let tiles = null;
+// The app open() started. Its tiles made in advance run on after the server closes: afterEach waits
+// for them, so their logs and file reads stay inside the test that started them.
+let openApp = null;
 
 beforeAll(async () => {
     isolateGit();
@@ -60,6 +63,8 @@ beforeAll(async () => {
     tiles = await keepTiles({ origin, token: TOKEN, tmp: join(r.repo, "tmp/visual-review") }, 123);
     await page.close();
     server.close();
+    await openApp.idle();
+    openApp = null;
 });
 afterAll(() => browser?.close());
 
@@ -109,6 +114,7 @@ async function open(
     // instead of a quarter second later on its second (Review waits for the list either way),
     // and the server's git work for it no longer waits for the tab, nor the tab for it.
     const listed = review ? fetch(`${origin}/api/prs`, { headers: { "x-review-token": TOKEN } }) : null;
+    openApp = app;
     page = await interceptedPage(browser, { viewport, hasTouch: touch, isMobile: touch });
     dialogs = [];
     requested = [];
@@ -149,6 +155,8 @@ afterEach(async () => {
     confirmFinish = false;
     await page?.close();
     server?.close();
+    await openApp?.idle();
+    openApp = null;
 });
 
 // The page's next flip of Flash, Spotlight's flash or Blink (FLASH_MS, a third of a second), now:

@@ -41,7 +41,14 @@ import { approve, makeKey, passkeysJson, register } from "./passkey-vectors.mjs"
 const TOKEN = "t".repeat(43);
 
 let server;
-afterEach(() => server?.close());
+let app;
+// The app's tiles made in advance run on after the server closes: wait for them, or their reads of
+// a later-deleted download log into the next test's console.error spy.
+afterEach(async () => {
+    server?.close();
+    await app?.idle();
+    app = null;
+});
 
 // The fixture's grid tiles, made once and put in every server's tmp directory (keepTiles).
 let tiles = null;
@@ -50,6 +57,8 @@ beforeAll(async () => {
     const s = await start({ gh: onePr(), tiles: false });
     tiles = await keepTiles({ ...s, token: TOKEN }, 123);
     server.close();
+    await app.idle();
+    app = null;
 });
 
 /**
@@ -70,6 +79,7 @@ async function start({ tiles: seed = true, ...options } = {}) {
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
     box.app = createApp({ repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, ...options, gh: options.gh(r) });
+    app = box.app;
     const api = async (method, path, body, headers = {}) => {
         const res = await fetch(`${origin}${path}`, {
             method,
@@ -1626,6 +1636,15 @@ describe("serve: what the page waits on", () => {
         expect(PNG.sync.read(thumb.body).width).toBeLessThanOrEqual(400);
         expect(thumbs()).toHaveLength(6);
         expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
+    });
+
+    it("settles idle() once every tile made in advance is on disk, so no work outlives the server", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        await app.idle();
+        // Six thumbnails and three changed pairs of three spotlit tiles: nothing is still being made.
+        expect(readdirSync(join(s.tmp, "thumbs")).filter((f) => f.endsWith(".png"))).toHaveLength(6);
+        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(9);
     });
 
     it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
