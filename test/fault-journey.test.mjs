@@ -29,7 +29,7 @@ import {
     Violation,
     world,
 } from "./faults.mjs";
-import { git, isolateGit, job, makeRepo } from "./helpers.mjs";
+import { git, isolateGit, job, keepTiles, makeRepo, seedTiles } from "./helpers.mjs";
 
 vi.mock("node:fs", async (importOriginal) => (await import("./fault-hooks.mjs")).faultyFs(await importOriginal()));
 vi.mock("../trusted/lib/github.mjs", async (importOriginal) =>
@@ -127,10 +127,22 @@ const remembering = (memory) => {
 
 // One repository for every journey, copied for each: making it costs more git processes than a
 // journey's reads. Its two directories hold one absolute path, the remote's in the clone's config.
+// Its tmp directory holds the captures' grid tiles, which every journey's server would otherwise
+// make again in child processes: more CPU than the journey's own.
 let template;
-beforeAll(() => {
+beforeAll(async () => {
     template = makeRepo();
     git(template.repo, "push", "-q", "origin", "feature:refs/heads/other");
+    const token = "t".repeat(43);
+    const s = await startApp(freshRepo(), { gh: world(template).gh, token, patience: Infinity });
+    try {
+        seedTiles(await keepTiles({ ...s, token }, 123), join(template.repo, "tmp/visual-review"));
+    } finally {
+        await s.close();
+    }
+    // One journey before the tests, its result unchecked: the server code's first run, and the
+    // thumbnail processes it starts, cost the first test half a second the others do not pay.
+    await walk({ stopped: false }, 0);
 });
 function freshRepo() {
     const dir = mkdtempSync(join(tmpdir(), "vr-journey-"));

@@ -397,19 +397,26 @@ describe("finish: refusals", () => {
 });
 
 describe("finish: git", () => {
-    it("generates commit messages that pass the repository's commitlint", async () => {
-        // commitlint's own load and lint, as its CLI runs them, in this process: the CLI started
-        // once per message loaded node and the configuration three times over.
+    // commitlint's own load and lint, as its CLI runs them, in this process: the CLI started once
+    // per message loaded node and the configuration three times over. Loaded once for the file,
+    // before the test: loading commitlint and the repository's configuration is most of the work.
+    let lint;
+    let config;
+    let options;
+    beforeAll(async () => {
         const from = createRequire(ROOT);
         const load = (await import(pathToFileURL(from.resolve("@commitlint/load")).href)).default;
-        const lint = (await import(pathToFileURL(from.resolve("@commitlint/lint")).href)).default;
-        const config = await load({}, { cwd: ROOT });
-        const options = {
+        lint = (await import(pathToFileURL(from.resolve("@commitlint/lint")).href)).default;
+        config = await load({}, { cwd: ROOT });
+        options = {
             parserOpts: config.parserPreset?.parserOpts,
             plugins: config.plugins,
             ignores: config.ignores,
             defaultIgnores: config.defaultIgnores,
         };
+    });
+
+    it("generates commit messages that pass the repository's commitlint", async () => {
         const local = [
             { project: "compact-mantine", merge: "3".repeat(40) },
             { project: "graphty-element", merge: "3".repeat(40) },
@@ -873,9 +880,11 @@ describe("finish: approvals from before passkeys", () => {
         expect(await legacyApprovalsAsync({ ...input, pr: null })).toBeNull();
     });
 
-    it("offers nothing while master holds no key", () => {
+    it("offers nothing while master holds no key", async () => {
         const s = legacySetup({ keys: false });
-        expect(legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG })).toBeNull();
+        const input = { repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG };
+        expect(legacyApprovals(input)).toBeNull();
+        expect(await legacyApprovalsAsync(input)).toBeNull();
     });
 
     it("on a branch behind master, offers the files master has not changed since, and only those", () => {

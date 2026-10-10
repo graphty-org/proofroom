@@ -397,9 +397,11 @@ export async function startApp(r, options) {
             body: type.includes("json") ? await res.json() : Buffer.from(await res.arrayBuffer()),
         };
     };
-    const close = () => {
+    // Waits for the tiles made in advance too: they would run on into the next test.
+    const close = async () => {
         server.closeAllConnections();
-        return new Promise((resolve) => server.close(() => resolve()));
+        await new Promise((resolve) => server.close(() => resolve()));
+        await box.app?.idle();
     };
     return { api, close, origin, tmp, server };
 }

@@ -11,6 +11,9 @@ export default defineConfig({
         // wait on its events, so their time follows the machine's load.
         testTimeout: 60_000,
         hookTimeout: 60_000,
+        // expect.poll looks again every 10 ms, not 50: most of the page tests' waits are polls, and
+        // each one that is already true on its second look no longer costs 50 ms.
+        expect: { poll: { interval: 10 } },
         // No test runs git with the developer's own config (signing, hooks) or a hook's GIT_DIR.
         setupFiles: ["test/isolate-git.setup.mjs"],
         // The repository every test's makeRepo copies.

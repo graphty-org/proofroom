@@ -2514,9 +2514,10 @@ function gridBar() {
         },
     });
     const undoAll = undoableIn(null);
+    // data-project names the project whose grid this is, so a test can tell it from the grid before.
     return el(
         "div",
-        { class: "gridbar" },
+        { class: "gridbar", "data-project": state.project },
         el(
             "div",
             { class: "row" },

@@ -307,8 +307,9 @@ async function loadResults(dir, name) {
  * @param {number} [options.patience] how long, in milliseconds, a page load waits for a run's
  *     captures before listing the target as downloading; Infinity waits for them
  * @param {number[]} [options.retryDelays] milliseconds before each retry of a Finish's network call
- * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void}
- *     the handler, for node:https in the CLI and node:http in the tests
+ * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void> }}
+ *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
+ *     tile is being made in the background
  */
 export function createApp({
     repo,
@@ -2617,7 +2618,7 @@ export function createApp({
         setInterval(() => refresh().catch(failed("background")), POLL).unref();
     }
 
-    return async (req, res) => {
+    const handler = async (req, res) => {
         try {
             const url = new URL(req.url, origin);
             if (!url.pathname.startsWith("/api/")) {
@@ -2656,4 +2657,15 @@ export function createApp({
             return send(res, client ? 400 : 500, { error: err.message });
         }
     };
+    /**
+     * Settles once no tile is being made in the background (the thumbnails and spotlit tiles made
+     * in advance), so whoever stops the server can wait for that work instead of leaving it running.
+     * @returns {Promise<void>}
+     */
+    handler.idle = async () => {
+        while (making.size) {
+            await Promise.allSettled([...making.values()].map((m) => m.done));
+        }
+    };
+    return handler;
 }

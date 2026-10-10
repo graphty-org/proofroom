@@ -29,35 +29,58 @@ import {
     git,
     isolateGit,
     job,
+    keepTiles,
     makeRepo,
     onePr,
     pushCommit,
     until,
+    seedTiles,
     withMoved,
 } from "./helpers.mjs";
 import { approve, makeKey, passkeysJson, register } from "./passkey-vectors.mjs";
 
-beforeAll(isolateGit);
-
 const TOKEN = "t".repeat(43);
 
 let server;
-afterEach(() => server?.close());
+let app;
+// The app's tiles made in advance run on after the server closes: wait for them, or their reads of
+// a later-deleted download log into the next test's console.error spy.
+afterEach(async () => {
+    server?.close();
+    await app?.idle();
+    app = null;
+});
+
+// The fixture's grid tiles, made once and put in every server's tmp directory (keepTiles).
+let tiles = null;
+beforeAll(async () => {
+    isolateGit();
+    const s = await start({ gh: onePr(), tiles: false });
+    tiles = await keepTiles({ ...s, token: TOKEN }, 123);
+    server.close();
+    await app.idle();
+    app = null;
+});
 
 /**
  * Starts the app on a random port.
- * @param {object} options passed to createApp; `repo` defaults to a fresh repository
+ * @param {object} [options] passed to createApp; `repo` defaults to a fresh repository
+ * @param {boolean} [options.tiles] false: without the fixture's grid tiles made already
  * @returns {Promise<object>} `api(method, path, body, headers)` plus the repository
  */
-async function start(options = {}) {
+async function start({ tiles: seed = true, ...options } = {}) {
     const r = options.repo ? options : makeRepo();
     const repo = options.repo ?? r.repo;
     const tmp = join(repo, "tmp/visual-review");
+    if (seed && tiles) {
+        seedTiles(tiles, tmp);
+    }
     const box = {};
     server = createServer((req, res) => box.app(req, res));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
     box.app = createApp({ repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, ...options, gh: options.gh(r) });
+    app = box.app;
     const api = async (method, path, body, headers = {}) => {
         const res = await fetch(`${origin}${path}`, {
             method,
@@ -263,8 +286,8 @@ describe("serve: pull requests", () => {
     });
 
     it("answers other requests while a git call of the list's refresh is held", async () => {
-        // A git that holds the default branch's passkeys.json read (legacyApprovals' first call)
-        // until the test releases it. Run on the server's own thread, as it once was, that read
+        // A git that holds the default branch's passkeys.json read (legacyApprovals' first call,
+        // or the check for the file before it) until the test releases it. Run on the server's own thread, as it once was, that read
         // blocked every request, and a git that stalled for seconds timed out the list (#1496).
         // On such a server the test cannot release it, so the hold ends by itself after 10 s and
         // the test fails on its timeout instead of hanging.
@@ -277,7 +300,7 @@ describe("serve: pull requests", () => {
             join(bin, "git"),
             [
                 "#!/bin/sh",
-                'case "$*" in "show "*":visual-review/passkeys.json")',
+                'case "$*" in "show "*":visual-review/passkeys.json" | *"cat-file -e "*":visual-review/passkeys.json")',
                 `  : > '${gate.held}'; i=0`,
                 `  while [ ! -e '${gate.release}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done ;;`,
                 "esac",
@@ -1542,7 +1565,11 @@ describe("serve: what the page waits on", () => {
     it("lists captures still downloading as downloading, and fills them in when they land", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
+        // The list waits a fifth of a second for the held download, not the default second: long
+        // enough for everything not held (the artifact sizes, a download already on disk), which
+        // is what it shows meanwhile.
         const s = await start({
+            patience: 200,
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
@@ -1581,7 +1608,7 @@ describe("serve: what the page waits on", () => {
         expect([...small.data.slice(0, 4)]).toEqual([255, 0, 0, 255]);
         expect([...small.data.slice(399 * 4, 400 * 4)]).toEqual([0, 0, 255, 255]);
 
-        const s = await start({ gh: onePr() });
+        const s = await start({ gh: onePr(), tiles: false });
         await s.api("GET", "/api/prs");
         // Made as the captures land, before any tile asks: one per item to decide that has an image
         // (five in compact-mantine, the removed one's from its baseline, and one in graphty-element).
@@ -1595,8 +1622,17 @@ describe("serve: what the page waits on", () => {
         expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
     });
 
-    it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
+    it("settles idle() once every tile made in advance is on disk, so no work outlives the server", async () => {
         const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        await app.idle();
+        // Six thumbnails and three changed pairs of three spotlit tiles: nothing is still being made.
+        expect(readdirSync(join(s.tmp, "thumbs")).filter((f) => f.endsWith(".png"))).toHaveLength(6);
+        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(9);
+    });
+
+    it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
+        const s = await start({ gh: onePr(), tiles: false });
         await s.api("GET", "/api/prs");
         const spots = () => (existsSync(join(s.tmp, "spots")) ? readdirSync(join(s.tmp, "spots")).sort() : []);
         // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three tiles each.
@@ -1667,7 +1703,11 @@ describe("serve: what the page waits on", () => {
     it("fills each project in as its own download lands, counting them", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
+        // The list waits a fifth of a second for the held download, not the default second: long
+        // enough for everything not held (the artifact sizes, a download already on disk), which
+        // is what it shows meanwhile.
         const s = await start({
+            patience: 200,
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
@@ -1798,7 +1838,11 @@ describe("serve: loading without waiting", () => {
     it("answers 202 for a project still downloading, with the bytes, until it lands", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
+        // The list waits a fifth of a second for the held download, not the default second: long
+        // enough for everything not held (the artifact sizes, a download already on disk), which
+        // is what it shows meanwhile.
         const s = await start({
+            patience: 200,
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
