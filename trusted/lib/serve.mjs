@@ -307,7 +307,7 @@ async function loadResults(dir, name) {
  * @param {number} [options.patience] how long, in milliseconds, a page load waits for a run's
  *     captures before listing the target as downloading; Infinity waits for them
  * @param {number[]} [options.retryDelays] milliseconds before each retry of a Finish's network call
- * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void) & { idle: () => Promise<void> }}
+ * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void> }}
  *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
  *     tile is being made in the background
  */
