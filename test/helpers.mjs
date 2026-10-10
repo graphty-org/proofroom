@@ -379,3 +379,54 @@ export async function interceptedPage(browser, options) {
     await page.route("**/interception-stays-on", (route) => route.continue());
     return page;
 }
+
+/**
+ * Has a running server make every grid tile of pull request `id` (each item's thumbnail, and the
+ * spotlit tiles of each changed one) and keeps a copy of them, for seedTiles. A server keeps its
+ * tiles in its tmp directory by the images' hashes and makes each one once, in child processes; a
+ * test with a fresh tmp directory made them all again, which in the page and journey tests took
+ * more CPU than the tests themselves. A test file makes them once, and seeds every server's tmp.
+ * @param {{ origin: string, token: string, tmp: string }} server the server, its token and tmp
+ * @param {number | string} id the pull request
+ * @returns {Promise<string>} a directory holding the tiles, as tmp holds them
+ */
+export async function keepTiles({ origin, token, tmp }, id) {
+    const get = async (path) => {
+        const res = await fetch(`${origin}${path}`, { headers: { "x-review-token": token } });
+        if (res.status !== 200) {
+            throw new Error(`keepTiles: ${path} answered ${res.status}`);
+        }
+        return res;
+    };
+    const target = (await (await get("/api/prs")).json()).targets.find((t) => String(t.id) === String(id));
+    // The projects the run captured (the config can name more).
+    for (const { project } of target.projects.filter((p) => p.problem === null)) {
+        const { items } = await (await get(`/api/pr/${id}/${project}`)).json();
+        const at = (route, kind, file) => [route, id, project, kind, file].map(encodeURIComponent).join("/");
+        // As the server makes them in advance (prewarm in serve.mjs): what needs a decision.
+        await Promise.all(
+            items
+                .filter((i) => i.status !== "unchanged" && i.status !== "failed")
+                .flatMap((i) => [
+                    get(`/api/${at("thumb", i.capture ? "capture" : "baseline", i.file)}`),
+                    ...(i.baseline && i.capture && i.baseline !== i.capture
+                        ? [get(`/api/${at("spot", "both", i.file)}`)]
+                        : []),
+                ]),
+        );
+    }
+    const kept = mkdtempSync(join(tmpdir(), "vr-tiles-"));
+    for (const dir of ["thumbs", "spots"]) {
+        cpSync(join(tmp, dir), join(kept, dir), { recursive: true, filter: (f) => !f.endsWith(".tmp") });
+    }
+    return kept;
+}
+
+/**
+ * Puts the tiles keepTiles kept into a server's tmp directory, before the server starts.
+ * @param {string} kept keepTiles' directory
+ * @param {string} tmp the server's tmp directory
+ */
+export function seedTiles(kept, tmp) {
+    cpSync(kept, tmp, { recursive: true });
+}
