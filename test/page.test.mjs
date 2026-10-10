@@ -43,6 +43,9 @@ let dialogs;
 // Every URL the page requested (the page's own `performance` is Playwright's clock's).
 let requested;
 let confirmFinish = false;
+// The app open() started. Its tiles made in advance run on after the server closes: afterEach waits
+// for them, so their logs and file reads stay inside the test that started them.
+let openApp = null;
 
 beforeAll(async () => {
     isolateGit();
@@ -96,6 +99,7 @@ async function open(
         ...options(r),
     });
     server.on("request", app);
+    openApp = app;
     page = await interceptedPage(browser, { viewport, hasTouch: touch, isMobile: touch });
     dialogs = [];
     requested = [];
@@ -140,6 +144,8 @@ afterEach(async () => {
     confirmFinish = false;
     await page?.close();
     server?.close();
+    await openApp?.idle();
+    openApp = null;
 });
 
 // The page's next flip of Flash, Spotlight's flash or Blink (FLASH_MS, a third of a second), now:
