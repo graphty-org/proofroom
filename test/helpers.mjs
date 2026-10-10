@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { inject } from "vitest";
 
 import { isolateGit } from "../../tools/isolated-git-env.mjs";
+import { contentHash } from "../trusted/gate.mjs";
+import { sha256 } from "../trusted/lib/compare.mjs";
 import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
 
 // Every test file already runs isolated (vitest.config.mjs's setup file); kept for the files that call it.
@@ -73,13 +75,21 @@ function put(path, data) {
  * .gitattributes line, git-lfs's filter, and the bare remote as its LFS store); the
  * branch `feature` adds one commit on top of it.
  *
- * A copy of the one repo-template.setup.mjs builds before the tests start: building it runs about
- * twenty git and git-lfs processes, which on a busy machine took seconds of a test's five.
+ * A copy of one repository repo-template.setup.mjs prepares before the tests start (`repoTemplate`
+ * by default; buildRepo, buildConflicted): building it runs about twenty git and git-lfs
+ * processes, which on a busy machine took seconds of a test's five.
+ * @param {string} [name] which prepared repository to copy
  * @returns {{ dir: string, repo: string, remote: string, master: string, head: string }} shas of
- *     master and of the feature branch's head
+ *     master and of the feature branch's head, and whatever else the prepared repository names
  */
-export function makeRepo() {
-    const template = inject("repoTemplate");
+export const makeRepo = (name = "repoTemplate") => copyRepo(inject(name));
+
+/**
+ * Copies a prepared repository and its bare remote, the copy's origin pointing at the copied remote.
+ * @param {{ dir: string }} template the repository, as buildRepo returns it
+ * @returns {{ dir: string, repo: string, remote: string }} the copy, with the template's other fields
+ */
+function copyRepo(template) {
     const dir = mkdtempSync(join(tmpdir(), "vr-repo-"));
     cpSync(template.dir, dir, { recursive: true });
     const repo = join(dir, "repo");
@@ -126,6 +136,56 @@ export function buildRepo() {
     const head = git(repo, "rev-parse", "HEAD");
     git(repo, "checkout", "-q", "master");
     return { dir, repo, remote, master, head };
+}
+
+/** The baseline buildConflicted makes both branches change. */
+export const CONFLICT_PATH = "visual-baselines/compact-mantine/button--primary.dark.png";
+/** The pull request's accepted capture of it, and the newer baseline another pull request put on master. */
+export const CONFLICT_MINE = join(FIXTURE, "compact-mantine/button--primary.dark.png");
+export const CONFLICT_THEIRS = join(FIXTURE, "compact-mantine/second/tooltip--hover.png");
+
+/**
+ * Builds a copy of `template` in which the pull request (#123, branch feature) accepted a new
+ * image of button--primary.dark with a review record, as Finish commits it; then master accepted
+ * a different one for the same story. Merging master into feature conflicts on that baseline
+ * only. With `code`, both also wrote src.txt, a conflict outside the baselines.
+ *
+ * repo-template.setup.mjs builds both once (makeRepo("conflictedRepo"), "conflictedCodeRepo"):
+ * these ten git processes and six git-lfs filters, run in each update test, were most of the
+ * work that took it past five seconds on a busy machine.
+ * @param {{ dir: string }} template the repository buildRepo made
+ * @param {{ code?: boolean }} [options] what else conflicts
+ * @returns {object} the repository, and master's and feature's tips
+ */
+export function buildConflicted(template, { code = false } = {}) {
+    const r = copyRepo(template);
+    const commit = (branch, message, files) => {
+        git(r.repo, "checkout", "-q", branch);
+        for (const [path, data] of Object.entries(files)) {
+            put(join(r.repo, path), data);
+        }
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", message);
+        git(r.repo, "push", "-q", "origin", branch);
+        return git(r.repo, "rev-parse", "HEAD");
+    };
+    const before = contentHash(Buffer.from(git(r.repo, "show", `master:${CONFLICT_PATH}`) + "\n"));
+    const record = {
+        version: 1,
+        pr: 123,
+        reviewedAt: "2026-09-27T15:04:05.000Z",
+        items: [{ path: CONFLICT_PATH, from: before, to: sha256(readFileSync(CONFLICT_MINE)), reason: null }],
+    };
+    const feature = commit("feature", "accept", {
+        [CONFLICT_PATH]: readFileSync(CONFLICT_MINE),
+        "visual-baselines/reviews/20260927T150405Z-pr123.json": `${JSON.stringify(record, null, 2)}\n`,
+        ...(code && { "src.txt": "feature's line\n" }),
+    });
+    const master = commit("master", "another pull request's accept", {
+        [CONFLICT_PATH]: readFileSync(CONFLICT_THEIRS),
+        ...(code && { "src.txt": "master's line\n" }),
+    });
+    return { ...r, feature, master };
 }
 
 /**
