@@ -77,7 +77,6 @@ beforeAll(() => {
 afterAll(() => vi.unstubAllEnvs());
 
 describe("capture", () => {
-    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("classifies new, unchanged, excluded, failed, and a story newly excluded by its parameters", async () => {
         const sb = storybook();
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
@@ -119,9 +118,8 @@ describe("capture", () => {
         });
         expect(items["demo--always-excluded.png"].status).toBe("excluded");
         expect(second.expected).toBe(second.items.length);
-    }, 120_000);
+    });
 
-    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("marks a story with no baseline unseeded when it looks as in master's capture", async () => {
         const sb = storybook();
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
@@ -160,9 +158,8 @@ describe("capture", () => {
             stories: ["demo--plain"],
         });
         expect(tampered.items[0].status).toBe("new");
-    }, 120_000);
+    });
 
-    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("compares a renamed story with its old id's baseline and reports a broken rename", async () => {
         const sb = storybook();
         const seedOut = mkdtempSync(join(tmpdir(), "vr-out-"));
@@ -214,9 +211,8 @@ describe("capture", () => {
                 .sort(),
         ).toEqual(["demo--nowhere.dark.png", "demo--plain.png", "demo--small.png"]);
         expect(r.expected).toBe(r.items.length);
-    }, 120_000);
+    });
 
-    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("refuses a renames file that is not a list of distinct renames", async () => {
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
         writeFileSync(join(baselines, "renames.json"), JSON.stringify([{ from: "a--b", to: "a--b" }]));
@@ -231,37 +227,33 @@ describe("capture", () => {
                 log: () => {},
             }),
         ).rejects.toThrow(/renames.json: entry 0 must be/);
-    }, 60_000);
+    });
 
-    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("captures the whole canvas at scale 2, never cropped to the content", async () => {
-        const sb = storybook();
-        const run = async (story) => {
-            const out = mkdtempSync(join(tmpdir(), "vr-out-"));
-            const r = await capture({
-                project: "demo",
-                storybook: sb,
-                baselines: mkdtempSync(join(tmpdir(), "vr-bl-")),
-                out,
-                workers: 1,
-                waitFor: null,
-                stories: [story],
-                log: () => {},
-            });
-            return { size: r.items[0].size, png: PNG.sync.read(readFileSync(join(out, r.items[0].file))) };
-        };
+        // The four stories in one capture: one browser, as a project's run has.
+        const out = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const r = await capture({
+            project: "demo",
+            storybook: storybook(),
+            baselines: mkdtempSync(join(tmpdir(), "vr-bl-")),
+            out,
+            workers: 1,
+            waitFor: null,
+            stories: ["demo--small", "demo--plain", "demo--tall", "demo--late-font"],
+            log: () => {},
+        });
+        const items = byFile(r);
         // A small component sits in the full 1200 x 900 viewport, doubled.
-        expect((await run("demo--small")).size).toEqual([1200 * 2, 900 * 2]);
-        expect((await run("demo--plain")).size).toEqual([1200 * 2, 900 * 2]);
+        expect(items["demo--small.png"].size).toEqual([1200 * 2, 900 * 2]);
+        expect(items["demo--plain.png"].size).toEqual([1200 * 2, 900 * 2]);
         // A story taller than the viewport is captured to its full scroll height.
-        expect((await run("demo--tall")).size).toEqual([1200 * 2, 2000 * 2]);
+        expect(items["demo--tall.png"].size).toEqual([1200 * 2, 2000 * 2]);
         // The capture waits for the page's fonts: the box drawn at (400, 300) when they settle is in it.
-        const { png } = await run("demo--late-font");
+        const png = PNG.sync.read(readFileSync(join(out, "demo--late-font.png")));
         const at = (405 * 2 + 305 * 2 * png.width) * 4;
         expect([...png.data.subarray(at, at + 3)]).toEqual([255, 0, 0]);
-    }, 120_000);
+    });
 
-    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("launches every browser with GPU rasterization off, so text renders the same each time", async () => {
         expect(CHROMIUM_ARGS).toContain("--disable-gpu-rasterization");
         const launch = vi.spyOn(chromium, "launch");
@@ -283,9 +275,8 @@ describe("capture", () => {
         } finally {
             launch.mockRestore();
         }
-    }, 60_000);
+    });
 
-    // eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
     it("fails with a clear message when a baseline is a Git LFS pointer", async () => {
         const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
         writeFileSync(
@@ -304,5 +295,5 @@ describe("capture", () => {
                 log: () => {},
             }),
         ).rejects.toThrow(/demo--plain.png: baseline is an LFS pointer; run git lfs pull/);
-    }, 60_000);
+    });
 });

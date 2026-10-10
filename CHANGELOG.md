@@ -1,3 +1,14 @@
+## 0.2.21 (2026-10-10)
+
+### 🩹 Fixes
+
+- **visual-review:** document the review handler as returning a promise ([#1896](https://github.com/graphty-org/graphty-monorepo/issues/1896))
+- **visual-review:** let tests wait for the tiles the server makes in advance ([#1896](https://github.com/graphty-org/graphty-monorepo/issues/1896))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.20 (2026-10-10)
 
 ### 🩹 Fixes

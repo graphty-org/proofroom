@@ -60,6 +60,22 @@ export const lfsObject = (remote, oid) => join(remote, "lfs/objects", oid.slice(
 export const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
 /**
+ * Waits until `check` returns something truthy, yielding to the event loop between checks. It has
+ * no limit of its own: the test's limit ends a wait for a condition that never comes.
+ * @param {() => unknown} check the condition, sync or async
+ * @returns {Promise<unknown>} what `check` returned
+ */
+export async function until(check) {
+    for (;;) {
+        const value = await check();
+        if (value) {
+            return value;
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+}
+
+/**
  * Writes a file, creating its directory.
  * @param {string} path the file
  * @param {string | Buffer} data its contents
