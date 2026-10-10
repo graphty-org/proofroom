@@ -162,6 +162,13 @@ async function openStory(number) {
     await expect.poll(() => page.locator(".itemline .number").textContent()).toBe(`#${number}`);
 }
 
+// Picks a project in the header and waits for its grid. Until the project loads, the grid on the
+// screen is the one before, and a click on it lands there (#1869).
+async function pickProject(project) {
+    await page.locator("#pick-project").selectOption(project);
+    await page.locator(`.gridbar[data-project="${project}"]`).waitFor();
+}
+
 const stageClass = () => page.locator("#stage").getAttribute("class");
 // The status row's message: the live line, the time spent beside it, and the alert.
 const status = () =>
@@ -2011,8 +2018,7 @@ describe("review page: moving on", () => {
             await expect.poll(status).toMatch(/^Excluded #/);
             await page.keyboard.press("Escape");
         }
-        await page.locator("#pick-project").selectOption("graphty-element");
-        await page.locator(".component").first().waitFor();
+        await pickProject("graphty-element");
         await page.locator("#review-undecided").click();
         await ready();
         await page.keyboard.press("a");
@@ -2031,8 +2037,7 @@ describe("review page: moving on", () => {
     it("suggests Finish only once every project of the target is decided, and says what is left where", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator(".component").first().waitFor();
-        await page.locator("#pick-project").selectOption("graphty-element");
-        await page.locator(".component").first().waitFor();
+        await pickProject("graphty-element");
         await page.locator("#review-undecided").click();
         await ready();
         await page.keyboard.press("a");
@@ -2053,8 +2058,8 @@ describe("review page: moving on", () => {
                 "graphty-element done; compact-mantine has 6 undecided stories.Next project: compact-mantine (6 undecided)",
             );
         await page.getByRole("button", { name: "Next project: compact-mantine (6 undecided)" }).click();
-        await expect.poll(() => page.locator("#pick-project").inputValue()).toBe("compact-mantine");
-        await page.locator(".component").first().waitFor();
+        await page.locator('.gridbar[data-project="compact-mantine"]').waitFor();
+        expect(await page.locator("#pick-project").inputValue()).toBe("compact-mantine");
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
         for (const n of [1, 5]) {
