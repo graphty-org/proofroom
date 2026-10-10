@@ -29,14 +29,14 @@ import {
     git,
     isolateGit,
     job,
+    keepTiles,
     makeRepo,
     onePr,
     pushCommit,
+    seedTiles,
     withMoved,
 } from "./helpers.mjs";
 import { approve, makeKey, passkeysJson, register } from "./passkey-vectors.mjs";
-
-beforeAll(isolateGit);
 
 const TOKEN = "t".repeat(43);
 
@@ -50,15 +50,30 @@ afterEach(async () => {
     app = null;
 });
 
+// The fixture's grid tiles, made once and put in every server's tmp directory (keepTiles).
+let tiles = null;
+beforeAll(async () => {
+    isolateGit();
+    const s = await start({ gh: onePr(), tiles: false });
+    tiles = await keepTiles({ ...s, token: TOKEN }, 123);
+    server.close();
+    await app.idle();
+    app = null;
+});
+
 /**
  * Starts the app on a random port.
- * @param {object} options passed to createApp; `repo` defaults to a fresh repository
+ * @param {object} [options] passed to createApp; `repo` defaults to a fresh repository
+ * @param {boolean} [options.tiles] false: without the fixture's grid tiles made already
  * @returns {Promise<object>} `api(method, path, body, headers)` plus the repository
  */
-async function start(options = {}) {
+async function start({ tiles: seed = true, ...options } = {}) {
     const r = options.repo ? options : makeRepo();
     const repo = options.repo ?? r.repo;
     const tmp = join(repo, "tmp/visual-review");
+    if (seed && tiles) {
+        seedTiles(tiles, tmp);
+    }
     const box = {};
     server = createServer((req, res) => box.app(req, res));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -1609,7 +1624,7 @@ describe("serve: what the page waits on", () => {
         expect([...small.data.slice(0, 4)]).toEqual([255, 0, 0, 255]);
         expect([...small.data.slice(399 * 4, 400 * 4)]).toEqual([0, 0, 255, 255]);
 
-        const s = await start({ gh: onePr() });
+        const s = await start({ gh: onePr(), tiles: false });
         await s.api("GET", "/api/prs");
         // Made as the captures land, before any tile asks: one per item to decide that has an image
         // (five in compact-mantine, the removed one's from its baseline, and one in graphty-element).
@@ -1633,7 +1648,7 @@ describe("serve: what the page waits on", () => {
     });
 
     it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
-        const s = await start({ gh: onePr() });
+        const s = await start({ gh: onePr(), tiles: false });
         await s.api("GET", "/api/prs");
         const spots = () => (existsSync(join(s.tmp, "spots")) ? readdirSync(join(s.tmp, "spots")).sort() : []);
         // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three tiles each.
