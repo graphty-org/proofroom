@@ -551,6 +551,11 @@ const LEGACY_CHILD =
  * @returns {Promise<ReturnType<typeof legacyApprovals>>} what legacyApprovals returns
  */
 export async function legacyApprovalsAsync(input) {
+    // legacyApprovals' own first answer, without starting a process for it: no key on the default
+    // branch, nothing to sign again. Most page loads of a repository without passkeys end here.
+    if (input.pr === null || !(await gitOk(input.repo, ["cat-file", "-e", `${input.base}:${PASSKEYS_FILE}`]))) {
+        return null;
+    }
     const out = await exec(process.execPath, ["-e", LEGACY_CHILD, import.meta.url, JSON.stringify(input)]);
     return JSON.parse(out);
 }

@@ -128,9 +128,12 @@ const remembering = (memory) => {
 // One repository for every journey, copied for each: making it costs more git processes than a
 // journey's reads. Its two directories hold one absolute path, the remote's in the clone's config.
 let template;
-beforeAll(() => {
+beforeAll(async () => {
     template = makeRepo();
     git(template.repo, "push", "-q", "origin", "feature:refs/heads/other");
+    // One journey before the tests, its result unchecked: the server code's first run, and the
+    // thumbnail processes it starts, cost the first test half a second the others do not pay.
+    await walk({ stopped: false }, 0);
 });
 function freshRepo() {
     const dir = mkdtempSync(join(tmpdir(), "vr-journey-"));

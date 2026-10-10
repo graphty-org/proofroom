@@ -264,8 +264,8 @@ describe("serve: pull requests", () => {
     });
 
     it("answers other requests while a git call of the list's refresh is held", async () => {
-        // A git that holds the default branch's passkeys.json read (legacyApprovals' first call)
-        // until the test releases it. Run on the server's own thread, as it once was, that read
+        // A git that holds the default branch's passkeys.json read (legacyApprovals' first call,
+        // or the check for the file before it) until the test releases it. Run on the server's own thread, as it once was, that read
         // blocked every request, and a git that stalled for seconds timed out the list (#1496).
         // On such a server the test cannot release it, so the hold ends by itself after 10 s and
         // the test fails on its timeout instead of hanging.
@@ -278,7 +278,7 @@ describe("serve: pull requests", () => {
             join(bin, "git"),
             [
                 "#!/bin/sh",
-                'case "$*" in "show "*":visual-review/passkeys.json")',
+                'case "$*" in "show "*":visual-review/passkeys.json" | *"cat-file -e "*":visual-review/passkeys.json")',
                 `  : > '${gate.held}'; i=0`,
                 `  while [ ! -e '${gate.release}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done ;;`,
                 "esac",
@@ -1558,7 +1558,11 @@ describe("serve: what the page waits on", () => {
     it("lists captures still downloading as downloading, and fills them in when they land", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
+        // The list waits a fifth of a second for the held download, not the default second: long
+        // enough for everything not held (the artifact sizes, a download already on disk), which
+        // is what it shows meanwhile.
         const s = await start({
+            patience: 200,
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
@@ -1683,7 +1687,11 @@ describe("serve: what the page waits on", () => {
     it("fills each project in as its own download lands, counting them", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
+        // The list waits a fifth of a second for the held download, not the default second: long
+        // enough for everything not held (the artifact sizes, a download already on disk), which
+        // is what it shows meanwhile.
         const s = await start({
+            patience: 200,
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
@@ -1824,7 +1832,11 @@ describe("serve: loading without waiting", () => {
     it("answers 202 for a project still downloading, with the bytes, until it lands", async () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
+        // The list waits a fifth of a second for the held download, not the default second: long
+        // enough for everything not held (the artifact sizes, a download already on disk), which
+        // is what it shows meanwhile.
         const s = await start({
+            patience: 200,
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
