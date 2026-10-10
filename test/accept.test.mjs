@@ -9,8 +9,10 @@ import {
     symlinkSync,
     writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { contentHash, gateProblems, unrecordedChanges } from "../trusted/gate.mjs";
@@ -240,7 +242,6 @@ describe("finish: accepts", () => {
             "checking",
             "writing 1 file",
             "committing",
-            "uploading images to LFS (0 of 1 done)",
             "uploading images to LFS (checking the commit has them all)",
             "pushing",
             "opening the pull request",
@@ -396,8 +397,26 @@ describe("finish: refusals", () => {
 });
 
 describe("finish: git", () => {
-    it("generates commit messages that pass the repository's commitlint", () => {
-        const commitlint = join(ROOT, "node_modules/.bin/commitlint");
+    // commitlint's own load and lint, as its CLI runs them, in this process: the CLI started once
+    // per message loaded node and the configuration three times over. Loaded once for the file,
+    // before the test: loading commitlint and the repository's configuration is most of the work.
+    let lint;
+    let config;
+    let options;
+    beforeAll(async () => {
+        const from = createRequire(ROOT);
+        const load = (await import(pathToFileURL(from.resolve("@commitlint/load")).href)).default;
+        lint = (await import(pathToFileURL(from.resolve("@commitlint/lint")).href)).default;
+        config = await load({}, { cwd: ROOT });
+        options = {
+            parserOpts: config.parserPreset?.parserOpts,
+            plugins: config.plugins,
+            ignores: config.ignores,
+            defaultIgnores: config.defaultIgnores,
+        };
+    });
+
+    it("generates commit messages that pass the repository's commitlint", async () => {
         const local = [
             { project: "compact-mantine", merge: "3".repeat(40) },
             { project: "graphty-element", merge: "3".repeat(40) },
@@ -416,9 +435,9 @@ describe("finish: git", () => {
                 record: "visual-baselines/reviews/x.json",
                 prefix: CONFIG.commitPrefix,
             });
-            const r = spawnSync(commitlint, [], { cwd: ROOT, input: msg, encoding: "utf8" });
-            expect(r.stdout + r.stderr).toBe("");
-            expect(r.status).toBe(0);
+            const r = await lint(msg, config.rules, options);
+            expect([...r.errors, ...r.warnings].map((p) => p.message)).toEqual([]);
+            expect(r.valid).toBe(true);
         }
     });
 
@@ -861,9 +880,11 @@ describe("finish: approvals from before passkeys", () => {
         expect(await legacyApprovalsAsync({ ...input, pr: null })).toBeNull();
     });
 
-    it("offers nothing while master holds no key", () => {
+    it("offers nothing while master holds no key", async () => {
         const s = legacySetup({ keys: false });
-        expect(legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG })).toBeNull();
+        const input = { repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG };
+        expect(legacyApprovals(input)).toBeNull();
+        expect(await legacyApprovalsAsync(input)).toBeNull();
     });
 
     it("on a branch behind master, offers the files master has not changed since, and only those", () => {

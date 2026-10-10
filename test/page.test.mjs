@@ -40,13 +40,24 @@ let server;
 let origin;
 let page;
 let dialogs;
+// Every URL the page requested (the page's own `performance` is Playwright's clock's).
+let requested;
 let confirmFinish = false;
+// The app open() started. Its tiles made in advance run on after the server closes: afterEach waits
+// for them, so their logs and file reads stay inside the test that started them.
+let openApp = null;
 
 beforeAll(async () => {
     isolateGit();
     // Headless Chromium can crash at start while reading system fonts without this.
     process.env.FC_FONTATIONS = "1";
     browser = await chromium.launch();
+    // One review opened and closed before the tests: the browser's first page and the server code's
+    // first run (its thumbnail processes started) cost the first test half a second the rest do not.
+    await open((r) => ({ gh: onePr()(r) }));
+    await page.locator(".component").first().waitFor();
+    await page.close();
+    server.close();
 });
 afterAll(() => browser?.close());
 
@@ -68,11 +79,11 @@ const twoPrs = (r, items) =>
     });
 
 // `host` localhost: WebAuthn needs a host name (an IP address is never a passkey's site).
-// `touch`: a touch screen (an iPad), where `pointer: coarse` matches. `clock`: the page's timers
-// and clocks are Playwright's, which a test can pause.
+// `touch`: a touch screen (an iPad), where `pointer: coarse` matches. The page's timers and clocks
+// are Playwright's, which a test can pause or jump (ready).
 async function open(
     options,
-    { viewport = { width: 1000, height: 800 }, review = true, host = "127.0.0.1", touch = false, clock = false } = {},
+    { viewport = { width: 1000, height: 800 }, review = true, host = "127.0.0.1", touch = false } = {},
 ) {
     const r = makeRepo();
     server = createServer();
@@ -88,8 +99,11 @@ async function open(
         ...options(r),
     });
     server.on("request", app);
+    openApp = app;
     page = await interceptedPage(browser, { viewport, hasTouch: touch, isMobile: touch });
     dialogs = [];
+    requested = [];
+    page.on("request", (q) => requested.push(q.url()));
     // The page asks in its own dialog (ask in review.js). Accept all, Undo and Exclude are
     // confirmed; Finish is refused unless a test sets confirmFinish.
     await page.exposeFunction("asked", (message) => {
@@ -113,8 +127,11 @@ async function open(
         dialogs.push(`browser dialog: ${d.message()}`);
         return d.dismiss();
     });
-    if (clock) {
-        await page.clock.install();
+    await page.clock.install();
+    if (review) {
+        // The list loaded before the page asks for it: the page's first ask answers at once,
+        // instead of a quarter second later on its second (Review waits for the list either way).
+        await fetch(`${origin}/api/prs`, { headers: { "x-review-token": TOKEN } });
     }
     await page.goto(`${origin}/#token=${TOKEN}`);
     if (review) {
@@ -127,7 +144,20 @@ afterEach(async () => {
     confirmFinish = false;
     await page?.close();
     server?.close();
+    await openApp?.idle();
+    openApp = null;
 });
+
+// The page's next flip of Flash, Spotlight's flash or Blink (FLASH_MS, a third of a second), now:
+// the page's clock jumps to it instead of the test waiting for it.
+const nextFlash = () => page.clock.fastForward(333);
+
+// Types `text` into Find story, and jumps the page's clock over the 200 ms the field waits for
+// more typing before it narrows the grid.
+async function narrow(text) {
+    await page.locator("#find").fill(text);
+    await page.clock.fastForward(200);
+}
 
 // Item numbers, fixed for the project (the All order): 1 menu--open (failed), 2
 // button--primary.dark (changed, area [160, 80, 40, 40]), 3 slider--sizes (changed), 4
@@ -159,8 +189,19 @@ const box = (part = null) =>
     }, part);
 // The targets screen shows the whole list: no refresh running, every capture downloaded.
 const listSettled = () => page.locator("#listline[data-settled]").waitFor();
-// The item's images have been on screen long enough for a decision to count.
-const ready = () => page.locator("#stage[data-ready]").waitFor();
+// The page's GUARD_MS: a decision this soon after an item's images appeared is ignored.
+const GUARD_MS = 250;
+// The item's images have been on screen long enough for a decision to count. Once they show, the
+// page's clock jumps the guard instead of the test waiting it out; a jump made before the page
+// noticed them only falls back to waiting.
+async function ready() {
+    const stage = page.locator("#stage[data-ready]");
+    await page.locator("#stage[data-ready], #stage .sheet").first().waitFor();
+    if ((await stage.count()) === 0) {
+        await page.clock.fastForward(GUARD_MS);
+    }
+    await stage.waitFor();
+}
 const progress = () => page.locator("#progress").textContent();
 const visibleTiles = () => page.locator(".tile-box:not([hidden]) .tile").count();
 // The grid's More filters menu: a status or a decision.
@@ -285,13 +326,14 @@ describe("review page: a component's Accept in a long grid, on an iPad", () => {
     });
 });
 
-// Thirty components of three removed and three new stories each.
+// Twenty-one components of three removed and three new stories each: comp20, the one the tests
+// accept, is far enough down the grid to scroll to on any iPad.
 const MIXED = [];
 {
     const items = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
     const card = items.find((i) => i.file === "card--legacy.png");
     const badge = items.find((i) => i.file === "badge--default.light.png");
-    for (let c = 0; c < 30; c++) {
+    for (let c = 0; c < 21; c++) {
         for (let m = 0; m < 6; m++) {
             const id = `comp${String(c).padStart(2, "0")}--s${m}`;
             MIXED.push({ ...(m < 3 ? card : badge), id, mode: null, file: `${id}.png` });
@@ -310,7 +352,7 @@ describe("review page: Accept takes what the filter shows, on an iPad", () => {
             await open((r) => ({ gh: withMoved(r, MIXED) }), { viewport, touch: true });
             await show("removed");
             const bar = page.locator("#accept-all");
-            await expect.poll(() => bar.textContent()).toBe("Accept 91 removed");
+            await expect.poll(() => bar.textContent()).toBe("Accept 64 removed");
             const comp = page.locator('.component[data-component="comp20"]');
             expect(await comp.locator("h3").textContent()).toBe("comp20Accept 3");
             await comp.locator("h3 .accept").click();
@@ -320,29 +362,29 @@ describe("review page: Accept takes what the filter shows, on an iPad", () => {
                 Array(3).fill("Accepted (not opened)"),
             );
             expect(await comp.locator("h3").textContent()).toBe("comp20Undo 3");
-            expect(await bar.textContent()).toBe("Accept 88 removed");
-            expect(await progress()).toBe("3 of 186 decided");
+            expect(await bar.textContent()).toBe("Accept 61 removed");
+            expect(await progress()).toBe("3 of 132 decided");
             // Find story narrows both Accepts as it narrows the grid.
-            await page.locator("#find").fill("comp05--s0");
+            await narrow("comp05--s0");
             await expect.poll(() => bar.textContent()).toBe("Accept 1 matching");
             expect(await page.locator('.component[data-component="comp05"] h3').textContent()).toBe("comp05Accept 1");
-            await page.locator("#find").fill("");
-            await expect.poll(() => bar.textContent()).toBe("Accept 88 removed");
+            await narrow("");
+            await expect.poll(() => bar.textContent()).toBe("Accept 61 removed");
             // Find story's short grid scrolled it to the top: down to comp20 again.
             await comp.evaluate((c) => c.scrollIntoView());
             const before = await scroll();
             expect(before).toBeGreaterThan(0);
             await bar.click();
-            await expect.poll(progress).toBe("91 of 186 decided");
+            await expect.poll(progress).toBe("64 of 132 decided");
             expect(dialogs).toEqual([
-                "Accept 88 removed items of compact-mantine without opening them? This includes 88 removals: " +
+                "Accept 61 removed items of compact-mantine without opening them? This includes 61 removals: " +
                     "accepting deletes their baselines.",
             ]);
             expect(await scroll()).toBe(before);
             expect(await bar.textContent()).toBe("Accept 0 removed");
-            // Nothing new was taken: the 90 new stories and the fixture's three are still undecided.
+            // Nothing new was taken: the 63 new stories and the fixture's three are still undecided.
             await page.getByRole("button", { name: /^Needs a decision/ }).click();
-            expect(await bar.textContent()).toBe("Accept all undecided (93)");
+            expect(await bar.textContent()).toBe("Accept all undecided (66)");
         });
     }
 });
@@ -439,6 +481,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
                 if (shown) {
                     seen.add(shown);
                 }
+                await nextFlash();
                 return [...seen].sort().join("|");
             })
             .toBe("Flash: baseline|Flash: new");
@@ -835,11 +878,10 @@ describe("review page: a pull request", () => {
     it("loads each tile's thumbnail from the server, not the full image", async () => {
         const img = page.locator('.component[data-component="button"] .tile img');
         await expect.poll(() => img.getAttribute("src")).toMatch(/^blob:/);
-        const urls = await page.evaluate(() => globalThis.performance.getEntriesByType("resource").map((e) => e.name));
-        expect(urls.some((u) => u.includes("/api/thumb/123/compact-mantine/capture/button--primary.dark.png"))).toBe(
-            true,
-        );
-        expect(urls.some((u) => u.includes("/api/img/"))).toBe(false);
+        expect(
+            requested.some((u) => u.includes("/api/thumb/123/compact-mantine/capture/button--primary.dark.png")),
+        ).toBe(true);
+        expect(requested.some((u) => u.includes("/api/img/"))).toBe(false);
     });
 
     // Where each pane and each image is on the screen, and whether anything scrolls.
@@ -1002,6 +1044,7 @@ describe("review page: a pull request", () => {
         await expect
             .poll(async () => {
                 seen.add(await flashing.evaluateAll((imgs) => imgs.findIndex((i) => i.style.visibility !== "hidden")));
+                await nextFlash();
                 return seen.size;
             })
             .toBe(2);
@@ -1057,6 +1100,7 @@ describe("review page: a pull request", () => {
         await expect
             .poll(async () => {
                 seen.add(await shown());
+                await nextFlash();
                 return [...seen].sort();
             })
             .toEqual(["0 Spotlight: baseline", "1 Spotlight: new"]);
@@ -1142,6 +1186,7 @@ describe("review page: a pull request", () => {
                 if (shown.length === 2) {
                     seen.add(shown.join());
                 }
+                await nextFlash();
                 return [...seen].sort().join("|");
             })
             .toBe("hidden,hidden|visible,visible");
@@ -1305,9 +1350,9 @@ describe("review page: a pull request", () => {
     });
 
     it("narrows by text and opens a number or a story id", async () => {
-        await page.locator("#find").fill("slider");
+        await narrow("slider");
         await expect.poll(visibleTiles).toBe(1);
-        await page.locator("#find").fill("");
+        await narrow("");
         await expect.poll(visibleTiles).toBe(5);
         await openStory(5);
         expect(await page.locator("h2").textContent()).toContain("tooltip--hover");
@@ -1344,7 +1389,7 @@ describe("review page: a pull request", () => {
     });
 
     it("Find story narrows Accept to the stories it shows, and the question says so", async () => {
-        await page.locator("#find").fill("slider");
+        await narrow("slider");
         const bar = page.locator("#accept-all");
         await expect.poll(() => bar.textContent()).toBe("Accept 1 matching");
         await bar.click();
@@ -1608,7 +1653,7 @@ describe("review page: the decision bar", () => {
     const stopClock = () => page.clock.pauseAt(Date.now() + 1000);
 
     it("keeps focus on a decision button it was on: Tab to Accept, Space twice", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { clock: true });
+        await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -1627,7 +1672,7 @@ describe("review page: the decision bar", () => {
     });
 
     it("ignores the second tap of a double tap, which lands on the next item's Accept", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { clock: true });
+        await open((r) => ({ gh: onePr()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -2161,7 +2206,7 @@ describe("review page: links and the frozen pass", () => {
         expect(Object.fromEntries(hash())).toMatchObject({ token: TOKEN, target: "123", filter: "undecided" });
         // The grid, with its filters.
         await page.getByRole("button", { name: /^All/ }).click();
-        await page.locator("#find").fill("slider");
+        await narrow("slider");
         await expect.poll(() => hash().get("q")).toBe("slider");
         const grid = page.url();
         await visit(grid);
@@ -2169,7 +2214,7 @@ describe("review page: links and the frozen pass", () => {
         expect(await page.getByRole("button", { name: /^All/ }).getAttribute("aria-pressed")).toBe("true");
         expect(await page.locator("#find").inputValue()).toBe("slider");
         // A story, with its pass, view and zoom.
-        await page.locator("#find").fill("");
+        await narrow("");
         await expect.poll(() => hash().has("q")).toBe(false);
         await openStory(2);
         await page.keyboard.press("s");
