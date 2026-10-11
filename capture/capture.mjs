@@ -461,11 +461,18 @@ export async function screenshotWholePage(page) {
     if (height <= MAX_SHOT_HEIGHT) {
         return page.screenshot(options);
     }
+    // Chromium's first screenshot beyond the viewport lays text out again, and line boxes of
+    // 'normal' height can come out a pixel shorter, so the page can shrink after the first slice.
+    // Playwright measures the page again before every screenshot and trims the clip to it, so
+    // later slices would come back short (#1976). A hidden box as large as the first measure,
+    // added only while each slice is taken, keeps the page that size: the slices then draw what
+    // one screenshot of the measured size would, with the canvas below a shrunk page.
+    const style = `html::after { content: ""; position: absolute; top: 0; left: 0; visibility: hidden; width: ${size.width}px; height: ${size.height}px; }`;
     const out = new PNG({ width, height });
     for (let top = 0; top < height; top += MAX_SHOT_HEIGHT) {
         const rows = Math.min(MAX_SHOT_HEIGHT, height - top);
         const clip = { x: 0, y: top / SCALE, width: size.width, height: rows / SCALE };
-        const slice = PNG.sync.read(await page.screenshot({ ...options, clip }));
+        const slice = PNG.sync.read(await page.screenshot({ ...options, style, clip }));
         if (slice.width !== width || slice.height !== rows) {
             throw new Error(
                 `screenshot slice at ${top} px is ${slice.width} x ${slice.height}, not ${width} x ${rows}`,
