@@ -302,20 +302,29 @@ describe("capture", () => {
 
 describe("screenshotWholePage", () => {
     // Bands 100 CSS px tall, each its own red value, so a row of the image names the band it shows.
+    // The page is 100 CSS px wide: the PNGs stay small, so the test pays for the slicing, not for
+    // encoding megapixels.
     const bands = (n) =>
         `<body style="margin:0">${Array.from({ length: n }, (_, i) => `<div style="height:100px;background:rgb(${i * 5},0,0)"></div>`).join("")}</body>`;
     const redAt = (png, y) => png.data[(y * png.width + 10) * 4];
 
+    let browser;
+    beforeAll(async () => {
+        browser = await chromium.launch({ args: CHROMIUM_ARGS });
+    });
+    afterAll(async () => {
+        await browser?.close();
+    });
+
     async function withPage(html, use) {
-        const browser = await chromium.launch({ args: CHROMIUM_ARGS });
+        const page = await browser.newPage({ viewport: { width: 100, height: 900 }, deviceScaleFactor: 2 });
         try {
-            const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 2 });
             await page.setContent(html);
             // As capture does: a screenshot before the page's first frame fails in Chromium.
             await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
             return await use(page);
         } finally {
-            await browser.close();
+            await page.close();
         }
     }
 
@@ -329,13 +338,13 @@ describe("screenshotWholePage", () => {
     });
 
     it("draws the bottom of a page taller than the limit, not a copy of its top", async () => {
-        // 5,000 CSS px is 10,000 device px: two slices, the second 1,808 px.
-        await withPage(bands(50), async (page) => {
+        // 4,200 CSS px is 8,400 device px: two slices, the second 208 px.
+        await withPage(bands(42), async (page) => {
             const png = PNG.sync.read(await screenshotWholePage(page));
-            expect([png.width, png.height]).toEqual([2400, 10000]);
+            expect([png.width, png.height]).toEqual([200, 8400]);
             expect(MAX_SHOT_HEIGHT).toBe(8192);
-            // Every band, both sides of the seam included, is where the page has it.
-            for (const y of [0, 199, 200, 8191, 8192, 8199, 8200, 9999]) {
+            // Every band, both sides of the seam and the last row included, is where the page has it.
+            for (const y of [0, 199, 200, 8191, 8192, 8199, 8200, 8399]) {
                 expect(redAt(png, y), `row ${y}`).toBe(Math.floor(y / 200) * 5);
             }
         });
