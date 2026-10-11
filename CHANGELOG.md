@@ -1,3 +1,17 @@
+## 0.2.22 (2026-10-11)
+
+### 🚀 Features
+
+- **tools:** fail a CI test that uses more than 25% of its time limit ([#1602](https://github.com/graphty-org/graphty-monorepo/issues/1602))
+
+### 🩹 Fixes
+
+- **visual-review:** capture stories taller than 8,192 device px in stitched slices ([#1958](https://github.com/graphty-org/graphty-monorepo/issues/1958))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.21 (2026-10-10)
 
 ### 🩹 Fixes
