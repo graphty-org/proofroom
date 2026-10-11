@@ -473,7 +473,9 @@ export async function screenshotWholePage(page) {
         }
         slice.data.copy(out.data, top * width * 4);
     }
-    return PNG.sync.write(out);
+    // Paeth on every row: the same size as pngjs's default (try all five filters per row) on
+    // screenshots, at a third of the time.
+    return PNG.sync.write(out, { filterType: 4 });
 }
 
 /**
