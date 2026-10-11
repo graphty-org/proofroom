@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { chromium } from "playwright";
 
-/* global requestAnimationFrame -- read only inside the page */
+/* global document, requestAnimationFrame -- read only inside the page */
 
 import { capture, CHROMIUM_ARGS, hasEmojiFont, MAX_SHOT_HEIGHT, screenshotWholePage } from "../capture/capture.mjs";
 
@@ -350,19 +350,35 @@ describe("screenshotWholePage", () => {
         });
     });
 
-    it("keeps the size it measured when the first slice shrinks the page", async () => {
-        // Chromium's first screenshot beyond the viewport lays text out again with line boxes of
-        // 'normal' height a pixel shorter: this label is 21 CSS px before it and 20 after, so the
-        // page is 4,221 CSS px when measured and 4,220 from the second slice on (#1976).
+    it("is the settled page's height when the first capture shrinks a page within the limit", async () => {
+        // Chromium's first screenshot beyond the viewport lays text out again: 11px monospace
+        // with line-height: normal is 21 CSS px a row before it and 20 after, so these 150 rows
+        // are 3,160 CSS px on load and 3,010 once captured (#1982). The image is the settled page,
+        // ending on its red block, with no background below it.
+        const rows = Array.from(
+            { length: 150 },
+            (_, i) => `<div style="padding:4px 6px;font:11px monospace">${i}</div>`,
+        );
+        const html = `<body style="margin:0">${rows.join("")}<div style="height:10px;background:rgb(200,0,0)"></div></body>`;
+        await withPage(html, async (page) => {
+            const png = PNG.sync.read(await screenshotWholePage(page));
+            const height = await page.evaluate(() => document.documentElement.scrollHeight);
+            expect(height).toBe(150 * 20 + 10);
+            expect([png.width, png.height]).toEqual([200, height * 2]);
+            expect(redAt(png, png.height - 1)).toBe(200);
+        });
+    });
+
+    it("is the settled page's height when the first capture shrinks a page taller than the limit", async () => {
+        // The label is 21 CSS px before the first capture beyond the viewport and 20 after, so the
+        // page is 4,221 CSS px on load and 4,220 once captured (#1976, #1982).
         const label = `<div style="padding:4px 6px;font:600 11px ui-monospace, monospace">ak</div>`;
         await withPage(`<!doctype html>${bands(42).replace('<body style="margin:0">', `$&${label}`)}`, async (page) => {
             const png = PNG.sync.read(await screenshotWholePage(page));
-            expect([png.width, png.height]).toEqual([200, 8442]);
-            // As one screenshot of the measured size draws it: the label 20 px tall, the bands
-            // below it, and the white canvas in the last CSS px.
+            expect([png.width, png.height]).toEqual([200, 8440]);
+            // The label 20 px tall, the bands below it, and the last band down to the last row.
             expect(redAt(png, 40)).toBe(0);
             expect(redAt(png, 8439)).toBe(41 * 5);
-            expect(redAt(png, 8441)).toBe(255);
         });
     });
 });

@@ -441,6 +441,12 @@ export const MAX_SHOT_HEIGHT = 8192;
  */
 export async function screenshotWholePage(page) {
     const options = /** @type {const} */ ({ animations: "disabled", caret: "hide", fullPage: true });
+    // Chromium's first screenshot beyond the viewport lays text out again, and line boxes of
+    // 'normal' height can come out a pixel shorter for good (11px monospace: 21 CSS px a line
+    // before, 20 after), so a page measured before it is taller than the page it draws: the image
+    // gets background rows below the story (#1982), and later slices of a tall page come back
+    // short (#1976). One throwaway capture settles the layout; everything below measures after it.
+    await page.screenshot({ ...options, clip: { x: 0, y: 0, width: 1, height: 1 } });
     // The page's size as Playwright measures it for a full-page screenshot.
     const size = await page.evaluate(() => {
         const [b, d] = [document.body, document.documentElement];
@@ -461,18 +467,11 @@ export async function screenshotWholePage(page) {
     if (height <= MAX_SHOT_HEIGHT) {
         return page.screenshot(options);
     }
-    // Chromium's first screenshot beyond the viewport lays text out again, and line boxes of
-    // 'normal' height can come out a pixel shorter, so the page can shrink after the first slice.
-    // Playwright measures the page again before every screenshot and trims the clip to it, so
-    // later slices would come back short (#1976). A hidden box as large as the first measure,
-    // added only while each slice is taken, keeps the page that size: the slices then draw what
-    // one screenshot of the measured size would, with the canvas below a shrunk page.
-    const style = `html::after { content: ""; position: absolute; top: 0; left: 0; visibility: hidden; width: ${size.width}px; height: ${size.height}px; }`;
     const out = new PNG({ width, height });
     for (let top = 0; top < height; top += MAX_SHOT_HEIGHT) {
         const rows = Math.min(MAX_SHOT_HEIGHT, height - top);
         const clip = { x: 0, y: top / SCALE, width: size.width, height: rows / SCALE };
-        const slice = PNG.sync.read(await page.screenshot({ ...options, style, clip }));
+        const slice = PNG.sync.read(await page.screenshot({ ...options, clip }));
         if (slice.width !== width || slice.height !== rows) {
             throw new Error(
                 `screenshot slice at ${top} px is ${slice.width} x ${slice.height}, not ${width} x ${rows}`,
