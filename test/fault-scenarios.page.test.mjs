@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { chromium } from "playwright";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { withRetries } from "../trusted/lib/github.mjs";
 import { startApp, world } from "./faults.mjs";
@@ -21,19 +21,12 @@ const BUTTON = "button--primary.dark.png";
 const BUTTON_BASELINE = join(FIXTURE, "compact-mantine/baselines", BUTTON);
 const BUTTON_BASELINE_HASH = CM_ITEMS.find((i) => i.file === BUTTON).baseline;
 
-// Each scenario starts a server on a new repository, opens a Chromium tab and walks the page to
-// the screen it tests: about 0.5 to 1 s unloaded and 1.5 s on a CI runner before the scenario's
-// own steps, some of which wait on purpose (3.5 s for a late render, 60 items for the image
-// cache). Measured on one CPU shared with a busy loop, the scenarios take 3 to 6 s; Vitest's
-// default 5 s is sized for unit tests.
-// eslint-disable-next-line local/no-test-timing -- per-test timeout, to go once the slow step is found, tracked in #1636
-vi.setConfig({ testTimeout: 20000 });
-
 let browser;
 let s;
 let pages = [];
 let page;
 let dialogs;
+const inFlight = new Map();
 
 beforeAll(async () => {
     isolateGit();
@@ -59,6 +52,20 @@ afterEach(async () => {
 async function tab(hash = "") {
     const p = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
     pages.push(p);
+    // Every write the tab sends (a decision, an Undo, a mark), counted until it is answered.
+    const writes = { open: 0, idle: [] };
+    inFlight.set(p, writes);
+    const isWrite = (req) => req.method() !== "GET";
+    p.on("request", (req) => {
+        writes.open += isWrite(req) ? 1 : 0;
+    });
+    const answered = (req) => {
+        if (isWrite(req) && --writes.open === 0) {
+            writes.idle.splice(0).forEach((resolve) => resolve());
+        }
+    };
+    p.on("requestfinished", answered);
+    p.on("requestfailed", answered);
     await p.exposeFunction("asked", (message) => {
         dialogs.push(message);
         return !message.startsWith("Finish");
@@ -120,8 +127,19 @@ const ready = (p = page) => p.locator("#stage[data-ready]").waitFor();
 const decisions = async (project = "compact-mantine", id = "123") =>
     (await s.api("GET", `/api/pr/${id}/${project}`)).body.decisions;
 const boxCount = () => page.locator("#box-count").textContent();
-// eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Waits until the tab has handled every input already sent to it, and the server has answered
+ * every write the tab sent: what a press that wrongly decided would have needed to land.
+ * @param {import("playwright").Page} [p] the tab
+ */
+async function settled(p = page) {
+    // A press's handler, and the write and the question it starts, run before the tab's next task.
+    await p.evaluate(() => new Promise((resolve) => globalThis.setTimeout(resolve, 0)));
+    const writes = inFlight.get(p);
+    if (writes.open > 0) {
+        await new Promise((resolve) => writes.idle.push(resolve));
+    }
+}
 
 /**
  * Run 1001 on `head`, whose capture of the button is its baseline's bytes: no changed box.
@@ -284,11 +302,10 @@ describe("review page: decisions", () => {
         const box = await page.locator("#accept").boundingBox();
         const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
         await page.mouse.click(x, y);
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await sleep(150);
+        // The second click lands as the next item shows, on its Accept.
+        await page.locator("#position", { hasText: /^3 of / }).waitFor();
         await page.mouse.click(x, y);
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await sleep(500);
+        await settled();
         expect(await decisions()).not.toHaveProperty("slider--sizes.png");
     });
 
@@ -303,8 +320,7 @@ describe("review page: decisions", () => {
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
         // The key is still held: the browser repeats it.
         await page.keyboard.down("a");
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await sleep(500);
+        await settled();
         await page.keyboard.up("a");
         expect(Object.keys(await decisions())).toEqual([BUTTON]);
     });
@@ -325,8 +341,7 @@ describe("review page: decisions", () => {
         await expect.poll(async () => Object.keys(await decisions()).length).toBe(0);
         await other.locator(`.tile[data-file="${BUTTON}"]`).click();
         await other.locator("#position").waitFor();
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await sleep(300);
+        await settled(other);
         expect(await decisions()).toEqual({});
     });
 
@@ -350,8 +365,7 @@ describe("review page: decisions", () => {
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^3 of /);
         await page.keyboard.type("too tall");
         await page.keyboard.press("Enter");
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await sleep(300);
+        await settled();
         expect(dialogs.filter((d) => d.startsWith("Exclude"))).toEqual([]);
         expect(await decisions()).toEqual({});
     });
@@ -377,19 +391,42 @@ describe("review page: rendering and routing", () => {
             items: CM_ITEMS.map((i) => (i.file === BUTTON ? { ...i, threshold: 1 } : i)),
         };
         await open(r, w);
-        await page.route("**/slider--sizes.png", async (route) => {
-            await sleep(1000);
+        // Item 3's images are held until the page has gone back to item 2.
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await page.route("**/api/img/**/slider--sizes.png", async (route) => {
+            await held;
             return route.continue().catch(() => {});
         });
         await review();
+        // With Focus on (O), showing item 2 works out item 3's diff ahead, for its focus point: the
+        // diff a late render of item 3 waits on is computed while item 2 shows.
+        await openStory(1);
+        await page.keyboard.press("o");
+        await page.keyboard.press("Escape");
         await openStory(2);
         await expect.poll(boxCount).toBe("No changed area at this threshold");
         await page.keyboard.press("k");
         await page.keyboard.press("j");
         await expect.poll(() => page.locator("#position").textContent()).toMatch(/^2 of /);
-        // Item 3's two images arrive one after the other, a second each.
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await sleep(3500);
+        await page
+            .locator("#box-count", { hasText: "No changed area at this threshold" })
+            .waitFor({ state: "attached" });
+        // The page reads an image's pixels only to diff it: once both of item 3's are read, its
+        // diff is done, and a late render waiting on it goes on before the page's next task.
+        await page.evaluate(() => {
+            const proto = globalThis.OffscreenCanvasRenderingContext2D.prototype;
+            const read = proto.getImageData;
+            globalThis.pixelReads = 0;
+            proto.getImageData = function (...args) {
+                globalThis.pixelReads++;
+                return read.apply(this, args);
+            };
+        });
+        release();
+        await page.waitForFunction(() => globalThis.pixelReads >= 2);
+        await page.evaluate(() => new Promise((resolve) => globalThis.setTimeout(resolve, 0)));
+        expect(await page.locator("#position").textContent()).toMatch(/^2 of /);
         expect(await boxCount()).toBe("No changed area at this threshold");
     });
 
@@ -408,9 +445,12 @@ describe("review page: rendering and routing", () => {
         // the superseded route has had its answer.
         let asked = 0;
         let answered = 0;
+        let pressed;
+        const pressesDone = new Promise((resolve) => (pressed = resolve));
         await page.route("**/api/prs?*", async (route) => {
             asked++;
-            await sleep(700);
+            // Answered only once Forward has been pressed: the route is superseded by then.
+            await pressesDone;
             const decided = await s.api("POST", "/api/decide", {
                 id: "123",
                 project: "compact-mantine",
@@ -424,11 +464,18 @@ describe("review page: rendering and routing", () => {
         });
         // Back twice and Forward once, without waiting for any to land: story -> grid -> targets,
         // whose route waits, -> grid again before that wait ends.
-        await page.evaluate(() => {
-            globalThis.history.back();
-            setTimeout(() => globalThis.history.back(), 50);
-            setTimeout(() => globalThis.history.forward(), 150);
-        });
+        await page.evaluate(
+            () =>
+                new Promise((resolve) => {
+                    globalThis.history.back();
+                    setTimeout(() => globalThis.history.back(), 50);
+                    setTimeout(() => {
+                        globalThis.history.forward();
+                        resolve();
+                    }, 150);
+                }),
+        );
+        pressed();
         // The grid is shown and the targets route has its answer; a superseded route that went on
         // would now draw the targets or push an entry, within a moment of its answer. The wait is
         // counted from the answer, not from the presses, so a slow machine waits longer instead of
@@ -438,8 +485,10 @@ describe("review page: rendering and routing", () => {
                 timeout: 8000,
             })
             .toBe(true);
-        // eslint-disable-next-line local/no-test-timing -- fixed sleep, to become a wait on the condition it stands in for, tracked in #1636
-        await sleep(500);
+        // The superseded route has read its answer and handled it.
+        await page.evaluate(
+            () => new Promise((resolve) => globalThis.requestAnimationFrame(() => globalThis.setTimeout(resolve, 0))),
+        );
         const after = await page.evaluate(() => ({
             length: globalThis.history.length,
             hash: globalThis.location.hash,

@@ -6,6 +6,11 @@ export default defineConfig({
         reporters: ["default", ...ciJunitReporter()],
         environment: "node",
         include: ["test/**/*.test.mjs"],
+        // The suite's own limit, as the other packages' browser suites have: a hang detector, not a
+        // measure of speed. No test sets its own. Tests here start git, gh and Chromium work and
+        // wait on its events, so their time follows the machine's load.
+        testTimeout: 60_000,
+        hookTimeout: 60_000,
         // expect.poll looks again every 10 ms, not 50: most of the page tests' waits are polls, and
         // each one that is already true on its second look no longer costs 50 ms.
         expect: { poll: { interval: 10 } },
