@@ -446,7 +446,11 @@ export async function screenshotWholePage(page) {
     // before, 20 after), so a page measured before it is taller than the page it draws: the image
     // gets background rows below the story (#1982), and later slices of a tall page come back
     // short (#1976). One throwaway capture settles the layout; everything below measures after it.
+    // A full-page capture also resizes the page while it runs, and a story that redraws on resize
+    // (Cytoscape's canvases) draws again in the next frames: wait for them, or the real capture
+    // catches that redraw half done and two captures of the story differ.
     await page.screenshot({ ...options, clip: { x: 0, y: 0, width: 1, height: 1 } });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     // The page's size as Playwright measures it for a full-page screenshot.
     const size = await page.evaluate(() => {
         const [b, d] = [document.body, document.documentElement];
