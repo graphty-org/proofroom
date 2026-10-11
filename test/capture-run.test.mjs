@@ -11,7 +11,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { chromium } from "playwright";
 
-import { capture, CHROMIUM_ARGS, hasEmojiFont } from "../capture/capture.mjs";
+/* global requestAnimationFrame -- read only inside the page */
+
+import { capture, CHROMIUM_ARGS, hasEmojiFont, MAX_SHOT_HEIGHT, screenshotWholePage } from "../capture/capture.mjs";
 
 const PARAMS = {
     "demo--plain": {},
@@ -295,5 +297,47 @@ describe("capture", () => {
                 log: () => {},
             }),
         ).rejects.toThrow(/demo--plain.png: baseline is an LFS pointer; run git lfs pull/);
+    });
+});
+
+describe("screenshotWholePage", () => {
+    // Bands 100 CSS px tall, each its own red value, so a row of the image names the band it shows.
+    const bands = (n) =>
+        `<body style="margin:0">${Array.from({ length: n }, (_, i) => `<div style="height:100px;background:rgb(${i * 5},0,0)"></div>`).join("")}</body>`;
+    const redAt = (png, y) => png.data[(y * png.width + 10) * 4];
+
+    async function withPage(html, use) {
+        const browser = await chromium.launch({ args: CHROMIUM_ARGS });
+        try {
+            const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 2 });
+            await page.setContent(html);
+            // As capture does: a screenshot before the page's first frame fails in Chromium.
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+            return await use(page);
+        } finally {
+            await browser.close();
+        }
+    }
+
+    it("is Playwright's own full-page screenshot, byte for byte, within the limit", async () => {
+        await withPage(bands(40), async (page) => {
+            const own = await page.screenshot({ animations: "disabled", caret: "hide", fullPage: true });
+            const ours = await screenshotWholePage(page);
+            expect(ours.readUInt32BE(20)).toBe(8000);
+            expect(ours.equals(own)).toBe(true);
+        });
+    });
+
+    it("draws the bottom of a page taller than the limit, not a copy of its top", async () => {
+        // 5,000 CSS px is 10,000 device px: two slices, the second 1,808 px.
+        await withPage(bands(50), async (page) => {
+            const png = PNG.sync.read(await screenshotWholePage(page));
+            expect([png.width, png.height]).toEqual([2400, 10000]);
+            expect(MAX_SHOT_HEIGHT).toBe(8192);
+            // Every band, both sides of the seam included, is where the page has it.
+            for (const y of [0, 199, 200, 8191, 8192, 8199, 8200, 9999]) {
+                expect(redAt(png, y), `row ${y}`).toBe(Math.floor(y / 200) * 5);
+            }
+        });
     });
 });
