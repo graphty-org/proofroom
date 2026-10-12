@@ -3801,19 +3801,96 @@ function move(step) {
     say(`Now #${numberOf(item)}, ${at + 1} of ${count}: ${itemName(item)}, ${statusLabel(item.status)}.`);
 }
 
-// Accept, Reject, Exclude and (with null) Undo of the item on screen. Every press either decides
-// or says in the status row why it did not.
-// `press` is the click or key press that asked for it.
-async function decide(decision, press = null) {
-    // The second click (or tap) of a double click belongs to its first: when the first was on
-    // another item, it is dropped, however late the page gets to it.
+// The second click (or tap) of a double click belongs to its first: when the first was on another
+// item, it is dropped, however late the page gets to it. Says so and returns true.
+function doubleClickTail(press) {
     const pressed = state.ended ? null : passItems()[state.index]?.file;
     if (press?.detail > 1 && pressedOn !== pressed) {
         say("Ignored: the second click of a double click meant for the item before.");
-        return;
+        return true;
     }
     if (press?.detail === 1) {
         pressedOn = pressed;
+    }
+    return false;
+}
+
+// Why `decision` cannot be taken on `item` now, or null when it can.
+function refusal(decision, item, press) {
+    const before = decisionOf(item);
+    const firm = firmDecision(item);
+    if (decision === null) {
+        if (!firm) {
+            return "Nothing to undo.";
+        }
+        return before.posted ? postedText(before) : null;
+    }
+    // No press reverses a decision: changing one is an explicit Undo first.
+    if (before?.posted) {
+        return postedText(before);
+    }
+    if (firm || (before && decision === "accept")) {
+        return `Already ${DONE[before.decision]}. Undo it to change it.`;
+    }
+    if (onlyExclude(item) && decision !== "exclude") {
+        return item.status === "unstable" ? UNSTABLE : FAILED;
+    }
+    if (!state.data.acceptable && decision !== "reject") {
+        return notSeeded();
+    }
+    if (decision === "accept" && stageShown !== item.file) {
+        return "Loading images: Accept waits for them.";
+    }
+    if ((press?.timeStamp ?? performance.now()) - appearedAt < GUARD_MS) {
+        return "Ignored: this image appeared less than a quarter second ago.";
+    }
+    return null;
+}
+
+// Reject's and Exclude's reason, and Exclude's confirmation: the reason (null for Accept), or
+// undefined when cancelled, having said so.
+async function reasonFor(decision, item, n) {
+    if (decision !== "reject" && decision !== "exclude") {
+        return null;
+    }
+    const reason = await askReason(item, decision);
+    if (reason === null) {
+        say(`${decision === "reject" ? "Reject" : "Exclude"} cancelled: ${n} is still undecided.`);
+        return undefined;
+    }
+    if (
+        decision === "exclude" &&
+        !(await ask(
+            `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
+                "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
+            "Exclude",
+        ))
+    ) {
+        say("Exclude cancelled.");
+        return undefined;
+    }
+    return reason;
+}
+
+// A saved decision (null: an Undo) in the page's copy of the decisions.
+function rememberDecision(item, before, decision, reason) {
+    if (decision === null) {
+        delete state.data.decisions[item.file];
+        // The reason comes back as the item's draft, so an Undo to fix a typo does not lose it.
+        if (before.reason) {
+            drafts.set(draftKey(item), before.reason);
+        }
+    } else {
+        state.data.decisions[item.file] = { decision, reason };
+        drafts.delete(draftKey(item));
+    }
+}
+
+// Accept, Reject, Exclude and (with null) Undo of the item on screen. Every press either decides
+// or says in the status row why it did not. `press` is the click or key press that asked for it.
+async function decide(decision, press = null) {
+    if (doubleClickTail(press)) {
+        return;
     }
     if (state.ended) {
         say("End of this pass: choose what is next.");
@@ -3834,61 +3911,14 @@ async function decide(decision, press = null) {
         return;
     }
     const before = decisionOf(item);
-    const firm = firmDecision(item);
-    let reason = null;
-    if (decision === null) {
-        if (!firm) {
-            say("Nothing to undo.");
-            return;
-        }
-        if (before.posted) {
-            say(postedText(before));
-            return;
-        }
-    } else {
-        // No press reverses a decision: changing one is an explicit Undo first.
-        if (before?.posted) {
-            say(postedText(before));
-            return;
-        }
-        if (firm || (before && decision === "accept")) {
-            say(`Already ${DONE[before.decision]}. Undo it to change it.`);
-            return;
-        }
-        if (onlyExclude(item) && decision !== "exclude") {
-            say(item.status === "unstable" ? UNSTABLE : FAILED);
-            return;
-        }
-        if (!state.data.acceptable && decision !== "reject") {
-            say(notSeeded());
-            return;
-        }
-        if (decision === "accept" && stageShown !== item.file) {
-            say("Loading images: Accept waits for them.");
-            return;
-        }
-        if ((press?.timeStamp ?? performance.now()) - appearedAt < GUARD_MS) {
-            say("Ignored: this image appeared less than a quarter second ago.");
-            return;
-        }
-        if (decision === "reject" || decision === "exclude") {
-            reason = await askReason(item, decision);
-            if (reason === null) {
-                say(`${decision === "reject" ? "Reject" : "Exclude"} cancelled: ${n} is still undecided.`);
-                return;
-            }
-        }
-        if (
-            decision === "exclude" &&
-            !(await ask(
-                `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
-                    "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
-                "Exclude",
-            ))
-        ) {
-            say("Exclude cancelled.");
-            return;
-        }
+    const refused = refusal(decision, item, press);
+    if (refused !== null) {
+        say(refused);
+        return;
+    }
+    const reason = await reasonFor(decision, item, n);
+    if (reason === undefined) {
+        return;
     }
     const slow = setTimeout(() => sayBusy("Saving the last decision..."), SLOW_MS);
     let answer;
@@ -3914,16 +3944,7 @@ async function decide(decision, press = null) {
         clearTimeout(slow);
         saving = null;
     }
-    if (decision === null) {
-        delete state.data.decisions[item.file];
-        // The reason comes back as the item's draft, so an Undo to fix a typo does not lose it.
-        if (before.reason) {
-            drafts.set(draftKey(item), before.reason);
-        }
-    } else {
-        state.data.decisions[item.file] = { decision, reason };
-        drafts.delete(draftKey(item));
-    }
+    rememberDecision(item, before, decision, reason);
     counted(item, before, decision, answer.unpublished);
     if (decision === null) {
         // Undo stays on the item, undecided again.
