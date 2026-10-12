@@ -5283,7 +5283,7 @@ async function copyLink() {
 document.getElementById("home").addEventListener("click", () => showTargets());
 document.getElementById("copy-link").addEventListener("click", copyLink);
 document.getElementById("keys-button").addEventListener("click", toggleKeys);
-window.addEventListener("popstate", () => route());
+globalThis.addEventListener("popstate", () => route());
 // Back on the page (another tab, the home screen): show the current list at once.
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.screen === "targets" && token) {

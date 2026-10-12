@@ -49,7 +49,7 @@ import { PNG } from "pngjs";
 import { classify, DEFAULT_THRESHOLD, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
-/* global document, window, requestAnimationFrame -- read only inside the page */
+/* global document, requestAnimationFrame -- read only inside the page */
 
 /** The instant every page's clock starts at. It keeps running from there. */
 const CLOCK_START = "2026-01-01T12:00:00Z";
@@ -304,11 +304,11 @@ async function extract(browser, base) {
     try {
         const page = await context.newPage();
         await page.goto(`${base}iframe.html`, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        await page.waitForFunction(() => /** @type {any} */ (window).__STORYBOOK_PREVIEW__?.storyStoreValue, null, {
+        await page.waitForFunction(() => /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.storyStoreValue, null, {
             timeout: RENDER_TIMEOUT,
         });
         return await page.evaluate(async () => {
-            const preview = /** @type {any} */ (window).__STORYBOOK_PREVIEW__;
+            const preview = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__;
             const all = await preview.extract();
             const params = {};
             for (const [id, story] of Object.entries(all)) {
@@ -372,7 +372,7 @@ async function shootOnce(browser, url, { delay, waitFor }) {
                     if (document.body.classList.contains("sb-show-errordisplay")) {
                         return "errored";
                     }
-                    const p = /** @type {any} */ (window).__STORYBOOK_PREVIEW__?.currentRender?.phase;
+                    const p = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.currentRender?.phase;
                     return ["completed", "afterEach", "finished", "errored", "aborted"].includes(p) && p;
                 },
                 null,
