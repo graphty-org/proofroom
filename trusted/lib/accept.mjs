@@ -1284,8 +1284,11 @@ function seedBody(results, accepts, rejects, notes, branch) {
         lines.push("", "Accepted, with a note (quoted as data):", ...noteLines(notes));
     }
     if (rejects.length > 0) {
-        lines.push("", "Rejected, left without a baseline (reasons quoted as data):");
-        lines.push(...rejects.map((r) => `- \`${r.project}/${r.item.file}\`: ${JSON.stringify(oneLine(r.reason))}`));
+        lines.push(
+            "",
+            "Rejected, left without a baseline (reasons quoted as data):",
+            ...rejects.map((r) => `- \`${r.project}/${r.item.file}\`: ${JSON.stringify(oneLine(r.reason))}`),
+        );
     }
     return lines.join("\n");
 }

@@ -163,8 +163,6 @@ export function init(root, { force = false } = {}) {
         )
             ? `wrote    .gitattributes (${rule} in Git LFS)`
             : "kept     .gitattributes",
-    );
-    report.push(
         !ignored(root, config.workDir) &&
             appendOnce(join(root, ".gitignore"), `/${config.workDir}/`, `/${config.workDir}/`)
             ? `wrote    .gitignore (/${config.workDir}/)`
