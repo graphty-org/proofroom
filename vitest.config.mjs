@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { ciReporters } from "../vitest.ci-junit.mjs";
+import { workerShare } from "../tools/test-slots.mjs";
 
 export default defineConfig({
     test: {
@@ -18,6 +19,8 @@ export default defineConfig({
         setupFiles: ["test/isolate-git.setup.mjs"],
         // The repository every test's makeRepo copies.
         globalSetup: ["test/repo-template.setup.mjs", "../tools/test-slots.mjs"],
+        // At most this run's share of the cores (tools/test-slots.mjs).
+        maxWorkers: workerShare(),
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "json", "lcov", "html"],
