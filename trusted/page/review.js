@@ -3815,16 +3815,22 @@ function doubleClickTail(press) {
     return false;
 }
 
-// Why `decision` cannot be taken on `item` now, or null when it can.
+// Why the item's decision cannot be undone now, or null when it can.
+function undoRefusal(item) {
+    const before = decisionOf(item);
+    if (!firmDecision(item)) {
+        return "Nothing to undo.";
+    }
+    return before.posted ? postedText(before) : null;
+}
+
+// Why `decision` (null: Undo) cannot be taken on `item` now, or null when it can.
 function refusal(decision, item, press) {
+    if (decision === null) {
+        return undoRefusal(item);
+    }
     const before = decisionOf(item);
     const firm = firmDecision(item);
-    if (decision === null) {
-        if (!firm) {
-            return "Nothing to undo.";
-        }
-        return before.posted ? postedText(before) : null;
-    }
     // No press reverses a decision: changing one is an explicit Undo first.
     if (before?.posted) {
         return postedText(before);
