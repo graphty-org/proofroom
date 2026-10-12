@@ -290,8 +290,11 @@ describe("review page: stale caches", () => {
 });
 
 describe("review page: decisions", () => {
-    // A double click's second click, landing on the next item's Accept, is ignored.
-    it("A double click on Accept, or a held A key, accepts the next items without showing them", async () => {
+    /**
+     * Double-clicks Accept on item 2, the second click landing once item 3 is on the screen.
+     * @param {number} [rate] how many times slower the tab's CPU runs (Chromium's throttling)
+     */
+    async function doubleClickAccept(rate = 1) {
         const r = makeRepo();
         await open(r, world(r));
         await review();
@@ -299,15 +302,28 @@ describe("review page: decisions", () => {
         // Accept waits for both images.
         await page.locator('#stage img[alt^="new image of"]').waitFor();
         await ready();
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate });
         const box = await page.locator("#accept").boundingBox();
-        const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
-        await page.mouse.click(x, y);
-        // The second click lands as the next item shows, on its Accept.
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        // The second click of the same double click (the browser counts it: detail 2) lands as
+        // the next item shows, on its Accept, however long after the first the page runs it.
         await page.locator("#position", { hasText: /^3 of / }).waitFor();
-        await page.mouse.click(x, y);
+        await page.mouse.down({ clickCount: 2 });
+        await page.mouse.up({ clickCount: 2 });
         await settled();
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
         expect(await decisions()).not.toHaveProperty("slider--sizes.png");
-    });
+    }
+
+    // A double click's second click, landing on the next item's Accept, is ignored.
+    it("A double click on Accept, or a held A key, accepts the next items without showing them", () =>
+        doubleClickAccept());
+
+    // The same on a page running 20 times slower: dropped by which item the double click began
+    // on, not by how soon after it the page gets to the second click.
+    it("A double click on Accept, or a held A key, accepts the next items without showing them (a slow page)", () =>
+        doubleClickAccept(20));
 
     // A held decision key decides once.
     it("A double click on Accept, or a held A key, accepts the next items without showing them (a held A key)", async () => {
