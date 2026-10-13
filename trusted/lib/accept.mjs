@@ -754,7 +754,13 @@ async function commitAccepts({
         }
     }
 
+    // The items come from the captured commit, as prepareRecord's did: the record built here must
+    // hash to exactly what the owner approved.
+    const plan = await planWrites(repo, base, writes, baselines);
     await fetch(defaultBranch);
+    // The commit the accepts go on: the captured head, or the branch's newer tip when it only merged
+    // the default branch since (masterMergeProblem).
+    let parent = base;
     if (isMaster) {
         if ((await net("git ls-remote", () => git(repo, ["ls-remote", "--heads", "origin", branch]))) !== "") {
             // A seed this tool pushed whose pull request failed to open is used as it is.
@@ -769,8 +775,13 @@ async function commitAccepts({
         }
     } else {
         await fetch(branch);
-        if ((await git(repo, ["rev-parse", own(branch)])) !== base) {
-            throw new AcceptError("capture is stale, wait for CI: the branch has moved past the captured head");
+        parent = await git(repo, ["rev-parse", own(branch)]);
+        const paths = [...plan.files.map((f) => f.path), ...(legacy?.drop ?? [])];
+        const why = parent === base ? null : await masterMergeProblem(repo, base, parent, tracking, paths);
+        if (why) {
+            throw new AcceptError(
+                `capture is stale, wait for CI: the branch has moved past the captured head (${why})`,
+            );
         }
     }
     // No refusal when the default branch has newer baselines than the capture: each record item
@@ -778,9 +789,6 @@ async function commitAccepts({
     // changed afterwards no longer starts from its contents there, the gate finds that item moves
     // nothing, and the merge queue's capture of the merged tree brings the image back for review.
 
-    // The items come from the captured commit, as prepareRecord's did: the record built here must
-    // hash to exactly what the owner approved.
-    const plan = await planWrites(repo, base, writes, baselines);
     const local = previewsOf([...accepts, ...rejects], target.pr);
     const body = buildRecord({
         version: approval ? 2 : 1,
@@ -798,7 +806,7 @@ async function commitAccepts({
 
     const tree = join(repo, config.workDir, "worktrees", `accept-${isMaster ? "master" : target.pr}`);
     await removeWorktree(repo, tree);
-    await git(repo, ["worktree", "add", "-q", "--detach", tree, base]);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, parent]);
     try {
         // A seed may be built on a commit older than the rule that stores baselines in Git LFS.
         // Carry the default branch's .gitattributes into it, so the PNGs become pointers and the
@@ -1111,6 +1119,40 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     }
+}
+
+/**
+ * Why a Finish of a capture of `head` cannot be committed on the pull request's newer `tip`, or
+ * null when it can: the tip holds the captured head, every file it changed since takes the default
+ * branch's contents (a merge of the default branch, and nothing of the pull request's own), and
+ * none of those files is one this Finish writes. The record still names what the owner saw at the
+ * captured head; the gate replays its items from the base branch's contents and CI captures the new
+ * commit, so an image the merge changed comes back for review.
+ * @param {string} repo the repository, with the tip and the default branch fetched
+ * @param {string} head the captured head
+ * @param {string} tip the branch's tip
+ * @param {string} tracking the fetched default branch
+ * @param {string[]} paths the files this Finish writes or removes
+ * @returns {Promise<string | null>} why not, or null
+ */
+async function masterMergeProblem(repo, head, tip, tracking, paths) {
+    if (!(await gitOk(repo, ["merge-base", "--is-ancestor", head, tip]))) {
+        return "the branch no longer holds the captured head";
+    }
+    const master = await git(repo, ["merge-base", tip, tracking]).catch(() => "");
+    const diff = async (a, b) =>
+        new Set((await git(repo, ["diff", "-z", "--name-only", "--no-renames", a, b])).split("\0").filter(Boolean));
+    const since = await diff(head, tip);
+    // A file the tip changed since the captured head that is not as the default branch has it.
+    const own = master === "" ? [...since] : [...(await diff(master, tip))].filter((f) => since.has(f));
+    if (own.length > 0) {
+        return `it changed ${own[0]}${own.length > 1 ? ` and ${own.length - 1} more` : ""} since`;
+    }
+    const touched = paths.filter((p) => since.has(p));
+    if (touched.length > 0) {
+        return `the default branch changed ${touched[0]}, which this review decides, so review its new capture`;
+    }
+    return null;
 }
 
 /**
