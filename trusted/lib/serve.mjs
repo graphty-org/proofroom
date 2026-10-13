@@ -59,6 +59,7 @@
  * `<tmp>/state/groups.jsonl`, to count approvals per group.
  */
 
+import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
     appendFileSync,
@@ -73,6 +74,9 @@ import {
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import { contentHash } from "../gate.mjs";
 
 import {
     AcceptError,
@@ -168,6 +172,8 @@ const POLL = 2 * 60000;
  */
 const networkTrouble = () => [...retrying].at(-1) ?? null;
 
+const execFileAsync = promisify(execFile);
+
 /**
  * The image a decision was taken on: the capture, or for a removed item its baseline.
  * @param {{ capture: string | null, baseline: string | null }} item the results.json item
@@ -203,6 +209,33 @@ async function earlierAccepts(repo, head, pr, baselines) {
             for (const item of record.items) {
                 out.set(item.path, item.to);
             }
+        }
+    }
+    return out;
+}
+
+/**
+ * The accepts of `records` the files at `tip` still hold. An update from the default branch can
+ * take that branch's side of a baseline and leave the record behind: the gate then sees the change
+ * unaccepted, so the accept is not published, whatever the record says.
+ * @param {string} repo the repository
+ * @param {string} tip the branch's commit
+ * @param {Map<string, string | null>} records `to` by baseline path (earlierAccepts)
+ * @returns {Promise<Map<string, string | null>>} those whose file at `tip` has that content
+ */
+async function heldAt(repo, tip, records) {
+    const out = new Map();
+    for (const [path, to] of records) {
+        const held = await execFileAsync("git", ["show", `${tip}:${path}`], {
+            cwd: repo,
+            encoding: "buffer",
+            maxBuffer: 64 << 20,
+        }).then(
+            ({ stdout }) => contentHash(stdout),
+            () => null,
+        );
+        if (held === (to ?? null)) {
+            out.set(path, to);
         }
     }
     return out;
@@ -1231,19 +1264,18 @@ export function createApp({
     }
 
     // What this pull request's review records at its branch's fetched tip publish: the newest `to`
-    // per path. The captured head's (`earlier`) when the tip is that head, so the usual case reads
-    // nothing more; null when the branch was never fetched, so nothing is known about it.
+    // per path, where the file at the tip still holds it (heldAt). The records are the captured
+    // head's (`earlier`) when the tip is that head; null when the branch was never fetched, so
+    // nothing is known about it.
     async function publishedOn(t) {
         const tip = t.branch ? tips.get(t.branch) : undefined;
         if (tip === undefined) {
             return null;
         }
-        if (tip === t.headSha) {
-            return t.earlier;
-        }
         const key = `${tip} ${t.pr}`;
         if (!recordsAt.has(key)) {
-            recordsAt.set(key, await earlierAccepts(repo, tip, t.pr, config.baselines));
+            const records = tip === t.headSha ? t.earlier : await earlierAccepts(repo, tip, t.pr, config.baselines);
+            recordsAt.set(key, await heldAt(repo, tip, records));
         }
         return recordsAt.get(key);
     }

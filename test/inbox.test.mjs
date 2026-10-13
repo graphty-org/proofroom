@@ -119,6 +119,19 @@ describe("coupledGroups", () => {
         const decided = [target(1, [project("a")]), target(2, [project("a")])];
         expect(inboxOf(decided, { now: 0, coupling }).groups).toEqual([]);
     });
+
+    it("says what each group member is waiting on, so none reads as done when it is not", () => {
+        const members = [
+            target(1, [project("a", { undecided: 1 })]),
+            target(2, [project("a", { problem: "capture failed" })]),
+            target(3, [project("a", { downloading: true })]),
+            target(4, [project("a")]),
+        ];
+        const coupling = new Map(members.map((t) => [t.id, { paths: ["a/x.png"], images: [], packages: ["p"] }]));
+        expect(inboxOf(members, { now: 0, coupling }).groups.map((g) => g.states)).toEqual([
+            ["ready", "notReady", "capturing", "done"],
+        ]);
+    });
 });
 
 describe("the notifier", () => {

@@ -1272,7 +1272,12 @@ function inboxView(inbox) {
             if (r) {
                 return readyRow(r);
             }
-            return bad ? badRow(bad) : el("li", { class: "meta" }, `#${g.prs[n]}: nothing to decide`);
+            if (bad) {
+                return badRow(bad);
+            }
+            // Only a member the server counted as done has nothing to decide; never guess it.
+            const said = { done: "nothing to decide", capturing: "still capturing" }[g.states?.[n]];
+            return el("li", { class: "meta" }, `#${g.prs[n]}: ${said ?? "status unknown: reload the page"}`);
         });
         const first = g.ids.find((id) => inbox.ready.some((r) => r.id === id && r.undecided > 0));
         return el(
