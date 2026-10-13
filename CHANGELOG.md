@@ -1,3 +1,14 @@
+## 0.2.26 (2026-10-13)
+
+### 🩹 Fixes
+
+- **visual-review:** ask for the session token when the page has none ([affee9300](https://github.com/graphty-org/graphty-monorepo/commit/affee9300))
+- **visual-review:** keep a screenshot approval across a merge of master ([#2272](https://github.com/graphty-org/graphty-monorepo/issues/2272))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.25 (2026-10-13)
 
 ### 🩹 Fixes
