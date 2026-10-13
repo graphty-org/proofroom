@@ -5,13 +5,12 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { sha256 } from "../trusted/lib/compare.mjs";
-import { git, isolateGit, LFS_ATTRIBUTES, lfsObject, ROOT } from "./helpers.mjs";
+import { git, isolateGit, LFS_ATTRIBUTES, lfsObject, ROOT, tempDir } from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
@@ -24,7 +23,7 @@ const PNG = "visual-baselines/demo/story--one.png";
  * @returns {{ repo: string, remote: string }} the paths
  */
 function setup() {
-    const dir = mkdtempSync(join(tmpdir(), "vr-lfs-hook-"));
+    const dir = tempDir("vr-lfs-hook-");
     const remote = join(dir, "remote.git");
     const repo = join(dir, "repo");
     git(dir, "init", "-q", "--bare", "-b", "master", remote);
@@ -58,7 +57,7 @@ function commit(repo, path, data) {
  * @returns {string} the directory
  */
 function pathWithoutLfs() {
-    const bin = mkdtempSync(join(tmpdir(), "vr-bin-"));
+    const bin = tempDir("vr-bin-");
     for (const tool of ["git", "cat", "sort", "grep", "sed", "head"]) {
         symlinkSync(execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim(), join(bin, tool));
     }
