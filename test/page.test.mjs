@@ -1727,9 +1727,35 @@ describe("review page: the decision bar", () => {
         await ready();
         await stopClock();
         await page.locator("#accept").click();
-        await page.locator("#accept").click();
+        // The second tap lands once the next item is on screen: a tap still in flight while the
+        // first decision saves is the next test's.
         await expect.poll(position).toMatch(/^3 of /);
-        await expect.poll(status).toMatch(/^(Ignored|Loading images|Still saving)/);
+        await page.locator("#accept").click();
+        await expect
+            .poll(status)
+            .toMatch(
+                /^(Ignored: this image appeared less than a quarter second ago\.|Loading images: Accept waits for them\.)$/,
+            );
+        expect(await page.locator("#accept").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("refuses the second tap of a double tap that comes while the first decision is saving", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator("#review-undecided").click();
+        await page.keyboard.press("k");
+        await ready();
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await page.route("**/api/decide**", async (route) => {
+            await held;
+            await route.continue();
+        });
+        await page.locator("#accept").click();
+        await page.locator("#accept").click();
+        await expect.poll(status).toBe("Still saving the last decision.");
+        release();
+        // The first decision's message replaces it, and the second tap decided nothing.
+        await expect.poll(status).toBe("Accepted #2. Now #3, 3 of 6: slider--sizes, changed.");
         expect(await page.locator("#accept").getAttribute("aria-pressed")).toBe("false");
     });
 });
