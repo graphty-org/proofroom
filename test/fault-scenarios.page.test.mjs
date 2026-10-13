@@ -478,19 +478,22 @@ describe("review page: rendering and routing", () => {
             await route.continue().catch(() => {});
             answered++;
         });
-        // Back twice and Forward once, without waiting for any to land: story -> grid -> targets,
-        // whose route waits, -> grid again before that wait ends.
-        await page.evaluate(
-            () =>
-                new Promise((resolve) => {
-                    globalThis.history.back();
-                    setTimeout(() => globalThis.history.back(), 50);
-                    setTimeout(() => {
-                        globalThis.history.forward();
-                        resolve();
-                    }, 150);
-                }),
-        );
+        // Back twice and Forward once: story -> grid -> targets, whose route waits, -> grid again
+        // before that wait ends. Each press goes once the one before it has landed (its popstate,
+        // after the page's own handler ran): Chromium drops a Back or Forward asked for while
+        // another is still in flight, which left the page on the targets screen (#2447).
+        await page.evaluate(() => {
+            globalThis.pops = 0;
+            globalThis.addEventListener("popstate", () => globalThis.pops++);
+        });
+        const press = async (step, pops) => {
+            await page.evaluate((s) => globalThis.history[s](), step);
+            await page.waitForFunction((n) => globalThis.pops >= n, pops);
+        };
+        await press("back", 1);
+        await press("back", 2);
+        await expect.poll(() => asked).toBe(1);
+        await press("forward", 3);
         pressed();
         // The grid is shown and the targets route has its answer; a superseded route that went on
         // would now draw the targets or push an entry, within a moment of its answer. The wait is
