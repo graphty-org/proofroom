@@ -137,6 +137,7 @@ Every command has `--help`; `visual-review --help` lists them.
 | `commitPrefix`  | `test`              | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
 | `issueLabels`   | `["bug"]`           | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
 | `fontconfig`    | none (host fonts)   | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
+| `updateCheck`   | none                | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                  |
 | `projects`      | (required)          | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:
@@ -842,6 +843,19 @@ made), and for every conflicting file under the baselines directory takes the de
 side. The commit names those files, and is signed as your git configuration signs. It pushes to
 the branch, and CI captures again. A conflict anywhere else refuses: it lists the files, and
 nothing is committed or pushed; merge that by hand.
+
+A merge with no conflict can still be broken: git merges two edits to the same code file without
+asking, and the result may not compile. `update` pushes with your hooks switched off, so set
+`updateCheck` to a shell command that checks the merge, such as your build or type check. When
+the merge changed any file outside the baselines directory, `update` runs it from the root of the
+merged checkout (a fresh git worktree, with no installed dependencies) before it pushes, with the
+branch's commit before the merge in `VISUAL_REVIEW_UPDATE_BASE`. If it exits with anything but 0,
+nothing is pushed, the branch stays where it was, and the message ends with the end of the
+command's output. A merge that changed only baselines is pushed without it. For example:
+
+```json
+"updateCheck": "npm ci && npm run build"
+```
 
 It accepts nothing and writes no review record. The default branch's baselines are already
 approved, and a file that ends up as it is on the default branch is no change for the gate, which

@@ -125,6 +125,56 @@ describe("update from master", () => {
         expect(git(r.remote, "log", "-1", "--format=%B", "feature")).toContain("No conflicts.");
     });
 
+    describe("with an updateCheck", () => {
+        const withCheck = (r, updateCheck, steps = []) =>
+            updateFromMaster({
+                repo: r.repo,
+                pr: 123,
+                branch: "feature",
+                config: { ...CONFIG, updateCheck },
+                progress: (s) => steps.push(s),
+            });
+
+        it("pushes nothing and leaves the branch where it was when a clean code merge fails the check", async () => {
+            const r = makeRepo();
+            pushCommit(r.remote, "master", "src/layout.ts");
+            const check =
+                'echo "error TS1117: An object literal cannot have multiple properties with the same name"; exit 3';
+            await expect(withCheck(r, check)).rejects.toThrow(
+                /^the merge of master into feature fails the update check: `.*` exited with 3, so nothing was pushed and feature is as it was; merge master into it by hand and fix it\. The check's output ended:\nerror TS1117/,
+            );
+            expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
+            expect(git(r.repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("master");
+            expect(git(r.repo, "status", "--porcelain")).toBe("");
+            expect(git(r.repo, "worktree", "list").split("\n")).toHaveLength(1);
+        });
+
+        it("runs the check in the merged checkout and pushes when it passes", async () => {
+            const r = makeRepo();
+            pushCommit(r.remote, "master", "src/layout.ts");
+            const seen = join(mkdtempSync(join(tmpdir(), "vr-check-")), "seen");
+            const steps = [];
+            const out = await withCheck(
+                r,
+                `test -f src/layout.ts && echo "$VISUAL_REVIEW_UPDATE_BASE" > ${seen}`,
+                steps,
+            );
+            expect(steps).toEqual(["fetching", "merging", "committing", "checking", "pushing"]);
+            expect(readFileSync(seen, "utf8").trim()).toBe(r.head);
+            expect(git(r.remote, "rev-parse", "feature")).toBe(out.commit);
+            expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.head);
+        });
+
+        it("skips the check when the merge changed only baselines", async () => {
+            const r = makeRepo();
+            pushCommit(r.remote, "master", "visual-baselines/compact-mantine/other.png");
+            const steps = [];
+            const out = await withCheck(r, "exit 1", steps);
+            expect(steps).toEqual(["fetching", "merging", "committing", "pushing"]);
+            expect(git(r.remote, "rev-parse", "feature")).toBe(out.commit);
+        });
+    });
+
     it("refuses a branch that already has master", async () => {
         const r = makeRepo();
         await expect(update(r)).rejects.toThrow("feature already has everything on master: nothing to update");

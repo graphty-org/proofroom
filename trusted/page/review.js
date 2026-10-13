@@ -4681,6 +4681,7 @@ const UPDATE_STEPS = [
     ["fetching", "Fetching", /^(starting|fetching)/],
     ["merging", "Merging", /^merging/],
     ["committing", "Committing", /^committing/],
+    ["checking", "Checking the merge", /^checking/],
     ["pushing", "Pushing", /^pushing/],
 ];
 
