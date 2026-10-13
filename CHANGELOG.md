@@ -1,3 +1,14 @@
+## 0.2.25 (2026-10-13)
+
+### 🩹 Fixes
+
+- **visual-review:** drop a double click's second click by item, and time the guard from the paint ([#2175](https://github.com/graphty-org/graphty-monorepo/issues/2175))
+- **tools:** cap each test slot's Node workers at its share of the cores ([9daf98f16](https://github.com/graphty-org/graphty-monorepo/commit/9daf98f16))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.24 (2026-10-12)
 
 This was a version bump only for visual-review to align it with other projects, there were no code changes.
