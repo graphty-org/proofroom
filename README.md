@@ -615,8 +615,9 @@ least 44 px tall.
 
 No key reverses a decision. A, R and E on an item that is already decided say "Already accepted.
 Undo it to change it."; press U (or Undo) first. A held A, R, E or U decides once, and an A, R or
-E that comes within a quarter second of an item's images appearing is ignored and says so, so the
-second tap of a double tap never decides the next item unseen. While a decision is being saved
+E pressed within a quarter second of an item's images being drawn is ignored and says so. The
+second click or tap of a double click never decides the next item unseen, however slowly the page
+runs: it is ignored when the first was on another item. While a decision is being saved
 the page says "Saving the last decision..." and waits for it before moving on; a save that fails
 leaves the item undecided, with its reason.
 

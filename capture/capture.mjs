@@ -49,7 +49,7 @@ import { PNG } from "pngjs";
 import { classify, DEFAULT_THRESHOLD, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
-/* global document, window, requestAnimationFrame -- read only inside the page */
+/* global document, requestAnimationFrame -- read only inside the page */
 
 /** The instant every page's clock starts at. It keeps running from there. */
 const CLOCK_START = "2026-01-01T12:00:00Z";
@@ -304,11 +304,11 @@ async function extract(browser, base) {
     try {
         const page = await context.newPage();
         await page.goto(`${base}iframe.html`, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        await page.waitForFunction(() => /** @type {any} */ (window).__STORYBOOK_PREVIEW__?.storyStoreValue, null, {
+        await page.waitForFunction(() => /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.storyStoreValue, null, {
             timeout: RENDER_TIMEOUT,
         });
         return await page.evaluate(async () => {
-            const preview = /** @type {any} */ (window).__STORYBOOK_PREVIEW__;
+            const preview = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__;
             const all = await preview.extract();
             const params = {};
             for (const [id, story] of Object.entries(all)) {
@@ -372,7 +372,7 @@ async function shootOnce(browser, url, { delay, waitFor }) {
                     if (document.body.classList.contains("sb-show-errordisplay")) {
                         return "errored";
                     }
-                    const p = /** @type {any} */ (window).__STORYBOOK_PREVIEW__?.currentRender?.phase;
+                    const p = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.currentRender?.phase;
                     return ["completed", "afterEach", "finished", "errored", "aborted"].includes(p) && p;
                 },
                 null,
@@ -441,6 +441,16 @@ export const MAX_SHOT_HEIGHT = 8192;
  */
 export async function screenshotWholePage(page) {
     const options = /** @type {const} */ ({ animations: "disabled", caret: "hide", fullPage: true });
+    // Chromium's first screenshot beyond the viewport lays text out again, and line boxes of
+    // 'normal' height can come out a pixel shorter for good (11px monospace: 21 CSS px a line
+    // before, 20 after), so a page measured before it is taller than the page it draws: the image
+    // gets background rows below the story (#1982), and later slices of a tall page come back
+    // short (#1976). One throwaway capture settles the layout; everything below measures after it.
+    // A full-page capture also resizes the page while it runs, and a story that redraws on resize
+    // (Cytoscape's canvases) draws again in the next frames: wait for them, or the real capture
+    // catches that redraw half done and two captures of the story differ.
+    await page.screenshot({ ...options, clip: { x: 0, y: 0, width: 1, height: 1 } });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     // The page's size as Playwright measures it for a full-page screenshot.
     const size = await page.evaluate(() => {
         const [b, d] = [document.body, document.documentElement];

@@ -69,8 +69,9 @@ const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles
 // size; 1 is real size: one CSS pixel per CSS pixel the story was drawn at, scrolling when larger.
 const ZOOMS = ["fit", 1, 2, 4, 8];
 const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
-// A decision this soon after its item's images appeared is the second tap of a double tap, not a
-// decision on an image the reader saw.
+// A press this soon after its item's images were drawn is the tail of a press meant for the item
+// before, not a decision on an image the reader saw. Measured from the press's own time
+// (event.timeStamp), so a page that runs the press late does not lengthen it.
 const GUARD_MS = 250;
 const SLOW_MS = 300; // a wait longer than this says what it waits for
 // The grid's decision filters, and how a decision reads on a tile.
@@ -144,7 +145,8 @@ let lastStageFile = null; // and for which item
 let lastShown = null; // the last item whose images were shown (never reset by a move)
 const SKIM_MS = 120;
 let stageShown = null; // the file whose images are on the stage: Accept waits for it
-let appearedAt = 0; // when the item on screen appeared, or its images did
+let appearedAt = 0; // when the item on screen was drawn, or its images were: Infinity until then
+let pressedOn = null; // the item the last first click of a decision button was on
 let saving = null; // the decision on its way to the server
 let flashTimer = null;
 let factor = 1; // CSS pixels per image pixel of the pictures on the stage
@@ -2890,7 +2892,13 @@ function showStory() {
     const item = items[state.index];
     if (item.file !== state.lastFile) {
         stageShown = null;
-        appearedAt = performance.now();
+        appearedAt = Infinity;
+        afterPaint(() => {
+            // Its images, when they came first, set their own time.
+            if (state.lastFile === item.file && stageShown === null) {
+                appearedAt = performance.now();
+            }
+        });
         optionsOpen = false;
     }
     state.lastFile = item.file;
@@ -2988,15 +2996,15 @@ function decisionBar(item, items, d) {
             "Next",
             kbd("K"),
         ),
-        button("undo", "Undo", "U", can.undo, { onclick: () => decide(null) }),
+        button("undo", "Undo", "U", can.undo, { onclick: (e) => decide(null, e) }),
         button("exclude", "Exclude", "E", can.exclude, {
             "aria-pressed": String(d?.decision === "exclude"),
-            onclick: () => decide("exclude"),
+            onclick: (e) => decide("exclude", e),
         }),
         button("reject", "Reject", "R", can.reject, {
             class: "reject",
             "aria-pressed": String(d?.decision === "reject"),
-            onclick: () => decide("reject"),
+            onclick: (e) => decide("reject", e),
         }),
         button(
             "accept",
@@ -3006,7 +3014,7 @@ function decisionBar(item, items, d) {
             {
                 class: `accept ${waitingImages ? "loading" : ""}`,
                 "aria-pressed": String(d?.decision === "accept"),
-                onclick: () => decide("accept"),
+                onclick: (e) => decide("accept", e),
             },
             waitingImages ? spinner() : null,
         ),
@@ -3460,9 +3468,13 @@ async function renderStage(item, view, keep) {
     }
 }
 
-// The item's images are on the screen: Accept applies, the next two items load in the
-// background, and a quarter second later the stage says it is ready (a decision before then is
-// taken for the second tap of a double tap).
+// Runs `then` once what the page holds now has been drawn: a frame's callbacks run before it is
+// drawn, so the second frame's run after the first was.
+const afterPaint = (then) => requestAnimationFrame(() => requestAnimationFrame(then));
+
+// The item's images are in the stage: Accept applies once they have been drawn, the next two
+// items load in the background, and a quarter second after the drawing the stage says it is
+// ready (a decision before then is taken for the tail of a press meant for the item before).
 function shown(stage, item) {
     const first = stageShown !== item.file;
     stageShown = item.file;
@@ -3473,7 +3485,7 @@ function shown(stage, item) {
         accept.querySelector(".spinner")?.remove();
     }
     if (first) {
-        appearedAt = performance.now();
+        appearedAt = Infinity;
         const after = passItems().slice(state.index + 1, state.index + 3);
         for (const next of after) {
             for (const kind of ["baseline", "capture"]) {
@@ -3487,14 +3499,22 @@ function shown(stage, item) {
             focusBox(after[0]).catch(() => {});
         }
     }
-    setTimeout(
-        () => {
-            if (stage.isConnected && stageShown === item.file) {
-                stage.dataset.ready = "";
-            }
-        },
-        Math.max(0, GUARD_MS - (performance.now() - appearedAt)),
-    );
+    afterPaint(() => {
+        if (!stage.isConnected || stageShown !== item.file) {
+            return;
+        }
+        if (appearedAt === Infinity) {
+            appearedAt = performance.now();
+        }
+        setTimeout(
+            () => {
+                if (stage.isConnected && stageShown === item.file) {
+                    stage.dataset.ready = "";
+                }
+            },
+            Math.max(0, GUARD_MS - (performance.now() - appearedAt)),
+        );
+    });
 }
 
 // Outlines the current changed area in every pane, and scrolls it into view. A pane opens at the
@@ -3871,9 +3891,103 @@ function move(step) {
     say(`Now #${numberOf(item)}, ${at + 1} of ${count}: ${itemName(item)}, ${statusLabel(item.status)}.`);
 }
 
+// The second click (or tap) of a double click belongs to its first: when the first was on another
+// item, it is dropped, however late the page gets to it. Says so and returns true.
+function doubleClickTail(press) {
+    const pressed = state.ended ? null : passItems()[state.index]?.file;
+    if (press?.detail > 1 && pressedOn !== pressed) {
+        say("Ignored: the second click of a double click meant for the item before.");
+        return true;
+    }
+    if (press?.detail === 1) {
+        pressedOn = pressed;
+    }
+    return false;
+}
+
+// Why the item's decision cannot be undone now, or null when it can.
+function undoRefusal(item) {
+    const before = decisionOf(item);
+    if (!firmDecision(item)) {
+        return "Nothing to undo.";
+    }
+    return before.posted ? postedText(before) : null;
+}
+
+// Why `decision` (null: Undo) cannot be taken on `item` now, or null when it can.
+function refusal(decision, item, press) {
+    if (decision === null) {
+        return undoRefusal(item);
+    }
+    const before = decisionOf(item);
+    const firm = firmDecision(item);
+    // No press reverses a decision: changing one is an explicit Undo first.
+    if (before?.posted) {
+        return postedText(before);
+    }
+    if (firm || (before && decision === "accept")) {
+        return `Already ${DONE[before.decision]}. Undo it to change it.`;
+    }
+    if (onlyExclude(item) && decision !== "exclude") {
+        return item.status === "unstable" ? UNSTABLE : FAILED;
+    }
+    if (!state.data.acceptable && decision !== "reject") {
+        return notSeeded();
+    }
+    if (decision === "accept" && stageShown !== item.file) {
+        return "Loading images: Accept waits for them.";
+    }
+    if ((press?.timeStamp ?? performance.now()) - appearedAt < GUARD_MS) {
+        return "Ignored: this image appeared less than a quarter second ago.";
+    }
+    return null;
+}
+
+// Reject's and Exclude's reason, and Exclude's confirmation: the reason (null for Accept), or
+// undefined when cancelled, having said so.
+async function reasonFor(decision, item, n) {
+    if (decision !== "reject" && decision !== "exclude") {
+        return null;
+    }
+    const reason = await askReason(item, decision);
+    if (reason === null) {
+        say(`${decision === "reject" ? "Reject" : "Exclude"} cancelled: ${n} is still undecided.`);
+        return undefined;
+    }
+    if (
+        decision === "exclude" &&
+        !(await ask(
+            `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
+                "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
+            "Exclude",
+        ))
+    ) {
+        say("Exclude cancelled.");
+        return undefined;
+    }
+    return reason;
+}
+
+// A saved decision (null: an Undo) in the page's copy of the decisions.
+function rememberDecision(item, before, decision, reason) {
+    if (decision === null) {
+        delete state.data.decisions[item.file];
+        // The reason comes back as the item's draft, so an Undo to fix a typo does not lose it.
+        if (before.reason) {
+            drafts.set(draftKey(item), before.reason);
+        }
+    } else {
+        state.data.decisions[item.file] = { decision, reason };
+        drafts.delete(draftKey(item));
+    }
+}
+
 // Accept, Reject, Exclude and (with null) Undo of the item on screen. Every press either decides
-// or says in the status row why it did not.
-async function decide(decision) {
+// or says in the status row why it did not. `press` is the click or key press that asked for it.
+async function decide(decision, press = null) {
+    if (doubleClickTail(press)) {
+        return;
+    }
     if (state.ended) {
         say("End of this pass: choose what is next.");
         return;
@@ -3893,61 +4007,14 @@ async function decide(decision) {
         return;
     }
     const before = decisionOf(item);
-    const firm = firmDecision(item);
-    let reason = null;
-    if (decision === null) {
-        if (!firm) {
-            say("Nothing to undo.");
-            return;
-        }
-        if (before.posted) {
-            say(postedText(before));
-            return;
-        }
-    } else {
-        // No press reverses a decision: changing one is an explicit Undo first.
-        if (before?.posted) {
-            say(postedText(before));
-            return;
-        }
-        if (firm || (before && decision === "accept")) {
-            say(`Already ${DONE[before.decision]}. Undo it to change it.`);
-            return;
-        }
-        if (onlyExclude(item) && decision !== "exclude") {
-            say(item.status === "unstable" ? UNSTABLE : FAILED);
-            return;
-        }
-        if (!state.data.acceptable && decision !== "reject") {
-            say(notSeeded());
-            return;
-        }
-        if (decision === "accept" && stageShown !== item.file) {
-            say("Loading images: Accept waits for them.");
-            return;
-        }
-        if (performance.now() - appearedAt < GUARD_MS) {
-            say("Ignored: this image appeared less than a quarter second ago.");
-            return;
-        }
-        if (decision === "reject" || decision === "exclude") {
-            reason = await askReason(item, decision);
-            if (reason === null) {
-                say(`${decision === "reject" ? "Reject" : "Exclude"} cancelled: ${n} is still undecided.`);
-                return;
-            }
-        }
-        if (
-            decision === "exclude" &&
-            !(await ask(
-                `Exclude ${item.id}? Every mode of this story stops being captured, on every pull request, ` +
-                    "until its settings file is removed. To clear a one-off failure, re-run the visual job instead.",
-                "Exclude",
-            ))
-        ) {
-            say("Exclude cancelled.");
-            return;
-        }
+    const refused = refusal(decision, item, press);
+    if (refused !== null) {
+        say(refused);
+        return;
+    }
+    const reason = await reasonFor(decision, item, n);
+    if (reason === undefined) {
+        return;
     }
     const slow = setTimeout(() => sayBusy("Saving the last decision..."), SLOW_MS);
     let answer;
@@ -3973,16 +4040,7 @@ async function decide(decision) {
         clearTimeout(slow);
         saving = null;
     }
-    if (decision === null) {
-        delete state.data.decisions[item.file];
-        // The reason comes back as the item's draft, so an Undo to fix a typo does not lose it.
-        if (before.reason) {
-            drafts.set(draftKey(item), before.reason);
-        }
-    } else {
-        state.data.decisions[item.file] = { decision, reason };
-        drafts.delete(draftKey(item));
-    }
+    rememberDecision(item, before, decision, reason);
     counted(item, before, decision, answer.unpublished);
     if (decision === null) {
         // Undo stays on the item, undecided again.
@@ -5300,10 +5358,10 @@ document.addEventListener("keydown", (e) => {
     const keys = {
         j: () => move(-1),
         k: () => move(1),
-        a: () => decide("accept"),
-        r: () => decide("reject"),
-        e: () => decide("exclude"),
-        u: () => decide(null),
+        a: () => decide("accept", e),
+        r: () => decide("reject", e),
+        e: () => decide("exclude", e),
+        u: () => decide(null, e),
         // In Spotlight, F flashes the spotlighted baseline and new instead of leaving it.
         f: () =>
             state.view === "spotlight"
@@ -5373,7 +5431,7 @@ async function copyLink() {
 document.getElementById("home").addEventListener("click", () => showTargets());
 document.getElementById("copy-link").addEventListener("click", copyLink);
 document.getElementById("keys-button").addEventListener("click", toggleKeys);
-window.addEventListener("popstate", () => route());
+globalThis.addEventListener("popstate", () => route());
 // Back on the page (another tab, the home screen): show the current list at once.
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && state.screen === "targets" && token) {

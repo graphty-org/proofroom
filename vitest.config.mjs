@@ -1,9 +1,10 @@
 import { defineConfig } from "vitest/config";
-import { ciJunitReporter } from "../vitest.ci-junit.mjs";
+import { ciReporters } from "../vitest.ci-junit.mjs";
+import { workerShare } from "../tools/test-slots.mjs";
 
 export default defineConfig({
     test: {
-        reporters: ["default", ...ciJunitReporter()],
+        reporters: ["default", ...ciReporters()],
         environment: "node",
         include: ["test/**/*.test.mjs"],
         // The suite's own limit, as the other packages' browser suites have: a hang detector, not a
@@ -18,6 +19,8 @@ export default defineConfig({
         setupFiles: ["test/isolate-git.setup.mjs"],
         // The repository every test's makeRepo copies.
         globalSetup: ["test/repo-template.setup.mjs", "../tools/test-slots.mjs"],
+        // At most this run's share of the cores (tools/test-slots.mjs).
+        maxWorkers: workerShare(),
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "json", "lcov", "html"],

@@ -8,14 +8,12 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { chromium } from "playwright";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
 import { CONFIG, isolateGit, makeRepo, onePr } from "./helpers.mjs";
 
 const TOKEN = "k".repeat(43);
-// Each test starts a server on a new repository and opens a tab: about a second each, more on CI.
-vi.setConfig({ testTimeout: 20000 });
 
 const LABEL = "Paste the session token (or the full URL serve printed)";
 
