@@ -841,6 +841,106 @@ describe("passkey approvals", () => {
         });
     });
 
+    describe("an approval survives a merge of the base branch into the pull request", () => {
+        const GATE = fileURLToPath(new URL("../trusted/gate.mjs", import.meta.url));
+        const OTHER = "visual-baselines/compact-mantine/button--primary.dark.png";
+        const ADDED = "visual-baselines/compact-mantine/card--added.png";
+        const NOT_TAKEN = `${PATH}: changed with no review record taking it from its base branch contents to these`;
+
+        /**
+         * Pull request 7 approved PATH; then master changed `onMaster` (another pull request's
+         * work), and master was merged into the pull request, keeping the pull request's side of a
+         * conflict.
+         * @param {string} [onMaster] the baseline master changes
+         * @returns {object} the repository, on branch pr
+         */
+        function merged(onMaster = OTHER) {
+            const r = repoWith(passkeysJson(KEY));
+            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(v2()) });
+            git(r.repo, "checkout", "-q", "master");
+            commit(r, { [onMaster]: "master's newer image", "lib.txt": "master's code" });
+            git(r.repo, "checkout", "-q", "pr");
+            git(r.repo, "merge", "-q", "--no-edit", "-X", "ours", "master");
+            return r;
+        }
+        const gate = (r, statuses = ["unchanged"], pr = "7") =>
+            spawnSync(
+                process.execPath,
+                [
+                    GATE,
+                    "--captures",
+                    artifacts(
+                        Object.fromEntries(
+                            Object.keys(CONFIG.projects).map((p) => [`visual-${p}-1`, results(statuses)]),
+                        ),
+                    ),
+                    "--base",
+                    "master",
+                    "--head",
+                    "pr",
+                    "--pr",
+                    pr,
+                ],
+                { cwd: r.repo, encoding: "utf8" },
+            );
+
+        it("passes with no new review when the merge left every approved file's base contents alone", () => {
+            const r = merged();
+            expect(check(r)).toEqual([]);
+            expect(gate(r).status).toBe(0);
+        });
+
+        it("fails when master changed the baseline under an approved file", () => {
+            expect(check(merged(PATH))).toEqual([NOT_TAKEN]);
+        });
+
+        it("fails a new changed image: one committed with no record, and one the capture shows", () => {
+            const r = merged();
+            commit(r, { [ADDED]: "added image" });
+            expect(check(r)).toEqual([
+                `${ADDED}: changed with no review record taking it from its base branch contents to these`,
+            ]);
+            const s = merged();
+            const out = gate(s, ["unchanged", "changed"]);
+            expect(out.stdout).toContain("1 changed (not accepted");
+            expect(out.status).toBe(1);
+        });
+
+        it("fails for another pull request", () => {
+            expect(check(merged(), 8)).toEqual([
+                "visual-baselines/reviews/r.json: the record is for pull request #7, not #8",
+                NOT_TAKEN,
+            ]);
+        });
+
+        it("fails a record edited after it was approved", () => {
+            const r = merged();
+            const tampered = {
+                ...signed(v2()),
+                items: [{ path: PATH, from: LEGACY, to: sha256("other"), reason: null }],
+            };
+            commit(r, { [PATH]: "other", "visual-baselines/reviews/r.json": tampered });
+            expect(check(r)).toEqual([
+                "visual-baselines/reviews/r.json: the challenge does not match: it was signed for other contents than these",
+                NOT_TAKEN,
+            ]);
+        });
+
+        it("still fails on a rejected image, which the capture of the merge still shows", () => {
+            const r = repoWith(passkeysJson(KEY));
+            const rejected = { ...v2(), rejects: [{ path: OTHER, capture: sha256("ugly"), reason: "ugly" }] };
+            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(rejected) });
+            git(r.repo, "checkout", "-q", "master");
+            commit(r, { "lib.txt": "master's code" });
+            git(r.repo, "checkout", "-q", "pr");
+            git(r.repo, "merge", "-q", "--no-edit", "master");
+            expect(check(r)).toEqual([]);
+            const out = gate(r, ["unchanged", "changed"]);
+            expect(out.stdout).toContain("a rejected item needs a code change");
+            expect(out.status).toBe(1);
+        });
+    });
+
     it("needs a record for any settings file the pull request adds or changes, not for a deletion or renames.json", () => {
         const r = repoWith(passkeysJson(KEY));
         const SETTINGS = "visual-baselines/compact-mantine/card--legacy.json";
