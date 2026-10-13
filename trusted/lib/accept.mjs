@@ -20,7 +20,7 @@
  * code (approval.mjs). `proposeKey` opens the pull request that registers a passkey.
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -1027,14 +1027,18 @@ export async function newerOnMaster(
  * still shows differently comes back to the review as changed. Any other conflict refuses, naming
  * the files, and nothing is committed or pushed.
  *
+ * When the merge changed a file outside the baselines directory and the config sets `updateCheck`,
+ * that command runs in the merged worktree before the push; when it fails, nothing is pushed and
+ * the branch stays where it was (the merge commit only ever existed in the throwaway worktree).
+ *
  * It accepts nothing and writes no review record: a baseline that ends up as on the default
  * branch is no change for the gate, which diffs the pull request against its base.
  * @param {object} input the work
  * @param {string} input.repo the repository
  * @param {number} input.pr the pull request
  * @param {string} input.branch its branch
- * @param {{ defaultBranch: string, baselines: string, workDir: string, commitPrefix: string }} input.config
- *     the settings
+ * @param {{ defaultBranch: string, baselines: string, workDir: string, commitPrefix: string,
+ *     updateCheck?: string | null }} input.config the settings
  * @param {(step: string) => void} [input.progress] told each step as it starts
  * @returns {Promise<{ commit: string, branch: string, taken: string[], recapture: string[] }>} the
  *     pushed merge commit, the conflicting baseline files that took the default branch's side, and
@@ -1104,6 +1108,19 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
                 "",
             ].join("\n");
             await work(["commit", "-q", "--no-verify", "-F", "-"], message);
+            if (
+                config.updateCheck &&
+                (await work(["diff", "--name-only", head, "HEAD", "--", ".", `:(exclude)${baselines}/`]))
+            ) {
+                progress("checking");
+                await runUpdateCheck(config.updateCheck, tree, head).catch((err) => {
+                    throw new AcceptError(
+                        `the merge of ${defaultBranch} into ${branch} fails the update check: ${err.message}, ` +
+                            `so nothing was pushed and ${branch} is as it was; merge ${defaultBranch} into it by hand and fix it` +
+                            (err.tail ? `. The check's output ended:\n${err.tail}` : ""),
+                    );
+                });
+            }
             progress("pushing");
             await work(["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]).catch((err) => {
                 throw /\[rejected\].*\((fetch first|non-fast-forward)\)/.test(err.message)
@@ -1242,6 +1259,43 @@ const dedupe = (items) => [...new Map(items.map((i) => [i.path, i])).values()];
 async function put(path, data) {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, data);
+}
+
+/**
+ * Runs the config's `updateCheck` shell command in the merged worktree, with the branch's head
+ * before the merge in VISUAL_REVIEW_UPDATE_BASE. No time limit: a build takes as long as it takes.
+ * @param {string} command the shell command
+ * @param {string} cwd the worktree, at the merge commit
+ * @param {string} base the branch's head before the merge
+ * @returns {Promise<void>} resolves when it exits 0; rejects with its exit status, and the end of its
+ *     output in the error's `tail`
+ */
+function runUpdateCheck(command, cwd, base) {
+    return new Promise((resolve, reject) => {
+        const child = spawn("/bin/sh", ["-c", command], {
+            cwd,
+            env: { ...process.env, HUSKY: "0", VISUAL_REVIEW_UPDATE_BASE: base },
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        const keep = (chunk) => {
+            out = (out + chunk).slice(-8000);
+        };
+        child.stdout.on("data", keep);
+        child.stderr.on("data", keep);
+        child.on("error", reject);
+        child.on("close", (code, signal) => {
+            if (code === 0) {
+                resolve();
+                return;
+            }
+            reject(
+                Object.assign(new Error(`\`${command}\` exited with ${signal ?? code}`), {
+                    tail: out.trim().split("\n").slice(-20).join("\n"),
+                }),
+            );
+        });
+    });
 }
 
 async function removeWorktree(repo, tree) {

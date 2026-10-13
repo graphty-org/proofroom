@@ -56,6 +56,7 @@ describe("normalizeConfig", () => {
             commitPrefix: "test",
             issueLabels: ["bug"],
             fontconfig: null,
+            updateCheck: null,
             projects: {
                 web: {
                     storybook: "storybook-static",
@@ -84,6 +85,7 @@ describe("normalizeConfig", () => {
         [[], /JSON object/],
         [{ fontconfig: "../fonts.conf", projects: { a: { storybook: "s" } } }, /fontconfig must be/],
         [{ fontconfig: 1, projects: { a: { storybook: "s" } } }, /fontconfig must be/],
+        [{ updateCheck: " ", projects: { a: { storybook: "s" } } }, /updateCheck must be/],
         [{}, /projects must name/],
         [{ projects: {} }, /projects must name/],
         [{ projects: { "a b": { storybook: "s" } } }, /project id/],

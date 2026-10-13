@@ -20,6 +20,7 @@ const DEFAULTS = {
     commitPrefix: "test",
     issueLabels: ["bug"],
     fontconfig: null,
+    updateCheck: null,
 };
 
 // Project ids name artifacts, jobs, directories and regular expressions, so they stay plain; and
@@ -32,7 +33,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, projects: Record<string, { storybook: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -67,6 +68,14 @@ export function normalizeConfig(input) {
             fail('fontconfig must be a fonts.conf inside the repository, relative and without ".."');
         }
         out.fontconfig = raw.fontconfig;
+    }
+    // The shell command `update` runs in the merged checkout before it pushes, when the merge
+    // changed anything outside the baselines. Null: no check.
+    if (raw.updateCheck !== undefined && raw.updateCheck !== null) {
+        if (typeof raw.updateCheck !== "string" || raw.updateCheck.trim() === "") {
+            fail("updateCheck must be a shell command");
+        }
+        out.updateCheck = raw.updateCheck;
     }
     if (raw.issueLabels !== undefined) {
         if (!Array.isArray(raw.issueLabels) || raw.issueLabels.some((l) => typeof l !== "string")) {
