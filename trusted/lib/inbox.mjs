@@ -59,11 +59,14 @@ function sourceOf(previews, loaded) {
  *     images: string[], packages: string[] | null }> }} at the time, when each ready entry (by
  *     readyKey) entered the ready list before, and what each pull request changes (coupledGroups)
  * @returns {{ ready: object[], notReady: object[], capturing: number, done: number,
- *     groups: ReturnType<typeof coupledGroups> }} the inbox; `ready` complete ones first, then
- *     fewest undecided images, then longest waiting; `groups` those with a member listed
+ *     groups: (ReturnType<typeof coupledGroups>[number] & { states: string[] })[] }} the inbox;
+ *     `ready` complete ones first, then fewest undecided images, then longest waiting; `groups`
+ *     those with a member listed, with each member's state ("ready", "notReady", "capturing",
+ *     "done" or "unknown") in `ids` order
  */
 export function inboxOf(targets, { now, since = new Map(), coupling = new Map() }) {
     const inbox = { ready: [], notReady: [], capturing: 0, done: 0, groups: [] };
+    const state = new Map();
     for (const t of targets) {
         if (t.pr === null || t.local) {
             continue;
@@ -76,6 +79,7 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
         // A story whose capture failed: never sent for review until it is fixed, whatever else waits.
         const failedStory = loaded.find((p) => p.failed?.length > 0);
         const about = { id: t.id, pr: t.pr, title: t.title, url: t.url, headSha: t.headSha };
+        state.set(t.id, failed || failedStory ? "notReady" : "ready");
         if (failed) {
             inbox.notReady.push({
                 ...about,
@@ -111,8 +115,10 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
                 since: since.get(key) ?? now,
             });
         } else if (loaded.length < t.projects.length) {
+            state.set(t.id, "capturing");
             inbox.capturing++;
         } else {
+            state.set(t.id, "done");
             inbox.done++;
         }
     }
@@ -121,7 +127,9 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
     // Only groups with a member waiting for the owner: the rest have nothing to review together.
     inbox.groups = coupledGroups(
         targets.filter((t) => coupling.has(t.id)).map((t) => ({ ...t, ...coupling.get(t.id) })),
-    ).filter((g) => g.ids.some((id) => listed.has(id)));
+    )
+        .filter((g) => g.ids.some((id) => listed.has(id)))
+        .map((g) => ({ ...g, states: g.ids.map((id) => state.get(id) ?? "unknown") }));
     return inbox;
 }
 

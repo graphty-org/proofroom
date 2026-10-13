@@ -827,6 +827,37 @@ describe("serve: decisions and Finish", () => {
         expect(await unpublished()).toBe(1);
     });
 
+    it("treats a finished accept as unpublished when the branch's baseline no longer holds its image", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        await s.api("POST", "/api/decide", {
+            id: "123",
+            project: "compact-mantine",
+            file: "badge--default.light.png",
+            decision: "accept",
+        });
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        await s.api("GET", "/api/prs");
+        expect((await s.api("GET", "/api/target/123")).body.unpublished).toBe(0);
+        // An update from the default branch takes its side of the baseline: the review record stays
+        // on the branch, but the file holds the old image again, so the gate sees the change unaccepted.
+        const clone = join(s.dir, "updater");
+        git(s.dir, "clone", "-q", "-b", "feature", s.remote, clone);
+        git(clone, "config", "user.name", "Other");
+        git(clone, "config", "user.email", "other@example.com");
+        git(clone, "rm", "-q", "visual-baselines/compact-mantine/badge--default.light.png");
+        git(clone, "commit", "-q", "-m", "take the default branch's baseline");
+        git(clone, "push", "-q", "origin", "feature");
+        await s.api("GET", "/api/prs");
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
+            "badge--default.light.png": { decision: "accept", reason: null },
+        });
+        expect((await s.api("GET", "/api/target/123")).body.unpublished).toBe(1);
+    });
+
     it("runs Finish in the background, reports its step, and refuses a second one and new decisions", async () => {
         let release;
         const gate = new Promise((resolve) => (release = resolve));
