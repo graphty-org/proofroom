@@ -5,8 +5,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -23,6 +22,7 @@ import {
     isolateGit,
     makeRepo,
     pushCommit,
+    tempDir,
 } from "./helpers.mjs";
 import { makeKey } from "./passkey-vectors.mjs";
 
@@ -152,7 +152,7 @@ describe("update from master", () => {
         it("runs the check in the merged checkout and pushes when it passes", async () => {
             const r = makeRepo();
             pushCommit(r.remote, "master", "src/layout.ts");
-            const seen = join(mkdtempSync(join(tmpdir(), "vr-check-")), "seen");
+            const seen = join(tempDir("vr-check-"), "seen");
             const steps = [];
             const out = await withCheck(
                 r,
@@ -190,7 +190,7 @@ describe("visual-review update <pr>", () => {
      * @returns {import("node:child_process").SpawnSyncReturns<string>} the finished process
      */
     function cli(r, args) {
-        const bin = mkdtempSync(join(tmpdir(), "vr-gh-"));
+        const bin = tempDir("vr-gh-");
         const gh = join(bin, "gh");
         writeFileSync(gh, `#!/bin/sh\necho '{"state":"open","head":{"ref":"feature"}}'\n`);
         chmodSync(gh, 0o755);

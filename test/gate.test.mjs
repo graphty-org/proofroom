@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,7 @@ import {
 } from "../trusted/gate.mjs";
 import { PASSKEYS_FILE } from "../trusted/lib/approval.mjs";
 import { normalizeConfig } from "../trusted/lib/config.mjs";
-import { CONFIG, FIXTURE, git, isolateGit, makeRepo } from "./helpers.mjs";
+import { CONFIG, FIXTURE, git, isolateGit, makeRepo, tempDir } from "./helpers.mjs";
 import { approve, makeKey, passkeysJson } from "./passkey-vectors.mjs";
 
 beforeAll(isolateGit);
@@ -53,7 +53,7 @@ const results = (statuses, extra = {}) => ({
 });
 
 function artifacts(map) {
-    const dir = mkdtempSync(join(tmpdir(), "vr-gate-"));
+    const dir = tempDir("vr-gate-");
     for (const [name, r] of Object.entries(map)) {
         mkdirSync(join(dir, name));
         if (r) {
@@ -402,7 +402,7 @@ describe("the not-affected marker (skipped.json)", () => {
         });
 
         it("fails the same artifacts in a merge-queue run", () => {
-            const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+            const file = join(tempDir("vr-event-"), "event.json");
             const r = makeRepo();
             const body = `\`\`\`yaml\nchecking_base_sha: ${git(r.repo, "rev-parse", "master")}\npull_requests:\n  - number: 7\n\`\`\`\n`;
             writeFileSync(file, JSON.stringify({ pull_request: { number: 995, body } }));
@@ -1038,7 +1038,7 @@ describe("passkey approvals", () => {
             });
             // The draft's event; the batch sits on `base` (a ref of r, or null for no checking_base_sha).
             const event = (r, base, ...prs) => {
-                const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+                const file = join(tempDir("vr-event-"), "event.json");
                 const list = prs.map((n) => `  - number: ${n}\n    scopes: []\n`).join("");
                 const sha = base === null ? "" : `checking_base_sha: ${git(r.repo, "rev-parse", base)}\n`;
                 const body = `### Queue\n\n\`\`\`yaml\n---\n${sha}pull_requests:\n${list}scopes: []\n...\n\n\`\`\`\n`;
@@ -1107,7 +1107,7 @@ describe("passkey approvals", () => {
 
             it("fails closed on an event that names no pull request, and refuses --pr with it", () => {
                 const r = batch();
-                const empty = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+                const empty = join(tempDir("vr-event-"), "event.json");
                 writeFileSync(empty, JSON.stringify({ pull_request: { body: "no yaml here" } }));
                 expect(run(r, "--queue-event", empty).status).toBe(1);
                 expect(run(r, "--queue-event", join(r.repo, "missing.json")).status).toBe(1);
@@ -1139,7 +1139,7 @@ describe("passkey approvals", () => {
                 const missing = run(r, "--queue-event", event(r, null, 7, 8));
                 expect(missing.stdout).toContain("names no checking_base_sha the gate can read (missing)");
                 expect(missing.status).toBe(1);
-                const file = join(mkdtempSync(join(tmpdir(), "vr-event-")), "event.json");
+                const file = join(tempDir("vr-event-"), "event.json");
                 const body = `\`\`\`yaml\nchecking_base_sha: ${"f".repeat(40)}\npull_requests:\n  - number: 7\n\`\`\`\n`;
                 writeFileSync(file, JSON.stringify({ pull_request: { body } }));
                 const unknown = run(r, "--queue-event", file);

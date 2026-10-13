@@ -16,7 +16,8 @@ export default defineConfig({
         // each one that is already true on its second look no longer costs 50 ms.
         expect: { poll: { interval: 10 } },
         // No test runs git with the developer's own config (signing, hooks) or a hook's GIT_DIR,
-        // and none reaches the network.
+        // none reaches the network, and the temporary directories a test file made (tempDir,
+        // helpers.mjs) go when it finishes.
         setupFiles: ["test/isolate-git.setup.mjs", "test/no-network.setup.mjs"],
         // The repository every test's makeRepo copies.
         globalSetup: ["test/repo-template.setup.mjs", "../tools/test-slots.mjs"],

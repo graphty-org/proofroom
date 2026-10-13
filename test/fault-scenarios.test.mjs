@@ -5,8 +5,7 @@
  * The page's scenarios are in fault-scenarios.page.test.mjs.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +17,7 @@ import { sessionToken } from "../trusted/lib/serve.mjs";
 import { storySettings } from "../capture/capture.mjs";
 import { hooks } from "./fault-hooks.mjs";
 import { captureLog, endedJob, injector, startApp, world } from "./faults.mjs";
-import { CONFIG, copyFixture, FIXTURE, git, isolateGit, job, makeRepo, pushCommit } from "./helpers.mjs";
+import { CONFIG, copyFixture, FIXTURE, git, isolateGit, job, makeRepo, pushCommit, tempDir } from "./helpers.mjs";
 
 vi.mock("node:fs", async (importOriginal) => (await import("./fault-hooks.mjs")).faultyFs(await importOriginal()));
 vi.mock("../trusted/lib/github.mjs", async (importOriginal) =>
@@ -846,7 +845,7 @@ describe("Finish", () => {
 
 describe("the session token", () => {
     it("An empty token file disables authentication", async () => {
-        const dir = mkdtempSync(join(tmpdir(), "vr-token-"));
+        const dir = tempDir("vr-token-");
         writeFileSync(join(dir, "token"), "\n");
         expect(sessionToken(dir).length).toBeGreaterThan(20);
         const r = makeRepo();
@@ -858,7 +857,7 @@ describe("the session token", () => {
 
 describe("the gate and the config", () => {
     it("The gate throws a stack trace on an unparseable results.json, hiding every other project's verdict", () => {
-        const dir = mkdtempSync(join(tmpdir(), "vr-gate-"));
+        const dir = tempDir("vr-gate-");
         mkdirSync(join(dir, "visual-a-1"));
         mkdirSync(join(dir, "visual-b-1"));
         writeFileSync(join(dir, "visual-a-1/results.json"), "{");

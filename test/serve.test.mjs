@@ -1,15 +1,5 @@
-import {
-    chmodSync,
-    existsSync,
-    mkdirSync,
-    mkdtempSync,
-    readdirSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -23,9 +13,9 @@ import { notifyOnce } from "../trusted/lib/inbox.mjs";
 import {
     capturedItems,
     copyFixture,
+    fakeGh,
     FIXTURE,
     FIXTURE_CONFIG,
-    fakeGh,
     git,
     isolateGit,
     job,
@@ -33,8 +23,9 @@ import {
     makeRepo,
     onePr,
     pushCommit,
-    until,
     seedTiles,
+    tempDir,
+    until,
     withMoved,
 } from "./helpers.mjs";
 import { approve, makeKey, passkeysJson, register } from "./passkey-vectors.mjs";
@@ -46,7 +37,9 @@ let app;
 // The app's tiles made in advance run on after the server closes: wait for them, or their reads of
 // a later-deleted download log into the next test's console.error spy.
 afterEach(async () => {
-    server?.close();
+    // Until every request has been answered: a list refresh still running would write its state
+    // into the repository after the test file removed it (tempDir).
+    await new Promise((resolve) => (server ? server.close(() => resolve()) : resolve()));
     await app?.idle();
     app = null;
 });
@@ -291,7 +284,7 @@ describe("serve: pull requests", () => {
         // blocked every request, and a git that stalled for seconds timed out the list (#1496).
         // On such a server the test cannot release it, so the hold ends by itself after 10 s and
         // the test fails on its timeout instead of hanging.
-        const bin = mkdtempSync(join(tmpdir(), "vr-git-"));
+        const bin = tempDir("vr-git-");
         const real = process.env.PATH.split(delimiter)
             .map((d) => join(d, "git"))
             .find((f) => existsSync(f));

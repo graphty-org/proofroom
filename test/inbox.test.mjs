@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { coupledGroups, inboxOf, message, notifyOnce, notifyStep } from "../trusted/lib/inbox.mjs";
+
+import { tempDir } from "./helpers.mjs";
 
 const project = (name, extra = {}) => ({ project: name, problem: null, downloading: false, undecided: 0, ...extra });
 const target = (pr, projects, extra = {}) => ({
@@ -183,7 +184,7 @@ describe("the notifier", () => {
     });
 
     it("runs the command without a shell, keeps what it sent, and ignores a stale inbox", async () => {
-        const dir = mkdtempSync(join(tmpdir(), "vr-notify-"));
+        const dir = tempDir("vr-notify-");
         const out = join(dir, "sent.json");
         const command = [
             process.execPath,
@@ -212,7 +213,7 @@ describe("the notifier", () => {
     });
 
     it("tries again next time when the command fails", async () => {
-        const dir = mkdtempSync(join(tmpdir(), "vr-notify-"));
+        const dir = tempDir("vr-notify-");
         writeFileSync(join(dir, "inbox.json"), JSON.stringify({ at: 0, origin: "o", ready: [ready(1)] }));
         await expect(
             notifyOnce({ stateDir: dir, command: [process.execPath, "-e", "process.exit(1)"], now: 1, gap: 0 }),

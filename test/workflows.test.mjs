@@ -4,13 +4,12 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { renderTemplate } from "../trusted/lib/init.mjs";
-import { CONFIG } from "./helpers.mjs";
+import { CONFIG, tempDir } from "./helpers.mjs";
 
 const workflow = (name) => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), "utf8");
 const values = { branch: CONFIG.defaultBranch, manager: "pnpm", version: "0.0.0" };
@@ -77,7 +76,7 @@ describe("visual-seed.yml", () => {
             .slice(0, end)
             .map((l) => l.slice(18))
             .join("\n");
-        const output = join(mkdtempSync(join(tmpdir(), "vr-seed-")), "out");
+        const output = join(tempDir("vr-seed-"), "out");
         const r = spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], {
             cwd: ROOT,
             env: { ...process.env, WANT: want, GITHUB_OUTPUT: output },

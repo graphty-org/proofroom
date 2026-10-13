@@ -8,8 +8,7 @@
  *   FAULT_SEED=7 pnpm exec vitest run test/fault-journey.test.mjs
  */
 
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -29,7 +28,7 @@ import {
     Violation,
     world,
 } from "./faults.mjs";
-import { git, isolateGit, job, keepTiles, makeRepo, seedTiles } from "./helpers.mjs";
+import { git, isolateGit, job, keepTiles, makeRepo, seedTiles, tempDir } from "./helpers.mjs";
 
 vi.mock("node:fs", async (importOriginal) => (await import("./fault-hooks.mjs")).faultyFs(await importOriginal()));
 vi.mock("../trusted/lib/github.mjs", async (importOriginal) =>
@@ -145,7 +144,7 @@ beforeAll(async () => {
     await walk({ stopped: false }, 0);
 });
 function freshRepo() {
-    const dir = mkdtempSync(join(tmpdir(), "vr-journey-"));
+    const dir = tempDir("vr-journey-");
     cpSync(template.dir, dir, { recursive: true });
     const config = join(dir, "repo/.git/config");
     writeFileSync(config, readFileSync(config, "utf8").replaceAll(template.remote, join(dir, "remote.git")));
