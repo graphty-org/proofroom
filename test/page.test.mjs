@@ -1797,7 +1797,7 @@ describe("review page: waits that say what they wait for", () => {
                 const gh = onePr()(r);
                 return {
                     gh: async (args, input) => {
-                        if (args[1]?.includes("/pulls?")) {
+                        if (args[1] === "graphql") {
                             await held;
                         }
                         return gh(args, input);
@@ -1960,7 +1960,7 @@ describe("review page: the wait box", () => {
                 const gh = onePr()(r);
                 return {
                     gh: withRetries(async (args, input) => {
-                        if ((args[1] ?? "").includes("/pulls?")) {
+                        if (args[1] === "graphql") {
                             if (github === "refusing") {
                                 throw new Error("HTTP 401: Bad credentials");
                             }
@@ -1995,7 +1995,7 @@ describe("review page: the wait box", () => {
                 const gh = onePr()(r);
                 return {
                     gh: async (args, input) => {
-                        if (down && (args[1] ?? "").includes("/pulls?")) {
+                        if (down && args[1] === "graphql") {
                             throw new Error("HTTP 401: Bad credentials");
                         }
                         return gh(args, input);
@@ -2025,7 +2025,7 @@ describe("review page: the wait box", () => {
                 const gh = onePr()(r);
                 return {
                     gh: async (args, input) => {
-                        if (hold && (args[1] ?? "").includes("/pulls?")) {
+                        if (hold && args[1] === "graphql") {
                             await new Promise((resolve) => (release = resolve));
                         }
                         return gh(args, input);

@@ -332,7 +332,7 @@ describe("refreshing the targets", () => {
         const w = world(r);
         let down = false;
         const gh = async (args, input) => {
-            if (down && args[1]?.includes("head_sha=")) {
+            if (down && args[1] === "graphql") {
                 throw new Error("HTTP 403: API rate limit exceeded for user ID 1.");
             }
             return w.gh(args, input);
@@ -358,7 +358,7 @@ describe("refreshing the targets", () => {
         w.data.artifacts[2000] = ["visual-compact-mantine-1", "visual-graphty-element-1"];
         let down = false;
         const gh = async (args, input) => {
-            if (down && args[1]?.includes("/pulls?state=open")) {
+            if (down && args[1] === "graphql") {
                 throw new Error("HTTP 502: Bad Gateway");
             }
             return w.gh(args, input);
@@ -498,7 +498,7 @@ describe("refreshing the targets", () => {
         for (let i = 0; i < 20; i++) {
             last = await s.api("GET", "/api/img/123/compact-mantine/capture/button--primary.dark.png");
         }
-        expect(w.data.calls.filter((c) => c.includes("pulls?state=open")).length).toBeLessThanOrEqual(3);
+        expect(w.data.calls.filter((c) => c === "api graphql").length).toBeLessThanOrEqual(3);
         expect(last.body.error).not.toMatch(/^no such/);
     });
 
