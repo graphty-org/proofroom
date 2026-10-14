@@ -62,7 +62,7 @@ describe("usage: what the server keeps", () => {
             createApp({ repo: r.repo, tmp, config: { ...CONFIG, usage }, token: TOKEN, origin, gh: async () => "[]" }),
         );
         const call = (method, body) =>
-            fetch(`${origin}/api/usage`, {
+            fetch(`${origin}/api/${method === "GET" ? "usage-setting" : "usage"}`, {
                 method,
                 headers: { "x-review-token": TOKEN, origin, "content-type": "application/json" },
                 body: body && JSON.stringify(body),

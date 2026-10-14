@@ -639,22 +639,22 @@ script, no other server. With the setting off, the page sends nothing and no fil
 Each line is one JSON event with its `type`, the time `at` (milliseconds since 1970) and `s`, an
 id made new at each page load (a session). The events:
 
-| Type                                         | When, and what it holds                                                                                                                                                     |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `load`                                       | The page loaded: viewport width and height, device pixel ratio, coarse pointer, touch points                                                                                |
-| `pointer`                                    | The first pointer of a session, and each change of kind: `mouse`, `touch` or `pen`                                                                                          |
-| `visible`, `hidden`                          | The tab or app came to the front, or left it                                                                                                                                |
-| `target`, `project`                          | A pull request (or seed) and a project opened: item count, newer baselines on the default branch                                                                            |
-| `item`                                       | An item shown in the story screen: its project, file, status, place in the pass, and whether it was reached by going back                                                   |
-| `drawn`                                      | Its images finished drawing: milliseconds since it was shown                                                                                                                |
-| `set`                                        | A view setting changed (screen, view, zoom, outline, baseline pane, focus, blink, flash, filter, grid options)                                                              |
-| `press`                                      | A button or key pressed (the same names the Keys list counts)                                                                                                               |
-| `controls`                                   | The controls on screen not seen before in the session, so the report can name those never used                                                                              |
-| `move`, `jump`                               | Previous or Next; Go to by number or story id                                                                                                                               |
-| `decide`, `undo`                             | A decision or its undo: the decision before it, milliseconds since the item was shown, view and zoom, the reason's length (never its text); bulk decisions give their count |
-| `finish-start`, `finish-end`, `update-start` | Finish or Update from the default branch started; ended, with success or failure and its duration                                                                           |
-| `error`                                      | An error the page showed, its first 160 characters                                                                                                                          |
-| `idle`                                       | No event for a minute or more: the gap, in milliseconds                                                                                                                     |
+| Type                         | When, and what it holds                                                                                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `load`                       | The page loaded: viewport width and height, device pixel ratio, coarse pointer, touch points                                                                                    |
+| `pointer`                    | The first pointer of a session, and each change of kind: `mouse`, `touch` or `pen`                                                                                              |
+| `visible`, `hidden`          | The tab or app came to the front, or left it                                                                                                                                    |
+| `target`, `project`          | A pull request (or seed) and a project opened: item count, newer baselines on the default branch                                                                                |
+| `item`                       | An item shown in the story screen: its project, file, status, place in the pass, and whether it was reached by going back                                                       |
+| `drawn`                      | Its images finished drawing: milliseconds since it was shown                                                                                                                    |
+| `set`                        | A view setting changed (screen, view, zoom, outline, baseline pane, focus, blink, flash, filter, grid options)                                                                  |
+| `press`                      | A button or key pressed (the same names the Keys list counts)                                                                                                                   |
+| `controls`                   | The controls on screen not seen before in the session, so the report can name those never used                                                                                  |
+| `move`, `jump`               | Previous or Next; Go to by number or story id                                                                                                                                   |
+| `decide`, `undo`             | A decision or its undo: the decision before it, milliseconds since the item was shown, view and zoom, the reason's length (never its text); bulk decisions give their count     |
+| `finish-start`, `finish-end` | A Finish (`kind` `finish`) or an Update from the default branch (`update`) the page follows, also after a reload; its end, with success or failure and how long it was followed |
+| `error`                      | An error the page showed, its first 160 characters                                                                                                                              |
+| `idle`                       | No event for a minute or more: the gap, in milliseconds                                                                                                                         |
 
 No image, no pull request text, no reject or exclude reason and no session token is recorded:
 the server drops any event that contains the token.

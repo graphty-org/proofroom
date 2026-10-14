@@ -2511,7 +2511,7 @@ export function createApp({
         "GET /api/finish-status": async () => [200, { job }],
         // Usage events (config `usage`): whether the page sends them, and the page's batches,
         // appended to usage-events.jsonl. Off, nothing is written.
-        "GET /api/usage": async () => [200, { on: config.usage === true }],
+        "GET /api/usage-setting": async () => [200, { on: config.usage === true }],
         "POST /api/usage": async (_, body) => {
             if (config.usage !== true) {
                 return [404, { error: "usage events are off" }];
@@ -2722,14 +2722,12 @@ export function createApp({
                     error: "not allowed",
                 });
             }
-            // A write route's GET (GET /api/usage) only reads.
-            const posted = writes && req.method === "POST";
-            if (posted && req.headers.origin !== origin) {
+            if (writes && req.headers.origin !== origin) {
                 return send(res, 403, { error: "foreign origin" });
             }
             const [status, body, type] = await handler(
                 args,
-                posted ? await readBody(req) : undefined,
+                writes ? await readBody(req) : undefined,
                 url.searchParams,
             );
             return send(res, status, body, type);
