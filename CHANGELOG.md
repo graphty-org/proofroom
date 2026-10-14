@@ -1,3 +1,14 @@
+## 0.2.28 (2026-10-14)
+
+### 🩹 Fixes
+
+- **workspace:** keep core files off in the update check and heap the root builds ([#2562](https://github.com/graphty-org/graphty-monorepo/issues/2562))
+- **workspace:** build with CI's 8 GB heap in the visual-review update check ([#2475](https://github.com/graphty-org/graphty-monorepo/issues/2475))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.27 (2026-10-13)
 
 ### 🩹 Fixes
