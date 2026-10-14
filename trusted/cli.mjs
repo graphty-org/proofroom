@@ -96,6 +96,17 @@ refuses, lists the files and changes nothing. The commit is signed as your git c
 signs. For a pull request whose capture is stale against the default branch's baselines, or
 whose branch conflicts with it only under the baselines directory.`,
 
+    usage: `usage: visual-review usage [--since <date>] [--json]
+
+Sums up the review page's usage events: sessions (touch or mouse), time per item by project and
+by view, decisions per minute, the controls and keys used most, least and never, view switches
+per item, going back, hesitation, errors, stale captures and Finish. Reads
+<workDir>/state/usage-events.jsonl, which \`serve\` writes only when visual-review.config.json
+sets "usage": true. Nothing leaves this computer.
+
+  --since <date>  only events from this date or time on (anything Date.parse reads, e.g. 2026-10-01)
+  --json          the summary as JSON`,
+
     "install-browser": `usage: visual-review install-browser
 
 Installs the Chromium, and on Linux the system libraries, that this package's Playwright uses
@@ -111,6 +122,7 @@ const COMMANDS = {
     gate,
     notify,
     update,
+    usage,
     "install-browser": installBrowser,
 };
 
@@ -128,6 +140,7 @@ Commands:
   notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
   compare          compare two directories of PNGs (local use)
+  usage            sum up the review page's usage events (when the config turns them on)
   install-browser  install the Chromium capture uses
 
 \`visual-review <command> --help\` describes each command. Documentation:
@@ -356,6 +369,27 @@ async function update(args) {
         }
         throw err;
     }
+}
+
+async function usage(args) {
+    const { values } = parseArgs({
+        args,
+        options: { since: { type: "string" }, json: { type: "boolean", default: false } },
+    });
+    const since = values.since === undefined ? 0 : Date.parse(values.since);
+    if (Number.isNaN(since)) {
+        console.error(HELP.usage);
+        return 2;
+    }
+    const { root, config } = await settings();
+    const { formatUsage, readUsage, summarize, USAGE_FILE } = await import("./lib/usage.mjs");
+    const file = join(root, config.workDir, "state", USAGE_FILE);
+    const summary = summarize(readUsage(file, since));
+    console.log(values.json ? JSON.stringify(summary, null, 2) : formatUsage(summary));
+    if (!config.usage && summary.events === 0) {
+        console.error(`visual-review usage: usage events are off; set "usage": true in visual-review.config.json`);
+    }
+    return 0;
 }
 
 async function compare(args) {

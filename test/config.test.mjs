@@ -56,6 +56,7 @@ describe("normalizeConfig", () => {
             issueLabels: ["bug"],
             fontconfig: null,
             updateCheck: null,
+            usage: false,
             projects: {
                 web: {
                     storybook: "storybook-static",

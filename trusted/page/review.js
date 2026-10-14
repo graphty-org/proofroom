@@ -165,6 +165,7 @@ function usage() {
     }
 }
 function count(name) {
+    logUsage("press", { c: name });
     try {
         const all = usage();
         all[name] = (all[name] ?? 0) + 1;
@@ -173,17 +174,166 @@ function count(name) {
         // Not counted; nothing else depends on it.
     }
 }
+const controlName = (b) =>
+    b.dataset.count ??
+    (b.id ||
+        [...b.childNodes]
+            .filter((n) => n.nodeType === 3)
+            .map((n) => n.textContent)
+            .join("")
+            .trim() ||
+        "button");
 document.addEventListener(
     "click",
     (e) => {
         const b = e.target.closest?.("button, summary");
         if (b && b.isConnected) {
-            const words = [...b.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent);
-            count(b.dataset.count ?? (b.id || words.join("").trim() || "button"));
+            count(controlName(b));
         }
     },
     true,
 );
+
+// Usage events, only when the server's owner turned them on (`usage` in visual-review.config.json):
+// a timeline of how a review goes, sent to this page's own server and nowhere else, which appends
+// it to a file on its disk. Off, nothing is kept or sent. No image, no reason text, no token.
+const usageLog = {
+    on: null, // null until the server answers; then true or false
+    queue: [],
+    sending: false,
+    session: globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2),
+    last: 0, // when the last event was taken
+    settings: null, // the view settings as last logged
+    seen: new Set(), // the controls seen on screen in this session
+    itemAt: 0, // when the item on screen was shown
+    itemFile: null,
+    itemIndex: -1,
+    pointer: null,
+};
+const IDLE_MS = 60000;
+function logUsage(type, data = {}) {
+    if (usageLog.on === false) {
+        return;
+    }
+    const at = Date.now();
+    if (usageLog.last && at - usageLog.last > IDLE_MS) {
+        usageLog.queue.push({ type: "idle", at, s: usageLog.session, ms: at - usageLog.last });
+    }
+    usageLog.last = at;
+    usageLog.queue.push({ type, at, s: usageLog.session, ...data });
+    // Waiting on the server's answer (a token not pasted yet) keeps only the newest.
+    usageLog.queue.splice(0, usageLog.queue.length - 500);
+    if (usageLog.on) {
+        queueMicrotask(sendUsage);
+    }
+}
+async function sendUsage() {
+    if (usageLog.sending || usageLog.queue.length === 0) {
+        return;
+    }
+    usageLog.sending = true;
+    const events = usageLog.queue.splice(0, 100);
+    try {
+        // Not through api(): a refused token here must not ask for it again. The answer is read, so
+        // the request ends (a page test waits for the page's writes to end).
+        const res = await fetch("/api/usage", {
+            method: "POST",
+            headers: { "x-review-token": token, "content-type": "application/json" },
+            body: JSON.stringify({ events }),
+        });
+        await res.text();
+    } catch {
+        // Lost; usage is never worth a message.
+    } finally {
+        usageLog.sending = false;
+    }
+    if (usageLog.queue.length > 0) {
+        sendUsage();
+    }
+}
+// Asks the server once per token whether to log; until it answers, events wait in the queue.
+async function startUsage() {
+    try {
+        const res = await fetch("/api/usage", { headers: { "x-review-token": token } });
+        if (res.status === 401) {
+            return; // asked again once a token is pasted
+        }
+        usageLog.on = res.ok && (await res.json()).on === true;
+    } catch {
+        usageLog.on = false;
+    }
+    if (usageLog.on) {
+        sendUsage();
+    } else {
+        usageLog.queue.length = 0;
+    }
+}
+// The view settings that changed since the last call, each as one event; and (logControls) the
+// controls on screen not seen before in this session, so the report can name those never pressed.
+function logSettings() {
+    if (usageLog.on === false) {
+        return;
+    }
+    const now = {
+        screen: state.screen,
+        view: state.view,
+        zoom: state.zoom,
+        showBox: state.showBox,
+        baselinePane: state.baselinePane,
+        focus: state.focus,
+        blink: state.blink,
+        spotFlash: state.spotFlash,
+        motion: state.motion,
+        filter: state.filter,
+        grouped: state.grouped,
+        gridSpot: state.gridSpot,
+        gridZoom: state.gridZoom,
+        shortcuts: state.shortcuts,
+    };
+    for (const [key, value] of Object.entries(now)) {
+        if (usageLog.settings && usageLog.settings[key] !== value) {
+            logUsage("set", { key, from: usageLog.settings[key], to: value });
+        }
+    }
+    usageLog.settings = now;
+    logControls();
+}
+function logControls() {
+    if (usageLog.on === false) {
+        return;
+    }
+    // Once the screen being drawn is in the document.
+    queueMicrotask(() => {
+        const fresh = new Set(
+            [...document.querySelectorAll("button, summary")]
+                .filter((b) => b.getClientRects().length > 0)
+                .map(controlName)
+                .filter((c) => !usageLog.seen.has(c)),
+        );
+        if (fresh.size > 0) {
+            fresh.forEach((c) => usageLog.seen.add(c));
+            logUsage("controls", { c: [...fresh] });
+        }
+    });
+}
+document.addEventListener(
+    "pointerdown",
+    (e) => {
+        if (e.pointerType !== usageLog.pointer) {
+            usageLog.pointer = e.pointerType;
+            logUsage("pointer", { p: e.pointerType });
+        }
+    },
+    true,
+);
+document.addEventListener("visibilitychange", () => logUsage(document.visibilityState));
+logUsage("load", {
+    w: innerWidth,
+    h: innerHeight,
+    dpr: devicePixelRatio,
+    coarse: globalThis.matchMedia?.("(pointer: coarse)").matches === true,
+    touch: navigator.maxTouchPoints ?? 0,
+});
 // A tap outside an open menu closes it, as a menu does.
 document.addEventListener("pointerdown", (e) => {
     for (const m of document.querySelectorAll("details.menu[open]")) {
@@ -235,6 +385,9 @@ function setBar(node = null) {
 // The same message again is not rewritten, so a screen reader does not read it again.
 function say(text, isError = false) {
     const shown = text === "" && running() ? finishing() : text;
+    if (isError && shown) {
+        logUsage("error", { m: shown.slice(0, 160) });
+    }
     elapsedLine.textContent = "";
     if (!isError && shown !== "" && statusLine.textContent === shown && alertLine.textContent === "") {
         return;
@@ -654,6 +807,7 @@ function useToken(e, field) {
     } catch {
         // Kept for this visit only.
     }
+    startUsage();
     checkFinish();
     route();
 }
@@ -904,6 +1058,13 @@ function toggleOption(key) {
 
 // Takes a project's data from the server as the one on screen.
 function adopt(data, project) {
+    if (state.target?.id !== data.target.id) {
+        logUsage("target", { id: data.target.id, local: data.target.local === true });
+    }
+    if (state.target?.id !== data.target.id || state.project !== project) {
+        const p = data.target.projects.find((x) => x.project === project);
+        logUsage("project", { id: data.target.id, project, items: data.items.length, stale: p?.newer?.length ?? 0 });
+    }
     state.data = data;
     state.target = data.target;
     state.project = project;
@@ -931,6 +1092,7 @@ function counted(item, before, after, unpublished) {
 // The breadcrumb (on the grid and story screens: Visual review / target / project / Grid, or on the
 // grid the item last opened) and Finish.
 function drawHeader() {
+    logSettings();
     const onTargets = state.screen === "targets" || state.target === null;
     crumbs.hidden = onTargets;
     finishSlot.replaceChildren();
@@ -1194,6 +1356,7 @@ function drawTargets() {
             : state.list.inbox && el("h2", { class: "all-heading" }, "All pull requests"),
         ...targets.map(targetCard),
     );
+    logControls();
     if (running()) {
         drawFinishPanel();
     }
@@ -2477,6 +2640,13 @@ async function decideMany(items, decision, what) {
         say(err.message, true);
         return;
     }
+    logUsage("decide", {
+        project: state.project,
+        d: decision,
+        n: answer.files.length,
+        bulk: "cluster",
+        reasonLength: reason?.length ?? 0,
+    });
     for (const file of answer.files) {
         state.data.decisions[file] = { decision, reason, ...(decision === "accept" && { bulk: true }) };
     }
@@ -2761,6 +2931,7 @@ function goTo(value) {
     if (v === "") {
         return;
     }
+    logUsage("jump", { number: /^\d+$/.test(v) });
     const all = ordered(reviewable());
     if (/^\d+$/.test(v)) {
         const n = Number(v);
@@ -2892,9 +3063,24 @@ function showStory() {
         return;
     }
     const focusId = barFocus();
+    const wasStory = state.screen === "story";
     state.screen = "story";
     state.index = Math.max(0, Math.min(state.index, items.length - 1));
     const item = items[state.index];
+    if (!wasStory || item.file !== usageLog.itemFile) {
+        logUsage("item", {
+            project: state.project,
+            file: item.file,
+            status: item.status,
+            i: state.index,
+            n: items.length,
+            pass: state.pass,
+            back: wasStory && state.index < usageLog.itemIndex,
+        });
+        usageLog.itemAt = performance.now();
+        usageLog.itemFile = item.file;
+        usageLog.itemIndex = state.index;
+    }
     if (item.file !== state.lastFile) {
         stageShown = null;
         appearedAt = Infinity;
@@ -3510,6 +3696,7 @@ function shown(stage, item) {
         }
         if (appearedAt === Infinity) {
             appearedAt = performance.now();
+            logUsage("drawn", { file: item.file, ms: Math.round(appearedAt - usageLog.itemAt) });
         }
         setTimeout(
             () => {
@@ -3878,6 +4065,7 @@ function move(step) {
     }
     const count = passItems().length;
     const at = state.index + step;
+    logUsage("move", { step });
     if (at >= count) {
         showEnd("");
         return;
@@ -4045,6 +4233,16 @@ async function decide(decision, press = null) {
         clearTimeout(slow);
         saving = null;
     }
+    logUsage(decision === null ? "undo" : "decide", {
+        project: state.project,
+        file: item.file,
+        d: decision,
+        was: before?.decision ?? null,
+        ms: Math.round(performance.now() - usageLog.itemAt),
+        view: state.view,
+        zoom: state.zoom,
+        reasonLength: reason?.length ?? 0,
+    });
     rememberDecision(item, before, decision, reason);
     counted(item, before, decision, answer.unpublished);
     if (decision === null) {
@@ -4102,6 +4300,7 @@ async function undo(files, where, one = false) {
     } catch (err) {
         say(`Undid ${done} of ${files.length}, then: ${err.message}`, true);
     }
+    logUsage("undo", { project: state.project, n: done });
     try {
         await reload();
     } catch (err) {
@@ -4182,6 +4381,12 @@ async function acceptAll(component) {
         say(err.message, true);
         return;
     }
+    logUsage("decide", {
+        project: state.project,
+        d: "accept",
+        n: answer.files.length,
+        bulk: component ? "component" : "all",
+    });
     for (const file of answer.files) {
         state.data.decisions[file] = { decision: "accept", reason: null, bulk: true };
     }
@@ -4321,6 +4526,7 @@ async function updateTarget(t) {
     if (!go) {
         return;
     }
+    logUsage("update-start", { id: t.id });
     try {
         state.job = (await api("/api/update", { id: t.id })).job;
     } catch (err) {
@@ -4497,6 +4703,7 @@ async function finishTarget(id, button) {
         say("A Finish is running: wait for it to end.");
         return;
     }
+    logUsage("finish-start", { id });
     const reset = () => {
         button.classList.remove("busy");
         button.querySelector(".spinner")?.remove();
@@ -4647,11 +4854,17 @@ async function watchFinish() {
     } finally {
         watching = false;
     }
+    const job = state.job;
+    logUsage("finish-end", {
+        id: job?.target ?? null,
+        kind: job?.kind ?? "finish",
+        ok: Boolean(job) && job.error === null && !job.interrupted,
+        ms: Math.round(performance.now() - state.finishSeen),
+    });
     state.finishSeen = null;
     say("");
     // The box closes on a Finish that worked: its result is the card on the targets screen. One
     // that failed keeps the box, as the error; the card below it says what was pushed.
-    const job = state.job;
     if (job && (job.error !== null || job.interrupted) && finishBox && !finishBox.ended) {
         const what = isUpdate(job) ? `Update of ${jobLabel(job)}` : `Finish of ${jobLabel(job)}`;
         finishBox.update({ title: `${what} failed`, body: null, detail: "" });
@@ -5448,6 +5661,7 @@ document.addEventListener("visibilitychange", () => {
 if (token === "") {
     askToken();
 } else {
+    startUsage();
     checkFinish();
     route();
 }
