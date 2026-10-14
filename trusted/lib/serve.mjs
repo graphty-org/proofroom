@@ -859,6 +859,28 @@ export function createApp({
         return answer;
     };
 
+    /**
+     * A listed pull request's CI run as REST answers it: the attempt is only there, so REST is
+     * asked only when the list shows the run changed since the last refresh.
+     * @param {{ run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null }} pr
+     *     the listed pull request
+     * @param {Map<number, { stamp: string, run: object }>} read collects this refresh's runs
+     * @returns {Promise<object | null>} the run, or null when CI never ran on the head
+     */
+    async function runOf({ run }, read) {
+        if (!run) {
+            return null;
+        }
+        const stamp = `${run.status} ${run.conclusion} ${run.updatedAt}`;
+        const was = runsRead.get(run.id);
+        const got = was?.stamp === stamp ? was.run : await getRun(gh, run.id);
+        // Kept only when REST agrees with the list, so an answer that lags it is asked again.
+        if (got.status === run.status && got.conclusion === run.conclusion) {
+            read.set(run.id, { stamp, run: got });
+        }
+        return got;
+    }
+
     async function build(info, run) {
         const g = run.status === "completed" ? kept(run) : gh;
         const jobs = await visualJobs(g, run, run.attempt, names);
@@ -1079,6 +1101,8 @@ export function createApp({
             listWarnings = [];
             const kept = [...targets.values()].filter((t) => t.pr !== null);
             step("listing pull requests");
+            // This refresh's runs (runOf); a failed list keeps what the last one learned.
+            let read = new Map();
             const prs = await openPullRequests(gh, config).catch((err) => {
                 if (!masterRun && kept.length === 0) {
                     throw err;
@@ -1089,9 +1113,9 @@ export function createApp({
                 for (const t of kept) {
                     next.set(t.id, { ...t, warnings: [warning] });
                 }
+                read = runsRead;
                 return [];
             });
-            const listed = listWarnings.length === 0;
             // Best effort: the default branch and the pull requests' branches, so the badge below
             // sees what accept will see. Skipped while a Finish runs, which fetches and pushes too.
             const fetch = (refs) =>
@@ -1119,21 +1143,6 @@ export function createApp({
                     });
                 }
             })();
-            // The run's attempt is only in REST: asked for when the list shows the run changed.
-            const read = new Map();
-            const runOf = async ({ run }) => {
-                if (!run) {
-                    return null;
-                }
-                const stamp = `${run.status} ${run.conclusion} ${run.updatedAt}`;
-                const was = runsRead.get(run.id);
-                const got = was?.stamp === stamp ? was.run : await getRun(gh, run.id);
-                // Kept only when REST agrees with the list, so an answer that lags it is asked again.
-                if (got.status === run.status && got.conclusion === run.conclusion) {
-                    read.set(run.id, { stamp, run: got });
-                }
-                return got;
-            };
             // Every pull request at once: one after another took about 40 s for 18 of them.
             let found = 0;
             step("finding CI runs", 0, prs.length);
@@ -1148,7 +1157,7 @@ export function createApp({
                         head: pr.headSha,
                     };
                     try {
-                        const run = await runOf(pr);
+                        const run = await runOf(pr, read);
                         return run
                             ? await build(info, run)
                             : await withPreviews(blank(info, `waiting for CI on ${pr.headSha.slice(0, 10)}`));
@@ -1159,10 +1168,7 @@ export function createApp({
                     }
                 }),
             );
-            // Only when the list was read: a failed list keeps what the last one learned.
-            if (listed) {
-                runsRead = read;
-            }
+            runsRead = read;
             step("fetching branches");
             await fetched;
             await readPasskeys();
