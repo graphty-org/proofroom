@@ -68,6 +68,18 @@ describe("inboxOf", () => {
             [1, 50],
         ]);
     });
+
+    it("never offers a draft pull request: its author is still working on it (issue 2727)", () => {
+        const two = [
+            target(1, [project("a", { undecided: 1 })], { draft: true }),
+            target(2, [project("a", { problem: "capture failed" })], { draft: true }),
+            target(3, [project("a", { undecided: 1 })]),
+        ];
+        const inbox = inboxOf(two, { now: 1 });
+        expect(inbox.ready.map((r) => r.pr)).toEqual([3]);
+        expect(inbox.notReady).toEqual([]);
+        expect(inbox).toMatchObject({ drafts: 2, capturing: 0, done: 0 });
+    });
 });
 
 describe("coupledGroups", () => {

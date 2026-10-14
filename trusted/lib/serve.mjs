@@ -998,7 +998,7 @@ export function createApp({
     const keptOr = (info, err) => {
         const old = targets.get(info.id);
         return old?.runId
-            ? { ...old, warnings: [retryLater("could not refresh", err.message)] }
+            ? { ...old, draft: info.draft, warnings: [retryLater("could not refresh", err.message)] }
             : blank(info, retryLater("failed to load", err.message));
     };
 
@@ -1118,6 +1118,7 @@ export function createApp({
                         url: pr.url,
                         branch: pr.branch,
                         head: pr.headSha,
+                        draft: pr.draft,
                     };
                     try {
                         const run = await runOf(pr, read);
@@ -1399,6 +1400,8 @@ export function createApp({
             title: t.title,
             url: t.url,
             branch: t.branch,
+            // Its author is still working on it: the inbox never offers it (inbox.mjs).
+            draft: t.draft === true,
             runId: t.runId,
             runAttempt: t.runAttempt,
             runUrl: t.runUrl,

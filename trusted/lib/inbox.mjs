@@ -3,7 +3,8 @@
  *
  * `inboxOf` sorts the review server's pull requests into what is waiting for the owner ("ready":
  * images to decide, or decisions not yet finished), what cannot be reviewed ("notReady": a capture
- * that failed, or a capture with a story that failed, with its reason) and two counts (capturing, nothing to decide). The server answers
+ * that failed, or a capture with a story that failed, with its reason) and three counts (capturing, nothing to decide,
+ * drafts: a draft pull request is still being worked on, so it is never offered). The server answers
  * it on GET /api/inbox and keeps it in `<workDir>/state/inbox.json`.
  *
  * `coupledGroups` finds the pull requests that change the same baseline files: they conflict when
@@ -58,17 +59,24 @@ function sourceOf(previews, loaded) {
  * @param {{ now: number, since?: Map<string, number>, coupling?: Map<string, { paths: string[],
  *     images: string[], packages: string[] | null }> }} at the time, when each ready entry (by
  *     readyKey) entered the ready list before, and what each pull request changes (coupledGroups)
- * @returns {{ ready: object[], notReady: object[], capturing: number, done: number,
+ * @returns {{ ready: object[], notReady: object[], capturing: number, done: number, drafts: number,
  *     groups: (ReturnType<typeof coupledGroups>[number] & { states: string[] })[] }} the inbox;
  *     `ready` complete ones first, then fewest undecided images, then longest waiting; `groups`
  *     those with a member listed, with each member's state ("ready", "notReady", "capturing",
- *     "done" or "unknown") in `ids` order
+ *     "done", "draft" or "unknown") in `ids` order
  */
 export function inboxOf(targets, { now, since = new Map(), coupling = new Map() }) {
-    const inbox = { ready: [], notReady: [], capturing: 0, done: 0, groups: [] };
+    const inbox = { ready: [], notReady: [], capturing: 0, done: 0, drafts: 0, groups: [] };
     const state = new Map();
     for (const t of targets) {
         if (t.pr === null || t.local) {
+            continue;
+        }
+        // A draft is still being worked on: nothing in it is ready for the owner, even a capture
+        // CI made before it went back to draft.
+        if (t.draft) {
+            state.set(t.id, "draft");
+            inbox.drafts++;
             continue;
         }
         const failed = t.projects.find(
