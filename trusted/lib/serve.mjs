@@ -111,6 +111,7 @@ import { approvalIndex, clusters, isNoise, knownNoise, observations } from "./fi
 import { coupledGroups, inboxOf, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { SPOT_KINDS, scaled } from "./thumbs.mjs";
+import { USAGE_FILE } from "./usage.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC = {
@@ -152,6 +153,7 @@ const WRITES = new Set([
     "passkey-challenge",
     "register",
     "update",
+    "usage",
 ]);
 // A registration challenge is good for one use within this long; a prepared approval for this long.
 const CHALLENGE_MS = 5 * 60000;
@@ -269,6 +271,41 @@ async function signingIdentity(repo) {
         author: name || email ? `${name} <${email}>` : null,
         fromEnv: Boolean(process.env.GIT_CONFIG_COUNT || process.env.GIT_CONFIG_PARAMETERS),
     };
+}
+
+const USAGE_TYPE = /^[a-z][a-z-]{0,31}$/;
+
+/**
+ * A page's batch of usage events as JSONL lines, or null when it is not one. Each event is a small
+ * object with a short `type`, a time `at` and a session id `s`; one whose JSON holds the session
+ * token is dropped, so the token is never written whatever the page sends.
+ * @param {unknown} events the page's batch
+ * @param {string} token the session token
+ * @returns {string | null} the lines to append
+ */
+export function usageLines(events, token) {
+    if (!Array.isArray(events) || events.length > 100) {
+        return null;
+    }
+    let out = "";
+    for (const e of events) {
+        const line = JSON.stringify(e);
+        if (
+            typeof e !== "object" ||
+            e === null ||
+            Array.isArray(e) ||
+            !USAGE_TYPE.test(e.type) ||
+            !Number.isFinite(e.at) ||
+            typeof e.s !== "string" ||
+            line.length > 2000
+        ) {
+            return null;
+        }
+        if (!line.includes(token)) {
+            out += `${line}\n`;
+        }
+    }
+    return out;
 }
 
 /**
@@ -2472,6 +2509,21 @@ export function createApp({
             return [202, { job }];
         },
         "GET /api/finish-status": async () => [200, { job }],
+        // Usage events (config `usage`): whether the page sends them, and the page's batches,
+        // appended to usage-events.jsonl. Off, nothing is written.
+        "GET /api/usage": async () => [200, { on: config.usage === true }],
+        "POST /api/usage": async (_, body) => {
+            if (config.usage !== true) {
+                return [404, { error: "usage events are off" }];
+            }
+            const lines = usageLines(body.events, token);
+            if (lines === null) {
+                return [400, { error: "events must be at most 100 small usage events" }];
+            }
+            mkdirSync(stateDir, { recursive: true });
+            appendFileSync(join(stateDir, USAGE_FILE), lines);
+            return [200, { kept: lines.split("\n").length - 1 }];
+        },
         // Update from the default branch: a background job like Finish, followed the same way.
         "POST /api/update": async (_, body) => {
             const t = await targetOf(String(body.id));
@@ -2670,12 +2722,14 @@ export function createApp({
                     error: "not allowed",
                 });
             }
-            if (writes && req.headers.origin !== origin) {
+            // A write route's GET (GET /api/usage) only reads.
+            const posted = writes && req.method === "POST";
+            if (posted && req.headers.origin !== origin) {
                 return send(res, 403, { error: "foreign origin" });
             }
             const [status, body, type] = await handler(
                 args,
-                writes ? await readBody(req) : undefined,
+                posted ? await readBody(req) : undefined,
                 url.searchParams,
             );
             return send(res, status, body, type);

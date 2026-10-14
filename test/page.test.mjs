@@ -154,7 +154,9 @@ async function open(
 afterEach(async () => {
     confirmFinish = false;
     await page?.close();
-    server?.close();
+    // Until every request has been answered: a list refresh still running would write its state
+    // into the repository after the test file removed it (tempDir).
+    await new Promise((resolve) => (server ? server.close(() => resolve()) : resolve()));
     await openApp?.idle();
     openApp = null;
 });
@@ -205,6 +207,15 @@ const box = (part = null) =>
         }
         return name ? globalThis.document.getElementById(`wait-${name}`).textContent : "open";
     }, part);
+// Waits until the open wait box's line `part` matches `pattern`, as long as Playwright's own waits
+// do: expect.poll gives up after a second, which the page's first asks can outlast on a busy machine.
+const boxSays = (part, pattern) =>
+    page.waitForFunction(
+        ([name, source]) =>
+            globalThis.document.getElementById("wait")?.open === true &&
+            new RegExp(source).test(globalThis.document.getElementById(`wait-${name}`).textContent),
+        [part, pattern.source],
+    );
 // The targets screen shows the whole list: no refresh running, every capture downloaded.
 const listSettled = () => page.locator("#listline[data-settled]").waitFor();
 // The page's GUARD_MS: a decision this soon after an item's images appeared is ignored.
@@ -1716,9 +1727,35 @@ describe("review page: the decision bar", () => {
         await ready();
         await stopClock();
         await page.locator("#accept").click();
-        await page.locator("#accept").click();
+        // The second tap lands once the next item is on screen: a tap still in flight while the
+        // first decision saves is the next test's.
         await expect.poll(position).toMatch(/^3 of /);
-        await expect.poll(status).toMatch(/^(Ignored|Loading images|Still saving)/);
+        await page.locator("#accept").click();
+        await expect
+            .poll(status)
+            .toMatch(
+                /^(Ignored: this image appeared less than a quarter second ago\.|Loading images: Accept waits for them\.)$/,
+            );
+        expect(await page.locator("#accept").getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("refuses the second tap of a double tap that comes while the first decision is saving", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator("#review-undecided").click();
+        await page.keyboard.press("k");
+        await ready();
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await page.route("**/api/decide**", async (route) => {
+            await held;
+            await route.continue();
+        });
+        await page.locator("#accept").click();
+        await page.locator("#accept").click();
+        await expect.poll(status).toBe("Still saving the last decision.");
+        release();
+        // The first decision's message replaces it, and the second tap decided nothing.
+        await expect.poll(status).toBe("Accepted #2. Now #3, 3 of 6: slider--sizes, changed.");
         expect(await page.locator("#accept").getAttribute("aria-pressed")).toBe("false");
     });
 });
@@ -1883,35 +1920,42 @@ describe("review page: the wait box", () => {
     });
 
     it("says in the box which GitHub call waits to retry, then turns a failure into an error with Retry", async () => {
-        let fails = 1;
-        let down = false;
+        // The list's GitHub call: "offline" fails on the network, so the server waits to retry it;
+        // "refusing" fails for real; "up" answers. Offline, every try fails at once, and a try runs
+        // in the same turn as the wait before it ends, so the server says it is waiting to retry
+        // whenever the page asks, for as long as the test keeps GitHub offline (the waits add up to
+        // more than the suite's test limit). The test reads the box, then changes GitHub's answer:
+        // it never races the page's first asks against a retry's timer (#2422).
+        let github = "offline";
         await open(
             (r) => {
                 const gh = onePr()(r);
                 return {
-                    gh: withRetries(
-                        async (args, input) => {
-                            if ((args[1] ?? "").includes("/pulls?")) {
-                                if (down) {
-                                    throw new Error("HTTP 401: Bad credentials");
-                                }
-                                if (fails-- > 0) {
-                                    throw new Error("Could not resolve host: api.github.com");
-                                }
+                    gh: withRetries(async (args, input) => {
+                        if ((args[1] ?? "").includes("/pulls?")) {
+                            if (github === "refusing") {
+                                throw new Error("HTTP 401: Bad credentials");
                             }
-                            return gh(args, input);
-                        },
-                        [1500],
-                    ),
+                            if (github === "offline") {
+                                throw new Error("Could not resolve host: api.github.com");
+                            }
+                        }
+                        return gh(args, input);
+                    }, Array(200).fill(500)),
                 };
             },
             { review: false },
         );
-        await expect
-            .poll(() => box("net"))
-            .toMatch(
-                /^GitHub did not answer \(Could not resolve host: api\.github\.com\)\. Trying again in \d s, try 2 of 2\.$/,
-            );
+        await boxSays(
+            "net",
+            /^GitHub did not answer \(Could not resolve host: api\.github\.com\)\. Trying again in \d s, try \d+ of 201\.$/,
+        );
+        github = "refusing";
+        await boxSays("error", /^Could not read the pull requests from GitHub: HTTP 401: Bad credentials$/);
+        expect(await box("net")).toBe("");
+        expect(await page.locator("#wait-retry").isVisible()).toBe(true);
+        github = "up";
+        await page.locator("#wait-retry").click();
         await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
         expect(await box()).toBeNull();
     });

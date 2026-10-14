@@ -1,10 +1,11 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
 import { classify, compareImages, isLfsPointer, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
+
+import { tempDir } from "./helpers.mjs";
 
 /**
  * Encodes a width x height PNG filled with `fill` ([r, g, b]), then applies `edits`.
@@ -196,7 +197,7 @@ describe("Git LFS pointers", () => {
     });
 
     it("refuses a baseline that is a pointer, reads a PNG, and returns null for none", async () => {
-        const dir = mkdtempSync(join(tmpdir(), "vr-lfs-"));
+        const dir = tempDir("vr-lfs-");
         writeFileSync(join(dir, "pointer.png"), POINTER);
         writeFileSync(join(dir, "real.png"), png(8, 8, WHITE));
         await expect(readBaseline(join(dir, "pointer.png"))).rejects.toThrow(

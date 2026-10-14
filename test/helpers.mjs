@@ -4,7 +4,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,27 @@ import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
 
 // Every test file already runs isolated (vitest.config.mjs's setup file); kept for the files that call it.
 export { isolateGit };
+
+const made = [];
+
+/**
+ * A new temporary directory, removed when the test file that made it finishes (removeTempDirs,
+ * run after each file by isolate-git.setup.mjs).
+ * @param {string} prefix the directory name's prefix
+ * @returns {string} its path
+ */
+export function tempDir(prefix) {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    made.push(dir);
+    return dir;
+}
+
+/** Removes every directory tempDir has made so far. */
+export function removeTempDirs() {
+    for (const dir of made.splice(0)) {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
 
 export const FIXTURE = fileURLToPath(new URL("fixtures/results/", import.meta.url));
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -106,7 +127,7 @@ export const makeRepo = (name = "repoTemplate") => copyRepo(inject(name));
  * @returns {{ dir: string, repo: string, remote: string }} the copy, with the template's other fields
  */
 function copyRepo(template) {
-    const dir = mkdtempSync(join(tmpdir(), "vr-repo-"));
+    const dir = tempDir("vr-repo-");
     cpSync(template.dir, dir, { recursive: true });
     const repo = join(dir, "repo");
     const remote = join(dir, "remote.git");
@@ -119,7 +140,7 @@ function copyRepo(template) {
  * @returns {{ dir: string, repo: string, remote: string, master: string, head: string }} it
  */
 export function buildRepo() {
-    const dir = mkdtempSync(join(tmpdir(), "vr-repo-"));
+    const dir = tempDir("vr-repo-");
     const remote = join(dir, "remote.git");
     const repo = join(dir, "repo");
     git(dir, "init", "-q", "--bare", "-b", "master", remote);
@@ -212,7 +233,7 @@ export function buildConflicted(template, { code = false } = {}) {
  * @returns {string} the new commit's sha
  */
 export function pushCommit(remote, branch, path) {
-    const clone = mkdtempSync(join(tmpdir(), "vr-other-"));
+    const clone = tempDir("vr-other-");
     git(clone, "clone", "-q", "-b", branch, remote, ".");
     git(clone, "config", "user.name", "Other");
     git(clone, "config", "user.email", "other@example.com");
@@ -431,7 +452,7 @@ export async function keepTiles({ origin, token, tmp }, id) {
                 ]),
         );
     }
-    const kept = mkdtempSync(join(tmpdir(), "vr-tiles-"));
+    const kept = tempDir("vr-tiles-");
     for (const dir of ["thumbs", "spots"]) {
         cpSync(join(tmp, dir), join(kept, dir), { recursive: true, filter: (f) => !f.endsWith(".tmp") });
     }

@@ -52,7 +52,9 @@ beforeEach(async () => {
 });
 afterEach(async () => {
     await page?.close();
-    server?.close();
+    // Until every request has been answered: a list refresh still running would write its state
+    // into the repository after the test file removed it (tempDir).
+    await new Promise((resolve) => (server ? server.close(() => resolve()) : resolve()));
 });
 
 const field = () => page.getByLabel(LABEL);

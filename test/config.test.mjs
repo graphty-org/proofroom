@@ -1,11 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { CONFIG_FILE, loadConfig, loadConfigAt, normalizeConfig } from "../trusted/lib/config.mjs";
-import { CONFIG, git, isolateGit } from "./helpers.mjs";
+import { CONFIG, git, isolateGit, tempDir } from "./helpers.mjs";
 
 beforeAll(isolateGit);
 
@@ -57,6 +56,7 @@ describe("normalizeConfig", () => {
             issueLabels: ["bug"],
             fontconfig: null,
             updateCheck: null,
+            usage: false,
             projects: {
                 web: {
                     storybook: "storybook-static",
@@ -105,7 +105,7 @@ describe("normalizeConfig", () => {
 
 describe("loadConfig and loadConfigAt", () => {
     const repo = () => {
-        const dir = mkdtempSync(join(tmpdir(), "vr-config-"));
+        const dir = tempDir("vr-config-");
         git(dir, "init", "-q", "-b", "main");
         git(dir, "config", "user.name", "T");
         git(dir, "config", "user.email", "t@example.com");

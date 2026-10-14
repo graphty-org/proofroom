@@ -3,8 +3,7 @@
  * iframe.html whose preview object answers what capture reads from a real one.
  */
 
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -14,6 +13,8 @@ import { chromium } from "playwright";
 /* global document, requestAnimationFrame -- read only inside the page */
 
 import { capture, CHROMIUM_ARGS, hasEmojiFont, MAX_SHOT_HEIGHT, screenshotWholePage } from "../capture/capture.mjs";
+
+import { tempDir } from "./helpers.mjs";
 
 const PARAMS = {
     "demo--plain": {},
@@ -62,7 +63,7 @@ window.__STORYBOOK_PREVIEW__ = {
 </script></body></html>`;
 
 function storybook() {
-    const dir = mkdtempSync(join(tmpdir(), "vr-sb-"));
+    const dir = tempDir("vr-sb-");
     const entries = Object.fromEntries(Object.keys(PARAMS).map((id) => [id, { id, type: "story" }]));
     entries["demo--docs"] = { id: "demo--docs", type: "docs" };
     writeFileSync(join(dir, "index.json"), JSON.stringify({ entries }));
@@ -81,11 +82,11 @@ afterAll(() => vi.unstubAllEnvs());
 describe("capture", () => {
     it("classifies new, unchanged, excluded, failed, and a story newly excluded by its parameters", async () => {
         const sb = storybook();
-        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        const baselines = tempDir("vr-bl-");
         const run = (out) =>
             capture({ project: "demo", storybook: sb, baselines, out, workers: 2, waitFor: null, log: () => {} });
 
-        const firstOut = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const firstOut = tempDir("vr-out-");
         const first = await run(firstOut);
         expect(first.seeded).toBe(false);
         expect(first.complete).toBe(true);
@@ -110,7 +111,7 @@ describe("capture", () => {
         copyFileSync(join(firstOut, "demo--plain.png"), join(baselines, "demo--plain.png"));
         copyFileSync(join(firstOut, "demo--plain.png"), join(baselines, "demo--excluded-here.png"));
 
-        const second = await run(mkdtempSync(join(tmpdir(), "vr-out-")));
+        const second = await run(tempDir("vr-out-"));
         expect(second.seeded).toBe(true);
         items = byFile(second);
         expect(items["demo--plain.png"].status).toBe("unchanged");
@@ -124,7 +125,7 @@ describe("capture", () => {
 
     it("marks a story with no baseline unseeded when it looks as in master's capture", async () => {
         const sb = storybook();
-        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        const baselines = tempDir("vr-bl-");
         const run = (out, extra) =>
             capture({
                 project: "demo",
@@ -137,11 +138,11 @@ describe("capture", () => {
                 ...extra,
             });
         // Master's capture: demo--plain is new there, captured twice and stable.
-        const master = mkdtempSync(join(tmpdir(), "vr-master-"));
+        const master = tempDir("vr-master-");
         const masterResults = await run(master, { stories: ["demo--plain"] });
         writeFileSync(join(master, "results.json"), JSON.stringify({ ...masterResults, runId: 77 }));
 
-        const prOut = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const prOut = tempDir("vr-out-");
         const pr = await run(prOut, { reference: master, stories: ["demo--plain"] });
         expect(pr.reference).toBe(77);
         expect(pr.items.map((i) => [i.file, i.status])).toEqual([["demo--plain.png", "unseeded"]]);
@@ -149,13 +150,13 @@ describe("capture", () => {
         // A reference whose item is already unseeded serves as well as a new one, so the status
         // does not alternate between master runs.
         writeFileSync(join(prOut, "results.json"), JSON.stringify({ ...pr, runId: 78 }));
-        const next = await run(mkdtempSync(join(tmpdir(), "vr-out-")), { reference: prOut, stories: ["demo--plain"] });
+        const next = await run(tempDir("vr-out-"), { reference: prOut, stories: ["demo--plain"] });
         expect(next.reference).toBe(78);
         expect(next.items.map((i) => [i.file, i.status])).toEqual([["demo--plain.png", "unseeded"]]);
 
         // A reference image that is not what master's results.json names is ignored: new.
         writeFileSync(join(master, "demo--plain.png"), "tampered");
-        const tampered = await run(mkdtempSync(join(tmpdir(), "vr-out-")), {
+        const tampered = await run(tempDir("vr-out-"), {
             reference: master,
             stories: ["demo--plain"],
         });
@@ -164,15 +165,15 @@ describe("capture", () => {
 
     it("compares a renamed story with its old id's baseline and reports a broken rename", async () => {
         const sb = storybook();
-        const seedOut = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const seedOut = tempDir("vr-out-");
         const run = (out, baselines) =>
             capture({ project: "demo", storybook: sb, baselines, out, workers: 2, waitFor: null, log: () => {} });
-        await run(seedOut, mkdtempSync(join(tmpdir(), "vr-bl-")));
+        await run(seedOut, tempDir("vr-bl-"));
 
         // Baselines under old ids: one that looks the same as its new story, one that does not,
         // one whose rename names no story, and one renamed from an id that is still a story (which
         // is no move, so it does nothing).
-        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        const baselines = tempDir("vr-bl-");
         copyFileSync(join(seedOut, "demo--plain.png"), join(baselines, "old--plain.png"));
         copyFileSync(join(seedOut, "demo--plain.png"), join(baselines, "old--small.png"));
         copyFileSync(join(seedOut, "demo--plain.png"), join(baselines, "old--lost.dark.png"));
@@ -186,7 +187,7 @@ describe("capture", () => {
                 { from: "demo--tall", to: "demo--late-font" },
             ]),
         );
-        const out = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const out = tempDir("vr-out-");
         const r = await run(out, baselines);
         const items = byFile(r);
         expect(items["demo--plain.png"]).toMatchObject({ status: "moved", from: "old--plain" });
@@ -216,14 +217,14 @@ describe("capture", () => {
     });
 
     it("refuses a renames file that is not a list of distinct renames", async () => {
-        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        const baselines = tempDir("vr-bl-");
         writeFileSync(join(baselines, "renames.json"), JSON.stringify([{ from: "a--b", to: "a--b" }]));
         await expect(
             capture({
                 project: "demo",
                 storybook: storybook(),
                 baselines,
-                out: mkdtempSync(join(tmpdir(), "vr-out-")),
+                out: tempDir("vr-out-"),
                 workers: 1,
                 waitFor: null,
                 log: () => {},
@@ -233,11 +234,11 @@ describe("capture", () => {
 
     it("captures the whole canvas at scale 2, never cropped to the content", async () => {
         // The four stories in one capture: one browser, as a project's run has.
-        const out = mkdtempSync(join(tmpdir(), "vr-out-"));
+        const out = tempDir("vr-out-");
         const r = await capture({
             project: "demo",
             storybook: storybook(),
-            baselines: mkdtempSync(join(tmpdir(), "vr-bl-")),
+            baselines: tempDir("vr-bl-"),
             out,
             workers: 1,
             waitFor: null,
@@ -263,8 +264,8 @@ describe("capture", () => {
             await capture({
                 project: "demo",
                 storybook: storybook(),
-                baselines: mkdtempSync(join(tmpdir(), "vr-bl-")),
-                out: mkdtempSync(join(tmpdir(), "vr-out-")),
+                baselines: tempDir("vr-bl-"),
+                out: tempDir("vr-out-"),
                 workers: 2,
                 waitFor: null,
                 stories: ["demo--plain"],
@@ -280,7 +281,7 @@ describe("capture", () => {
     });
 
     it("fails with a clear message when a baseline is a Git LFS pointer", async () => {
-        const baselines = mkdtempSync(join(tmpdir(), "vr-bl-"));
+        const baselines = tempDir("vr-bl-");
         writeFileSync(
             join(baselines, "demo--plain.png"),
             `version https://git-lfs.github.com/spec/v1\noid sha256:${"a".repeat(64)}\nsize 9\n`,
@@ -290,7 +291,7 @@ describe("capture", () => {
                 project: "demo",
                 storybook: storybook(),
                 baselines,
-                out: mkdtempSync(join(tmpdir(), "vr-out-")),
+                out: tempDir("vr-out-"),
                 workers: 1,
                 waitFor: null,
                 stories: ["demo--plain"],

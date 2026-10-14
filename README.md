@@ -138,6 +138,7 @@ Every command has `--help`; `visual-review --help` lists them.
 | `issueLabels`   | `["bug"]`           | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
 | `fontconfig`    | none (host fonts)   | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
 | `updateCheck`   | none                | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                  |
+| `usage`         | `false`             | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
 | `projects`      | (required)          | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:
@@ -626,6 +627,48 @@ A reason typed in the reason box belongs to the item it was typed on: cancelled,
 the next time you press Reject or Exclude on that item, and it is cleared when that item's decision
 is saved. Undo puts a decision's reason back, so undoing to fix a typo does not lose it. The box
 closes with the decision, so the next A accepts instead of typing an "a".
+
+## Usage events
+
+Off by default. With `"usage": true` in `visual-review.config.json`, the review page records a
+timeline of how you review, so the page's layout and controls can be improved from real use. The
+page sends each event to the `serve` process it was loaded from, and that process appends it to
+`<workDir>/state/usage-events.jsonl` on its own disk. Nothing goes anywhere else: no third-party
+script, no other server. With the setting off, the page sends nothing and no file is written.
+
+Each line is one JSON event with its `type`, the time `at` (milliseconds since 1970) and `s`, an
+id made new at each page load (a session). The events:
+
+| Type                                         | When, and what it holds                                                                                                                                                     |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `load`                                       | The page loaded: viewport width and height, device pixel ratio, coarse pointer, touch points                                                                                |
+| `pointer`                                    | The first pointer of a session, and each change of kind: `mouse`, `touch` or `pen`                                                                                          |
+| `visible`, `hidden`                          | The tab or app came to the front, or left it                                                                                                                                |
+| `target`, `project`                          | A pull request (or seed) and a project opened: item count, newer baselines on the default branch                                                                            |
+| `item`                                       | An item shown in the story screen: its project, file, status, place in the pass, and whether it was reached by going back                                                   |
+| `drawn`                                      | Its images finished drawing: milliseconds since it was shown                                                                                                                |
+| `set`                                        | A view setting changed (screen, view, zoom, outline, baseline pane, focus, blink, flash, filter, grid options)                                                              |
+| `press`                                      | A button or key pressed (the same names the Keys list counts)                                                                                                               |
+| `controls`                                   | The controls on screen not seen before in the session, so the report can name those never used                                                                              |
+| `move`, `jump`                               | Previous or Next; Go to by number or story id                                                                                                                               |
+| `decide`, `undo`                             | A decision or its undo: the decision before it, milliseconds since the item was shown, view and zoom, the reason's length (never its text); bulk decisions give their count |
+| `finish-start`, `finish-end`, `update-start` | Finish or Update from the default branch started; ended, with success or failure and its duration                                                                           |
+| `error`                                      | An error the page showed, its first 160 characters                                                                                                                          |
+| `idle`                                       | No event for a minute or more: the gap, in milliseconds                                                                                                                     |
+
+No image, no pull request text, no reject or exclude reason and no session token is recorded:
+the server drops any event that contains the token.
+
+`visual-review usage` sums the file up as plain text, or as JSON with `--json`; `--since
+2026-10-01` leaves out older events. It reports the sessions (touch or mouse, viewport, items and
+decisions), the median and 90th percentile time per item by project and by view, decisions per
+active minute (idle gaps left out), the controls and keys used most, least and never, view or
+zoom switches per item, how often an item is reached by going back, hesitation (15 seconds or
+more before a decision), errors per session, how many projects were opened on a stale capture,
+and Finish's successes, failures and duration.
+
+To delete what was recorded, delete `<workDir>/state/usage-events.jsonl`. To stop recording, set
+`"usage": false` (or remove it) and restart `serve`.
 
 ## What each decision does
 
