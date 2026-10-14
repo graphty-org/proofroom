@@ -317,7 +317,10 @@ async function extract(browser, base) {
             }
             const gl = document.createElement("canvas").getContext("webgl");
             const info = gl?.getExtension("WEBGL_debug_renderer_info");
-            const renderer = gl ? String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : null;
+            let renderer = null;
+            if (gl) {
+                renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+            }
             return { params, renderer, gpu: "gpu" in navigator };
         });
     } finally {
@@ -755,8 +758,9 @@ export async function capture({
 
         const emojiFont = hasEmojiFont({ ...process.env, ...fontEnv });
         if (emojiFont === false) {
+            const where = fontconfig ? `in ${fontconfig}` : "on this machine";
             log(
-                `warning: no font ${fontconfig ? `in ${fontconfig}` : "on this machine"} draws emoji (fc-list ` +
+                `warning: no font ${where} draws emoji (fc-list ` +
                     ":charset=1f680 found none), so every emoji in a story is captured as an empty box; " +
                     "add one, such as Noto Color Emoji",
             );
@@ -858,7 +862,8 @@ export async function capture({
                     const item = await run(b, jobs[next++]);
                     items.push(item);
                     if (item.status !== "unchanged") {
-                        log(`${item.status} ${item.file}${item.reason ? `: ${item.reason}` : ""}`);
+                        const why = item.reason ? `: ${item.reason}` : "";
+                        log(`${item.status} ${item.file}${why}`);
                     }
                     await save();
                 }
