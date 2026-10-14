@@ -201,7 +201,7 @@ const usageLog = {
     on: null, // null until the server answers; then true or false
     queue: [],
     sending: false,
-    session: globalThis.crypto?.randomUUID?.() ?? String(Math.random()).slice(2),
+    session: crypto.randomUUID(), // the page runs over HTTPS or on localhost, where crypto has it
     last: 0, // when the last event was taken
     settings: null, // the view settings as last logged
     seen: new Set(), // the controls seen on screen in this session
@@ -254,7 +254,7 @@ async function sendUsage() {
 // Asks the server once per token whether to log; until it answers, events wait in the queue.
 async function startUsage() {
     try {
-        const res = await fetch("/api/usage", { headers: { "x-review-token": token } });
+        const res = await fetch("/api/usage-setting", { headers: { "x-review-token": token } });
         if (res.status === 401) {
             return; // asked again once a token is pasted
         }
@@ -807,7 +807,6 @@ function useToken(e, field) {
     } catch {
         // Kept for this visit only.
     }
-    startUsage();
     checkFinish();
     route();
 }
@@ -4385,7 +4384,8 @@ async function acceptAll(component) {
         project: state.project,
         d: "accept",
         n: answer.files.length,
-        bulk: component ? "component" : "all",
+        bulk: "accept-all",
+        component,
     });
     for (const file of answer.files) {
         state.data.decisions[file] = { decision: "accept", reason: null, bulk: true };
@@ -4526,7 +4526,6 @@ async function updateTarget(t) {
     if (!go) {
         return;
     }
-    logUsage("update-start", { id: t.id });
     try {
         state.job = (await api("/api/update", { id: t.id })).job;
     } catch (err) {
@@ -4703,7 +4702,6 @@ async function finishTarget(id, button) {
         say("A Finish is running: wait for it to end.");
         return;
     }
-    logUsage("finish-start", { id });
     const reset = () => {
         button.classList.remove("busy");
         button.querySelector(".spinner")?.remove();
@@ -4825,12 +4823,24 @@ async function finishTarget(id, button) {
 let watching = false;
 
 // Follows the running Finish to its end, then shows its result above the targets.
+// A Finish or an update from the default branch followed (also after a reload), and its end:
+// success or failure, and how long it was followed.
+function logJob(type) {
+    const job = state.job ?? {};
+    const end = type === "finish-end" && {
+        ok: job.error === null && !job.interrupted,
+        ms: Math.round(performance.now() - state.finishSeen),
+    };
+    logUsage(type, { id: job.target ?? null, kind: job.kind ?? "finish", ...end });
+}
+
 async function watchFinish() {
     if (watching) {
         return;
     }
     watching = true;
     state.finishSeen ??= performance.now();
+    logJob("finish-start");
     try {
         let spoken = "";
         while (running()) {
@@ -4854,17 +4864,12 @@ async function watchFinish() {
     } finally {
         watching = false;
     }
-    const job = state.job;
-    logUsage("finish-end", {
-        id: job?.target ?? null,
-        kind: job?.kind ?? "finish",
-        ok: Boolean(job) && job.error === null && !job.interrupted,
-        ms: Math.round(performance.now() - state.finishSeen),
-    });
+    logJob("finish-end");
     state.finishSeen = null;
     say("");
     // The box closes on a Finish that worked: its result is the card on the targets screen. One
     // that failed keeps the box, as the error; the card below it says what was pushed.
+    const job = state.job;
     if (job && (job.error !== null || job.interrupted) && finishBox && !finishBox.ended) {
         const what = isUpdate(job) ? `Update of ${jobLabel(job)}` : `Finish of ${jobLabel(job)}`;
         finishBox.update({ title: `${what} failed`, body: null, detail: "" });
@@ -5217,7 +5222,9 @@ function remember() {
 }
 
 // Reads the newest Finish once; a running one is followed on whatever screen opens.
+// Also asks whether to log usage: both run once a token is known.
 async function checkFinish() {
+    startUsage();
     try {
         track((await api("/api/finish-status")).job);
     } catch {
@@ -5661,7 +5668,6 @@ document.addEventListener("visibilitychange", () => {
 if (token === "") {
     askToken();
 } else {
-    startUsage();
     checkFinish();
     route();
 }

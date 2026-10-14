@@ -80,12 +80,7 @@ export function normalizeConfig(input) {
     }
     // Usage events: the review page's timeline, kept only in the work directory (README, "Usage
     // events"). Off unless a repository turns it on.
-    if (raw.usage !== undefined) {
-        if (typeof raw.usage !== "boolean") {
-            fail("usage must be true or false");
-        }
-        out.usage = raw.usage;
-    }
+    out.usage = usageSetting(raw.usage, fail);
     if (raw.issueLabels !== undefined) {
         if (!Array.isArray(raw.issueLabels) || raw.issueLabels.some((l) => typeof l !== "string")) {
             fail("issueLabels must be an array of strings");
@@ -138,6 +133,19 @@ export function normalizeConfig(input) {
         };
     }
     return out;
+}
+
+/**
+ * The `usage` setting: off unless set to true.
+ * @param {unknown} value the config's value
+ * @param {(msg: string) => never} fail throws the config error
+ * @returns {boolean} whether usage events are on
+ */
+function usageSetting(value, fail) {
+    if (value !== undefined && typeof value !== "boolean") {
+        fail("usage must be true or false");
+    }
+    return value === true;
 }
 
 /**

@@ -58,6 +58,32 @@ const sortedCounts = (map) =>
     [...map].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]))).map(([name, n]) => ({ name, n }));
 
 /**
+ * One session: when it ran, on what, and how much happened.
+ * @param {string} id the session id
+ * @param {object[]} list its events, oldest first
+ * @returns {object} the session's line of the summary
+ */
+function sessionOf(id, list) {
+    const idle = list.filter((e) => e.type === "idle").reduce((n, e) => n + e.ms, 0);
+    const span = list.at(-1).at - list[0].at;
+    const load = list.find((e) => e.type === "load");
+    const pointers = new Set(list.filter((e) => e.type === "pointer").map((e) => e.p));
+    const touch = pointers.has("touch") || pointers.has("pen") || (pointers.size === 0 && load?.coarse === true);
+    return {
+        session: id,
+        start: new Date(list[0].at).toISOString(),
+        minutes: Math.round(span / 6000) / 10,
+        // An idle event names the gap before it, so the session's active time leaves it out.
+        activeMs: Math.max(0, span - idle),
+        targets: new Set(list.filter((e) => e.type === "project").map((e) => e.id)).size,
+        items: list.filter((e) => e.type === "item").length,
+        decisions: list.filter((e) => e.type === "decide").reduce((n, e) => n + (e.n ?? 1), 0),
+        pointer: touch ? "touch" : "mouse",
+        viewport: load ? [load.w, "x", load.h, "@", load.dpr].join("") : null,
+    };
+}
+
+/**
  * Sums the events up.
  * @param {object[]} events the events, from readUsage
  * @returns {object} the summary
@@ -78,7 +104,9 @@ export function summarize(events) {
     const groupBy = (list, key) => {
         const out = {};
         for (const e of list) {
-            (out[e[key] ?? "unknown"] ??= []).push(e.ms);
+            const k = e[key] ?? "unknown";
+            out[k] ??= [];
+            out[k].push(e.ms);
         }
         return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, timing(v)]));
     };
@@ -89,47 +117,21 @@ export function summarize(events) {
         bump(presses, e.c);
     }
     const seen = new Set(byType("controls").flatMap((e) => e.c ?? []));
-    const neverUsed = [...seen].filter((c) => !presses.has(c)).sort();
+    const neverUsed = [...seen].filter((c) => !presses.has(c)).sort((a, b) => a.localeCompare(b));
     const controls = sortedCounts(new Map([...presses].filter(([c]) => !String(c).startsWith("key-"))));
     const keys = sortedCounts(new Map([...presses].filter(([c]) => String(c).startsWith("key-"))));
 
-    // Per session: when it ran, on what, and how much happened.
-    let activeMs = 0;
-    let decisions = 0;
-    const perSession = [];
-    let touch = 0;
-    let mouse = 0;
-    for (const [id, list] of sessions) {
-        const idle = list.filter((e) => e.type === "idle").reduce((n, e) => n + e.ms, 0);
-        const span = list.at(-1).at - list[0].at;
-        // An idle event names the gap before it, so the session's active time leaves it out.
-        activeMs += Math.max(0, span - idle);
-        const decided = list.filter((e) => e.type === "decide").reduce((n, e) => n + (e.n ?? 1), 0);
-        decisions += decided;
-        const load = list.find((e) => e.type === "load");
-        const pointers = new Set(list.filter((e) => e.type === "pointer").map((e) => e.p));
-        const isTouch = pointers.has("touch") || pointers.has("pen") || (pointers.size === 0 && load?.coarse === true);
-        if (isTouch) {
-            touch++;
-        } else {
-            mouse++;
-        }
-        perSession.push({
-            session: id,
-            start: new Date(list[0].at).toISOString(),
-            minutes: Math.round(span / 6000) / 10,
-            targets: new Set(list.filter((e) => e.type === "project").map((e) => e.id)).size,
-            items: list.filter((e) => e.type === "item").length,
-            decisions: decided,
-            pointer: isTouch ? "touch" : "mouse",
-            viewport: load ? `${load.w}x${load.h}@${load.dpr}` : null,
-        });
-    }
+    const perSession = [...sessions].map(([id, list]) => sessionOf(id, list));
+    const activeMs = perSession.reduce((n, x) => n + x.activeMs, 0);
+    const decisions = perSession.reduce((n, x) => n + x.decisions, 0);
+    const touch = perSession.filter((x) => x.pointer === "touch").length;
+    const mouse = perSession.length - touch;
 
     // View changes per item shown, and how many items were reached by going back.
     const viewSwitches = byType("set").filter((e) => ["view", "zoom"].includes(e.key)).length;
     const projects = byType("project");
     const finishes = byType("finish-end").filter((e) => e.kind !== "update");
+    const starts = byType("finish-start").filter((e) => e.kind !== "update");
     return {
         events: events.length,
         from: events[0] ? new Date(events[0].at).toISOString() : null,
@@ -172,7 +174,7 @@ export function summarize(events) {
             rate: rate(projects.filter((e) => e.stale > 0).length, projects.length),
         },
         finish: {
-            started: byType("finish-start").length,
+            started: starts.length,
             completed: finishes.filter((e) => e.ok).length,
             failed: finishes.filter((e) => !e.ok).length,
             duration: timing(finishes.map((e) => e.ms)),
@@ -186,6 +188,7 @@ export function summarize(events) {
 
 const seconds = (ms) => (ms === null ? "-" : `${(ms / 1000).toFixed(1)} s`);
 const percent = (r) => (r === null ? "-" : `${Math.round(r * 100)}%`);
+const counts = (pairs) => pairs.map((p) => p.join(" ")).join(", ");
 const timed = (t) => `median ${seconds(t.median)}, p90 ${seconds(t.p90)} (${t.n})`;
 
 /**
@@ -203,18 +206,14 @@ export function formatUsage(s) {
         `Sessions: ${s.sessions.n} (${s.sessions.touch} touch, ${s.sessions.mouse} mouse)`,
         ...s.sessions.list.map(
             (x) =>
-                `  ${x.start}  ${x.minutes} min  ${x.pointer}${x.viewport ? ` ${x.viewport}` : ""}  ` +
+                `  ${x.start}  ${x.minutes} min  ${[x.pointer, x.viewport].filter(Boolean).join(" ")}  ` +
                 `${x.targets} reviews, ${x.items} items shown, ${x.decisions} decisions`,
         ),
         "",
         `Items: ${s.items.shown} shown (${s.items.distinct} distinct); backtracking ${percent(s.items.backtrackRate)}`,
         `  images drawn after: ${timed(s.items.imagesDrawn)}`,
         `Decisions: ${s.decisions.n} (${s.decisions.single} one by one, ${s.decisions.bulk} in bulk), ${s.decisions.perMinute ?? "-"} per active minute`,
-        `  ${
-            Object.entries(s.decisions.byDecision)
-                .map(([d, n]) => `${d} ${n}`)
-                .join(", ") || "none one by one"
-        }; ${s.decisions.changed} changed, ${s.decisions.undos} undone`,
+        `  ${counts(Object.entries(s.decisions.byDecision)) || "none one by one"}; ${s.decisions.changed} changed, ${s.decisions.undos} undone`,
         `  time per item: ${timed(s.decisions.timePerItem)}`,
         ...Object.entries(s.decisions.byProject).map(([k, t]) => `    project ${k}: ${timed(t)}`),
         ...Object.entries(s.decisions.byView).map(([k, t]) => `    view ${k}: ${timed(t)}`),
@@ -231,7 +230,7 @@ export function formatUsage(s) {
             .reverse()
             .map((c) => `  ${c.name}: ${c.n}`),
         `Controls shown but never used: ${s.controls.neverUsed.join(", ") || "none"}`,
-        `Keys: ${s.controls.keys.map((k) => `${k.name.slice(4)} ${k.n}`).join(", ") || "none"}`,
+        `Keys: ${counts(s.controls.keys.map((k) => [k.name.slice(4), k.n])) || "none"}`,
         "",
         `Errors shown: ${s.errors.n} (${s.errors.perSession === null ? "-" : s.errors.perSession.toFixed(1)} per session)`,
         ...s.errors.top.map((e) => `  ${e.n}x ${e.name}`),
