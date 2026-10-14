@@ -99,7 +99,6 @@ import {
     exec,
     getRun,
     hurry,
-    newestCiRun,
     openPullRequests,
     pullRequestContext,
     retrying,
@@ -371,6 +370,13 @@ export function createApp({
     let recordsAt = new Map();
     /** What the last refresh could not read from GitHub (the pull request list, a git fetch). */
     let listWarnings = [];
+    /**
+     * Each pull request run REST answered, by run id, with the list's status, conclusion and update
+     * time it was read at: a run whose three are unchanged is not asked for again, so a steady
+     * refresh costs GitHub one GraphQL query.
+     * @type {Map<number, { stamp: string, run: object }>}
+     */
+    let runsRead = new Map();
     /** The images the owner approved, by `<baseline path> <hash>` (filters.mjs approvalIndex). */
     let approved = new Map();
     /** Review records by blob id: a blob never changes, so each is read once. */
@@ -737,8 +743,15 @@ export function createApp({
         let evidence = [];
         try {
             evidence = JSON.parse(readFileSync(evidenceFile, "utf8"));
-        } catch {
-            // None kept yet, or unreadable: start again.
+        } catch (err) {
+            // None kept yet, or not JSON: start again. A file that cannot be read is kept as it
+            // is, never overwritten with this refresh's evidence alone.
+            if (err.code && err.code !== "ENOENT") {
+                const warning = `could not read the capture noise evidence (${evidenceFile}): ${err.message}`;
+                console.error(`visual-review: ${warning}`);
+                listWarnings.push(warning);
+                return;
+            }
         }
         const id = (o) => `${o.key} ${o.pr} ${o.baseline} ${o.capture}`;
         const have = new Set(evidence.map(id));
@@ -1029,7 +1042,7 @@ export function createApp({
             listWarnings = [];
             const kept = [...targets.values()].filter((t) => t.pr !== null);
             step("listing pull requests");
-            const prs = await openPullRequests(gh).catch((err) => {
+            const prs = await openPullRequests(gh, config).catch((err) => {
                 if (!masterRun && kept.length === 0) {
                     throw err;
                 }
@@ -1041,6 +1054,7 @@ export function createApp({
                 }
                 return [];
             });
+            const listed = listWarnings.length === 0;
             // Best effort: the default branch and the pull requests' branches, so the badge below
             // sees what accept will see. Skipped while a Finish runs, which fetches and pushes too.
             const fetch = (refs) =>
@@ -1068,6 +1082,21 @@ export function createApp({
                     });
                 }
             })();
+            // The run's attempt is only in REST: asked for when the list shows the run changed.
+            const read = new Map();
+            const runOf = async ({ run }) => {
+                if (!run) {
+                    return null;
+                }
+                const stamp = `${run.status} ${run.conclusion} ${run.updatedAt}`;
+                const was = runsRead.get(run.id);
+                const got = was?.stamp === stamp ? was.run : await getRun(gh, run.id);
+                // Kept only when REST agrees with the list, so an answer that lags it is asked again.
+                if (got.status === run.status && got.conclusion === run.conclusion) {
+                    read.set(run.id, { stamp, run: got });
+                }
+                return got;
+            };
             // Every pull request at once: one after another took about 40 s for 18 of them.
             let found = 0;
             step("finding CI runs", 0, prs.length);
@@ -1082,7 +1111,7 @@ export function createApp({
                         head: pr.headSha,
                     };
                     try {
-                        const run = await newestCiRun(gh, pr.headSha, config);
+                        const run = await runOf(pr);
                         return run
                             ? await build(info, run)
                             : await withPreviews(blank(info, `waiting for CI on ${pr.headSha.slice(0, 10)}`));
@@ -1093,6 +1122,10 @@ export function createApp({
                     }
                 }),
             );
+            // Only when the list was read: a failed list keeps what the last one learned.
+            if (listed) {
+                runsRead = read;
+            }
             step("fetching branches");
             await fetched;
             await readPasskeys();

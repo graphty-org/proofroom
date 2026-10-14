@@ -134,21 +134,67 @@ export const withRetries =
 
 const api = async (gh, path) => JSON.parse(await gh(["api", path]));
 
+// Every open pull request with its head commit's check suites, one page of 100 at a time. A check
+// suite of GitHub Actions carries its workflow run; GraphQL has no run attempt, so the caller asks
+// REST for a run only when it changed since the previous refresh (serve.mjs).
+const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: OPEN, first: 100, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title url headRefName headRefOid
+        commits(last: 1) { nodes { commit { checkSuites(first: 100) { nodes {
+          databaseId status conclusion
+          workflowRun { databaseId url updatedAt workflow { resourcePath } }
+        } } } } }
+      }
+    }
+  }
+}`;
+
 /**
- * Open pull requests, newest first.
+ * Open pull requests, newest first, each with the newest run of the capturing workflow on its head
+ * commit, in one GraphQL query per 100 pull requests: one REST call per pull request spent about
+ * 1,500 of the account's 5,000 calls an hour with 50 of them open.
  * @param {Function} gh the gh runner
- * @returns {Promise<{ number: number, title: string, url: string, headSha: string, branch: string }[]>}
- *     the pull requests
+ * @param {{ workflow: string }} config the workflow file that captures (the config's `workflow`)
+ * @returns {Promise<{ number: number, title: string, url: string, headSha: string, branch: string,
+ *     run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null }[]>}
+ *     the pull requests; `run` is null when CI never ran on the head, and its status and
+ *     conclusion are lowercase, as REST spells them
  */
-export async function openPullRequests(gh) {
-    const pulls = await api(gh, "repos/{owner}/{repo}/pulls?state=open&per_page=100");
-    return pulls.map((p) => ({
-        number: p.number,
-        title: p.title,
-        url: p.html_url,
-        headSha: p.head.sha,
-        branch: p.head.ref,
-    }));
+export async function openPullRequests(gh, { workflow }) {
+    const out = [];
+    for (let after = null; ;) {
+        const args = ["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", `query=${PULLS_QUERY}`];
+        if (after) {
+            args.push("-f", `after=${after}`);
+        }
+        const page = JSON.parse(await gh(args)).data.repository.pullRequests;
+        for (const p of page.nodes) {
+            const suites = (p.commits.nodes[0]?.commit.checkSuites.nodes ?? []).filter((s) =>
+                s.workflowRun?.workflow.resourcePath.endsWith(`/${workflow}`),
+            );
+            const newest = suites.reduce((a, b) => (b.databaseId > (a?.databaseId ?? -1) ? b : a), null);
+            out.push({
+                number: p.number,
+                title: p.title,
+                url: p.url,
+                headSha: p.headRefOid,
+                branch: p.headRefName,
+                run: newest && {
+                    id: newest.workflowRun.databaseId,
+                    status: newest.status.toLowerCase(),
+                    conclusion: newest.conclusion?.toLowerCase() ?? null,
+                    updatedAt: newest.workflowRun.updatedAt,
+                },
+            });
+        }
+        if (!page.pageInfo.hasNextPage) {
+            return out;
+        }
+        after = page.pageInfo.endCursor;
+    }
 }
 
 const toRun = (r) => ({
@@ -167,7 +213,7 @@ const toRun = (r) => ({
  * @param {{ workflow: string }} config the workflow file that captures (the config's `workflow`)
  * @returns {Promise<object | null>} the run, or null when CI never ran on it
  */
-export async function newestCiRun(gh, sha, { workflow }) {
+async function newestCiRun(gh, sha, { workflow }) {
     const { workflow_runs: runs } = await api(
         gh,
         `repos/{owner}/{repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?head_sha=${sha}&per_page=1`,

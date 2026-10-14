@@ -4,7 +4,7 @@ import { delimiter, join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { parsePasskeys, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
-import { downloadCaptures, hurry, newestMasterCapture, withRetries } from "../trusted/lib/github.mjs";
+import { downloadCaptures, hurry, newestMasterCapture, openPullRequests, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import { unrecordedChanges } from "../trusted/gate.mjs";
 import { thumbnail } from "../trusted/lib/thumbs.mjs";
@@ -1561,7 +1561,7 @@ describe("serve: what the page waits on", () => {
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
-                    if ((args[1] ?? "").includes("/pulls?")) {
+                    if (args[1] === "graphql") {
                         await held;
                     }
                     return inner(args, input);
@@ -1782,7 +1782,7 @@ describe("serve: loading without waiting", () => {
             gh: (r) => {
                 const inner = onePr()(r);
                 return async (args, input) => {
-                    if ((args[1] ?? "").includes("/pulls?")) {
+                    if (args[1] === "graphql") {
                         await held;
                     }
                     return inner(args, input);
@@ -1809,12 +1809,95 @@ describe("serve: loading without waiting", () => {
         await s.api("GET", "/api/prs");
         await s.api("GET", "/api/prs");
         const count = (kind) => calls.filter((c) => c === kind).length;
-        expect(count("repos/{owner}/{repo}/pulls")).toBe(2);
-        expect(count("repos/{owner}/{repo}/actions/workflows/ci.yml/runs")).toBe(2);
+        expect(count("graphql")).toBe(2);
+        expect(count("repos/{owner}/{repo}/actions/workflows/ci.yml/runs")).toBe(0);
+        // The run is read once: the second list shows it unchanged.
+        expect(count("repos/{owner}/{repo}/actions/runs/N")).toBe(1);
         expect(count("repos/{owner}/{repo}/actions/runs/N/attempts/N/jobs")).toBe(1);
         expect(count("repos/{owner}/{repo}/actions/runs/N/artifacts")).toBe(1);
         expect(count("download")).toBe(2);
         expect(readdirSync(join(s.tmp, "1000-1", "gh"))).toHaveLength(2);
+    });
+
+    it("lists every pull request and its CI run in one GraphQL query, and asks REST only for a run that changed", async () => {
+        const calls = [];
+        const heads = ["1", "2", "3", "4", "5"].map((d) => d.repeat(40));
+        // Four pull requests with a run in progress, and #105 that CI has not reached.
+        const runs = Object.fromEntries(
+            heads.slice(0, 4).map((h, i) => [h, { id: 1000 + i, head: h, status: "in_progress", conclusion: null }]),
+        );
+        const s = await start({
+            gh: () =>
+                counted(
+                    fakeGh({ prs: heads.map((h, i) => ({ number: 101 + i, head: h, branch: `b${i}` })), runs }),
+                    calls,
+                ),
+        });
+        const listed = (await s.api("GET", "/api/prs")).body.targets;
+        expect(listed.map((t) => t.id).sort()).toEqual(["101", "102", "103", "104", "105"]);
+        expect(listed.find((t) => t.id === "105").projects[0].problem).toBe("waiting for CI on 5555555555");
+        const count = (kind) => calls.filter((c) => c === kind).length;
+        expect(count("graphql")).toBe(1);
+        expect(count("repos/{owner}/{repo}/actions/workflows/ci.yml/runs")).toBe(0);
+        expect(count("repos/{owner}/{repo}/actions/runs/N")).toBe(4);
+
+        // Nothing changed: one query, no run read.
+        calls.length = 0;
+        await s.api("GET", "/api/prs");
+        expect(count("graphql")).toBe(1);
+        expect(count("repos/{owner}/{repo}/actions/runs/N")).toBe(0);
+
+        // One run finished: exactly that run is read again.
+        Object.assign(runs[heads[2]], { status: "completed", conclusion: "failure" });
+        calls.length = 0;
+        const after = (await s.api("GET", "/api/prs")).body.targets;
+        expect(count("graphql")).toBe(1);
+        expect(count("repos/{owner}/{repo}/actions/runs/N")).toBe(1);
+        expect(after.find((t) => t.id === "103").runId).toBe(1002);
+    });
+
+    it("reads every page of more than 100 pull requests, newest suite of the configured workflow first", async () => {
+        const asked = [];
+        const pr = (n, suites) => ({
+            number: n,
+            title: `PR ${n}`,
+            url: `https://gh/pull/${n}`,
+            headRefName: `b${n}`,
+            headRefOid: String(n).repeat(40).slice(0, 40),
+            commits: { nodes: [{ commit: { checkSuites: { nodes: suites } } }] },
+        });
+        const checkSuite = (id, path, runId, status = "COMPLETED", conclusion = "SUCCESS") => ({
+            databaseId: id,
+            status,
+            conclusion,
+            workflowRun: { databaseId: runId, url: "u", updatedAt: "t", workflow: { resourcePath: `/o/r/${path}` } },
+        });
+        const pages = [
+            { pageInfo: { hasNextPage: true, endCursor: "C1" }, nodes: [pr(1, [checkSuite(5, "ci.yml", 50)])] },
+            {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                    pr(2, [
+                        checkSuite(7, "ci.yml", 70, "IN_PROGRESS", null),
+                        checkSuite(6, "ci.yml", 60),
+                        checkSuite(8, "other-ci.yml", 80),
+                    ]),
+                    pr(3, [checkSuite(9, "nightly-ci.yml", 90)]),
+                ],
+            },
+        ];
+        const gh = async (args) => {
+            asked.push(args.find((a) => a.startsWith("after=")) ?? null);
+            return JSON.stringify({ data: { repository: { pullRequests: pages[asked.length - 1] } } });
+        };
+        const prs = await openPullRequests(gh, { workflow: "ci.yml" });
+        expect(asked).toEqual([null, "after=C1"]);
+        expect(prs.map((p) => [p.number, p.run?.id ?? null])).toEqual([
+            [1, 50],
+            [2, 70],
+            [3, null],
+        ]);
+        expect(prs[1].run).toMatchObject({ status: "in_progress", conclusion: null });
     });
 
     it("downloads a run's projects at once, eight at most, and the one asked for next", async () => {
@@ -1905,7 +1988,7 @@ describe("serve: loading without waiting", () => {
             gh: (r) => {
                 const inner = onePr()(r);
                 return withRetries(async (args, input) => {
-                    if ((args[1] ?? "").includes("/pulls?") && offline) {
+                    if (args[1] === "graphql" && offline) {
                         throw new Error("Could not resolve host: api.github.com");
                     }
                     return inner(args, input);
@@ -2155,7 +2238,7 @@ describe("network failures", () => {
         const { body } = await s.api("GET", "/api/prs");
         expect(body.targets.map((t) => t.id)).toEqual(["123"]);
         expect(calls.filter((c) => c === "run download")).toHaveLength(2);
-        expect(calls.filter((c) => c.startsWith("api repos/{owner}/{repo}/pulls"))).toHaveLength(1);
+        expect(calls.filter((c) => c === "api graphql")).toHaveLength(1);
     });
 
     // Pull request #123 loads; #124's CI run cannot be read; master run 2000 loads.
@@ -2165,7 +2248,7 @@ describe("network failures", () => {
                 { number: 123, head: r.head, branch: "feature" },
                 { number: 124, head: "4".repeat(40), branch: "other" },
             ],
-            runs: { [r.head]: { id: 1000, head: r.head } },
+            runs: { [r.head]: { id: 1000, head: r.head }, ["4".repeat(40)]: { id: 1001, head: "4".repeat(40) } },
             runsById: { 2000: { id: 2000, head: r.master } },
             jobs: { 1000: [job("compact-mantine"), job("graphty-element")], 2000: [job("compact-mantine")] },
             artifacts: { 1000: ["visual-compact-mantine-1"], 2000: ["visual-compact-mantine-1"] },
@@ -2179,7 +2262,7 @@ describe("network failures", () => {
     };
 
     it("shows one pull request that cannot be loaded as failed, and loads the rest and master", async () => {
-        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path.includes("head_sha=4444")) });
+        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path.endsWith("actions/runs/1001")) });
         const { status, body } = await s.api("GET", "/api/prs");
         expect(status).toBe(200);
         const byId = Object.fromEntries(body.targets.map((t) => [t.id, t]));
@@ -2194,7 +2277,7 @@ describe("network failures", () => {
     });
 
     it("still loads master when the list of pull requests cannot be read", async () => {
-        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path.includes("/pulls?")) });
+        const s = await start({ masterRun: 2000, gh: twoPrsAndMaster((path) => path === "graphql") });
         const { status, body } = await s.api("GET", "/api/prs");
         expect(status).toBe(200);
         expect(body.targets.map((t) => t.id)).toEqual(["master"]);
