@@ -18,7 +18,7 @@ import { join } from "node:path";
 
 import { createApp } from "../trusted/lib/serve.mjs";
 import { hooks } from "./fault-hooks.mjs";
-import { copyFixture, FIXTURE_CONFIG, git, job, until } from "./helpers.mjs";
+import { copyFixture, FIXTURE_CONFIG, git, job, pullsGraphql, until } from "./helpers.mjs";
 
 // ---------------------------------------------------------------- the injector
 
@@ -309,15 +309,8 @@ export function world(r) {
         data.calls.push(args.join(" "));
         const path = args[0] === "api" ? args[1] : "";
         let m;
-        if (path.startsWith("repos/{owner}/{repo}/pulls?")) {
-            return JSON.stringify(
-                data.prs.map((p) => ({
-                    number: p.number,
-                    title: `PR ${p.number}`,
-                    html_url: `https://gh/pull/${p.number}`,
-                    head: { sha: p.head, ref: p.branch },
-                })),
-            );
+        if (path === "graphql") {
+            return pullsGraphql(data.prs, (head) => data.runs[head]);
         }
         if ((m = /workflows\/[^/]+\/runs\?head_sha=(\w+)/.exec(path))) {
             const x = data.runs[m[1]];
