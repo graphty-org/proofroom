@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 export const USAGE_FILE = "usage-events.jsonl";
 
 /** A decision this long after its item was shown counts as hesitation. */
-export const HESITATION_MS = 15000;
+const HESITATION_MS = 15000;
 
 /**
  * Reads the events, skipping lines that are not JSON (a write cut short) and, with `since`, the
