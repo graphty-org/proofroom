@@ -1321,7 +1321,7 @@ function inboxView(inbox) {
     const rest = [
         inbox.capturing > 0 ? `${inbox.capturing} capturing` : null,
         inbox.done > 0 ? `${inbox.done} with nothing to decide` : null,
-        inbox.drafts > 0 ? `${inbox.drafts} draft${inbox.drafts === 1 ? "" : "s"} still being worked on` : null,
+        inbox.drafts > 0 ? `${inbox.drafts} still a draft` : null,
     ].filter(Boolean);
     return el(
         "section",
