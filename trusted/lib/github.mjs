@@ -142,7 +142,7 @@ const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String) {
     pullRequests(states: OPEN, first: 100, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title url headRefName headRefOid
+        number title url headRefName headRefOid isDraft
         commits(last: 1) { nodes { commit { checkSuites(first: 100) { nodes {
           databaseId status conclusion
           workflowRun { databaseId url updatedAt workflow { resourcePath } }
@@ -158,7 +158,7 @@ const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String) {
  * 1,500 of the account's 5,000 calls an hour with 50 of them open.
  * @param {Function} gh the gh runner
  * @param {{ workflow: string }} config the workflow file that captures (the config's `workflow`)
- * @returns {Promise<{ number: number, title: string, url: string, headSha: string, branch: string,
+ * @returns {Promise<{ number: number, title: string, url: string, headSha: string, branch: string, draft: boolean,
  *     run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null }[]>}
  *     the pull requests; `run` is null when CI never ran on the head, and its status and
  *     conclusion are lowercase, as REST spells them
@@ -182,6 +182,7 @@ export async function openPullRequests(gh, { workflow }) {
                 url: p.url,
                 headSha: p.headRefOid,
                 branch: p.headRefName,
+                draft: p.isDraft === true,
                 run: newest && {
                     id: newest.workflowRun.databaseId,
                     status: newest.status.toLowerCase(),

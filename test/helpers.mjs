@@ -262,7 +262,7 @@ export function copyFixture(project, dest, overrides = {}) {
 /**
  * The GraphQL answer openPullRequests reads: one page holding every pull request, each with its
  * head's check suites (the CI run's, when it has one, beside another workflow's).
- * @param {{ number: number, head: string, branch: string }[]} prs the pull requests
+ * @param {{ number: number, head: string, branch: string, draft?: boolean }[]} prs the pull requests
  * @param {(head: string) => { id: number, attempt?: number, status?: string, conclusion?: string | null } | undefined} runOf
  *     the head's CI run
  * @returns {string} the answer
@@ -288,6 +288,7 @@ export function pullsGraphql(prs, runOf) {
             url: `https://gh/pull/${p.number}`,
             headRefName: p.branch,
             headRefOid: p.head,
+            isDraft: p.draft === true,
             commits: { nodes: [{ commit: { checkSuites: { nodes: suites } } }] },
         };
     });

@@ -961,6 +961,37 @@ describe("finish: approvals from before passkeys", () => {
         expect(message).toContain(`Removed the unsigned record ${OLD}, which the gate refuses.`);
         expect(gate(s)).toEqual([`${UNREVIEWED}: ${why}`]);
     });
+
+    it("refuses to remove a file that is not an unsigned record, and commits nothing", async () => {
+        const s = legacyCopy();
+        const found = legacyApprovals({ repo: s.repo, pr: 123, head: s.head, base: s.master, config: CONFIG });
+        const legacy = { ...found, drop: ["visual-baselines/compact-mantine/badge--default.light.png"] };
+        const { record } = await prepareRecord({
+            repo: s.repo,
+            target,
+            projects: s.projects,
+            decisions: [],
+            now: NOW,
+            config: CONFIG,
+            legacy,
+        });
+        const approval = { record: { ...record, approval: approve(record, KEY, { origin: ORIGIN }) }, origin: ORIGIN };
+        const err = await finish({
+            repo: s.repo,
+            gh: async () => "{}",
+            target,
+            projects: s.projects,
+            decisions: [],
+            now: NOW,
+            config: CONFIG,
+            approval,
+            legacy,
+        }).catch((e) => e);
+        expect(err.message).toBe(
+            "visual-baselines/compact-mantine/badge--default.light.png is not an unsigned record this pull request added; nothing was committed",
+        );
+        expect(remoteLog(s, "feature")[0]).toBe(s.head);
+    });
 });
 
 describe("finish with a passkey approval", () => {
@@ -1313,5 +1344,124 @@ describe("proposeKey", () => {
         await expect(
             proposeKey({ repo: s.repo, gh: async () => "{}", entry: FIRST.entry, now: later, config: CONFIG }),
         ).rejects.toThrow("already registered");
+    });
+});
+
+describe("finish: the less travelled paths", () => {
+    const reject = (file, reason = "wrong") => ({ project: "compact-mantine", file, decision: "reject", reason });
+    const atMaster = (s) => {
+        const master = { commit: s.master, headSha: null, pr: null };
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master);
+    };
+
+    it("refuses projects captured by different CI runs", async () => {
+        const s = setup();
+        s.projects["graphty-element"].results.runId = 999;
+        const err = await s
+            .run([accept("badge--default.light.png"), accept("graph--basic.png", "graphty-element")])
+            .catch((e) => e);
+        expect(err.message).toBe(
+            "the projects of one Finish must come from one CI run, or one head of the pull request",
+        );
+        expect(remoteLog(s, "feature")[0]).toBe(s.head);
+    });
+
+    it.each([
+        [null, "no usable branch for this target: null"],
+        ["bad..name", "no usable branch for this target: bad..name"],
+    ])("refuses a target branch git cannot name: %s", async (branch, message) => {
+        const s = setup();
+        const err = await s.run([accept("badge--default.light.png")], { pr: 123, branch }).catch((e) => e);
+        expect(err.message).toBe(message);
+    });
+
+    it("refuses a seed when its branch already exists on origin and is not this tool's seed", async () => {
+        const s = setup();
+        atMaster(s);
+        git(s.repo, "push", "-q", "origin", `${s.master}:refs/heads/visual/seed-2026-09-27`);
+        pushCommit(s.remote, "visual/seed-2026-09-27", "other.txt");
+        const err = await s.run([accept("badge--default.light.png")], { pr: null, branch: null }).catch((e) => e);
+        expect(err.message).toBe("visual/seed-2026-09-27 already exists on origin: merge or delete it first");
+    });
+
+    it("titles master's rejects issue in the plural for more than one story", async () => {
+        const s = setup();
+        atMaster(s);
+        await s.run([reject("badge--default.light.png"), reject("button--primary.dark.png")], {
+            pr: null,
+            branch: null,
+        });
+        const issue = s.calls.find((c) => c.args[1].endsWith("/issues"));
+        expect(JSON.parse(issue.input).title).toBe("Visual review: 2 stories rejected on master");
+    });
+
+    it("passes a failed reject comment through unchanged when nothing was committed", async () => {
+        const s = setup();
+        const failure = new Error("HTTP 502");
+        const err = await finish({
+            repo: s.repo,
+            gh: async () => {
+                throw failure;
+            },
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions: [reject("slider--sizes.png")],
+            now: NOW,
+            config: CONFIG,
+        }).catch((e) => e);
+        expect(err).toBe(failure);
+        expect(remoteLog(s, "feature")[0]).toBe(s.head);
+    });
+
+    it("counts several accept notes when the reject comment fails after the accepts landed", async () => {
+        const s = setup();
+        const err = await finish({
+            repo: s.repo,
+            gh: async (args) => {
+                if (args[1].includes("/comments")) {
+                    throw new Error("HTTP 502");
+                }
+                return "{}";
+            },
+            target: { pr: 123, branch: "feature" },
+            projects: s.projects,
+            decisions: [
+                accept("badge--default.light.png", "compact-mantine", "one"),
+                accept("button--primary.dark.png", "compact-mantine", "two"),
+                reject("slider--sizes.png"),
+            ],
+            now: NOW,
+            config: CONFIG,
+        }).catch((e) => e);
+        expect(err.message).toMatch(/comment with the rejects and 2 accept notes failed: HTTP 502\. /);
+        expect(err.committed).toBe(remoteLog(s, "feature")[0]);
+    });
+
+    it("uploads more images than one LFS batch in counted batches before the push", async () => {
+        const s = setup();
+        const cm = s.projects["compact-mantine"];
+        const template = cm.results.items.find((i) => i.file === "badge--default.light.png");
+        const decisions = [];
+        for (let i = 0; i < 51; i++) {
+            const file = `many--story-${i}.png`;
+            const bytes = Buffer.from(`image ${i}`);
+            writeFileSync(join(cm.dir, file), bytes);
+            cm.results.items.push({
+                ...template,
+                id: `many--story-${i}`,
+                file,
+                status: "new",
+                baseline: null,
+                capture: sha256(bytes),
+            });
+            decisions.push(accept(file));
+        }
+        const out = await s.run(decisions);
+        expect(out.commit).toBe(remoteLog(s, "feature")[0]);
+        expect(s.steps.filter((x) => x.startsWith("uploading images to LFS"))).toEqual([
+            "uploading images to LFS (0 of 51 done)",
+            "uploading images to LFS (50 of 51 done)",
+            "uploading images to LFS (checking the commit has them all)",
+        ]);
     });
 });

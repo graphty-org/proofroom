@@ -178,6 +178,25 @@ describe("serve: pull requests", () => {
         expect(kept.ready.map((r) => r.pr)).toEqual([123]);
     });
 
+    it("never offers a draft pull request for review: its author is still working on it (issue 2727)", async () => {
+        const s = await start({
+            gh: (r) =>
+                fakeGh({
+                    prs: [{ number: 123, head: r.head, branch: "feature", draft: true }],
+                    runs: { [r.head]: { id: 1000, head: r.head } },
+                    jobs: { 1000: [job("compact-mantine"), job("graphty-element")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1", "visual-graphty-element-1"] },
+                    results: {
+                        "visual-compact-mantine-1": { headSha: r.head, items: capturedItems() },
+                        "visual-graphty-element-1": { headSha: r.head },
+                    },
+                }),
+        });
+        const { body: list } = await s.api("GET", "/api/prs");
+        expect(list.targets[0]).toMatchObject({ pr: 123, draft: true });
+        expect(list.inbox).toMatchObject({ ready: [], notReady: [], drafts: 1 });
+    });
+
     it("holds back a pull request with a failed story, with its reason, and the notifier never announces it", async () => {
         // The fixture's menu--open failed; give it a baseline, as a story that rendered before.
         const items = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items.map((i) =>
@@ -1864,6 +1883,7 @@ describe("serve: loading without waiting", () => {
             url: `https://gh/pull/${n}`,
             headRefName: `b${n}`,
             headRefOid: String(n).repeat(40).slice(0, 40),
+            isDraft: n === 3,
             commits: { nodes: [{ commit: { checkSuites: { nodes: suites } } }] },
         });
         const checkSuite = (id, path, runId, status = "COMPLETED", conclusion = "SUCCESS") => ({
@@ -1892,10 +1912,10 @@ describe("serve: loading without waiting", () => {
         };
         const prs = await openPullRequests(gh, { workflow: "ci.yml" });
         expect(asked).toEqual([null, "after=C1"]);
-        expect(prs.map((p) => [p.number, p.run?.id ?? null])).toEqual([
-            [1, 50],
-            [2, 70],
-            [3, null],
+        expect(prs.map((p) => [p.number, p.run?.id ?? null, p.draft])).toEqual([
+            [1, 50, false],
+            [2, 70, false],
+            [3, null, true],
         ]);
         expect(prs[1].run).toMatchObject({ status: "in_progress", conclusion: null });
     });
