@@ -1977,6 +1977,25 @@ async function openTarget(id, story) {
 
 // ---------------------------------------------------------------- screen: project grid
 
+// What the wait box says while a project's captures are still downloading.
+function downloadingView(project, data) {
+    const t = data.target;
+    const d = t.download;
+    const size = t.projects.find((x) => x.project === project)?.bytes;
+    return {
+        title: `Downloading ${project} captures for ${labelOf(t)}`,
+        text:
+            `CI run ${t.runId}'s captures are not on this computer yet. ${project}` +
+            `${size ? ` (${megabytes(size)})` : ""} downloads first; the rest go on in the background.`,
+        detail: d
+            ? `${d.done} of ${plural(d.total, "artifact")}${d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : ""}`
+            : "",
+        done: d?.done ?? null,
+        total: d?.total ?? null,
+        net: networkLine(data.network, data.now),
+    };
+}
+
 // A project's items, in the wait box for as long as that takes. A project whose captures are still
 // downloading is asked for again until they land: the server downloads it ahead of the others, and
 // the box counts the artifacts and bytes. Resolves null when the wait was cancelled or another
@@ -2011,21 +2030,7 @@ async function loadProject(targetId, project, seq) {
             box.end();
             return { data };
         }
-        const t = data.target;
-        const d = t.download;
-        const size = t.projects.find((x) => x.project === project)?.bytes;
-        box.update({
-            title: `Downloading ${project} captures for ${labelOf(t)}`,
-            text:
-                `CI run ${t.runId}'s captures are not on this computer yet. ${project}` +
-                `${size ? ` (${megabytes(size)})` : ""} downloads first; the rest go on in the background.`,
-            detail: d
-                ? `${d.done} of ${plural(d.total, "artifact")}${d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : ""}`
-                : "",
-            done: d?.done ?? null,
-            total: d?.total ?? null,
-            net: networkLine(data.network, data.now),
-        });
+        box.update(downloadingView(project, data));
         await sleep(700);
         if (seq !== nav) {
             box.end();
@@ -3033,6 +3038,11 @@ function explanation(item, d) {
     if (item.status === "new") {
         return "New story: no baseline yet.";
     }
+    return changeText(item);
+}
+
+// What changed in a story's image: its rename, the pixels that differ and where, and the threshold.
+function changeText(item) {
     const parts = [];
     if (item.from) {
         parts.push(`Moved from ${item.from}: Accept moves its baseline to this id. `);
@@ -3773,6 +3783,21 @@ function shown(stage, item) {
     });
 }
 
+// Replaces a sheet's outline of the changed area (sheet pixels), or removes it when outlines are off.
+function markBox(sheet, [left, top, right, bottom]) {
+    sheet.querySelector(".boxmark")?.remove();
+    if (state.showBox) {
+        const mark = el("div", { class: "boxmark" });
+        Object.assign(mark.style, {
+            left: `${left}px`,
+            top: `${top}px`,
+            width: `${right - left}px`,
+            height: `${bottom - top}px`,
+        });
+        sheet.append(mark);
+    }
+}
+
 // Outlines the current changed area in every pane, and scrolls it into view. A pane opens at the
 // top left of its image (`reset`); on opening (`jump` false) it scrolls only when the area is
 // smaller than the pane and out of sight. Next change (`jump` true) always brings the area into
@@ -3793,17 +3818,7 @@ function showBox(stage, boxes, jump, reset = true) {
         // The outline is drawn inside the image, so an area at an edge keeps all four sides.
         const [left, top] = [Math.max(0, x * factor - 2), Math.max(0, y * factor - 2)];
         const [right, bottom] = [Math.min(sw, (x + w) * factor + 2), Math.min(sh, (y + h) * factor + 2)];
-        sheet.querySelector(".boxmark")?.remove();
-        if (state.showBox) {
-            const mark = el("div", { class: "boxmark" });
-            Object.assign(mark.style, {
-                left: `${left}px`,
-                top: `${top}px`,
-                width: `${right - left}px`,
-                height: `${bottom - top}px`,
-            });
-            sheet.append(mark);
-        }
+        markBox(sheet, [left, top, right, bottom]);
         if (!jump && !reset) {
             continue;
         }
@@ -3965,6 +3980,26 @@ async function fillEnd(card, seq) {
     const next = others.find((p) => p.undecided > 0 && !p.downloading && !p.problem);
     const waitingFor = others.filter((p) => p.downloading);
     const left = leftToReview(t, state.project);
+    const offers = endOffers(t, here, next, left);
+    const verdict = left ? `${left}.` : `Every project of ${labelOf(t)} is decided.`;
+    card.replaceChildren(
+        ...[
+            el(
+                "h2",
+                { id: "end-heading", tabindex: "-1" },
+                `End of ${state.project}: ${here.decided} of ${here.reviewable} decided, ${here.undecided} undecided.`,
+            ),
+            isLocal() ? null : el("p", {}, verdict),
+            el("div", { class: "offers" }, offers),
+            waitingFor.length > 0 ? downloadingList(t, waitingFor) : null,
+        ].filter(Boolean),
+    );
+    offers[0].focus();
+}
+
+// The end card's offers, in order: the next project, this project's undecided, Finish, the grid
+// and the next pull request.
+function endOffers(t, here, next, left) {
     const offer = (label, onclick, cls = null) =>
         el("button", { type: "button", class: cls, onclick, "aria-describedby": "end-heading" }, label);
     const offers = [];
@@ -4006,20 +4041,7 @@ async function fillEnd(card, seq) {
             offer(`Next: ${labelOf(after)} (${undecidedOf(after)} undecided)`, () => openTarget(after.id, true)),
         );
     }
-    const verdict = left ? `${left}.` : `Every project of ${labelOf(t)} is decided.`;
-    card.replaceChildren(
-        ...[
-            el(
-                "h2",
-                { id: "end-heading", tabindex: "-1" },
-                `End of ${state.project}: ${here.decided} of ${here.reviewable} decided, ${here.undecided} undecided.`,
-            ),
-            isLocal() ? null : el("p", {}, verdict),
-            el("div", { class: "offers" }, offers),
-            waitingFor.length > 0 ? downloadingList(t, waitingFor) : null,
-        ].filter(Boolean),
-    );
-    offers[0].focus();
+    return offers;
 }
 
 // The end card's Finish, primary when no next project comes first.

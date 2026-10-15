@@ -1,3 +1,13 @@
+## 0.2.29 (2026-10-15)
+
+### 🩹 Fixes
+
+- **visual-review:** list pull requests and their CI runs in one GraphQL query ([#2682](https://github.com/graphty-org/graphty-monorepo/issues/2682))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.28 (2026-10-14)
 
 ### 🩹 Fixes
