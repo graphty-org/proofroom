@@ -1839,7 +1839,7 @@ describe("review page: waits that say what they wait for", () => {
         const downloading = page.getByRole("button", { name: "Downloading..." });
         // The two projects the run uploaded captures for, while they download; the three it did
         // not are listed as such at once.
-        await expect.poll(() => downloading.count(), { timeout: 10000 }).toBe(2);
+        await expect.poll(() => downloading.count()).toBe(2);
         const card = await page.locator('.card[data-target="123"]').textContent();
         // How many artifacts and bytes have landed, and for how long it has been downloading.
         expect(card).toMatch(/Downloading: 0 of 2 artifacts, 0\.0 MB of 2\.0 MB, \d+ s/);
@@ -1848,7 +1848,7 @@ describe("review page: waits that say what they wait for", () => {
         await expect.poll(status).toMatch(/^Downloading captures in the background: #123/);
         expect(await box()).toBeNull();
         release();
-        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
+        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor();
         expect(await downloading.count()).toBe(0);
     });
 
@@ -1912,7 +1912,7 @@ describe("review page: the wait box", () => {
         const { options, release } = heldDownload();
         const viewport = { width: 820, height: 1180 };
         await open(options, { review: false, touch: true, viewport });
-        await geRow().getByRole("button", { name: "Downloading..." }).waitFor({ timeout: 10000 });
+        await geRow().getByRole("button", { name: "Downloading..." }).waitFor();
         await geRow().getByRole("button", { name: "Downloading..." }).click();
         await expect.poll(() => box("title")).toBe("Downloading graphty-element captures for #123");
         expect(await box("text")).toBe(
@@ -1942,7 +1942,7 @@ describe("review page: the wait box", () => {
         await geRow().getByRole("button", { name: "Downloading..." }).click();
         await expect.poll(() => box("title")).toBe("Downloading graphty-element captures for #123");
         release();
-        await page.locator(".component").first().waitFor({ timeout: 10000 });
+        await page.locator(".component").first().waitFor();
         expect(await box()).toBeNull();
         expect(await page.locator("#pick-project").inputValue()).toBe("graphty-element");
     });
@@ -1984,7 +1984,7 @@ describe("review page: the wait box", () => {
         expect(await page.locator("#wait-retry").isVisible()).toBe(true);
         github = "up";
         await page.locator("#wait-retry").click();
-        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
+        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor();
         expect(await box()).toBeNull();
     });
 
@@ -2013,7 +2013,7 @@ describe("review page: the wait box", () => {
         expect(await page.locator("#wait-cancel").textContent()).toBe("Close");
         down = false;
         await page.locator("#wait-retry").click();
-        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor({ timeout: 10000 });
+        await page.getByRole("button", { name: "Review", exact: true }).first().waitFor();
         expect(await box()).toBeNull();
     });
 
@@ -2555,9 +2555,7 @@ describe("review page: Finish", () => {
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
         await page.getByRole("button", { name: /^Finish/ }).click();
-        // The commit, the LFS upload and the push come first: seconds on a busy runner.
-        const slow = { timeout: 30000 };
-        await expect.poll(status, slow).toBe("Finishing #123: posting the status...");
+        await expect.poll(status).toBe("Finishing #123: posting the status...");
         // The wait box follows it step by step, over the page.
         await expect.poll(() => box("title")).toBe("Finishing #123");
         await expect
@@ -2585,7 +2583,7 @@ describe("review page: Finish", () => {
 
         release();
         await expect
-            .poll(() => page.locator(".finish-outcome").textContent(), slow)
+            .poll(() => page.locator(".finish-outcome").textContent())
             .toMatch(
                 /^Finished #123\.Committed \w{10} to feature\.Commit status: pending -- 4 accepted, 0 rejected, 0 excluded, 3 undecided, not loaded: layout, algorithms, graphty, cytoscape-extensions\./,
             );
@@ -2635,11 +2633,10 @@ describe("review page: Finish", () => {
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
         await page.getByRole("button", { name: /^Finish/ }).click();
-        const slow = { timeout: 30000 };
-        await expect.poll(() => box("net"), slow).toBe("Retrying after a network error, attempt 2 of 4");
+        await expect.poll(() => box("net")).toBe("Retrying after a network error, attempt 2 of 4");
         expect(await page.locator("#wait #finish-panel li.now").textContent()).toBe("Posting the status: in progress");
         release();
-        await expect.poll(() => page.locator(".finish-outcome").textContent(), slow).toMatch(/^Finished #123\./);
+        await expect.poll(() => page.locator(".finish-outcome").textContent()).toMatch(/^Finished #123\./);
         expect(await page.locator(".finish-outcome").textContent()).not.toContain("status not posted");
     });
 });
@@ -2732,7 +2729,7 @@ describe("review page: the passkey", () => {
         });
 
         await page.getByRole("button", { name: "Register passkey" }).click();
-        await expect.poll(status, { timeout: 30000 }).toMatch(/^Passkey registered \((Linux|Mac|Windows) passkey, /);
+        await expect.poll(status).toMatch(/^Passkey registered \((Linux|Mac|Windows) passkey, /);
         const { credentials } = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
         expect(credentials).toHaveLength(1);
         const id = Buffer.from(credentials[0].credentialId, "base64").toString("base64url");
@@ -2757,16 +2754,14 @@ describe("review page: the passkey", () => {
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: false });
         const asked = dialogs.length;
         await finish.click();
-        await expect.poll(() => dialogs.length, { timeout: 30000 }).toBeGreaterThan(asked + 1);
+        await expect.poll(() => dialogs.length).toBeGreaterThan(asked + 1);
         expect(dialogs[asked]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
         expect(dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
         expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
 
         // The retry, with Face ID passing, signs and finishes.
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: true });
-        await expect
-            .poll(() => page.locator(".finish-outcome h2").textContent(), { timeout: 30000 })
-            .toBe("Finished #123.");
+        await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toBe("Finished #123.");
         const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
         expect(record).toMatchObject({ version: 2, pr: 123 });
@@ -2787,9 +2782,7 @@ describe("review page: the passkey", () => {
         await expect.poll(progress).toBe("4 of 6 decided");
         confirmFinish = true;
         await page.getByRole("button", { name: /^Finish #123/ }).click();
-        await expect
-            .poll(() => page.locator(".finish-outcome h2").textContent(), { timeout: 30000 })
-            .toBe("Finished #123.");
+        await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toBe("Finished #123.");
         expect(dialogs.at(-1)).toContain(
             "Not yet protected: no passkey is registered, so this Finish is not approved by you and the CI gate does not check who accepted.",
         );
@@ -2819,9 +2812,7 @@ describe("review page: the passkey", () => {
         expect(await header.textContent()).not.toContain("Passkey");
         confirmFinish = true;
         await page.getByRole("button", { name: /^Finish #123/ }).click();
-        await expect
-            .poll(() => page.locator(".finish-outcome h2").textContent(), { timeout: 30000 })
-            .toBe("Finished #123.");
+        await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toBe("Finished #123.");
         expect(dialogs.at(-1)).not.toContain("passkey");
     });
 });
