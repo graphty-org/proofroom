@@ -1868,15 +1868,6 @@ async function openTarget(id, story) {
 // the box counts the artifacts and bytes. Resolves null when the wait was cancelled or another
 // screen took over; { data } once loaded; { error, box } when it failed, the box still open for the
 // caller to say so.
-// "1 of 3 artifacts, 41 MB of 120 MB": how far a download has got; nothing before it starts.
-function downloadDetail(d) {
-    if (!d) {
-        return "";
-    }
-    const bytes = d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : "";
-    return `${d.done} of ${plural(d.total, "artifact")}${bytes}`;
-}
-
 async function loadProject(targetId, project, seq) {
     const box = block(`Opening ${project}`, {
         cancel: () => {
@@ -1914,7 +1905,9 @@ async function loadProject(targetId, project, seq) {
             text:
                 `CI run ${t.runId}'s captures are not on this computer yet. ${project}` +
                 `${size ? ` (${megabytes(size)})` : ""} downloads first; the rest go on in the background.`,
-            detail: downloadDetail(d),
+            detail: d
+                ? `${d.done} of ${plural(d.total, "artifact")}${d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : ""}`
+                : "",
             done: d?.done ?? null,
             total: d?.total ?? null,
             net: networkLine(data.network, data.now),
