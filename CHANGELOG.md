@@ -1,3 +1,13 @@
+## 0.2.30 (2026-10-15)
+
+### 🩹 Fixes
+
+- **visual-review:** never offer a draft pull request for review ([#2727](https://github.com/graphty-org/graphty-monorepo/issues/2727))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.29 (2026-10-15)
 
 ### 🩹 Fixes
