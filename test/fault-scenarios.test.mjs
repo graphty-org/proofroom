@@ -68,7 +68,6 @@ const finishJob = async (s, id = "123") => {
 };
 const projectOf = (body, id, project) =>
     body.targets.find((t) => t.id === id)?.projects.find((p) => p.project === project);
-const within = (ms, promise) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
 
 /**
  * A second pull request, #124 on branch `other`, with CI run 1001 capturing both projects.
@@ -526,8 +525,8 @@ describe("stalls", () => {
                 rules: [{ on: "git", match: /^git fetch -q origin \+refs\/heads\/feature/, kind: "stall" }],
             }).install();
             const s = await serve(r, w);
-            const res = await within(3000, s.api("GET", "/api/prs"));
-            expect(res, "GET /api/prs never answered").not.toBeNull();
+            // A hang here times the test out: GET /api/prs never answered.
+            await s.api("GET", "/api/prs");
             expect(log.lines.some((l) => l.includes("fetch"))).toBe(true);
         } finally {
             delete process.env[TIMEOUT];
@@ -544,8 +543,8 @@ describe("stalls", () => {
             await decide(s, "compact-mantine", "badge--default.light.png", "accept");
             injector({ rules: [{ on: "git", match: /^git push /, kind: "stall" }] }).install();
             await s.api("POST", "/api/finish", { id: "123" });
-            const j = await within(3000, endedJob(s));
-            expect(j, "the Finish never ended").not.toBeNull();
+            // A hang here times the test out: the Finish never ended.
+            const j = await endedJob(s);
             expect(j.error).toMatch(/push/);
             expect((await decide(s, "compact-mantine", "button--primary.dark.png", "accept")).status).toBe(200);
         } finally {
