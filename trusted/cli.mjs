@@ -398,8 +398,13 @@ async function compare(args) {
         return 2;
     }
     const pngs = async (dir) => (await readdir(dir)).filter((f) => f.endsWith(".png"));
-    const read = (dir, file, present) =>
-        present.includes(file) ? (dir === values.baselines ? readBaseline : readFile)(join(dir, file)) : null;
+    const read = (dir, file, present) => {
+        if (!present.includes(file)) {
+            return null;
+        }
+        const reader = dir === values.baselines ? readBaseline : readFile;
+        return reader(join(dir, file));
+    };
     const [baselines, captures] = await Promise.all([pngs(values.baselines), pngs(values.captures)]);
     const counts = {};
     for (const file of [...new Set([...baselines, ...captures])].sort()) {
