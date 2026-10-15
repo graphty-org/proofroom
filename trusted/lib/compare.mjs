@@ -176,7 +176,11 @@ export function classify({ baseline, first, second = null, reference = null, thr
     const agree = () => second === null || compareImages(first, second, options).status === "unchanged";
     if (baseline === null) {
         const same = reference !== null && compareImages(reference, first, options).status === "unchanged";
-        const status = same ? "unseeded" : agree() ? "new" : "unstable";
+        /** @type {"unseeded" | "new" | "unstable"} */
+        let status = "unseeded";
+        if (!same) {
+            status = agree() ? "new" : "unstable";
+        }
         return { status, ...none, baseline: null, capture: sha256(first), size: pngSize(first) };
     }
     const vsFirst = compareImages(baseline, first, options);

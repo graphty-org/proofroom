@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { contentHash, gateProblems, unrecordedChanges } from "../trusted/gate.mjs";
 import {
     commitMessage,
+    commitStatus,
     finish,
     legacyApprovals,
     legacyApprovalsAsync,
@@ -1463,5 +1464,28 @@ describe("finish: the less travelled paths", () => {
             "uploading images to LFS (50 of 51 done)",
             "uploading images to LFS (checking the commit has them all)",
         ]);
+    });
+});
+
+describe("commitStatus", () => {
+    const counts = { accepted: 2, rejected: 0, excluded: 1, undecided: 0, unloaded: [] };
+
+    it("is success when everything was decided and loaded", () => {
+        expect(commitStatus(counts)).toEqual({
+            state: "success",
+            description: "Reviewed: 2 accepted, 0 rejected, 1 excluded, 0 left undecided",
+        });
+    });
+
+    it("is pending while a story is undecided or a project did not load", () => {
+        expect(commitStatus({ ...counts, undecided: 3 }).state).toBe("pending");
+        expect(commitStatus({ ...counts, unloaded: ["layout", "graphty"] })).toEqual({
+            state: "pending",
+            description: "Reviewed: 2 accepted, 0 rejected, 1 excluded, 0 left undecided, not loaded: layout, graphty",
+        });
+    });
+
+    it("is failure on any reject, even with stories undecided", () => {
+        expect(commitStatus({ ...counts, rejected: 1, undecided: 3, unloaded: ["layout"] }).state).toBe("failure");
     });
 });
