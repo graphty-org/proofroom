@@ -301,20 +301,24 @@ describe("serve: pull requests", () => {
         // A git that holds the default branch's passkeys.json read (legacyApprovals' first call,
         // or the check for the file before it) until the test releases it. Run on the server's own thread, as it once was, that read
         // blocked every request, and a git that stalled for seconds timed out the list (#1496).
-        // On such a server the test cannot release it, so the hold ends by itself after 10 s and
-        // the test fails on its timeout instead of hanging.
+        // On such a server the test cannot release it, so the hold ends by itself once the suite's
+        // 60 s test limit has passed (6000 sleeps of at least 10 ms): git then fails, leaving a mark
+        // the test checks, instead of carrying on as if released.
         const bin = tempDir("vr-git-");
         const real = process.env.PATH.split(delimiter)
             .map((d) => join(d, "git"))
             .find((f) => existsSync(f));
-        const gate = { held: join(bin, "held"), release: join(bin, "release") };
+        const gate = { held: join(bin, "held"), release: join(bin, "release"), expired: join(bin, "expired") };
         writeFileSync(
             join(bin, "git"),
             [
                 "#!/bin/sh",
                 'case "$*" in "show "*":visual-review/passkeys.json" | *"cat-file -e "*":visual-review/passkeys.json")',
                 `  : > '${gate.held}'; i=0`,
-                `  while [ ! -e '${gate.release}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done ;;`,
+                `  while [ ! -e '${gate.release}' ]; do`,
+                `    [ $i -ge 6000 ] && { : > '${gate.expired}'; echo 'fake git: the held read was never released' >&2; exit 1; }`,
+                "    sleep 0.01; i=$((i + 1))",
+                "  done ;;",
                 "esac",
                 `exec '${real}' "$@"`,
                 "",
@@ -333,6 +337,7 @@ describe("serve: pull requests", () => {
         expect((await s.api("GET", "/api/inbox")).status).toBe(200);
         writeFileSync(gate.release, "");
         expect((await list).status).toBe(200);
+        expect(existsSync(gate.expired), "the held git read was never released").toBe(false);
     });
 
     it("shows the newest attempt's artifact", async () => {
