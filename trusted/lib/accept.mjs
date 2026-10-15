@@ -519,7 +519,13 @@ async function postFinishStatus(gh, decided, { commit, undecided, unloaded }) {
  * @returns {{ state: "failure" | "pending" | "success", description: string }} the status
  */
 export function commitStatus({ accepted, rejected, excluded, undecided, unloaded }) {
-    const state = rejected > 0 ? "failure" : undecided > 0 || unloaded.length > 0 ? "pending" : "success";
+    /** @type {"failure" | "pending" | "success"} */
+    let state = "success";
+    if (rejected > 0) {
+        state = "failure";
+    } else if (undecided > 0 || unloaded.length > 0) {
+        state = "pending";
+    }
     const description =
         `Reviewed: ${accepted} accepted, ${rejected} rejected, ${excluded} excluded, ` +
         `${undecided} left undecided${unloaded.length > 0 ? `, not loaded: ${unloaded.join(", ")}` : ""}`;

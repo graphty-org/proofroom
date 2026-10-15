@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
@@ -205,5 +206,41 @@ describe("Git LFS pointers", () => {
         );
         expect(await readBaseline(join(dir, "real.png"))).toEqual(png(8, 8, WHITE));
         expect(await readBaseline(join(dir, "missing.png"))).toBeNull();
+    });
+});
+
+describe("the compare command", () => {
+    it("reads each file from the side that has it and reports every change", () => {
+        const dir = tempDir("vr-compare-cli-");
+        const baselines = join(dir, "baselines");
+        const captures = join(dir, "captures");
+        mkdirSync(baselines);
+        mkdirSync(captures);
+        writeFileSync(join(baselines, "same.png"), png(4, 4, WHITE));
+        writeFileSync(join(captures, "same.png"), png(4, 4, WHITE));
+        writeFileSync(join(baselines, "gone.png"), png(4, 4, BLACK));
+        writeFileSync(join(captures, "added.png"), png(4, 4, BLACK));
+        const cli = new URL("../trusted/cli.mjs", import.meta.url).pathname;
+        let out = "";
+        let status = 0;
+        try {
+            execFileSync(process.execPath, [cli, "compare", "--baselines", baselines, "--captures", captures], {
+                encoding: "utf8",
+            });
+        } catch (err) {
+            out = err.stdout;
+            status = err.status;
+        }
+        const lines = out
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+        expect(status).toBe(1);
+        expect(lines.map((l) => [l.file, l.status])).toEqual([
+            ["added.png", "new"],
+            ["gone.png", "removed"],
+            [undefined, undefined],
+        ]);
+        expect(lines.at(-1)).toEqual({ summary: { new: 1, removed: 1, unchanged: 1 } });
     });
 });
