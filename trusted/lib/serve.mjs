@@ -1630,12 +1630,10 @@ export function createApp({
         return { t, p: p?.results ? p : undefined };
     }
 
-    const gone = (id) => [
-        404,
-        {
-            error: `${id === "master" ? defaultBranch : `#${id}`} is not listed any more (closed, or it could not be loaded): reload the list`,
-        },
-    ];
+    const gone = (id) => {
+        const name = id === "master" ? defaultBranch : `#${id}`;
+        return [404, { error: `${name} is not listed any more (closed, or it could not be loaded): reload the list` }];
+    };
 
     // Whether a write is about the capture the page shows: `hash` (the image), or `runId` and
     // `runAttempt`. A page that sends neither is not checked.
