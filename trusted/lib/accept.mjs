@@ -527,6 +527,37 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
 }
 
 /**
+ * The refused review records a pull request carries from before passkeys, and the files they cover.
+ * @param {(args: string[]) => Buffer} run runs git in the repository
+ * @param {string} head the captured head of the pull request
+ * @param {string[]} refused the records the gate refuses
+ * @returns {{ drop: string[], covered: Set<string> }} the records to remove (unsigned or
+ *     unreadable), and the baselines the readable ones among them covered
+ */
+function legacyRecords(run, head, refused) {
+    const covered = new Set();
+    const drop = [];
+    for (const path of refused) {
+        let record = null;
+        try {
+            record = JSON.parse(run(["show", `${head}:${path}`]).toString("utf8"));
+        } catch {
+            // unreadable: removed below like any refused record, and it covers nothing
+        }
+        if (record !== null && record.version !== 1) {
+            continue; // only unsigned records from before passkeys are signed again
+        }
+        drop.push(path);
+        for (const item of Array.isArray(record?.items) ? record.items : []) {
+            if (typeof item?.path === "string") {
+                covered.add(item.path);
+            }
+        }
+    }
+    return { drop, covered };
+}
+
+/**
  * Approvals a pull request carries from before passkeys: the review records it added that the
  * gate refuses (version 1, unsigned), and the baseline changes those records covered that no
  * counted record accounts for. Uses the gate's own calculation, so a signed Finish covers exactly
@@ -573,25 +604,7 @@ export function legacyApprovals({ repo, pr, head, base, config }) {
     };
     const { refused, missing: all } = reviewGaps(fork, head, repo, config.baselines, { keys, pr });
     const missing = fork === base ? all : all.filter((m) => blob(fork, m.path) === blob(base, m.path));
-    const covered = new Set();
-    const drop = [];
-    for (const path of refused) {
-        let record = null;
-        try {
-            record = JSON.parse(run(["show", `${head}:${path}`]).toString("utf8"));
-        } catch {
-            // unreadable: removed below like any refused record, and it covers nothing
-        }
-        if (record !== null && record.version !== 1) {
-            continue; // only unsigned records from before passkeys are signed again
-        }
-        drop.push(path);
-        for (const item of Array.isArray(record?.items) ? record.items : []) {
-            if (typeof item?.path === "string") {
-                covered.add(item.path);
-            }
-        }
-    }
+    const { drop, covered } = legacyRecords(run, head, refused);
     const items = missing
         .filter((m) => m.path !== PASSKEYS_FILE && covered.has(m.path))
         .map((m) => ({ path: m.path, from: m.from, to: m.to, reason: "approved before passkeys; signed again" }));
