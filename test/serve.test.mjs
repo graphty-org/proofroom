@@ -657,6 +657,19 @@ describe("serve: images", () => {
         expect(raw.statusCode).toBe(404);
     });
 
+    it("names a target that is not listed any more by its number, or by the default branch", async () => {
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const pr = await s.api("GET", "/api/img/999/compact-mantine/capture/button--primary.dark.png");
+        expect(pr.status).toBe(404);
+        expect(pr.body.error).toBe("#999 is not listed any more (closed, or it could not be loaded): reload the list");
+        const master = await s.api("GET", "/api/img/master/compact-mantine/capture/button--primary.dark.png");
+        expect(master.status).toBe(404);
+        expect(master.body.error).toBe(
+            "master is not listed any more (closed, or it could not be loaded): reload the list",
+        );
+    });
+
     it("refuses an image whose bytes differ from results.json's hash", async () => {
         const s = await start({ gh: onePr() });
         const { body } = await s.api("GET", "/api/prs");

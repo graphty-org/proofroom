@@ -193,6 +193,13 @@ async function reference(args) {
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1"]);
 
+/**
+ * A host as it goes in a URL: an IPv6 address in brackets, anything else as it is.
+ * @param {string} host the host serve binds
+ * @returns {string} the URL's host part
+ */
+const urlHost = (host) => (host.includes(":") ? `[${host}]` : host);
+
 async function serve(args) {
     if (args.includes("--branch")) {
         console.error("visual-review serve: --branch is gone: a --results preview is look only and has no Finish");
@@ -239,7 +246,7 @@ async function serve(args) {
         .trim();
     const previews = values.previews ? resolve(values.previews) : join(dirname(common), config.workDir, "local");
     const token = sessionToken(join(tmp, "state"));
-    const origin = `${https ? "https" : "http"}://${HOST.includes(":") ? `[${HOST}]` : HOST}:${PORT}`;
+    const origin = `${https ? "https" : "http"}://${urlHost(HOST)}:${PORT}`;
     // Offline: a local results directory is a preview, so nothing is posted to GitHub.
     const offline = async (ghArgs, input) => {
         console.log(`gh (offline, not run): ${ghArgs.join(" ")}\n${input ?? ""}`);
@@ -343,10 +350,11 @@ async function update(args) {
         for (const path of out.taken) {
             console.log(`  took ${config.defaultBranch}'s side: ${path}`);
         }
+        const recaptured = out.recapture.map((p) => `  ${p}`).join("\n");
         console.log(
             out.recapture.length === 0
                 ? "CI captures again; no baseline changed on the branch."
-                : `CI captures again and compares these with their new baselines:\n${out.recapture.map((p) => `  ${p}`).join("\n")}`,
+                : `CI captures again and compares these with their new baselines:\n${recaptured}`,
         );
         return 0;
     } catch (err) {
