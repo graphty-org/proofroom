@@ -2025,6 +2025,15 @@ async function openTarget(id, story) {
 
 // ---------------------------------------------------------------- screen: project grid
 
+// The wait box's count of a download: its artifacts, and its bytes once their size is known.
+function downloadDetail(d) {
+    if (!d) {
+        return "";
+    }
+    const bytes = d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : "";
+    return `${d.done} of ${plural(d.total, "artifact")}${bytes}`;
+}
+
 // What the wait box says while a project's captures are still downloading.
 function downloadingView(project, data) {
     const t = data.target;
@@ -2035,9 +2044,7 @@ function downloadingView(project, data) {
         text:
             `CI run ${t.runId}'s captures are not on this computer yet. ${project}` +
             `${size ? ` (${megabytes(size)})` : ""} downloads first; the rest go on in the background.`,
-        detail: d
-            ? `${d.done} of ${plural(d.total, "artifact")}${d.bytes ? `, ${megabytes(d.bytesDone)} of ${megabytes(d.bytes)}` : ""}`
-            : "",
+        detail: downloadDetail(d),
         done: d?.done ?? null,
         total: d?.total ?? null,
         net: networkLine(data.network, data.now),
@@ -4453,14 +4460,19 @@ async function undo(files, where, one = false) {
     }
     showGrid();
     if (done === files.length || stopped) {
-        say(
-            one
-                ? `Undid ${where}: undecided again.`
-                : stopped
-                  ? `Stopped: undid ${done} of ${plural(files.length, "decision")} of ${where}.`
-                  : `Undid ${plural(done, "decision")} of ${where}.`,
-        );
+        say(undoneMessage(done, files.length, where, one, stopped));
     }
+}
+
+// What an undo says once it ends: one item, a stopped run, or every decision it was asked to undo.
+function undoneMessage(done, total, where, one, stopped) {
+    if (one) {
+        return `Undid ${where}: undecided again.`;
+    }
+    if (stopped) {
+        return `Stopped: undid ${done} of ${plural(total, "decision")} of ${where}.`;
+    }
+    return `Undid ${plural(done, "decision")} of ${where}.`;
 }
 
 // A component's Undo N, or More > Undo all decisions: asks first, naming the count.

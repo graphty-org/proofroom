@@ -1602,6 +1602,24 @@ describe("review page: a pull request", () => {
         expect(await option("accept")).toBe("Accepted (0)");
     });
 
+    it("stops undoing every decision when Stop is pressed, and says how many it undid", async () => {
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("4 of 6 decided");
+        // The first undo is held until Stop has been pressed.
+        let release;
+        const held = new Promise((resolve) => (release = resolve));
+        await page.route("**/api/decide**", async (route) => {
+            await held;
+            await route.continue();
+        });
+        await page.locator("details.menu > summary").click();
+        await page.getByRole("button", { name: "Undo all decisions..." }).click();
+        await page.getByRole("button", { name: "Stop", exact: true }).click();
+        release();
+        await expect.poll(status).toBe("Stopped: undid 1 of 4 decisions of compact-mantine.");
+        expect(await progress()).toBe("3 of 6 decided");
+    });
+
     it("keeps a reject an earlier Finish posted, and says so on its tile", async () => {
         await page.route("**/api/pr/**", async (route) => {
             const res = await route.fetch();
@@ -1945,6 +1963,30 @@ describe("review page: the wait box", () => {
         await page.locator(".component").first().waitFor({ timeout: 10000 });
         expect(await box()).toBeNull();
         expect(await page.locator("#pick-project").inputValue()).toBe("graphty-element");
+    });
+
+    it("counts only artifacts while the download's size is unknown, and nothing before the download starts", async () => {
+        const { options, release } = heldDownload();
+        await open(options, { review: false });
+        // What the server says about the download, rewritten: no size yet, then no download at all.
+        let rewrite = (download) => ({ ...download, bytes: null });
+        await page.route("**/api/pr/123/graphty-element", async (route) => {
+            const res = await route.fetch();
+            const body = await res.json();
+            if (body.downloading) {
+                body.target.download = rewrite(body.target.download);
+            }
+            await route.fulfill({ response: res, json: body });
+        });
+        await geRow().getByRole("button", { name: "Downloading..." }).waitFor({ timeout: 10000 });
+        await geRow().getByRole("button", { name: "Downloading..." }).click();
+        await boxSays("detail", /^1 of 2 artifacts$/);
+        expect(await box("detail")).toBe("1 of 2 artifacts");
+        rewrite = () => null;
+        await boxSays("detail", /^$/);
+        expect(await box("detail")).toBe("");
+        release();
+        await page.locator(".component").first().waitFor({ timeout: 10000 });
     });
 
     it("says in the box which GitHub call waits to retry, then turns a failure into an error with Retry", async () => {
