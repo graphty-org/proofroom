@@ -309,7 +309,7 @@ header h1 {
     border-bottom: 1px solid var(--line);
 }
 
-#status-row > span {
+#status-row > :is(span, output) {
     min-width: 0;
 }
 
@@ -323,12 +323,12 @@ header h1 {
     height: auto;
 }
 
-#status-row.open > span {
+#status-row.open > :is(span, output) {
     -webkit-line-clamp: unset;
     line-clamp: unset;
 }
 
-#status-row > span {
+#status-row > :is(span, output) {
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
@@ -336,7 +336,7 @@ header h1 {
     overflow: hidden;
 }
 
-#status-row > span:empty {
+#status-row > :is(span, output):empty {
     display: none;
 }
 
@@ -345,7 +345,7 @@ header h1 {
         height: calc(2.8em + 6px);
     }
 
-    #status-row > span {
+    #status-row > :is(span, output) {
         -webkit-line-clamp: 2;
         line-clamp: 2;
     }
