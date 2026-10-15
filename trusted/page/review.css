@@ -311,6 +311,11 @@ header h1 {
 
 #status-row > :is(span, output) {
     min-width: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+    overflow: hidden;
 }
 
 #elapsed,
@@ -326,14 +331,6 @@ header h1 {
 #status-row.open > :is(span, output) {
     -webkit-line-clamp: unset;
     line-clamp: unset;
-}
-
-#status-row > :is(span, output) {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
-    line-clamp: 1;
-    overflow: hidden;
 }
 
 #status-row > :is(span, output):empty {
