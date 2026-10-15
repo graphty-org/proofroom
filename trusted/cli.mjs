@@ -366,10 +366,11 @@ async function update(args) {
         for (const path of out.taken) {
             console.log(`  took ${config.defaultBranch}'s side: ${path}`);
         }
+        const recaptured = out.recapture.map((p) => `  ${p}`).join("\n");
         console.log(
             out.recapture.length === 0
                 ? "CI captures again; no baseline changed on the branch."
-                : `CI captures again and compares these with their new baselines:\n${out.recapture.map((p) => `  ${p}`).join("\n")}`,
+                : `CI captures again and compares these with their new baselines:\n${recaptured}`,
         );
         return 0;
     } catch (err) {
