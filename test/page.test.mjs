@@ -2851,6 +2851,17 @@ describe("review page: narrow windows, touch and wording", () => {
             [selector, text],
         );
 
+    it("marks the tools and messages rows as named regions and the message line as a native output", async () => {
+        await open((r) => ({ gh: onePr()(r) }));
+        await page.locator(".component").first().waitFor();
+        expect(await page.getByRole("region", { name: "Tools" }).evaluate((e) => e.tagName)).toBe("SECTION");
+        const messages = page.getByRole("region", { name: "Messages" });
+        expect(await messages.evaluate((e) => e.tagName)).toBe("SECTION");
+        expect(
+            await messages.getByRole("status", { includeHidden: true }).evaluate((e) => e.id + " " + e.tagName),
+        ).toBe("status OUTPUT");
+    });
+
     it("keeps the decision bar and the header on screen at every width", async () => {
         await open((r) => ({ gh: onePr()(r) }));
         await page.locator(".component").first().waitFor();
