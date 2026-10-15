@@ -1276,7 +1276,7 @@ function inboxView(inbox) {
                 return badRow(bad);
             }
             // Only a member the server counted as done has nothing to decide; never guess it.
-            const said = { done: "nothing to decide", capturing: "still capturing" }[g.states?.[n]];
+            const said = { done: "nothing to decide", capturing: "still capturing", draft: "draft" }[g.states?.[n]];
             return el("li", { class: "meta" }, `#${g.prs[n]}: ${said ?? "status unknown: reload the page"}`);
         });
         const first = g.ids.find((id) => inbox.ready.some((r) => r.id === id && r.undecided > 0));
@@ -1321,6 +1321,7 @@ function inboxView(inbox) {
     const rest = [
         inbox.capturing > 0 ? `${inbox.capturing} capturing` : null,
         inbox.done > 0 ? `${inbox.done} with nothing to decide` : null,
+        inbox.drafts > 0 ? `${inbox.drafts} still a draft` : null,
     ].filter(Boolean);
     return el(
         "section",
