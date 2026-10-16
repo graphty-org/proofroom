@@ -1221,14 +1221,7 @@ export function createApp({
             await legacyFor(t);
         }
         signer = await signingIdentity(repo);
-        // A Finish that pushed while this refresh ran: read what the branch publishes again, with
-        // no await between the last check and the swap.
-        while (seen !== pushes) {
-            seen = pushes;
-            for (const t of next.values()) {
-                t.published = await publishedOn(t);
-            }
-        }
+        await republish(next, seen);
         targets = next;
         save();
         prune();
@@ -1339,6 +1332,17 @@ export function createApp({
             }
         } catch (err) {
             console.error(`visual-review: ignoring the kept list in ${listFile}: ${err.message}`);
+        }
+    }
+
+    // A Finish that pushed while a refresh ran (after `seen` pushes): reads what each branch
+    // publishes again. The caller swaps in the list right after, with no await between.
+    async function republish(next, seen) {
+        while (seen !== pushes) {
+            seen = pushes;
+            for (const t of next.values()) {
+                t.published = await publishedOn(t);
+            }
         }
     }
 

@@ -5196,6 +5196,19 @@ function commitLine(out, repo) {
     return el("p", {}, "Committed ", commit, ` to ${out.branch}.`);
 }
 
+// The commit status a Finish posted, or why posting it failed; none when it was already finished.
+function finishStatusLine(out) {
+    if (out.alreadyFinished) {
+        return [];
+    }
+    const counts = (out.status ?? "").replace(/^Reviewed: /, "").replace(" left undecided", " undecided");
+    return [
+        out.statusError
+            ? el("p", { class: "error" }, `The commit status failed: ${out.statusError}`)
+            : el("p", {}, `Commit status: ${out.state ?? "set"} -- ${counts}.`),
+    ];
+}
+
 function finishOutcome() {
     const job = state.job;
     if (!job || job.running || state.dismissed === job.id) {
@@ -5274,14 +5287,7 @@ function finishOutcome() {
             el("p", { class: "error" }, `The comment with the accept notes was not posted: ${out.commentError}`),
         );
     }
-    const counts = (out.status ?? "").replace(/^Reviewed: /, "").replace(" left undecided", " undecided");
-    if (!out.alreadyFinished) {
-        parts.push(
-            out.statusError
-                ? el("p", { class: "error" }, `The commit status failed: ${out.statusError}`)
-                : el("p", {}, `Commit status: ${out.state ?? "set"} -- ${counts}.`),
-        );
-    }
+    parts.push(...finishStatusLine(out));
     const next = nextTarget(job.target);
     const offers = [
         next
