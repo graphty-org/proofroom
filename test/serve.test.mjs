@@ -928,6 +928,54 @@ describe("serve: decisions and Finish", () => {
         expect((await decide("button--primary.dark.png")).status).toBe(200);
     });
 
+    it("keeps what a Finish published when a refresh read the branch from before its push", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        let reached;
+        const atStatus = new Promise((resolve) => (reached = resolve));
+        const s = await start({
+            gh: (r) => {
+                const gh = onePr()(r);
+                return async (args, input) => {
+                    if (args[1]?.includes("/statuses/")) {
+                        reached();
+                        await gate;
+                    }
+                    return gh(args, input);
+                };
+            },
+        });
+        await s.api("GET", "/api/prs");
+        await s.api("POST", "/api/decide", {
+            id: "123",
+            project: "compact-mantine",
+            file: "badge--default.light.png",
+            decision: "accept",
+        });
+        await s.api("POST", "/api/finish", { id: "123" });
+        await atStatus;
+        // A refresh while the Finish runs fetches nothing, and reads the branch as it was before
+        // the push.
+        const before = () => git(s.repo, "update-ref", "refs/remotes/origin/feature", s.head);
+        before();
+        await s.api("GET", "/api/prs");
+        release();
+        expect((await endedJob(s)).error).toBeNull();
+        const unpublished = async () => (await s.api("GET", "/api/target/123")).body.unpublished;
+        expect(await unpublished()).toBe(0);
+        // A later refresh whose fetch fails still knows the push.
+        before();
+        git(s.repo, "remote", "set-url", "origin", join(s.dir, "gone"));
+        await s.api("GET", "/api/prs");
+        expect(await unpublished()).toBe(0);
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
+            "badge--default.light.png": { decision: "accept", reason: null, posted: true },
+        });
+    });
+
     it("reports the signing key the server's environment gives git", async () => {
         const s = await start({ gh: onePr() });
         const saved = { ...process.env };

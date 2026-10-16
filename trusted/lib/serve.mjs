@@ -368,6 +368,12 @@ export function createApp({
     // the branch" check.
     let tips = new Map();
     let recordsAt = new Map();
+    // The commit each Finish pushed, by branch, and how many pushes there were: a refresh reads the
+    // branch tips once, and while a Finish runs it fetches nothing, so the tips it read can predate
+    // the push. Without these, that refresh put back the branch as it was before the push, and the
+    // decisions the Finish published read as unpublished again (issue #3040).
+    const pushedTips = new Map();
+    let pushes = 0;
     /** What the last refresh could not read from GitHub (the pull request list, a git fetch). */
     let listWarnings = [];
     /**
@@ -1161,6 +1167,7 @@ export function createApp({
                 );
             }
         }
+        let seen = pushes;
         await readTips();
         step("checking the baselines", 0, next.size);
         let checked = 0;
@@ -1177,6 +1184,14 @@ export function createApp({
             await legacyFor(t);
         }
         signer = await signingIdentity(repo);
+        // A Finish that pushed while this refresh ran: read what the branch publishes again, with
+        // no await between the last check and the swap.
+        while (seen !== pushes) {
+            seen = pushes;
+            for (const t of next.values()) {
+                t.published = await publishedOn(t);
+            }
+        }
         targets = next;
         save();
         prune();
@@ -1313,7 +1328,18 @@ export function createApp({
     // head's (`earlier`) when the tip is that head; null when the branch was never fetched, so
     // nothing is known about it.
     async function publishedOn(t) {
-        const tip = t.branch ? tips.get(t.branch) : undefined;
+        const fetched = t.branch ? tips.get(t.branch) : undefined;
+        const mine = t.branch ? pushedTips.get(t.branch) : undefined;
+        // Our own push counts until a fetch shows a tip that holds it, or one that replaced it.
+        const stale =
+            mine !== undefined &&
+            mine !== fetched &&
+            (fetched === undefined ||
+                (await exec("git", ["merge-base", "--is-ancestor", fetched, mine], { cwd: repo }).then(
+                    () => true,
+                    () => false,
+                )));
+        const tip = stale ? mine : fetched;
         if (tip === undefined) {
             return null;
         }
@@ -2612,7 +2638,16 @@ export function createApp({
             });
         // The commit Finish pushed is the branch's tip now, before a refresh fetches it.
         const pushed = async (commit) => {
+            if (t.branch) {
+                pushedTips.set(t.branch, commit);
+                pushes++;
+            }
             t.published = await earlierAccepts(repo, commit, t.pr, config.baselines);
+            // A refresh that ended while this Finish ran listed a new object for the target.
+            const shown = targets.get(t.id);
+            if (shown && shown !== t) {
+                shown.published = t.published;
+            }
         };
         try {
             j.result = await finish({
@@ -2635,7 +2670,9 @@ export function createApp({
             const r = j.result;
             const status = r.statusError ? `; status not posted: ${r.statusError}` : "";
             console.log(
-                `visual-review: Finish of ${finishLabel(t)} done: commit ${r.commit ?? "none"}, ${r.rejects} rejects${status}`,
+                r.alreadyFinished
+                    ? `visual-review: Finish of ${finishLabel(t)} done: already finished as commit ${r.commit}`
+                    : `visual-review: Finish of ${finishLabel(t)} done: commit ${r.commit ?? "none"}, ${r.rejects} rejects${status}`,
             );
         } catch (err) {
             if (err instanceof AcceptError && err.committed && !err.pullRequestMissing) {
