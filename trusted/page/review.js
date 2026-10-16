@@ -5184,6 +5184,15 @@ function commitLine(out, repo) {
         return el("p", {}, "No commit: nothing was accepted or excluded.");
     }
     const commit = repo ? link(`${repo}/commit/${out.commit}`, short(out.commit)) : short(out.commit);
+    if (out.alreadyFinished) {
+        return el(
+            "p",
+            {},
+            "Already finished: an earlier Finish committed these decisions as ",
+            commit,
+            ` to ${out.branch}.`,
+        );
+    }
     return el("p", {}, "Committed ", commit, ` to ${out.branch}.`);
 }
 
@@ -5266,11 +5275,13 @@ function finishOutcome() {
         );
     }
     const counts = (out.status ?? "").replace(/^Reviewed: /, "").replace(" left undecided", " undecided");
-    parts.push(
-        out.statusError
-            ? el("p", { class: "error" }, `The commit status failed: ${out.statusError}`)
-            : el("p", {}, `Commit status: ${out.state ?? "set"} -- ${counts}.`),
-    );
+    if (!out.alreadyFinished) {
+        parts.push(
+            out.statusError
+                ? el("p", { class: "error" }, `The commit status failed: ${out.statusError}`)
+                : el("p", {}, `Commit status: ${out.state ?? "set"} -- ${counts}.`),
+        );
+    }
     const next = nextTarget(job.target);
     const offers = [
         next

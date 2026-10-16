@@ -49,6 +49,8 @@ beforeEach(async () => {
     );
     // A new context each test: its own storage, as a home-screen web app has.
     page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+    // No limit of Playwright's 30 s on its waits: the test's ends them.
+    page.setDefaultTimeout(0);
 });
 afterEach(async () => {
     await page?.close();

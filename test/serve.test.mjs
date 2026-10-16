@@ -301,20 +301,24 @@ describe("serve: pull requests", () => {
         // A git that holds the default branch's passkeys.json read (legacyApprovals' first call,
         // or the check for the file before it) until the test releases it. Run on the server's own thread, as it once was, that read
         // blocked every request, and a git that stalled for seconds timed out the list (#1496).
-        // On such a server the test cannot release it, so the hold ends by itself after 10 s and
-        // the test fails on its timeout instead of hanging.
+        // On such a server the test cannot release it, so the hold ends by itself once the suite's
+        // 60 s test limit has passed (6000 sleeps of at least 10 ms): git then fails, leaving a mark
+        // the test checks, instead of carrying on as if released.
         const bin = tempDir("vr-git-");
         const real = process.env.PATH.split(delimiter)
             .map((d) => join(d, "git"))
             .find((f) => existsSync(f));
-        const gate = { held: join(bin, "held"), release: join(bin, "release") };
+        const gate = { held: join(bin, "held"), release: join(bin, "release"), expired: join(bin, "expired") };
         writeFileSync(
             join(bin, "git"),
             [
                 "#!/bin/sh",
                 'case "$*" in "show "*":visual-review/passkeys.json" | *"cat-file -e "*":visual-review/passkeys.json")',
                 `  : > '${gate.held}'; i=0`,
-                `  while [ ! -e '${gate.release}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done ;;`,
+                `  while [ ! -e '${gate.release}' ]; do`,
+                `    [ $i -ge 6000 ] && { : > '${gate.expired}'; echo 'fake git: the held read was never released' >&2; exit 1; }`,
+                "    sleep 0.01; i=$((i + 1))",
+                "  done ;;",
                 "esac",
                 `exec '${real}' "$@"`,
                 "",
@@ -333,6 +337,7 @@ describe("serve: pull requests", () => {
         expect((await s.api("GET", "/api/inbox")).status).toBe(200);
         writeFileSync(gate.release, "");
         expect((await list).status).toBe(200);
+        expect(existsSync(gate.expired), "the held git read was never released").toBe(false);
     });
 
     it("shows the newest attempt's artifact", async () => {
@@ -921,6 +926,54 @@ describe("serve: decisions and Finish", () => {
         expect(job).toMatchObject({ id: 1, running: false, step: null, error: null });
         expect(job.result.commit).toBe(git(s.remote, "rev-parse", "feature"));
         expect((await decide("button--primary.dark.png")).status).toBe(200);
+    });
+
+    it("keeps what a Finish published when a refresh read the branch from before its push", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        let reached;
+        const atStatus = new Promise((resolve) => (reached = resolve));
+        const s = await start({
+            gh: (r) => {
+                const gh = onePr()(r);
+                return async (args, input) => {
+                    if (args[1]?.includes("/statuses/")) {
+                        reached();
+                        await gate;
+                    }
+                    return gh(args, input);
+                };
+            },
+        });
+        await s.api("GET", "/api/prs");
+        await s.api("POST", "/api/decide", {
+            id: "123",
+            project: "compact-mantine",
+            file: "badge--default.light.png",
+            decision: "accept",
+        });
+        await s.api("POST", "/api/finish", { id: "123" });
+        await atStatus;
+        // A refresh while the Finish runs fetches nothing, and reads the branch as it was before
+        // the push.
+        const before = () => git(s.repo, "update-ref", "refs/remotes/origin/feature", s.head);
+        before();
+        await s.api("GET", "/api/prs");
+        release();
+        expect((await endedJob(s)).error).toBeNull();
+        const unpublished = async () => (await s.api("GET", "/api/target/123")).body.unpublished;
+        expect(await unpublished()).toBe(0);
+        // A later refresh whose fetch fails still knows the push.
+        before();
+        git(s.repo, "remote", "set-url", "origin", join(s.dir, "gone"));
+        await s.api("GET", "/api/prs");
+        expect(await unpublished()).toBe(0);
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
+            "badge--default.light.png": { decision: "accept", reason: null, posted: true },
+        });
     });
 
     it("reports the signing key the server's environment gives git", async () => {

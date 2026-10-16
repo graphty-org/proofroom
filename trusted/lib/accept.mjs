@@ -263,9 +263,10 @@ function check(projects, decisions, pr) {
  * @param {{ items: object[], drop: string[] } | null} [input.legacy] approvals from before
  *     passkeys to sign again (only with an approval), as legacyApprovals returns
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
- *     issue: string | null, rejects: number, acceptNotes: number, state: string, status: string | null,
- *     statusError: string | null, commentError: string | null }>} what was pushed and posted
- *     (`issue`: master's rejects; `acceptNotes`: the accept notes published, in the comment or the
+ *     issue: string | null, rejects: number, acceptNotes: number, state: string | null,
+ *     status: string | null, statusError: string | null, commentError: string | null,
+ *     alreadyFinished?: true }>} what was pushed and posted (`alreadyFinished`: an earlier Finish
+ *     already pushed these decisions as `commit`, and nothing was pushed or posted now; `issue`: master's rejects; `acceptNotes`: the accept notes published, in the comment or the
  *     seed pull request's description; `state` and `status`: the commit status's state and
  *     description, or `statusError` when posting it failed; `commentError` when a comment holding
  *     only accept notes failed after the accepts were pushed)
@@ -314,6 +315,22 @@ export async function finish({
             approval,
             legacy,
         });
+        if (pushed.alreadyFinished) {
+            // The earlier Finish posted the comment and the status too: nothing is posted again.
+            return {
+                commit: pushed.commit,
+                branch: pushed.branch,
+                alreadyFinished: true,
+                pullRequest: null,
+                issue: null,
+                rejects: 0,
+                acceptNotes: 0,
+                state: null,
+                status: null,
+                statusError: null,
+                commentError: null,
+            };
+        }
         if (isMaster) {
             pullRequest = await openSeedPullRequest(gh, decided, pushed);
         }
@@ -812,7 +829,10 @@ async function commitAccepts({
             git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${ownRef(b)}`]),
         );
     await fetch(defaultBranch);
-    const { parent, seed } = await acceptParent({ repo, target, net, config, legacy }, { base, branch, plan, fetch });
+    const { parent, seed } = await acceptParent(
+        { repo, target, net, config, legacy, rejects },
+        { base, branch, plan, fetch },
+    );
     if (seed) {
         return seed;
     }
@@ -901,21 +921,29 @@ async function verifiedWrites(accepts) {
 /**
  * The commit the accepts go on: the captured head, or the branch's newer tip when it only merged
  * the default branch since (masterMergeProblem). On master, a seed this tool pushed whose pull
- * request failed to open is used as it is.
- * @param {object} input finish's repo, target, net, config and legacy
+ * request failed to open is used as it is; on a pull request, an accept commit an earlier Finish
+ * pushed for these same decisions is reported as already finished (finishedBefore).
+ * @param {object} input finish's repo, target, net, config, legacy and rejects
  * @param {{ base: string, branch: string, plan: object, fetch: (b: string) => Promise<any> }} at
  *     the captured commit, the branch, the planned writes and the fetcher
- * @returns {Promise<{ parent?: string, seed?: { commit: string, branch: string, record: null } }>}
- *     the parent, or the seed already pushed
+ * @returns {Promise<{ parent?: string, seed?: { commit: string, branch: string, record: string | null,
+ *     alreadyFinished?: true } }>} the parent, or the commit already pushed
  */
 async function acceptParent(input, { base, branch, plan, fetch }) {
-    const { repo, target, net, config, legacy } = input;
+    const { repo, target, net, config, legacy, rejects } = input;
     if (target.pr !== null) {
         await fetch(branch);
         const parent = await git(repo, ["rev-parse", ownRef(branch)]);
         const paths = [...plan.files.map((f) => f.path), ...(legacy?.drop ?? [])];
-        const why =
-            parent === base ? null : await masterMergeProblem(repo, base, parent, ownRef(config.defaultBranch), paths);
+        const moved = (tip) =>
+            tip === base ? null : masterMergeProblem(repo, base, tip, ownRef(config.defaultBranch), paths);
+        const why = await moved(parent);
+        const items = withLegacy(plan.items, legacy);
+        const record =
+            why && (await finishedBefore(repo, { tip: parent, base, target, config, items, rejects, moved }));
+        if (record) {
+            return { seed: { commit: parent, branch, record, alreadyFinished: true } };
+        }
         if (why) {
             throw new AcceptError(
                 `capture is stale, wait for CI: the branch has moved past the captured head (${why})`,
@@ -934,6 +962,63 @@ async function acceptParent(input, { base, branch, plan, fetch }) {
         return { seed: { commit: await git(repo, ["rev-parse", ownRef(branch)]), branch, record: null } };
     }
     throw new AcceptError(`${branch} already exists on origin: merge or delete it first`);
+}
+
+/**
+ * The record of the accept commit an earlier Finish pushed, when that commit is all the branch
+ * gained since the captured head (or since a merge of the default branch it allows) and it already
+ * records every one of these decisions: a Finish sent again (a second press, or a page that had
+ * not seen the first end) then has nothing left to do. Anything else on the branch returns null,
+ * and the caller refuses the capture as stale.
+ * @param {string} repo the repository
+ * @param {object} at what to compare
+ * @param {string} at.tip the branch tip as fetched
+ * @param {string} at.base the captured head
+ * @param {{ pr: number }} at.target the pull request
+ * @param {{ commitPrefix: string, baselines: string }} at.config the settings
+ * @param {object[]} at.items the record items this Finish would write
+ * @param {object[]} at.rejects the checked rejects
+ * @param {(tip: string) => Promise<string | null>} at.moved why a tip is stale for this capture
+ * @returns {Promise<string | null>} the record's path, or null
+ */
+async function finishedBefore(repo, { tip, base, target, config, items, rejects, moved }) {
+    const [subject, parents] = (await git(repo, ["log", "-1", "--format=%s%n%P", tip])).split("\n");
+    if (subject !== `${config.commitPrefix}: accept visual baselines for #${target.pr}` || parents.includes(" ")) {
+        return null;
+    }
+    if (await moved(parents)) {
+        return null;
+    }
+    const path = /^Record: (.+)$/m.exec(await git(repo, ["log", "-1", "--format=%B", tip]))?.[1];
+    const record = path
+        ? await git(repo, ["show", `${tip}:${path}`])
+              .then(JSON.parse)
+              .catch(() => null)
+        : null;
+    if (record?.pr !== target.pr || record.subject?.head !== base || !Array.isArray(record.items)) {
+        return null;
+    }
+    // A note or a reject's reason differs too: the earlier Finish posted its own.
+    const key = (i, kind = "item") => JSON.stringify([kind, i.path, i.to, i.reason ?? null]);
+    const recorded = new Set([
+        ...record.items.map((i) => key(i)),
+        ...(record.rejects ?? []).map((r) => key({ ...r, to: r.capture }, "reject")),
+    ]);
+    const same =
+        items.every((i) => recorded.has(key(i))) &&
+        rejects.every((r) =>
+            recorded.has(
+                key(
+                    {
+                        path: `${config.baselines}/${r.project}/${r.item.file}`,
+                        to: r.item.capture ?? r.item.baseline ?? null,
+                        reason: r.reason,
+                    },
+                    "reject",
+                ),
+            ),
+        );
+    return same ? path : null;
 }
 
 /**
