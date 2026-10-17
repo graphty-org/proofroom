@@ -398,6 +398,45 @@ describe("finish: refusals", () => {
     });
 });
 
+describe("finish: a Finish sent again after it succeeded", () => {
+    const B = "badge--default.light.png";
+    const P = "button--primary.dark.png";
+
+    it("reports the same decisions as already finished, and pushes and posts nothing", async () => {
+        const s = setup();
+        const first = await s.run([accept(B), accept(P, "compact-mantine", "wider")]);
+        const calls = s.calls.length;
+        const again = await s.run([accept(B), accept(P, "compact-mantine", "wider")]);
+        expect(again).toMatchObject({ commit: first.commit, branch: "feature", alreadyFinished: true });
+        expect(remoteLog(s, "feature")[0]).toBe(first.commit);
+        expect(s.calls).toHaveLength(calls);
+    });
+
+    it("reports part of the same decisions as already finished", async () => {
+        const s = setup();
+        const first = await s.run([accept(B), accept(P)]);
+        await expect(s.run([accept(B)])).resolves.toMatchObject({ commit: first.commit, alreadyFinished: true });
+    });
+
+    it("still refuses as stale when the branch moved by anything else", async () => {
+        const s = setup();
+        await s.run([accept(B)]);
+        pushCommit(s.remote, "feature", "later.txt");
+        await expect(s.run([accept(B)])).rejects.toThrow(/capture is stale, wait for CI/);
+    });
+
+    it("still refuses as stale when the decisions differ", async () => {
+        const s = setup();
+        const first = await s.run([accept(B)]);
+        await expect(s.run([accept(B), accept(P)])).rejects.toThrow(/capture is stale, wait for CI/);
+        await expect(s.run([accept(B, "compact-mantine", "a note")])).rejects.toThrow(/capture is stale/);
+        await expect(
+            s.run([accept(B), { project: "compact-mantine", file: P, decision: "reject", reason: "no" }]),
+        ).rejects.toThrow(/capture is stale/);
+        expect(remoteLog(s, "feature")[0]).toBe(first.commit);
+    });
+});
+
 describe("finish: git", () => {
     // commitlint's own load and lint, as its CLI runs them, in this process: the CLI started once
     // per message loaded node and the configuration three times over. Loaded once for the file,
@@ -1150,6 +1189,16 @@ describe("finish with a passkey approval", () => {
             );
             expect(remoteLog(s, "feature")[0]).toBe(later);
         });
+    });
+
+    it("reports a signed Finish sent again, rejects and all, as already finished", async () => {
+        const s = setup();
+        const first = await run(s, DECISIONS, await approved(s, DECISIONS));
+        const again = await run(s, DECISIONS, await approved(s, DECISIONS));
+        expect(again).toMatchObject({ commit: first.commit, alreadyFinished: true });
+        const other = [...DECISIONS.slice(0, 3), { ...DECISIONS[3], reason: "short" }, DECISIONS[4]];
+        await expect(run(s, other, await approved(s, other))).rejects.toThrow(/capture is stale/);
+        expect(remoteLog(s, "feature")[0]).toBe(first.commit);
     });
 
     it("refuses, before committing, a record that differs from the approved one", async () => {
