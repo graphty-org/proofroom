@@ -278,7 +278,9 @@ ready" while some are still being captured, and how long ago it became ready; ta
 its first undecided image. Under it, **Not ready** lists the pull requests whose capture failed,
 or that have a story whose capture failed (these are fixed before review, never sent for it),
 each with the project, the story and the reason, its job log and Retry where a retry can help; then one line
-counts the pull requests still capturing and those with nothing to decide. The cards of every
+counts the pull requests still capturing, those with nothing to decide and the drafts. A draft pull
+request is never offered or announced, even with a capture made before it went back to draft: its
+author is still working on it. Mark it ready when it is. The cards of every
 pull request follow, as before. The number ready is in the tab's title ("(3) Visual review") and
 on its icon, and, on a home-screen web app where the browser allows it, on the app icon. The page
 asks the server again every few seconds while it is shown, and at once when you come back to it.

@@ -260,6 +260,44 @@ export function copyFixture(project, dest, overrides = {}) {
 }
 
 /**
+ * The GraphQL answer openPullRequests reads: one page holding every pull request, each with its
+ * head's check suites (the CI run's, when it has one, beside another workflow's).
+ * @param {{ number: number, head: string, branch: string, draft?: boolean }[]} prs the pull requests
+ * @param {(head: string) => { id: number, attempt?: number, status?: string, conclusion?: string | null } | undefined} runOf
+ *     the head's CI run
+ * @returns {string} the answer
+ */
+export function pullsGraphql(prs, runOf) {
+    const checkSuite = (id, path, x) => ({
+        databaseId: id,
+        status: (x.status ?? "completed").toUpperCase(),
+        conclusion: x.conclusion === undefined ? "SUCCESS" : (x.conclusion?.toUpperCase() ?? null),
+        workflowRun: {
+            databaseId: x.id,
+            url: `https://gh/runs/${x.id}`,
+            updatedAt: `attempt ${x.attempt ?? 1}`,
+            workflow: { resourcePath: `/o/r/actions/workflows/${path}` },
+        },
+    });
+    const nodes = prs.map((p) => {
+        const x = runOf(p.head);
+        const suites = [checkSuite(1, "other.yml", { id: 1 }), ...(x ? [checkSuite(x.id, "ci.yml", x)] : [])];
+        return {
+            number: p.number,
+            title: `PR ${p.number}`,
+            url: `https://gh/pull/${p.number}`,
+            headRefName: p.branch,
+            headRefOid: p.head,
+            isDraft: p.draft === true,
+            commits: { nodes: [{ commit: { checkSuites: { nodes: suites } } }] },
+        };
+    });
+    return JSON.stringify({
+        data: { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } },
+    });
+}
+
+/**
  * A fake gh answering the calls github.mjs makes, from plain data.
  * @param {object} data what gh answers
  * @param {object[]} [data.prs] open pull requests: { number, head, branch }
@@ -287,23 +325,16 @@ export function fakeGh({
     const run = (r) => ({
         id: r.id,
         run_attempt: r.attempt ?? 1,
-        status: "completed",
-        conclusion: "success",
+        status: r.status ?? "completed",
+        conclusion: r.conclusion === undefined ? "success" : r.conclusion,
         html_url: `https://gh/runs/${r.id}`,
         head_sha: r.head,
     });
     return async (args, input) => {
         const path = args[0] === "api" ? args[1] : null;
         let m;
-        if (path?.startsWith("repos/{owner}/{repo}/pulls?")) {
-            return JSON.stringify(
-                prs.map((p) => ({
-                    number: p.number,
-                    title: `PR ${p.number}`,
-                    html_url: `https://gh/pull/${p.number}`,
-                    head: { sha: p.head, ref: p.branch },
-                })),
-            );
+        if (path === "graphql") {
+            return pullsGraphql(prs, (head) => runs[head]);
         }
         if (path?.startsWith("repos/{owner}/{repo}/commits?sha=master")) {
             return JSON.stringify(masterRuns.map((r) => ({ sha: r.head })));
@@ -321,7 +352,7 @@ export function fakeGh({
             });
         }
         if ((m = /actions\/runs\/(\d+)$/.exec(path))) {
-            return JSON.stringify(run(runsById[m[1]]));
+            return JSON.stringify(run(runsById[m[1]] ?? Object.values(runs).find((x) => String(x.id) === m[1])));
         }
         if (/issues\/\d+\/comments$/.test(path ?? "") || /\/statuses\/\w+$/.test(path ?? "")) {
             posted.push({ path, body: JSON.parse(args.length > 2 ? (input ?? "{}") : "{}") });
@@ -407,12 +438,14 @@ export const withMoved = (r, extra = []) => {
  * request sent right after `await page.route(...)` can still go out unintercepted (about one in
  * ten on a CPU throttled sixfold, as a slow CI runner is). With this never-matching route held,
  * later routes only change what Playwright matches, which is in force before `page.route` returns.
+ * Its waits (waitFor, click and the rest) have no limit of Playwright's 30 s: the test's ends them.
  * @param {import("playwright").Browser} browser the browser to open it in
  * @param {import("playwright").BrowserContextOptions} options the viewport and the rest, as for newPage
  * @returns {Promise<import("playwright").Page>} the tab
  */
 export async function interceptedPage(browser, options) {
     const page = await browser.newPage(options);
+    page.setDefaultTimeout(0);
     await page.route("**/interception-stays-on", (route) => route.continue());
     return page;
 }

@@ -212,6 +212,13 @@ describe("visual-review update <pr>", () => {
         expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.feature);
     });
 
+    it("lists each baseline CI compares again, one per indented line", () => {
+        const r = conflicted();
+        const run = cli(r, ["123"]);
+        expect(run.status).toBe(0);
+        expect(run.stdout).toContain(`CI captures again and compares these with their new baselines:\n  ${PATH}\n`);
+    });
+
     it("exits 1 with the files on a code conflict, and 2 without a pull request number", () => {
         const r = conflicted({ code: true });
         const run = cli(r, ["123"]);
