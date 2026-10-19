@@ -341,7 +341,7 @@ const gitBytes = (repo, args, input) =>
         const child = execFile(
             "git",
             args,
-            { cwd: repo, encoding: "buffer", maxBuffer: 1 << 28, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+            { cwd: repo, encoding: "buffer", maxBuffer: 1 << 28 },
             (err, out, stderr) => (err ? reject(new Error(stderr.toString().trim() || err.message)) : resolve(out)),
         );
         child.stdin.on("error", () => {});
@@ -398,6 +398,33 @@ async function blobsOf(repo, names) {
  */
 export async function againstBase({ repo, ref, head, baselines, project, dir, results }) {
     const prefix = `${baselines}/${project}/`;
+    const blobs = await pngBlobs(repo, ref, prefix);
+    const contents = await blobsOf(repo, [...new Set(blobs.values())]);
+    const hashOf = (file) => (blobs.has(file) ? contentHash(contents.get(blobs.get(file))) : null);
+    const shown = compareWithBase(results, blobs, hashOf);
+    for (const file of shown) {
+        await putImage(repo, join(dir, "baselines", file), contents.get(blobs.get(file)), hashOf(file));
+    }
+    const captured = results.items.filter((i) => i.vsBase && i.capture);
+    const names = captured.map((i) => `${head}:${prefix}${i.file}`);
+    let atHead = await blobsOf(repo, names);
+    if (atHead.size < names.length) {
+        await gitBytes(repo, ["fetch", "-q", "--no-tags", "origin", head]).catch(() => null);
+        atHead = await blobsOf(repo, names);
+    }
+    for (const [i, item] of captured.entries()) {
+        await putImage(repo, join(dir, item.file), atHead.get(names[i]) ?? null, item.capture);
+    }
+}
+
+/**
+ * The baseline PNGs under a directory at a ref, with their blob ids.
+ * @param {string} repo the repository
+ * @param {string} ref the ref
+ * @param {string} prefix the directory, with its trailing "/"
+ * @returns {Promise<Map<string, string>>} blob id by file name below the directory
+ */
+async function pngBlobs(repo, ref, prefix) {
     const blobs = new Map();
     for (const entry of (await gitBytes(repo, ["ls-tree", "-r", "-z", ref, "--", prefix]))
         .toString("utf8")
@@ -407,8 +434,17 @@ export async function againstBase({ repo, ref, head, baselines, project, dir, re
             blobs.set(path.slice(prefix.length), meta.split(" ")[2]);
         }
     }
-    const contents = await blobsOf(repo, [...new Set(blobs.values())]);
-    const hashOf = (file) => (blobs.has(file) ? contentHash(contents.get(blobs.get(file))) : null);
+    return blobs;
+}
+
+/**
+ * Rewrites a capture's items against the default branch's baselines (againstBase).
+ * @param {{ items: object[] }} results the results.json, changed in place
+ * @param {Map<string, string>} blobs the default branch's baselines, by file
+ * @param {(file: string) => string | null} hashOf the image hash of a default branch baseline
+ * @returns {string[]} the files whose default branch image the page needs
+ */
+function compareWithBase(results, blobs, hashOf) {
     const seen = new Set();
     const shown = [];
     for (const item of results.items) {
@@ -433,56 +469,51 @@ export async function againstBase({ repo, ref, head, baselines, project, dir, re
             shown.push(item.file);
         }
     }
-    for (const file of blobs.keys()) {
-        if (!seen.has(file)) {
-            const [id, mode = null] = file.slice(0, -".png".length).split(".");
-            results.items.push({
-                id,
-                mode,
-                file,
-                status: "removed",
-                baseline: hashOf(file),
-                capture: null,
-                size: null,
-                baselineSize: null,
-                changedPixels: null,
-                bbox: null,
-                flaky: false,
-                threshold: 0,
-                includeAA: false,
-                reason: null,
-                console: [],
-                vsBase: true,
-            });
-            shown.push(file);
-        }
+    for (const file of [...blobs.keys()].filter((f) => !seen.has(f))) {
+        const [id, mode = null] = file.slice(0, -".png".length).split(".");
+        results.items.push({
+            id,
+            mode,
+            file,
+            status: "removed",
+            baseline: hashOf(file),
+            capture: null,
+            size: null,
+            baselineSize: null,
+            changedPixels: null,
+            bbox: null,
+            flaky: false,
+            threshold: 0,
+            includeAA: false,
+            reason: null,
+            console: [],
+            vsBase: true,
+        });
+        shown.push(file);
     }
-    // The image a blob stands for, written where the page reads it unless it is there already.
-    const put = async (path, blob, hash) => {
-        const have = await readFile(path).catch(() => null);
-        if (have && sha256(have) === hash) {
-            return;
-        }
-        const bytes = blob && isLfsPointer(blob) ? await gitBytes(repo, ["lfs", "smudge"], blob) : blob;
-        if (!bytes || sha256(bytes) !== hash) {
-            throw new Error(`${path.slice(dir.length + 1)}: the image ${hash} could not be read (git lfs fetch it)`);
-        }
-        mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, bytes);
-    };
-    for (const file of shown) {
-        await put(join(dir, "baselines", file), contents.get(blobs.get(file)), hashOf(file));
+    return shown;
+}
+
+/**
+ * Writes the image a blob stands for (a Git LFS pointer is read from Git LFS), unless the file
+ * already holds it.
+ * @param {string} repo the repository
+ * @param {string} path where the image goes
+ * @param {Buffer | null} blob the blob
+ * @param {string} hash the image's SHA-256
+ * @returns {Promise<void>} resolves once the image is there; rejects when it cannot be read
+ */
+async function putImage(repo, path, blob, hash) {
+    const have = await readFile(path).catch(() => null);
+    if (have && sha256(have) === hash) {
+        return;
     }
-    const captured = results.items.filter((i) => i.vsBase && i.capture);
-    const names = captured.map((i) => `${head}:${prefix}${i.file}`);
-    let atHead = await blobsOf(repo, names);
-    if (atHead.size < names.length) {
-        await gitBytes(repo, ["fetch", "-q", "--no-tags", "origin", head]).catch(() => null);
-        atHead = await blobsOf(repo, names);
+    const bytes = blob && isLfsPointer(blob) ? await gitBytes(repo, ["lfs", "smudge"], blob) : blob;
+    if (!bytes || sha256(bytes) !== hash) {
+        throw new Error(`${basename(path)}: the image ${hash} could not be read (git lfs fetch it)`);
     }
-    for (const [i, item] of captured.entries()) {
-        await put(join(dir, item.file), atHead.get(names[i]) ?? null, item.capture);
-    }
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
 }
 
 /**
@@ -1999,6 +2030,46 @@ export function createApp({
     });
 
     /**
+     * The owner's approval POST /api/finish carries, checked against what finish-prepare built.
+     * @param {object} t the target
+     * @param {{ digest: string }} work as finishWork returns now
+     * @param {{ challenge?: string, approval?: object }} body the request
+     * @param {boolean} sign whether this Finish signs (signingProblem)
+     * @returns {Promise<{ refused?: Array<unknown>, approval: object | null, work?: object }>} the
+     *     answer refusing it, or finish's `approval` (null when none is needed) and the prepared
+     *     work it signs
+     */
+    async function approvalOf(t, work, body, sign) {
+        if (body.approval && !sign) {
+            return { refused: [409, { error: "the approval is stale (the decisions changed): press Finish again" }] };
+        }
+        const { main, trusted } = await knownKeys();
+        if (trusted.length === 0 || !sign) {
+            return { approval: null };
+        }
+        if (!body.approval) {
+            return {
+                refused: [400, { error: "this Finish needs your passkey approval (Face ID): press Finish again" }],
+            };
+        }
+        const p = approvals.get(t.id);
+        if (!p || p.challenge !== body.challenge || p.expires < Date.now() || p.digest !== work.digest) {
+            const error =
+                "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again";
+            return { refused: [409, { error }] };
+        }
+        const statement = { ...p.statement, approval: body.approval };
+        const why = verifyApproval(statement, trusted, { origin });
+        if (why) {
+            return { refused: [403, { error: `the approval was refused: ${why}` }] };
+        }
+        approvals.delete(t.id);
+        const { commit, branch, record } = p;
+        const pendingKeys = main.length > 0 ? [] : trusted;
+        return { approval: { statement, commit, branch, record, pendingKeys, origin }, work: p.work };
+    }
+
+    /**
      * Why a Finish of this work signs nothing, or null when it signs the baselines tree it leaves.
      * A reject means the owner did not approve what the branch shows. On a pull request an image
      * left undecided, or a project not loaded, may be a baseline the branch already changed, which
@@ -2743,42 +2814,14 @@ export function createApp({
             if (body.digest !== undefined && body.digest !== work.digest) {
                 return [409, { error: CHANGED_SINCE }];
             }
-            let approval = null;
-            const { main, trusted } = await knownKeys();
             const sign = signingProblem(t, work) === null;
-            if (body.approval && !sign) {
-                return [409, { error: "the approval is stale (the decisions changed): press Finish again" }];
+            const checked = await approvalOf(t, work, body, sign);
+            if (checked.refused) {
+                return checked.refused;
             }
-            if (trusted.length > 0 && sign) {
-                if (!body.approval) {
-                    return [400, { error: "this Finish needs your passkey approval (Face ID): press Finish again" }];
-                }
-                const p = approvals.get(t.id);
-                if (!p || p.challenge !== body.challenge || p.expires < Date.now() || p.digest !== work.digest) {
-                    return [
-                        409,
-                        {
-                            error: "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again",
-                        },
-                    ];
-                }
-                const statement = { ...p.statement, approval: body.approval };
-                const why = verifyApproval(statement, trusted, { origin });
-                if (why) {
-                    return [403, { error: `the approval was refused: ${why}` }];
-                }
-                approvals.delete(t.id);
-                // The decisions the approved commit was built from, not a fresh read of the state.
-                work = p.work;
-                approval = {
-                    statement,
-                    commit: p.commit,
-                    branch: p.branch,
-                    record: p.record,
-                    pendingKeys: main.length > 0 ? [] : trusted,
-                    origin,
-                };
-            }
+            const { approval } = checked;
+            // The decisions the approved commit was built from, not a fresh read of the state.
+            work = checked.work ?? work;
             const { list, captures, undecided } = work;
             finishing = true;
             job = {

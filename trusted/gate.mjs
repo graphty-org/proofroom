@@ -560,6 +560,66 @@ function haveCommit(sha, cwd) {
     return has() || (git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", sha]) && has());
 }
 
+/**
+ * Reads a merge-queue draft's event: its batch's pull requests and the commit the batch sits on,
+ * printing what the gate reports about them.
+ * @param {string} file the event file
+ * @returns {string | null} the batch's base commit; null when the gate fails on the event
+ */
+function queueBaseOf(file) {
+    let event = null;
+    try {
+        event = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+        // Unreadable: no pull requests, which fails below.
+    }
+    const prs = queuePullRequests(event);
+    if (prs.length === 0) {
+        console.log("::error::merge queue -- the queue's draft pull request names no pull requests of the batch");
+        return null;
+    }
+    console.log(`Merge-queue batch: #${prs.join(", #")}`);
+    const base = queueBaseSha(event);
+    if (base === null || !haveCommit(base, repoRoot())) {
+        console.log(
+            `::error::merge queue -- the queue's draft pull request names no checking_base_sha the gate can read (${base ?? "missing"})`,
+        );
+        return null;
+    }
+    console.log(`Baseline changes compared with the batch's base ${base}`);
+    return base;
+}
+
+/**
+ * Prints and returns what fails the gate about the owner's approval: the keys (approvalKeys), the
+ * approvals directory, and the approval of the head's baselines tree (treeApprovalProblems).
+ * @param {object} at what to check
+ * @param {string} at.base the base branch tip, where keys and config are read
+ * @param {string} at.diffBase what baseline changes are measured from
+ * @param {string} at.head the head
+ * @param {string} at.root the repository
+ * @param {{ baselines: string, approvals: string }} at.config the base branch's config
+ * @param {{ approvals: string }} at.headConfig the head's config
+ * @returns {string[]} the failing lines
+ */
+function approvalLines({ base, diffBase, head, root, config, headConfig }) {
+    const { keys, problems } = approvalKeys(base, head, root);
+    if (headConfig.approvals !== config.approvals) {
+        problems.push(
+            `this pull request moves the approvals directory from ${config.approvals} to ${headConfig.approvals}`,
+        );
+    }
+    const lines = problems.map((line) => `::error::passkey approval -- ${line}`);
+    const { baselines, approvals } = config;
+    for (const line of treeApprovalProblems({ base: diffBase, head, cwd: root, baselines, approvals, keys })) {
+        lines.push(`::error::baselines not approved -- ${line}`);
+    }
+    for (const line of lines) {
+        console.log(line);
+    }
+    return lines;
+}
+
 export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
 
 Fails (exit 1) while a pull request holds visual changes nobody accepted, or baselines whose
@@ -598,8 +658,7 @@ export function runGate(args) {
         return 0;
     }
     const queueEvent = values["queue-event"];
-    /** @type {number | number[] | undefined} */
-    let pr = values.pr === undefined ? undefined : Number(values.pr);
+    const pr = values.pr === undefined ? undefined : Number(values.pr);
     // A batch's changes are those since the commit it sits on, not since the base branch: a batch
     // stacked on another holds that batch's approved changes, which its own run gated. If that batch
     // fails, Mergify rebuilds this one on a new base. The config, the seeded projects and the keys
@@ -615,26 +674,10 @@ export function runGate(args) {
         return 2;
     }
     if (queueEvent !== undefined) {
-        let event = null;
-        try {
-            event = JSON.parse(readFileSync(queueEvent, "utf8"));
-        } catch {
-            // Unreadable: no pull requests, which fails below.
-        }
-        pr = queuePullRequests(event);
-        if (pr.length === 0) {
-            console.log("::error::merge queue -- the queue's draft pull request names no pull requests of the batch");
+        queueBase = queueBaseOf(queueEvent);
+        if (queueBase === null) {
             return 1;
         }
-        console.log(`Merge-queue batch: #${pr.join(", #")}`);
-        queueBase = queueBaseSha(event);
-        if (queueBase === null || !haveCommit(queueBase, repoRoot())) {
-            console.log(
-                `::error::merge queue -- the queue's draft pull request names no checking_base_sha the gate can read (${queueBase ?? "missing"})`,
-            );
-            return 1;
-        }
-        console.log(`Baseline changes compared with the batch's base ${queueBase}`);
     }
     const root = repoRoot();
     const config = loadConfigAt(values.base, root);
@@ -652,32 +695,13 @@ export function runGate(args) {
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);
     }
-    const { keys, problems: approval } = approvalKeys(values.base, values.head, root);
-    if (headConfig.approvals !== config.approvals) {
-        approval.push(
-            `this pull request moves the approvals directory from ${config.approvals} to ${headConfig.approvals}`,
-        );
-    }
-    for (const line of approval) {
-        console.log(`::error::passkey approval -- ${line}`);
-    }
-    const unrecorded = treeApprovalProblems({
-        base: diffBase,
-        head: values.head,
-        cwd: root,
-        baselines: config.baselines,
-        approvals: config.approvals,
-        keys,
-    });
-    for (const line of unrecorded) {
-        console.log(`::error::baselines not approved -- ${line}`);
-    }
+    const unrecorded = approvalLines({ base: values.base, diffBase, head: values.head, root, config, headConfig });
     for (const file of trustFilesChanged(diffBase, values.head, config.workflow, root)) {
         console.log(
             `::warning::this pull request changes ${file}, which decides what the visual gate accepts: review that change with care`,
         );
     }
-    if (problems.length + approval.length + unrecorded.length > 0) {
+    if (problems.length + unrecorded.length > 0) {
         console.log("Review them with `visual-review serve` (the @graphty/visual-review README).");
         return 1;
     }

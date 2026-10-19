@@ -63,11 +63,7 @@ export function normalizeConfig(input) {
         }
         out[key] = out[key].replace(/\/+$/, "");
     }
-    // The owner's signed approvals sign the baselines directory's tree, so they must live outside
-    // it: adding one must not change the tree it signs.
-    if (`${out.approvals}/`.startsWith(`${out.baselines}/`) || `${out.baselines}/`.startsWith(`${out.approvals}/`)) {
-        fail("approvals must be a directory outside baselines, and baselines outside approvals");
-    }
+    apart(out, fail);
     // The fontconfig file every capture draws with (FONTCONFIG_FILE), so local and CI captures use
     // the same committed fonts instead of whatever the host has installed. Null: host fonts.
     if (raw.fontconfig !== undefined && raw.fontconfig !== null) {
@@ -139,6 +135,18 @@ export function normalizeConfig(input) {
         };
     }
     return out;
+}
+
+/**
+ * Refuses an approvals directory inside the baselines directory, or the other way round: the
+ * owner's approvals sign the baselines directory's tree, so adding one must not change it.
+ * @param {{ baselines: string, approvals: string }} out the settings
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function apart({ baselines, approvals }, fail) {
+    if (`${approvals}/`.startsWith(`${baselines}/`) || `${baselines}/`.startsWith(`${approvals}/`)) {
+        fail("approvals must be a directory outside baselines, and baselines outside approvals");
+    }
 }
 
 /**
