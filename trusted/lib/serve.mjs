@@ -339,7 +339,7 @@ export function sessionToken(stateDir) {
 const gitBytes = (repo, args, input) =>
     new Promise((resolve, reject) => {
         const child = execFile(
-            "git",
+            "git", // NOSONAR(S4036): the review server runs the owner's own git, as the rest of it does
             args,
             { cwd: repo, encoding: "buffer", maxBuffer: 1 << 28 },
             (err, out, stderr) => (err ? reject(new Error(stderr.toString().trim() || err.message)) : resolve(out)),
@@ -2052,8 +2052,8 @@ export function createApp({
                 refused: [400, { error: "this Finish needs your passkey approval (Face ID): press Finish again" }],
             };
         }
-        const p = approvals.get(t.id);
-        if (!p || p.challenge !== body.challenge || p.expires < Date.now() || p.digest !== work.digest) {
+        const p = approvals.get(t.id) ?? {};
+        if (p.challenge !== body.challenge || !(p.expires >= Date.now()) || p.digest !== work.digest) {
             const error =
                 "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again";
             return { refused: [409, { error }] };
