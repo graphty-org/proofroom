@@ -2053,7 +2053,7 @@ export function createApp({
             };
         }
         const p = approvals.get(t.id) ?? {};
-        if (p.challenge !== body.challenge || !(p.expires >= Date.now()) || p.digest !== work.digest) {
+        if (p.challenge !== body.challenge || (p.expires ?? 0) < Date.now() || p.digest !== work.digest) {
             const error =
                 "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again";
             return { refused: [409, { error }] };
