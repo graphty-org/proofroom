@@ -80,6 +80,13 @@ describe("inboxOf", () => {
         expect(inbox.notReady).toEqual([]);
         expect(inbox).toMatchObject({ drafts: 2, capturing: 0, done: 0 });
     });
+
+    it("keeps a draft the owner Finished part of waiting, with the count left (issue 3235)", () => {
+        const draft = target(1, [project("a", { undecided: 17, decided: 93, finished: 93 })], { draft: true });
+        const inbox = inboxOf([draft], { now: 1 });
+        expect(inbox.ready).toEqual([expect.objectContaining({ pr: 1, undecided: 17, decided: 93 })]);
+        expect(inbox.drafts).toBe(0);
+    });
 });
 
 describe("coupledGroups", () => {

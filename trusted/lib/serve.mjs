@@ -988,10 +988,12 @@ export function createApp({
 
     /**
      * Puts a pull request's local preview in place of every project CI has not captured (nor is
-     * downloading): only a complete preview of the head GitHub lists now, so one of an older push,
-     * or one still capturing, is never offered.
+     * downloading): only a complete preview of the head GitHub lists now, or of an older head the
+     * branch has since added only accept commits to (a Finish that left images undecided), so one
+     * of an older push, or one still capturing, is never offered. A draft (whose CI never
+     * captures) with a preview of an older push says a new preview is needed instead.
      * @param {object} t the target, changed in place; `head` is the pull request's head
-     * @returns {Promise<object>} the target
+     * @returns {Promise<object>} the target; `headMoved` is the head when a preview is of an older one
      */
     async function withPreviews(t) {
         if (!previews || t.pr === null) {
@@ -1004,11 +1006,60 @@ export function createApp({
             }
             const local = await project(p.project, dir, null);
             const r = local.results;
-            if (r?.complete && isPreviewOf(r, t.pr) && r.headSha === t.head) {
+            if (!r?.complete || !isPreviewOf(r, t.pr)) {
+                continue;
+            }
+            const current = r.headSha === t.head;
+            if (current || (await onlyAccepts(r.headSha, t.head, t.pr))) {
                 t.projects[i] = { ...local, preview: true, ciProblem: p.problem, logUrl: p.logUrl ?? null };
+                if (!current) {
+                    t.headMoved = t.head;
+                }
+            } else if (t.draft) {
+                t.projects[i] = { ...p, problem: newPreviewNeeded(t) };
             }
         }
         return t;
+    }
+
+    // Why a target has no Finish now, as a response; null when it has one.
+    const finishRefused = (t) => {
+        if (t.local) {
+            return [403, { error: "a local preview has no Finish" }];
+        }
+        return t.headMoved ? [409, { error: movedHead(t) }] : null;
+    };
+    const movedHead = (t) =>
+        `the head moved to ${t.headMoved.slice(0, 10)} after a Finish; this preview is of ${t.headSha.slice(0, 10)}: ` +
+        `${newPreviewNeeded(t)} to Finish. Decisions taken here carry over to it`;
+    const newPreviewNeeded = (t) =>
+        `a new preview is needed for this head (${t.head.slice(0, 10)}): run tools/visual-preview.sh ${t.pr}`;
+
+    /**
+     * Whether `tip` is `head` plus nothing but accept commits a Finish pushed for this pull request
+     * (the subject and single parent finishedBefore in accept.mjs recognizes). Unknown commits (a
+     * branch not fetched yet) count as no.
+     * @param {string} head the previewed head
+     * @param {string} tip the pull request's head now
+     * @param {number} pr the pull request
+     * @returns {Promise<boolean>} whether it is
+     */
+    async function onlyAccepts(head, tip, pr) {
+        const subject = `${config.commitPrefix}: accept visual baselines for #${pr}`;
+        const log = await exec("git", ["log", "--format=%P%x09%s", `${head}..${tip}`], { cwd: repo }).catch(() => "");
+        const ancestor = await exec("git", ["merge-base", "--is-ancestor", head, tip], { cwd: repo }).then(
+            () => true,
+            () => false,
+        );
+        const commits = log.split("\n").filter(Boolean);
+        return (
+            ancestor &&
+            commits.length > 0 &&
+            commits.every((line) => {
+                const [parents, ...rest] = line.split("\t");
+                return !parents.includes(" ") && rest.join("\t") === subject;
+            })
+        );
     }
 
     // Why a project's capture is missing, from its download and its CI job; null when it is there.
@@ -1484,6 +1535,9 @@ export function createApp({
             runUrl: t.runUrl,
             commit: t.commit,
             headSha: t.headSha,
+            // The pull request's head when the preview shown is of an older one it only added
+            // accept commits to: decide here, Finish on a preview of the new head.
+            headMoved: t.headMoved ?? null,
             mergeMasterFirst: t.mergeMasterFirst,
             downloading: t.downloading === true,
             // While downloading: how many artifacts and bytes have landed of how many, and since when
@@ -2450,8 +2504,9 @@ export function createApp({
             if (!t) {
                 return gone(String(body.id));
             }
-            if (t.local) {
-                return [403, { error: "a local preview has no Finish" }];
+            const refused = finishRefused(t);
+            if (refused) {
+                return refused;
             }
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];
@@ -2518,8 +2573,9 @@ export function createApp({
             if (!t) {
                 return gone(String(body.id));
             }
-            if (t.local) {
-                return [403, { error: "a local preview has no Finish" }];
+            const refused = finishRefused(t);
+            if (refused) {
+                return refused;
             }
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];

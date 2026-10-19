@@ -267,7 +267,12 @@ token, or the whole URL `serve` printed, and it loads. The field hides what you 
   and compares it with the images you accepted, so the pull request passes with nothing left to
   decide when CI draws the same bytes, and any image CI draws differently comes back to you
   undecided. Decisions are kept by image hash, so when CI's capture of the same head lands every
-  identical image keeps its decision. See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
+  identical image keeps its decision. A Finish that leaves images undecided moves the head (its
+  accept commit), and the preview of the old head stays listed while the branch has gained only
+  accept commits since: what you decided shows as decided, the rest undecided, and you keep
+  deciding there. Finish waits for a preview of the new head (`tools/visual-preview.sh <pr>`),
+  which keeps every decision. After any other commit, a draft says "a new preview is needed for
+  this head". See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
 
 ### What is waiting for you, and one quiet notification
 
@@ -280,7 +285,8 @@ or that have a story whose capture failed (these are fixed before review, never 
 each with the project, the story and the reason, its job log and Retry where a retry can help; then one line
 counts the pull requests still capturing, those with nothing to decide and the drafts. A draft pull
 request is never offered or announced, even with a capture made before it went back to draft: its
-author is still working on it. Mark it ready when it is. The cards of every
+author is still working on it. Mark it ready when it is. A draft you already Finished part of is
+the exception: it stays listed with the images left ("17 of 110 images left"). The cards of every
 pull request follow, as before. The number ready is in the tab's title ("(3) Visual review") and
 on its icon, and, on a home-screen web app where the browser allows it, on the app icon. The page
 asks the server again every few seconds while it is shown, and at once when you come back to it.
@@ -359,7 +365,10 @@ skipping the rest; its grid from the grid, its first undecided item from a story
 **Grid** on the story screen or, on the grid, the item last opened ("#3 slider--sizes"), which goes
 back into it in its pass at its place. Escape goes up one level (story to grid, grid to targets),
 and the browser's Back and Forward move between the screens. Then **Finish** with the number of decisions it
-would publish ("Finish #201 (12)"; at 0 it is unavailable and says "Nothing new to finish",
+would publish ("Finish #201 (12)"), after the running count of the target's images ("93 of 110
+decided -- 17 left"; from 1050 px wide, below which the target menu's count says it). Pressing
+Finish with images undecided first says "17 images are still undecided; they will block the
+merge", with **Go to the first undecided** and **Finish anyway**. At 0 decisions Finish is unavailable and says "Nothing new to finish",
 shortened to "Nothing new" on an iPad and left to Finish itself to say below 900 px; whether a
 passkey must approve it is said in Finish's sheet), **Keys** and **Copy link**. The header is one
 row from 700 px wide: Finish never shrinks, the menus give up their width first, and below 900 px

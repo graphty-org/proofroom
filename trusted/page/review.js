@@ -624,8 +624,13 @@ function sayBackground(text, extra = "") {
 // the button pressed seems to do nothing. Resolves true for `yes`, false for Cancel or Escape.
 // `onYes` runs inside the click on `yes` itself, for what a browser allows only there.
 // `unavailable` makes `yes` say why instead (inside the dialog, which a screen reader hears), and
-// `why` names the element of `message` explaining it; `focusYes` focuses `yes` (a retry).
-function ask(message, yes, { onYes = () => {}, label = null, unavailable = null, why = null, focusYes = false } = {}) {
+// `why` names the element of `message` explaining it; `focusYes` focuses `yes` (a retry). `other`
+// ({ label, onclick }) adds a third button, the primary one, that runs `onclick` and answers false.
+function ask(
+    message,
+    yes,
+    { onYes = () => {}, label = null, unavailable = null, why = null, focusYes = false, other = null } = {},
+) {
     // Focus on the box, not a button: the Enter that asked (in the reason box) must not answer it.
     const text = el("div", { class: "ask-text", id: "ask-text" }, message);
     const dialog = el("dialog", {
@@ -652,11 +657,26 @@ function ask(message, yes, { onYes = () => {}, label = null, unavailable = null,
             "p",
             { class: "actions" },
             el("button", { type: "button", onclick: answer("no") }, "Cancel"),
+            other
+                ? el(
+                      "button",
+                      {
+                          type: "button",
+                          class: "primary",
+                          id: "ask-other",
+                          onclick: () => {
+                              other.onclick();
+                              dialog.close("no");
+                          },
+                      },
+                      other.label,
+                  )
+                : null,
             el(
                 "button",
                 {
                     type: "button",
-                    class: "primary",
+                    class: other ? null : "primary",
                     id: "ask-yes",
                     "aria-disabled": unavailable ? "true" : null,
                     "aria-describedby": unavailable && why ? why : null,
@@ -923,6 +943,7 @@ const labelOf = (t) => {
 };
 const undecidedOf = (t) => t.projects.reduce((n, p) => n + p.undecided, 0);
 const finishedOf = (t) => t.projects.reduce((n, p) => n + (p.finished ?? 0), 0);
+const reviewableOf = (t) => t.projects.reduce((n, p) => n + p.reviewable, 0);
 const draftKey = (item) => `${state.target.id}/${state.project}/${item.file}`;
 
 // Errors first, then components by their most urgent item, stories the same way within one, and
@@ -1157,9 +1178,13 @@ function drawHeader() {
 // reason's tail is only for wide windows and screen readers, so a narrow header keeps Finish whole.
 function finishControl(t) {
     const count = t.unpublished ?? 0;
-    const can = count > 0 && !running();
-    const why = count === 0 ? ["Nothing new", " to finish"] : null;
+    const can = count > 0 && !running() && !t.headMoved;
+    let why = count === 0 ? ["Nothing new", " to finish"] : null;
+    if (t.headMoved) {
+        why = ["New preview needed", " to finish"];
+    }
     return [
+        tallyLine(t),
         el(
             "button",
             {
@@ -1170,6 +1195,8 @@ function finishControl(t) {
                 onclick: (e) => {
                     if (can) {
                         finishTarget(t.id, e.currentTarget);
+                    } else if (t.headMoved) {
+                        say(movedText(t));
                     } else {
                         say(running() ? "A Finish is running: wait for it to end." : "Nothing new to finish.");
                     }
@@ -1199,6 +1226,27 @@ toItemCrumb.addEventListener("click", () => backToItem());
 titleCrumb.addEventListener("click", () => showContext());
 document.getElementById("prev-project").addEventListener("click", () => stepProject(-1));
 document.getElementById("next-project").addEventListener("click", () => stepProject(1));
+
+// "93 of 110 decided -- 17 left", beside Finish: what is still undecided is never out of sight. A
+// narrow header keeps "17 left".
+function tallyLine(t) {
+    const total = reviewableOf(t);
+    if (total === 0) {
+        return null;
+    }
+    const left = undecidedOf(t);
+    return el(
+        "span",
+        { class: left > 0 ? "finish-tally left" : "finish-tally", "data-tally": t.id },
+        el("span", { class: "wide-only" }, `${total - left} of ${total} decided -- `),
+        `${left} left`,
+    );
+}
+
+// Why a target whose head moved past its preview (an earlier Finish's accept commit) cannot finish.
+const movedText = (t) =>
+    `This preview is of ${short(t.headSha)}; a Finish moved the head to ${short(t.headMoved)}. Decide here: ` +
+    `a new preview of the head is needed to Finish (tools/visual-preview.sh ${t.pr}), and your decisions carry over to it.`;
 
 // ---------------------------------------------------------------- screen: targets
 
@@ -1380,6 +1428,17 @@ const ago = (from, now) => {
     return m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
 };
 
+// An inbox row's count: the images to decide (of how many, once some are decided), or the decisions
+// ready to Finish.
+function inboxCount(r) {
+    if (r.undecided === 0) {
+        return `ready to Finish (${plural(r.unpublished, "decision")})`;
+    }
+    return r.decided > 0
+        ? `${r.undecided} of ${plural(r.undecided + r.decided, "image")} left`
+        : plural(r.undecided, "image");
+}
+
 // What is waiting for the owner, on top of the targets screen: the pull requests with images to
 // decide (fewest first; a row opens its first undecided image), those whose capture failed, and
 // how many are still capturing or have nothing to decide. Coupled pull requests (they change the
@@ -1409,9 +1468,7 @@ function inboxView(inbox) {
                 el(
                     "span",
                     { class: "meta" },
-                    r.undecided > 0
-                        ? plural(r.undecided, "image")
-                        : `ready to Finish (${plural(r.unpublished, "decision")})`,
+                    inboxCount(r),
                     `, ${r.source}`,
                     r.complete ? "" : `, ${r.loaded} of ${plural(r.total, "project")} ready`,
                     `, ${ago(r.since, now)}`,
@@ -1802,6 +1859,7 @@ function targetCard(t) {
             ),
         ),
         t.downloading ? el("p", { class: "meta" }, spinner(), downloadText(t)) : null,
+        t.headMoved ? el("p", { class: "warning" }, movedText(t)) : null,
         !t.local && t.unpublished > 0
             ? el("p", { class: "meta" }, `${plural(t.unpublished, "decision")} not yet finished`)
             : null,
@@ -4772,7 +4830,7 @@ function sheet(t, f, prepared, notice) {
     }
     if (f.undecided.length > 0) {
         lines.push(
-            `Still undecided, left for a later round: ${f.undecided.map((p) => `${p.project} ${p.undecided}`).join(", ")}.`,
+            `Still undecided, and blocking the merge: ${f.undecided.map((p) => `${p.project} ${p.undecided}`).join(", ")}.`,
         );
     }
     if (f.unloaded.length > 0) {
@@ -4868,6 +4926,46 @@ function finishTitle(t, f, required, onlyRejects) {
     return onlyRejects ? `Post ${plural(f.rejects, "reject")} to ${labelOf(t)}` : `Finish ${labelOf(t)}`;
 }
 
+// Before a Finish: the last decision saved, and images left undecided confirmed. True to go on.
+async function readyToFinish(id) {
+    if (saving) {
+        sayBusy("Saving the last decision...");
+        await saving.catch(() => {});
+    }
+    return finishWithUndecided(id);
+}
+
+// Before a Finish that leaves images undecided: says so plainly, and offers the first of them. True
+// to go on with the Finish.
+async function finishWithUndecided(id) {
+    const t = state.target?.id === id ? state.target : state.list?.targets?.find((x) => x.id === id);
+    const left = t ? undecidedOf(t) : 0;
+    if (left === 0) {
+        return true;
+    }
+    let jump = false;
+    const go = await ask(
+        [
+            el("h2", { id: "undecided-title" }, `${plural(left, "image")} still undecided`),
+            el(
+                "p",
+                {},
+                `${plural(left, "image")} ${left === 1 ? "is" : "are"} still undecided; they will block the merge. ` +
+                    `${reviewableOf(t) - left} of ${reviewableOf(t)} are decided.`,
+            ),
+        ],
+        "Finish anyway",
+        { label: "undecided-title", other: { label: "Go to the first undecided", onclick: () => (jump = true) } },
+    );
+    if (jump) {
+        say("");
+        await openTarget(id, true);
+    } else if (!go) {
+        say("Finish cancelled: nothing was changed.");
+    }
+    return go;
+}
+
 async function finishTarget(id, button) {
     if (running()) {
         say("A Finish is running: wait for it to end.");
@@ -4880,9 +4978,9 @@ async function finishTarget(id, button) {
     };
     button.classList.add("busy");
     button.prepend(spinner());
-    if (saving) {
-        sayBusy("Saving the last decision...");
-        await saving.catch(() => {});
+    if (!(await readyToFinish(id))) {
+        reset();
+        return;
     }
     let notice = "";
     for (;;) {
