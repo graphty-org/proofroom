@@ -1169,6 +1169,51 @@ describe("serve: local previews of a pull request", () => {
         ]);
     });
 
+    it("keeps a draft's preview after a Finish moved its head by an accept commit, and asks for a new one after any other commit (issue 3235)", async () => {
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => out.mockRestore());
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        // Without the fixture's failed story, which would hold the pull request out of the inbox.
+        preview(previews, "compact-mantine", r.head, { items: capturedItems() });
+        // GitHub lists the branch's tip as the draft's head.
+        const s = await start({
+            ...r,
+            gh: (x) => (args, input) =>
+                fakeGh({
+                    prs: [{ number: 123, head: git(x.remote, "rev-parse", "feature"), branch: "feature", draft: true }],
+                })(args, input),
+            previews,
+        });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        const accepted = git(s.remote, "rev-parse", "feature");
+
+        // The head is the accept commit: the preview of the old head is still shown, the accept as
+        // finished and the rest undecided, and the draft still waits in the inbox with its count.
+        const after = (await s.api("GET", "/api/prs")).body;
+        const [t] = after.targets;
+        expect(t).toMatchObject({ headSha: r.head, headMoved: accepted });
+        expect(t.projects[0]).toMatchObject({ preview: true, problem: null, decided: 1, finished: 1, undecided: 4 });
+        expect(after.inbox.ready).toEqual([expect.objectContaining({ pr: 123, undecided: 4, decided: 1 })]);
+        // Decisions are still taken on it; Finish waits for a preview of the new head.
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        const refused = await s.api("POST", "/api/finish", { id: "123" });
+        expect(refused.status).toBe(409);
+        expect(refused.body.error).toMatch(/a new preview is needed for this head .*tools\/visual-preview\.sh 123/);
+
+        // Anything else on the branch: no preview, and it says a new one is needed.
+        const other = pushCommit(s.remote, "feature", "src/other.txt");
+        const [moved] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(moved.headMoved).toBeNull();
+        expect(moved.projects[0]).toMatchObject({
+            preview: false,
+            problem: `a new preview is needed for this head (${other.slice(0, 10)}): run tools/visual-preview.sh 123`,
+        });
+    });
+
     it("carries decisions over to CI's capture where its bytes are identical, and shows a differing image undecided", async () => {
         // The made-up hash of CI's slider--sizes has no such bytes on disk: its thumbnail says so.
         const err = vi.spyOn(console, "error").mockImplementation(() => {});

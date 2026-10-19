@@ -45,6 +45,9 @@ let dialogs;
 // Every URL the page requested (the page's own `performance` is Playwright's clock's).
 let requested;
 let confirmFinish = false;
+// How the question before a Finish that leaves images undecided is answered: "yes" (Finish anyway),
+// "no" or "other" (Go to the first undecided).
+let undecidedAnswer = "yes";
 // The fixture's grid tiles, made once (keepTiles) and put in every server's tmp directory.
 let tiles = null;
 // The app open() started. Its tiles made in advance run on after the server closes: afterEach waits
@@ -120,9 +123,13 @@ async function open(
     requested = [];
     page.on("request", (q) => requested.push(q.url()));
     // The page asks in its own dialog (ask in review.js). Accept all, Undo and Exclude are
-    // confirmed; Finish is refused unless a test sets confirmFinish.
+    // confirmed; Finish is refused unless a test sets confirmFinish; Finish with images undecided
+    // is answered with undecidedAnswer.
     await page.exposeFunction("asked", (message) => {
         dialogs.push(message);
+        if (/^\d+ images? still undecided/.test(message)) {
+            return undecidedAnswer;
+        }
         return !message.startsWith("Finish") || confirmFinish;
     });
     await page.addInitScript(() => {
@@ -131,9 +138,10 @@ async function open(
         new MutationObserver(() => {
             for (const d of document.querySelectorAll("dialog.ask[open]:not([data-seen])")) {
                 d.dataset.seen = "";
-                globalThis
-                    .asked(d.querySelector(".ask-text").innerText)
-                    .then((yes) => d.querySelectorAll(".actions button")[yes ? 1 : 0].click());
+                globalThis.asked(d.querySelector(".ask-text").innerText).then((yes) => {
+                    const which = { yes: "#ask-yes", other: "#ask-other", no: ".actions button" };
+                    d.querySelector(which[yes] ?? (yes ? "#ask-yes" : ".actions button")).click();
+                });
             }
         }).observe(document, { childList: true, subtree: true, attributes: true });
     });
@@ -153,6 +161,7 @@ async function open(
 
 afterEach(async () => {
     confirmFinish = false;
+    undecidedAnswer = "yes";
     await page?.close();
     // Until every request has been answered: a list refresh still running would write its state
     // into the repository after the test file removed it (tempDir).
@@ -1487,21 +1496,47 @@ describe("review page: a pull request", () => {
         const finish = page.getByRole("button", { name: /^Finish/ });
         expect(await finish.textContent()).toBe("Finish #123 (4)");
         await finish.click();
-        await expect.poll(() => dialogs.length).toBe(2);
-        const sheet = dialogs[1].split("\n").filter(Boolean);
+        await expect.poll(() => dialogs.length).toBe(3);
+        expect(dialogs[1]).toBe(
+            "3 images still undecided\n\n3 images are still undecided; they will block the merge. 4 of 7 are decided.",
+        );
+        const sheet = dialogs[2].split("\n").filter(Boolean);
         expect(sheet.slice(0, 6)).toEqual([
             "Finish #123, every project:",
             "Commit 4 accepts to feature.",
             "Then set the commit status 'Visual review' to pending (3 undecided; not loaded: layout, algorithms, graphty, cytoscape-extensions).",
             "Accepted without opening: 4.",
-            "Still undecided, left for a later round: compact-mantine 2, graphty-element 1.",
+            "Still undecided, and blocking the merge: compact-mantine 2, graphty-element 1.",
             "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions.",
         ]);
-        expect(dialogs[1]).toMatch(/Finish commits are (signed with|NOT signed)/);
-        expect(dialogs[1]).toContain(`start the server from your own shell:\n${START}`);
+        expect(dialogs[2]).toMatch(/Finish commits are (signed with|NOT signed)/);
+        expect(dialogs[2]).toContain(`start the server from your own shell:\n${START}`);
         await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
         await page.locator("#home").click();
         await expect.poll(() => page.locator(".signer pre").textContent()).toBe(START);
+    });
+
+    it("counts decided and undecided images beside Finish, and a decision moves the count (issue 3235)", async () => {
+        const tally = () => page.locator("#finish-slot .finish-tally").textContent();
+        expect(await tally()).toBe("0 of 7 decided -- 7 left");
+        expect(await page.locator("#finish-slot .finish-tally").getAttribute("class")).toContain("left");
+        await page.locator('.component[data-component="badge"] h3 button').click();
+        await expect.poll(tally).toBe("1 of 7 decided -- 6 left");
+    });
+
+    it("before a Finish that leaves images undecided, says so and goes to the first of them (issue 3235)", async () => {
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("4 of 6 decided");
+        undecidedAnswer = "other";
+        await page.getByRole("button", { name: /^Finish/ }).click();
+        await expect.poll(() => dialogs.length).toBe(2);
+        expect(dialogs[1]).toBe(
+            "3 images still undecided\n\n3 images are still undecided; they will block the merge. 4 of 7 are decided.",
+        );
+        // No Finish sheet: the first undecided image is open instead.
+        await expect.poll(position).toMatch(/^1 of 2 -- 2 left$/);
+        expect(dialogs).toHaveLength(2);
+        expect(await page.locator("dialog.ask").count()).toBe(0);
     });
 
     it("shows at once that Finish is checking, and says when it is cancelled", async () => {
@@ -1520,8 +1555,9 @@ describe("review page: a pull request", () => {
         expect(await finish.locator(".spinner").count()).toBe(1);
         answer();
         await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
-        expect(dialogs).toHaveLength(2);
-        expect(dialogs[1]).toMatch(/^Finish #123, every project:/);
+        expect(dialogs).toHaveLength(3);
+        expect(dialogs[1]).toMatch(/^3 images still undecided/);
+        expect(dialogs[2]).toMatch(/^Finish #123, every project:/);
         expect(await finish.getAttribute("aria-disabled")).toBe("false");
     });
 
@@ -2560,13 +2596,14 @@ describe("review page: Finish", () => {
         });
         confirmFinish = true;
         await page.getByRole("button", { name: /^Finish/ }).click();
-        await expect.poll(() => dialogs.length).toBe(2);
+        await expect.poll(() => dialogs.length).toBe(3);
+        expect(dialogs.shift()).toMatch(/^5 images still undecided/);
         expect(dialogs[0].split("\n").filter(Boolean).slice(0, 7)).toEqual([
             "Finish #123, every project:",
             "Commit 1 accept to feature.",
             "Post 1 reject as a comment on #123.",
             "Then set the commit status 'Visual review' to failure (1 rejected).",
-            "Still undecided, left for a later round: compact-mantine 4, graphty-element 1.",
+            "Still undecided, and blocking the merge: compact-mantine 4, graphty-element 1.",
             "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions.",
             "Notes to publish:",
         ]);
@@ -2796,8 +2833,9 @@ describe("review page: the passkey", () => {
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: false });
         const asked = dialogs.length;
         await finish.click();
-        await expect.poll(() => dialogs.length).toBeGreaterThan(asked + 1);
-        expect(dialogs[asked]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
+        await expect.poll(() => dialogs.length).toBeGreaterThan(asked + 2);
+        expect(dialogs[asked]).toMatch(/^3 images still undecided/);
+        expect(dialogs[asked + 1]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
         expect(dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
         expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
 

@@ -1,3 +1,21 @@
+## 0.2.33 (2026-10-18)
+
+This was a version bump only for visual-review to align it with other projects, there were no code changes.
+
+## 0.2.32 (2026-10-17)
+
+### 🚀 Features
+
+- **visual-review:** record review page usage events locally, opt-in ([7218df139](https://github.com/graphty-org/graphty-monorepo/commit/7218df139))
+
+### 🩹 Fixes
+
+- **visual-review:** report a repeated Finish as already finished ([#3040](https://github.com/graphty-org/graphty-monorepo/issues/3040))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.31 (2026-10-15)
 
 This was a version bump only for visual-review to align it with other projects, there were no code changes.
