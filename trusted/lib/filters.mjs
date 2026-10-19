@@ -4,9 +4,9 @@
  *
  * - **Approved before.** A capture byte-identical to an image the owner already approved for the
  *   same story and mode (a review record on the default branch or on an open pull request's
- *   branch) is accepted again, with the record that approved it named in the new record. The gate
- *   checks that record before the item counts (gate.mjs earlierApprovalProblem), so nothing here
- *   is taken on trust.
+ *   branch) is accepted again, with the record that approved it named in the new record. The
+ *   record counts only when it passes gate.mjs earlierApprovalProblem, and the owner's Finish
+ *   sheet lists every such accept before the owner signs the baselines with it.
  * - **Known capture noise.** A story whose capture changed on two pull requests that touch none of
  *   its package's files, or that flips between the same two images, is flaky. It is labeled, never
  *   accepted: the owner still decides, but can decide the group at once.
@@ -25,8 +25,8 @@ import { earlierApprovalProblem } from "../gate.mjs";
  * that path where it lives: a later record that accepts another image for the path, or rejects one,
  * replaces it.
  * @param {{ ref: string, commit: string, path: string, record: any, main: boolean }[]} records
- *     review records: the tip they were read at (`ref`), the commit to name for them (the gate
- *     fetches it), their path, and whether `ref` is the default branch
+ *     review records: the tip they were read at (`ref`), the commit to name for them, their path,
+ *     and whether `ref` is the default branch
  * @param {object[] | null} keys the default branch's passkeys (null when none)
  * @returns {Map<string, { pr: number | null, commit: string, record: string, reviewedAt: string }>}
  *     by `<path> <hash>`; a default branch record wins over a pull request's, then the newest

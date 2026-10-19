@@ -15,12 +15,14 @@ import { PNG } from "pngjs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
+import { sha256 } from "../trusted/lib/compare.mjs";
 import { withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import {
     CONFIG,
     capturedItems,
     FIXTURE,
+    FIXTURE_CONFIG,
     fakeGh,
     git,
     interceptedPage,
@@ -2761,6 +2763,38 @@ describe("review page: update from master", () => {
     });
 });
 
+describe("review page: against the default branch", () => {
+    it("shows an image the branch already changed as a change against master's baseline", async () => {
+        const badge = readFileSync(join(FIXTURE, "compact-mantine/badge--default.light.png"));
+        const BASELINE = "visual-baselines/compact-mantine/input--default.png";
+        await open((r) => {
+            // An earlier Finish already put the capture into the branch's baseline: against the
+            // branch the capture is unchanged, against master it is not.
+            git(r.repo, "checkout", "-q", "feature");
+            writeFileSync(join(r.repo, BASELINE), badge);
+            git(r.repo, "commit", "-q", "-am", "an earlier accept");
+            git(r.repo, "push", "-q", "origin", "feature");
+            const head = git(r.repo, "rev-parse", "HEAD");
+            git(r.repo, "checkout", "-q", "master");
+            const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+            const items = fixture.items.map((i) =>
+                i.file === "input--default.png" ? { ...i, baseline: sha256(badge), capture: sha256(badge) } : i,
+            );
+            const results = {
+                "visual-compact-mantine-1": { commit: head, headSha: head, items },
+                "visual-graphty-element-1": { commit: head, headSha: head },
+            };
+            return { config: FIXTURE_CONFIG, gh: onePr({ results })({ ...r, head }) };
+        });
+        await page.locator(".component").first().waitFor();
+        await expect.poll(progress).toBe("0 of 7 decided");
+        await page.locator("#find").fill("input--default");
+        await page.locator("#find").press("Enter");
+        await expect.poll(() => page.locator("h2").textContent()).toContain("input--default");
+        await ready();
+    });
+});
+
 describe("review page: the passkey", () => {
     // Chromium's virtual authenticator (CDP) stands in for Face ID: a real browser makes the
     // registration and the approval, and the server's own checks verify them.
@@ -2770,6 +2804,9 @@ describe("review page: the passkey", () => {
             (repo) => {
                 const gh = onePr()(repo);
                 return {
+                    // The two projects captured: a project with no capture leaves its baselines
+                    // unseen, and a Finish then signs nothing.
+                    config: FIXTURE_CONFIG,
                     gh: async (args, input) => {
                         if (args[1] === "repos/{owner}/{repo}/pulls") {
                             opened.push(JSON.parse(input));
@@ -2826,26 +2863,59 @@ describe("review page: the passkey", () => {
         await page.locator(".component").first().waitFor();
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
-        confirmFinish = true;
         const finish = page.getByRole("button", { name: /^Finish #123/ });
+
+        // Images left undecided: the sheet says nothing is signed, and no passkey is asked for.
+        let asked = dialogs.length;
+        await finish.click();
+        await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
+        expect(dialogs.slice(asked).join("\n")).toContain(
+            "Nothing is signed, because images are still undecided: the merge stays blocked until a Finish with every image decided and none rejected signs the baselines.",
+        );
+        expect(await page.evaluate(() => globalThis.whileAsking.length)).toBe(1);
+
+        // The rest decided (as in another tab): this Finish signs.
+        for (const [project, file, decision, reason] of [
+            ["compact-mantine", "tooltip--hover.png", "exclude", "noisy"],
+            ["compact-mantine", "menu--open.png", "exclude", "noisy"],
+            ["graphty-element", "graph--basic.png", "accept", null],
+        ]) {
+            const res = await fetch(`${origin}/api/decide`, {
+                method: "POST",
+                headers: { "x-review-token": TOKEN, origin, "content-type": "application/json" },
+                body: JSON.stringify({ id: "123", project, file, decision, reason }),
+            });
+            expect(res.status).toBe(200);
+        }
+        confirmFinish = true;
 
         // Face ID refused: nothing is pushed, and the sheet stays to try again.
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: false });
-        const asked = dialogs.length;
+        asked = dialogs.length;
         await finish.click();
-        await expect.poll(() => dialogs.length).toBeGreaterThan(asked + 2);
-        expect(dialogs[asked]).toMatch(/^3 images still undecided/);
-        expect(dialogs[asked + 1]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
-        expect(dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
+        await expect.poll(() => dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
+        expect(dialogs.slice(asked).join("\n")).toContain(
+            "Your passkey signs the baselines this Finish leaves on the branch (Face ID or a security key).",
+        );
         expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
 
-        // The retry, with Face ID passing, signs and finishes.
+        // The retry, with Face ID passing, signs and finishes: the accept commit, then the signed
+        // statement about its baselines tree.
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: true });
         await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toBe("Finished #123.");
-        const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const [file] = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const statement = JSON.parse(git(r.remote, "show", `feature:${file}`));
+        expect(file).toBe(`visual-review-approvals/${statement.tree}.json`);
+        expect(statement).toMatchObject({
+            version: 1,
+            pr: 123,
+            commit: git(r.remote, "rev-parse", "feature^"),
+            tree: git(r.remote, "rev-parse", "feature:visual-baselines"),
+        });
+        expect(verifyApproval(statement, [entry], { origin })).toBeNull();
+        const files = git(r.remote, "show", "--name-only", "--format=", "feature^").split("\n");
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
-        expect(record).toMatchObject({ version: 2, pr: 123 });
-        expect(verifyApproval(record, [entry], { origin })).toBeNull();
+        expect(record).toMatchObject({ version: 3, pr: 123 });
         expect(new Set(await page.evaluate(() => globalThis.whileAsking))).toEqual(new Set([true]));
     });
 
@@ -2868,7 +2938,7 @@ describe("review page: the passkey", () => {
         );
         const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
-        expect(record).toMatchObject({ version: 1, unproven: true });
+        expect(record).toMatchObject({ version: 3, pr: 123 });
     });
 
     it("finishes rejects alone without asking for a passkey to be registered first", async () => {
