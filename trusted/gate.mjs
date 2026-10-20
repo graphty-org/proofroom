@@ -760,6 +760,46 @@ export function unrecordedChanges(base, head, cwd = process.cwd(), baselines = "
  */
 export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
     const enforced = Boolean(approvals.keys);
+    const show = (ref, path) => gitOut(cwd, ["show", `${ref}:${path}`]);
+    const { problems, records, changed } = classifyDiff(base, head, cwd, baselines, enforced, show);
+    const refused = [];
+    const entries = [];
+    let onBase = null;
+    const baseHashes = () => {
+        onBase ??= baseRecordHashes(base, cwd, baselines);
+        return onBase;
+    };
+    for (const path of records) {
+        const record = parseOr(show(head, path));
+        if (enforced) {
+            const why = refusedRecordProblem(record, approvals, baseHashes);
+            if (why) {
+                problems.push(`${path}: ${why}`);
+                refused.push(path);
+                continue;
+            }
+        }
+        const items = standingItems(record, path, problems, { cwd, baselines, keys: approvals.keys ?? null, base });
+        entries.push({ at: String(record?.reviewedAt ?? ""), items });
+    }
+    entries.sort((a, b) => compareStrings(a.at, b.at));
+    const missing = changed.filter((c) => replayItems(c, entries) !== c.to);
+    return { problems, refused, missing };
+}
+
+/**
+ * Sorts the diff between base and head under the baselines directory into added review records,
+ * problems with changed or deleted ones, and the changed files a record must account for.
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @param {string} cwd the repository
+ * @param {string} baselines the baselines directory
+ * @param {boolean} enforced whether approvals are enforced (then the passkeys file counts too)
+ * @param {(ref: string, path: string) => Buffer} show reads a file at a ref
+ * @returns {{ problems: string[], records: string[], changed: { path: string, from: string | null,
+ *     to: string | null }[] }} the sorted diff
+ */
+function classifyDiff(base, head, cwd, baselines, enforced, show) {
     const fields = gitOut(cwd, [
         "diff",
         "-z",
@@ -773,10 +813,8 @@ export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
     ])
         .toString("utf8")
         .split("\0");
-    const show = (ref, path) => gitOut(cwd, ["show", `${ref}:${path}`]);
     const problems = [];
     const records = [];
-    const refused = [];
     const changed = [];
     for (let i = 0; i + 1 < fields.length; i += 2) {
         const [status, path] = [fields[i], fields[i + 1]];
@@ -786,64 +824,121 @@ export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
             } else {
                 problems.push(`${path}: review records are append-only, but this one was changed or deleted`);
             }
-        } else if (
-            path.endsWith(".png") ||
-            path === PASSKEYS_FILE ||
-            (path.endsWith(".json") && status !== "D" && !path.endsWith("/renames.json"))
-        ) {
-            const hash = path.endsWith(".png") ? contentHash : sha256;
-            changed.push({
-                path,
-                from: status === "A" ? null : hash(show(base, path)),
-                to: status === "D" ? null : hash(show(head, path)),
-            });
+        } else if (isReviewedFile(path, status)) {
+            changed.push(fileChange(path, status, (ref) => show(ref, path), base, head));
         }
     }
-    let onBase = null;
-    const entries = [];
-    for (const path of records) {
-        const record = parseOr(show(head, path));
-        if (enforced) {
-            let why = record === null ? "not valid JSON" : verifyRecord(record, approvals.keys, { pr: approvals.pr });
-            if (!why) {
-                onBase ??= baseRecordHashes(base, cwd, baselines);
-                if (onBase.has(recordHash(record).toString("hex"))) {
-                    why = "a copy of a record already on the base branch: an approval counts once";
-                }
-            }
-            if (why) {
-                problems.push(`${path}: ${why}`);
-                refused.push(path);
-                continue;
-            }
-        }
-        const items = (Array.isArray(record?.items) ? record.items : []).filter((item) => {
-            if (item?.approvedBefore === undefined) {
-                return true;
-            }
-            // An accept the page took because the owner approved the same image before: it moves
-            // the file only when that earlier approval is there and holds, never on the page's word.
-            const why = approvedBeforeProblem(item, cwd, baselines, approvals.keys ?? null, base);
-            if (why) {
-                problems.push(`${path}: ${item.path} is marked approved before, but ${why}`);
-            }
-            return !why;
-        });
-        entries.push({ at: String(record?.reviewedAt ?? ""), items });
+    return { problems, records, changed };
+}
+
+/**
+ * A changed file's contents hash on each side; null where it does not exist.
+ * @param {string} path the file
+ * @param {string} status its git name-status letter
+ * @param {(ref: string) => Buffer} read reads the file at a ref
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @returns {{ path: string, from: string | null, to: string | null }} the change
+ */
+function fileChange(path, status, read, base, head) {
+    const hash = path.endsWith(".png") ? contentHash : sha256;
+    return {
+        path,
+        from: status === "A" ? null : hash(read(base)),
+        to: status === "D" ? null : hash(read(head)),
+    };
+}
+
+/**
+ * Whether a changed file needs a review record: an image, the passkeys file, or a story settings
+ * file that still exists (not the renames list).
+ * @param {string} path the file
+ * @param {string} status its git name-status letter
+ * @returns {boolean} whether a record must account for it
+ */
+function isReviewedFile(path, status) {
+    return (
+        path.endsWith(".png") ||
+        path === PASSKEYS_FILE ||
+        (path.endsWith(".json") && status !== "D" && !path.endsWith("/renames.json"))
+    );
+}
+
+/**
+ * Why an added review record counts for nothing while approvals are enforced, or null when it counts.
+ * @param {any} record the parsed record, or null when it is not JSON
+ * @param {{ keys?: object[] | null, pr?: number | number[] | null }} approvals as in unrecordedChanges
+ * @param {() => Set<string>} baseHashes the hashes of the records already on the base branch
+ * @returns {string | null} why not, or null
+ */
+function refusedRecordProblem(record, approvals, baseHashes) {
+    if (record === null) {
+        return "not valid JSON";
     }
-    entries.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-    const missing = changed.filter((c) => {
-        let now = c.from;
-        for (const { items } of entries) {
-            for (const item of items) {
-                if (item?.path === c.path && (item.from ?? null) === now) {
-                    now = item.to ?? null;
-                }
-            }
+    const why = verifyRecord(record, approvals.keys, { pr: approvals.pr });
+    if (why) {
+        return why;
+    }
+    if (baseHashes().has(recordHash(record).toString("hex"))) {
+        return "a copy of a record already on the base branch: an approval counts once";
+    }
+    return null;
+}
+
+/**
+ * A record's items that stand: every plain item, and each "approved before" item whose earlier
+ * approval is there and holds. Each one that does not stand adds a problem.
+ * @param {any} record the parsed record
+ * @param {string} path the record's path
+ * @param {string[]} problems where to add the problems
+ * @param {{ cwd: string, baselines: string, keys: object[] | null, base: string }} where as in
+ *     approvedBeforeProblem
+ * @returns {any[]} the items that stand
+ */
+function standingItems(record, path, problems, { cwd, baselines, keys, base }) {
+    return (Array.isArray(record?.items) ? record.items : []).filter((item) => {
+        if (item?.approvedBefore === undefined) {
+            return true;
         }
-        return now !== c.to;
+        // An accept the page took because the owner approved the same image before: it moves
+        // the file only when that earlier approval is there and holds, never on the page's word.
+        const why = approvedBeforeProblem(item, cwd, baselines, keys, base);
+        if (why) {
+            problems.push(`${path}: ${item.path} is marked approved before, but ${why}`);
+        }
+        return !why;
     });
-    return { problems, refused, missing };
+}
+
+/**
+ * Where the counted records, in review order, take one changed file from its base contents.
+ * @param {{ path: string, from: string | null }} change the changed file
+ * @param {{ items: any[] }[]} entries the counted records' items, oldest review first
+ * @returns {string | null} the contents hash the records end on
+ */
+function replayItems(change, entries) {
+    let now = change.from;
+    for (const { items } of entries) {
+        for (const item of items) {
+            if (item?.path === change.path && (item.from ?? null) === now) {
+                now = item.to ?? null;
+            }
+        }
+    }
+    return now;
+}
+
+/**
+ * Orders two strings by code unit, as `<` does.
+ * @param {string} a one
+ * @param {string} b the other
+ * @returns {number} negative, zero or positive
+ */
+function compareStrings(a, b) {
+    if (a < b) {
+        return -1;
+    }
+    return a > b ? 1 : 0;
 }
 
 /**
