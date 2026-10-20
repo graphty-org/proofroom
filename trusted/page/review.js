@@ -5427,6 +5427,13 @@ async function checkFinish() {
         return;
     }
     if (running()) {
+        // The screen may already be drawn from a list that answered first, with Finish offered:
+        // draw it again now that a Finish is known to run.
+        if (state.screen === "targets") {
+            drawTargets();
+        } else {
+            drawHeader();
+        }
         watchFinish();
     }
 }

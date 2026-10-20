@@ -2612,6 +2612,16 @@ describe("review page: Finish", () => {
             "Pushing: done",
         ]);
 
+        // The reloaded page learns of the Finish only after it drew the list, Finish button and
+        // all: the order a slow machine gave by chance, which left that button offered.
+        let reloaded = false;
+        await page.route("**/api/finish-status", async (route) => {
+            if (reloaded) {
+                await page.locator('.card[data-target="123"]').waitFor();
+            }
+            await route.continue();
+        });
+        reloaded = true;
         await page.reload();
         await expect.poll(status).toBe("Finishing #123: posting the status...");
         await expect
