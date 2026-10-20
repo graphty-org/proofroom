@@ -1,8 +1,10 @@
 /**
- * Passkey approvals of review records: the owner's device (Face ID or Touch ID, a passkey in
- * iCloud Keychain) signs the SHA-256 of a review record, and this module checks that signature.
- * The gate runs it on every record a pull request adds; the server runs it at Finish, immediately
- * before the record is committed.
+ * Passkey approvals: the owner's device (Face ID or Touch ID, a passkey in iCloud Keychain) signs
+ * the SHA-256 of a JSON document, and this module checks that signature. The document is the
+ * statement that approves a baselines tree (accept.mjs treeStatement), which the gate checks
+ * (gate.mjs treeApprovalProblem) and the server checks at Finish, immediately before it is
+ * committed; earlier, review records were signed the same way (verifyRecord, still used to read
+ * them).
  *
  * WebAuthn's ES256 signature is over `authenticatorData || SHA-256(clientDataJSON)`, and the
  * challenge inside clientDataJSON is the record's hash, so the signature covers the record. Only

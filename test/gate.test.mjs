@@ -16,10 +16,10 @@ import {
     newestResults,
     queueBaseSha,
     queuePullRequests,
-    reviewGaps,
     seededAt,
+    treeApprovalProblems,
+    treeAt,
     trustFilesChanged,
-    unrecordedChanges,
 } from "../trusted/gate.mjs";
 import { PASSKEYS_FILE } from "../trusted/lib/approval.mjs";
 import { normalizeConfig } from "../trusted/lib/config.mjs";
@@ -263,7 +263,7 @@ describe("gate command", () => {
         expect(out.status).toBe(0);
     });
 
-    it("fails on an unaccepted change and on a baseline committed without a review record", () => {
+    it("fails on an unaccepted change and on a baseline committed without the owner's approval", () => {
         const r = makeRepo();
         git(r.repo, "checkout", "-q", "feature");
         writeFileSync(join(r.repo, "visual-baselines/compact-mantine/card--legacy.png"), "copied capture");
@@ -271,7 +271,7 @@ describe("gate command", () => {
         const out = run(r.repo, artifacts({ "visual-compact-mantine-1": results(["changed"]) }));
         expect(out.stdout).toMatch(/::error::visual changes not accepted -- compact-mantine: 1 changed/);
         expect(out.stdout).toMatch(
-            /::error::baseline without a review -- visual-baselines\/compact-mantine\/card--legacy.png/,
+            /::error::baselines not approved -- visual-baselines\/ differs from the base \(tree [0-9a-f]{40}\), and no visual-review-approvals\/[0-9a-f]{40}\.json approves it/,
         );
         expect(out.status).toBe(1);
     });
@@ -425,61 +425,14 @@ describe("contentHash", () => {
     });
 });
 
-describe("unrecordedChanges", () => {
-    it("accepts a record naming the image's hash when the baseline is committed as an LFS pointer", () => {
-        const r = makeRepo();
-        git(r.repo, "checkout", "-q", "feature");
-        const path = "visual-baselines/compact-mantine/card--legacy.png";
-        writeFileSync(join(r.repo, path), "new image");
-        git(r.repo, "add", "-A");
-        git(r.repo, "commit", "-q", "-m", "accept");
-        const blob = execFileSync("git", ["cat-file", "blob", `HEAD:${path}`], { cwd: r.repo });
-        expect(blob.toString()).toMatch(/^version https:\/\/git-lfs.github.com\/spec\/v1\n/);
-        expect(unrecordedChanges("master", "feature", r.repo)).toEqual([
-            `${path}: changed with no review record taking it from its base branch contents to these`,
-        ]);
-        const to = createHash("sha256").update("new image").digest("hex");
-        mkdirSync(join(r.repo, "visual-baselines/reviews"));
-        writeFileSync(
-            join(r.repo, "visual-baselines/reviews/r.json"),
-            JSON.stringify({ items: [{ path, from: LEGACY, to }] }),
-        );
-        git(r.repo, "add", "-A");
-        git(r.repo, "commit", "-q", "-m", "record");
-        expect(unrecordedChanges("master", "feature", r.repo)).toEqual([]);
-    });
-
-    it("fails a pull request that deletes a review record the base holds", () => {
-        const r = makeRepo();
-        mkdirSync(join(r.repo, "visual-baselines/reviews"));
-        writeFileSync(join(r.repo, "visual-baselines/reviews/old.json"), "{}");
-        git(r.repo, "add", "-A");
-        git(r.repo, "commit", "-q", "-m", "record");
-        git(r.repo, "checkout", "-q", "-b", "drop");
-        git(r.repo, "rm", "-q", "visual-baselines/reviews/old.json");
-        git(r.repo, "commit", "-q", "-m", "drop the record");
-        expect(unrecordedChanges("master", "drop", r.repo)).toEqual([
-            "visual-baselines/reviews/old.json: review records are append-only, but this one was changed or deleted",
-        ]);
-    });
-});
-
-describe("passkey approvals", () => {
+describe("signed tree approvals", () => {
     const KEY = makeKey();
-    const PATH = "visual-baselines/compact-mantine/card--legacy.png";
-    const TO = createHash("sha256").update("new image").digest("hex");
-    const v2 = (pr = 7, to = TO) => ({
-        version: 2,
-        pr,
-        subject: { builtMerge: "1".repeat(40), head: "2".repeat(40), runId: 9, runAttempt: 1, scale: 2 },
-        items: [{ path: PATH, from: LEGACY, to, reason: null }],
-        rejects: [],
-        reviewedAt: "2026-09-28T12:00:00.000Z",
-    });
-    const signed = (record, key = KEY) => ({ ...record, approval: approve(record, key) });
+    const BASELINES = "visual-baselines";
+    const APPROVALS = "visual-review-approvals";
+    const PATH = `${BASELINES}/compact-mantine/card--legacy.png`;
 
     /**
-     * master with passkeys.json (when given) and branch `pr` from it.
+     * master with passkeys.json (when given) and branch `pr` from it, checked out.
      * @param {string} [passkeys] passkeys.json on master
      * @returns {object} the repository
      */
@@ -507,240 +460,178 @@ describe("passkey approvals", () => {
                 continue;
             }
             mkdirSync(join(r.repo, path, ".."), { recursive: true });
-            writeFileSync(join(r.repo, path), typeof data === "string" ? data : JSON.stringify(data));
+            const text = typeof data === "string" || Buffer.isBuffer(data) ? data : JSON.stringify(data, null, 2);
+            writeFileSync(join(r.repo, path), text);
         }
         git(r.repo, "add", "-A");
         git(r.repo, "commit", "-q", "-m", "change");
     }
 
-    const check = (r, pr = 7) =>
-        unrecordedChanges("master", "pr", r.repo, "visual-baselines", { keys: [KEY.entry], pr });
-
-    it("words the same messages from reviewGaps' data as before it was split out, and names the refused records", () => {
-        const r = repoWith(passkeysJson(KEY));
-        const files = { [PATH]: "new image", "visual-baselines/reviews/old.json": { version: 1, items: [] } };
-        for (let i = 0; i < 22; i++) {
-            files[`visual-baselines/compact-mantine/extra-${String(i).padStart(2, "0")}.png`] = `image ${i}`;
-        }
-        commit(r, files);
-        const gaps = reviewGaps("master", "pr", r.repo, "visual-baselines", { keys: [KEY.entry], pr: 7 });
-        expect(gaps.refused).toEqual(["visual-baselines/reviews/old.json"]);
-        expect(gaps.missing).toHaveLength(23);
-        expect(gaps.missing).toContainEqual({ path: PATH, from: LEGACY, to: TO });
-        // The exact lines the gate printed before reviewGaps existed: records first, then at most
-        // twenty files in path order, then the count of the rest.
-        const unrecorded = (p) =>
-            `${p}: changed with no review record taking it from its base branch contents to these`;
-        expect(check(r)).toEqual(
-            [
-                "visual-baselines/reviews/old.json: a version 1 record has no passkey approval; review it again with Face ID",
-                PATH,
-                ...Array.from(
-                    { length: 19 },
-                    (_, i) => `visual-baselines/compact-mantine/extra-${String(i).padStart(2, "0")}.png`,
-                ),
-            ]
-                .map((p, i) => (i === 0 ? p : unrecorded(p)))
-                .concat(["... and 3 more baseline files with no review record"]),
-        );
+    /**
+     * The statement Finish signs for a commit: its baselines tree, and the pull request.
+     * @param {object} r the repository
+     * @param {string} at the commit reviewed
+     * @returns {object} the statement
+     */
+    const statementOf = (r, at) => ({
+        version: 1,
+        commit: git(r.repo, "rev-parse", at),
+        tree: treeAt(at, BASELINES, r.repo),
+        baselines: BASELINES,
+        pr: 7,
+        approvedAt: "2026-10-19T12:00:00.000Z",
     });
 
-    it("passes version 1 records while the base has no passkeys.json or no keys", () => {
-        for (const passkeys of [undefined, '{ "version": 1, "keys": [] }\n']) {
-            const r = repoWith(passkeys);
-            commit(r, {
-                [PATH]: "new image",
-                "visual-baselines/reviews/r.json": {
-                    version: 1,
-                    unproven: true,
-                    items: [{ path: PATH, from: LEGACY, to: TO }],
-                },
-            });
-            expect(approvalKeys("master", "pr", undefined, r.repo)).toEqual({ keys: null, problems: [] });
-            expect(unrecordedChanges("master", "pr", r.repo)).toEqual([]);
-        }
-    });
+    /**
+     * Commits an approval of the tree at `at` on the current branch, as Finish does: outside the
+     * baselines directory, named by the tree.
+     * @param {object} r the repository
+     * @param {{ at?: string, key?: object | null, statement?: object }} [o] the commit reviewed,
+     *     the key that signs (null: unsigned), and a statement to use instead
+     * @returns {object} the committed statement
+     */
+    function approveTree(r, { at = "HEAD", key = KEY, statement = statementOf(r, at) } = {}) {
+        const file = { ...statement, ...(key && { approval: approve(statement, key) }) };
+        commit(r, { [`${APPROVALS}/${treeAt("HEAD", BASELINES, r.repo)}.json`]: file });
+        return file;
+    }
 
-    it("passes an approved version 2 record naming the changed baseline", () => {
+    const check = (r, { head = "pr", keys = [KEY.entry] } = {}) =>
+        treeApprovalProblems({ base: "master", head, cwd: r.repo, baselines: BASELINES, approvals: APPROVALS, keys });
+
+    it("passes a tree signed at an ancestor, and the approval commit leaves the signed tree alone", () => {
         const r = repoWith(passkeysJson(KEY));
-        commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(v2()) });
-        expect(approvalKeys("master", "pr", 7, r.repo)).toEqual({ keys: [KEY.entry], problems: [] });
+        commit(r, { [PATH]: "new image" });
+        const signed = approveTree(r);
+        expect(treeAt("pr", BASELINES, r.repo)).toBe(signed.tree);
+        expect(check(r)).toEqual([]);
+        // Commits after the approval that leave the baselines alone keep it.
+        commit(r, { "src.txt": "more code" });
         expect(check(r)).toEqual([]);
     });
 
-    it("verifies a record of a local preview as one of a CI capture, and still fails CI's capture that differs from it", () => {
+    it("fails a tree other than the one signed", () => {
         const r = repoWith(passkeysJson(KEY));
-        const local = v2();
-        local.subject = {
-            ...local.subject,
-            runId: null,
-            runAttempt: null,
-            local: [{ project: "compact-mantine", merge: "1".repeat(40), host: "devbox", tool: "test" }],
-        };
-        // The owner approved the locally captured image: the branch holds it, with the signed record.
-        commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(local) });
-        expect(check(r)).toEqual([]);
-        // CI's own capture of that head is compared with the approved image. Identical: nothing to
-        // decide. Different: changed, and the local approval does not cover it.
-        const config = normalizeConfig({
-            defaultBranch: "master",
-            projects: { "compact-mantine": { storybook: "a" } },
-        });
-        const seeded = new Set(["compact-mantine"]);
-        const ci = (status) => ({ "compact-mantine": { attempt: 1, results: results([status]) } });
-        expect(gateProblems({ config, seeded, captures: ci("unchanged") })).toEqual([]);
-        expect(gateProblems({ config, seeded, captures: ci("changed") })).toEqual([
-            expect.stringMatching(/^compact-mantine: 1 changed/),
-        ]);
-    });
-
-    it("fails an old-format record added after enforcement, and reports its baseline unrecorded", () => {
-        const r = repoWith(passkeysJson(KEY));
-        commit(r, {
-            [PATH]: "new image",
-            "visual-baselines/reviews/r.json": {
-                version: 1,
-                unproven: true,
-                items: [{ path: PATH, from: LEGACY, to: TO }],
-            },
-        });
+        commit(r, { [PATH]: "new image" });
+        approveTree(r);
+        commit(r, { [PATH]: "another image" });
+        const tree = treeAt("pr", BASELINES, r.repo);
         expect(check(r)).toEqual([
-            "visual-baselines/reviews/r.json: a version 1 record has no passkey approval; review it again with Face ID",
-            `${PATH}: changed with no review record taking it from its base branch contents to these`,
+            `${BASELINES}/ differs from the base (tree ${tree}), and no ${APPROVALS}/${tree}.json approves it: review the changes with \`visual-review serve\` and Finish, which signs the tree`,
         ]);
-    });
-
-    it("fails a version 2 record without an approval, and a replayed one from another pull request", () => {
-        const r = repoWith(passkeysJson(KEY));
-        commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": v2() });
-        expect(check(r)[0]).toBe("visual-baselines/reviews/r.json: the record has no passkey approval");
-        const s = repoWith(passkeysJson(KEY));
-        commit(s, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(v2(5)) });
-        expect(check(s, 6)[0]).toBe("visual-baselines/reviews/r.json: the record is for pull request #5, not #6");
-    });
-
-    describe("an item approved before", () => {
-        const RECORD = "visual-baselines/reviews/20261001T000000Z-pr5.json";
-        /**
-         * The earlier approval: a record for #5 on branch `other`, pushed so the gate can fetch it.
-         * @param {object} r the repository, on branch `pr`
-         * @param {object} earlier the record
-         * @returns {string} the commit holding it
-         */
-        function earlierOn(r, earlier) {
-            git(r.repo, "checkout", "-q", "-b", "other", "master");
-            commit(r, { [RECORD]: earlier });
-            const sha = git(r.repo, "rev-parse", "HEAD");
-            git(r.repo, "push", "-q", "origin", "other");
-            git(r.repo, "checkout", "-q", "pr");
-            return sha;
-        }
-        const reused = (sha, extra = {}) => {
-            const record = v2();
-            record.items = [{ ...record.items[0], approvedBefore: { pr: 5, commit: sha, record: RECORD, ...extra } }];
-            return record;
-        };
-
-        it("moves the file when the named record approves exactly this image for this story", () => {
-            const r = repoWith(passkeysJson(KEY));
-            const sha = earlierOn(r, signed(v2(5)));
-            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(reused(sha)) });
-            expect(check(r)).toEqual([]);
-        });
-
-        it("moves nothing on the page's word: a record for another image, an unsigned one, a missing one or a chain", () => {
-            const r = repoWith(passkeysJson(KEY));
-            // Every earlier record in one commit, and one item per case in one record of this pull request.
-            const at = (name) => `visual-baselines/reviews/${name}.json`;
-            git(r.repo, "checkout", "-q", "-b", "other", "master");
-            commit(r, {
-                [at("other-image")]: signed(v2(5, "f".repeat(64))),
-                [at("unsigned")]: v2(5),
-                [at("for-5")]: signed(v2(5)),
-                [at("chained")]: signed({ ...reused("1".repeat(40)), pr: 5 }),
-            });
-            const sha = git(r.repo, "rev-parse", "HEAD");
-            git(r.repo, "push", "-q", "origin", "other");
-            git(r.repo, "checkout", "-q", "pr");
-            const cases = [
-                [{ record: at("other-image") }, "the earlier record does not approve this image for this story"],
-                [{ record: at("unsigned") }, "the record has no passkey approval"],
-                [{ record: at("nothing") }, `${at("nothing")} is not at ${sha}`],
-                [{ record: "visual-baselines/../passkeys.json" }, "it names no commit and review record"],
-                [{ record: at("chained") }, "the earlier record does not approve this image for this story"],
-            ];
-            const record = v2();
-            record.items = cases.map(([extra]) => ({
-                ...record.items[0],
-                approvedBefore: { pr: 5, commit: sha, record: RECORD, ...extra },
-            }));
-            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(record) });
-            expect(check(r)).toEqual([
-                ...cases.map(
-                    ([, why]) => `visual-baselines/reviews/r.json: ${PATH} is marked approved before, but ${why}`,
-                ),
-                `${PATH}: changed with no review record taking it from its base branch contents to these`,
-            ]);
-        });
-
-        it("before passkeys are enforced, takes an unsigned earlier record only from the base branch", () => {
-            const unsigned = { version: 1, unproven: true, pr: 5, items: [{ path: PATH, from: LEGACY, to: TO }] };
-            // On a branch anyone can push to: refused.
-            const r = repoWith(undefined);
-            const sha = earlierOn(r, unsigned);
-            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused(sha) });
-            expect(unrecordedChanges("master", "pr", r.repo)[0]).toContain(
-                `its commit ${sha} is not on the base branch, and an unsigned record counts only there`,
-            );
-            // On the base branch (a pull request the owner finished and merged): it stands.
-            const m = makeRepo();
-            commit(m, { [RECORD]: unsigned });
-            const merged = git(m.repo, "rev-parse", "HEAD");
-            git(m.repo, "checkout", "-q", "-b", "pr");
-            commit(m, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused(merged) });
-            expect(unrecordedChanges("master", "pr", m.repo)).toEqual([]);
-            const s = repoWith(undefined);
-            commit(s, { [PATH]: "new image", "visual-baselines/reviews/r.json": reused("9".repeat(40)) });
-            expect(unrecordedChanges("master", "pr", s.repo)[0]).toContain("cannot be fetched");
-        });
-    });
-
-    it("never takes keys from the pull request", () => {
-        const k2 = makeKey();
-        const r = repoWith(passkeysJson(KEY));
-        commit(r, {
-            [PATH]: "new image",
-            [PASSKEYS_FILE]: passkeysJson(KEY, k2),
-            "visual-baselines/reviews/r.json": signed(v2(), k2),
-        });
-        expect(check(r)[0]).toBe(
-            "visual-baselines/reviews/r.json: approval is from a key not in passkeys.json on the base branch",
+        // A statement filed under the head's tree that signs another one.
+        const other = repoWith(passkeysJson(KEY));
+        commit(other, { [PATH]: "new image" });
+        const statement = { ...statementOf(other, "HEAD"), tree: "f".repeat(40) };
+        approveTree(other, { statement });
+        expect(check(other)[0]).toMatch(
+            /it signs visual-baselines\/ at tree f{40}, not visual-baselines\/ at [0-9a-f]{40}/,
         );
     });
 
-    it("leaves records already on the base alone, and fails an added record that names nothing changed", () => {
-        const r = makeRepo();
-        commit(r, {
-            [PASSKEYS_FILE]: passkeysJson(KEY),
-            "visual-baselines/reviews/old.json": { version: 1, unproven: true, items: [] },
+    it("fails an approval whose commit is not an ancestor of the head, even of an equal tree", () => {
+        const r = repoWith(passkeysJson(KEY));
+        // The same baseline change on a branch of its own, approved there.
+        git(r.repo, "checkout", "-q", "-b", "side", "master");
+        commit(r, { [PATH]: "new image" });
+        const signed = statementOf(r, "side");
+        git(r.repo, "checkout", "-q", "pr");
+        commit(r, { [PATH]: "new image", "src.txt": "the pull request's own code" });
+        expect(treeAt("pr", BASELINES, r.repo)).toBe(signed.tree);
+        approveTree(r, { statement: signed });
+        expect(check(r)[0]).toContain(`its commit ${signed.commit} is not an ancestor of pr`);
+    });
+
+    it("fails a statement whose commit does not hold the tree it signs", () => {
+        const r = repoWith(passkeysJson(KEY));
+        commit(r, { [PATH]: "new image" });
+        const statement = { ...statementOf(r, "HEAD"), commit: git(r.repo, "rev-parse", "master") };
+        approveTree(r, { statement });
+        expect(check(r)[0]).toContain(`${BASELINES}/ at its commit ${statement.commit} is not the tree it signs`);
+    });
+
+    it("fails a bad signature: another key, a statement changed after signing, none at all", () => {
+        const r = repoWith(passkeysJson(KEY));
+        commit(r, { [PATH]: "new image" });
+        approveTree(r, { key: makeKey() });
+        expect(check(r)[0]).toContain("approval is from a key not in passkeys.json on the base branch");
+
+        const changed = repoWith(passkeysJson(KEY));
+        commit(changed, { [PATH]: "new image" });
+        const statement = statementOf(changed, "HEAD");
+        const approval = approve(statement, KEY);
+        commit(changed, {
+            [`${APPROVALS}/${statement.tree}.json`]: { ...statement, pr: 8, approval },
         });
-        git(r.repo, "checkout", "-q", "-b", "pr");
+        expect(check(changed)[0]).toContain("the challenge does not match");
+
+        const unsigned = repoWith(passkeysJson(KEY));
+        commit(unsigned, { [PATH]: "new image" });
+        approveTree(unsigned, { key: null });
+        expect(check(unsigned)[0]).toContain("the record has no passkey approval");
+        // Before the base holds a key, an unsigned statement is enough.
+        expect(check(unsigned, { keys: null })).toEqual([]);
+    });
+
+    it("needs no approval when the baselines tree is the base's", () => {
+        const r = repoWith(passkeysJson(KEY));
         commit(r, { "src.txt": "code" });
         expect(check(r)).toEqual([]);
-        commit(r, { "visual-baselines/reviews/extra.json": { version: 1, items: [] } });
-        expect(check(r)).toEqual([
-            "visual-baselines/reviews/extra.json: a version 1 record has no passkey approval; review it again with Face ID",
-        ]);
-        commit(r, { "visual-baselines/reviews/junk.json": "{" });
-        expect(check(r)).toContain("visual-baselines/reviews/junk.json: not valid JSON");
+        // Changed, then changed back: the tree is the base's again.
+        commit(r, { [PATH]: "new image" });
+        commit(r, { [PATH]: readFileSync(join(FIXTURE, "compact-mantine/baselines/card--legacy.png")) });
+        expect(treeAt("pr", BASELINES, r.repo)).toBe(treeAt("master", BASELINES, r.repo));
+        expect(check(r)).toEqual([]);
     });
 
-    // One case per test: each builds its own repository, and a test holds one case's git work.
-    it("fails closed without --pr when the base branch holds a key", () => {
+    it("gives the per-pull-request review records no meaning of their own", () => {
+        // A record a pull request's earlier Finish signed, naming the change exactly: not enough.
         const r = repoWith(passkeysJson(KEY));
-        expect(approvalKeys("master", "pr", undefined, r.repo).problems).toEqual([
-            "approvals are enforced (visual-review/passkeys.json on the base branch holds a key), so the gate needs --pr <number>",
+        const record = {
+            version: 2,
+            pr: 7,
+            subject: { builtMerge: "1".repeat(40), head: "2".repeat(40), runId: 9, runAttempt: 1, scale: 2 },
+            items: [{ path: PATH, from: LEGACY, to: sha256("new image"), reason: null }],
+            rejects: [],
+            reviewedAt: "2026-09-28T12:00:00.000Z",
+        };
+        commit(r, {
+            [PATH]: "new image",
+            [`${BASELINES}/reviews/r.json`]: { ...record, approval: approve(record, KEY) },
+        });
+        expect(check(r)[0]).toMatch(/and no visual-review-approvals\/[0-9a-f]{40}\.json approves it/);
+        // A signed tree passes, whatever the records in it say, an unreadable one included; and
+        // deleting a record is a change of the tree like any other.
+        commit(r, { [`${BASELINES}/reviews/junk.json`]: "{" });
+        approveTree(r);
+        expect(check(r)).toEqual([]);
+        commit(r, { [`${BASELINES}/reviews/junk.json`]: null });
+        expect(check(r)[0]).toMatch(/approves it/);
+    });
+
+    it("covers every pixel: a baseline is a Git LFS pointer naming its image's SHA-256, so another image is another tree", () => {
+        const r = repoWith(passkeysJson(KEY));
+        commit(r, { [PATH]: "new image" });
+        const pointer = execFileSync("git", ["cat-file", "blob", `pr:${PATH}`], { cwd: r.repo }).toString();
+        expect(pointer).toBe(`version https://git-lfs.github.com/spec/v1\noid sha256:${sha256("new image")}\nsize 9\n`);
+        approveTree(r);
+        // One byte of the image differs: its pointer, so the tree, so the approval no longer holds.
+        commit(r, { [PATH]: "new imagf" });
+        expect(contentHash(execFileSync("git", ["cat-file", "blob", `pr:${PATH}`], { cwd: r.repo }))).toBe(
+            sha256("new imagf"),
+        );
+        expect(check(r)[0]).toMatch(/and no visual-review-approvals\/[0-9a-f]{40}\.json approves it/);
+    });
+
+    it("fails a change to passkeys.json once the base holds a key, and not before", () => {
+        const r = repoWith(passkeysJson(KEY));
+        commit(r, { [PASSKEYS_FILE]: passkeysJson(KEY, makeKey()) });
+        expect(check(r)).toEqual([
+            `${PASSKEYS_FILE}: changed; once a key is registered, adding or replacing one is merged by an administrator (the README, "Replacing the passkey")`,
         ]);
+        const first = repoWith();
+        commit(first, { [PASSKEYS_FILE]: passkeysJson(KEY) });
+        expect(check(first, { keys: null })).toEqual([]);
     });
 
     it.each([
@@ -750,235 +641,21 @@ describe("passkey approvals", () => {
     ])("fails closed on switching enforcement off: passkeys.json %s", (_, change) => {
         const r = repoWith(passkeysJson(KEY));
         commit(r, { [PASSKEYS_FILE]: change });
-        expect(approvalKeys("master", "pr", 7, r.repo).problems).toEqual([
+        expect(approvalKeys("master", "pr", r.repo).problems).toEqual([
             "this pull request would switch approval enforcement off: its visual-review/passkeys.json is missing, invalid or holds no key",
         ]);
     });
 
-    it("fails closed on an invalid base file", () => {
+    it("reads keys only from the base, and fails closed on an invalid base file", () => {
+        const r = repoWith();
+        expect(approvalKeys("master", "pr", r.repo)).toEqual({ keys: null, problems: [] });
+        const k = repoWith(passkeysJson(KEY));
+        commit(k, { [PASSKEYS_FILE]: passkeysJson(makeKey()) });
+        expect(approvalKeys("master", "pr", k.repo)).toEqual({ keys: [KEY.entry], problems: [] });
         const bad = repoWith('{ "version": 1, "keys": [{ "id": "x" }] }');
-        expect(approvalKeys("master", "pr", 7, bad.repo).problems[0]).toMatch(
+        expect(approvalKeys("master", "pr", bad.repo).problems[0]).toMatch(
             /^visual-review\/passkeys.json on the base branch is invalid: keys\[0\]\.rpId/,
         );
-    });
-
-    describe("records count only from the base branch's contents", () => {
-        const OLD = sha256("old image");
-        const NOW = sha256("current image");
-        const at = (t) => `2026-09-${t}T12:00:00.000Z`;
-        const rec = (pr, from, to, t = "28") => ({
-            ...v2(pr, to),
-            items: [{ path: PATH, from, to, reason: null }],
-            reviewedAt: at(t),
-        });
-        const SEED = signed(rec(null, LEGACY, OLD, "20"));
-
-        // master: a seed approved old image, then pull request 7 approved the current one.
-        function history() {
-            const r = makeRepo();
-            commit(r, {
-                [PASSKEYS_FILE]: passkeysJson(KEY),
-                [PATH]: "old image",
-                "visual-baselines/reviews/seed.json": SEED,
-            });
-            commit(r, { [PATH]: "current image", "visual-baselines/reviews/pr7.json": signed(rec(7, OLD, NOW, "21")) });
-            git(r.repo, "checkout", "-q", "-b", "pr");
-            return r;
-        }
-
-        it("fails a seed record replayed to roll a baseline back past a newer approval", () => {
-            const r = history();
-            commit(r, { [PATH]: "old image", "visual-baselines/reviews/copy.json": SEED });
-            expect(check(r, 20)).toEqual([
-                "visual-baselines/reviews/copy.json: a copy of a record already on the base branch: an approval counts once",
-                `${PATH}: changed with no review record taking it from its base branch contents to these`,
-            ]);
-        });
-
-        it("fails an approved record whose from is not the base branch's contents", () => {
-            const r = history();
-            // Approved by the owner, but for a change from the image the seed replaced.
-            commit(r, { [PATH]: "old image", "visual-baselines/reviews/r.json": signed(rec(null, LEGACY, OLD, "22")) });
-            expect(check(r, 20)).toEqual([
-                `${PATH}: changed with no review record taking it from its base branch contents to these`,
-            ]);
-        });
-
-        // One case per test: each builds its own repository, and a test holds one case's git work.
-        const NEXT = sha256("next image");
-        const twoSessions = (r) =>
-            commit(r, {
-                [PATH]: "next image",
-                "visual-baselines/reviews/a.json": signed(rec(8, NOW, OLD, "22")),
-                "visual-baselines/reviews/b.json": signed(rec(8, OLD, NEXT, "23")),
-            });
-
-        it("follows two sessions of one pull request", () => {
-            const r = history();
-            twoSessions(r);
-            expect(check(r, 8)).toEqual([]);
-        });
-
-        it("refuses the decision a later session of the pull request replaced", () => {
-            const r = history();
-            twoSessions(r);
-            commit(r, { [PATH]: "old image" });
-            expect(check(r, 8)).toEqual([
-                `${PATH}: changed with no review record taking it from its base branch contents to these`,
-            ]);
-        });
-
-        it("counts nothing for a cycle of records that never starts at the base", () => {
-            const c = history();
-            commit(c, {
-                [PATH]: "next image",
-                "visual-baselines/reviews/a.json": signed(rec(8, NEXT, OLD, "22")),
-                "visual-baselines/reviews/b.json": signed(rec(8, OLD, NEXT, "23")),
-            });
-            expect(check(c, 8)).toEqual([
-                `${PATH}: changed with no review record taking it from its base branch contents to these`,
-            ]);
-        });
-    });
-
-    describe("an approval survives a merge of the base branch into the pull request", () => {
-        const GATE = fileURLToPath(new URL("../trusted/gate.mjs", import.meta.url));
-        const OTHER = "visual-baselines/compact-mantine/button--primary.dark.png";
-        const ADDED = "visual-baselines/compact-mantine/card--added.png";
-        const NOT_TAKEN = `${PATH}: changed with no review record taking it from its base branch contents to these`;
-
-        /**
-         * Pull request 7 approved PATH; then master changed `onMaster` (another pull request's
-         * work), and master was merged into the pull request, keeping the pull request's side of a
-         * conflict.
-         * @param {string} [onMaster] the baseline master changes
-         * @returns {object} the repository, on branch pr
-         */
-        function merged(onMaster = OTHER) {
-            const r = repoWith(passkeysJson(KEY));
-            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(v2()) });
-            git(r.repo, "checkout", "-q", "master");
-            commit(r, { [onMaster]: "master's newer image", "lib.txt": "master's code" });
-            git(r.repo, "checkout", "-q", "pr");
-            git(r.repo, "merge", "-q", "--no-edit", "-X", "ours", "master");
-            return r;
-        }
-        const gate = (r, statuses = ["unchanged"], pr = "7") =>
-            spawnSync(
-                process.execPath,
-                [
-                    GATE,
-                    "--captures",
-                    artifacts(
-                        Object.fromEntries(
-                            Object.keys(CONFIG.projects).map((p) => [`visual-${p}-1`, results(statuses)]),
-                        ),
-                    ),
-                    "--base",
-                    "master",
-                    "--head",
-                    "pr",
-                    "--pr",
-                    pr,
-                ],
-                { cwd: r.repo, encoding: "utf8" },
-            );
-
-        it("passes with no new review when the merge left every approved file's base contents alone", () => {
-            const r = merged();
-            expect(check(r)).toEqual([]);
-            expect(gate(r).status).toBe(0);
-        });
-
-        it("fails when master changed the baseline under an approved file", () => {
-            expect(check(merged(PATH))).toEqual([NOT_TAKEN]);
-        });
-
-        it("fails a new changed image: one committed with no record, and one the capture shows", () => {
-            const r = merged();
-            commit(r, { [ADDED]: "added image" });
-            expect(check(r)).toEqual([
-                `${ADDED}: changed with no review record taking it from its base branch contents to these`,
-            ]);
-            const s = merged();
-            const out = gate(s, ["unchanged", "changed"]);
-            expect(out.stdout).toContain("1 changed (not accepted");
-            expect(out.status).toBe(1);
-        });
-
-        it("fails for another pull request", () => {
-            expect(check(merged(), 8)).toEqual([
-                "visual-baselines/reviews/r.json: the record is for pull request #7, not #8",
-                NOT_TAKEN,
-            ]);
-        });
-
-        it("fails a record edited after it was approved", () => {
-            const r = merged();
-            const tampered = {
-                ...signed(v2()),
-                items: [{ path: PATH, from: LEGACY, to: sha256("other"), reason: null }],
-            };
-            commit(r, { [PATH]: "other", "visual-baselines/reviews/r.json": tampered });
-            expect(check(r)).toEqual([
-                "visual-baselines/reviews/r.json: the challenge does not match: it was signed for other contents than these",
-                NOT_TAKEN,
-            ]);
-        });
-
-        it("still fails on a rejected image, which the capture of the merge still shows", () => {
-            const r = repoWith(passkeysJson(KEY));
-            const rejected = { ...v2(), rejects: [{ path: OTHER, capture: sha256("ugly"), reason: "ugly" }] };
-            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(rejected) });
-            git(r.repo, "checkout", "-q", "master");
-            commit(r, { "lib.txt": "master's code" });
-            git(r.repo, "checkout", "-q", "pr");
-            git(r.repo, "merge", "-q", "--no-edit", "master");
-            expect(check(r)).toEqual([]);
-            const out = gate(r, ["unchanged", "changed"]);
-            expect(out.stdout).toContain("a rejected item needs a code change");
-            expect(out.status).toBe(1);
-        });
-    });
-
-    it("needs a record for any settings file the pull request adds or changes, not for a deletion or renames.json", () => {
-        const r = repoWith(passkeysJson(KEY));
-        const SETTINGS = "visual-baselines/compact-mantine/card--legacy.json";
-        commit(r, { [SETTINGS]: { diffThreshold: 1 }, "visual-baselines/compact-mantine/renames.json": [] });
-        expect(check(r)).toEqual([
-            `${SETTINGS}: changed with no review record taking it from its base branch contents to these`,
-        ]);
-        const item = { path: SETTINGS, from: null, to: sha256(JSON.stringify({ diffThreshold: 1 })), reason: "x" };
-        commit(r, { "visual-baselines/reviews/r.json": signed({ ...v2(), items: [item] }) });
-        expect(check(r)).toEqual([]);
-        git(r.repo, "checkout", "-q", "master");
-        commit(r, { [SETTINGS]: { delay: 100 } });
-        git(r.repo, "checkout", "-q", "-b", "drop");
-        commit(r, { [SETTINGS]: null });
-        expect(unrecordedChanges("master", "drop", r.repo, "visual-baselines", { keys: [KEY.entry], pr: 7 })).toEqual(
-            [],
-        );
-    });
-
-    it("needs an approved record for a change to passkeys.json once the base holds a key", () => {
-        const k2 = makeKey();
-        const r = repoWith(passkeysJson(KEY));
-        commit(r, { [PASSKEYS_FILE]: passkeysJson(k2) });
-        expect(check(r)).toEqual([
-            `${PASSKEYS_FILE}: changed with no record approved by a key on the base branch; once a key is registered, adding or replacing one is merged by an administrator (the README, "Replacing the passkey")`,
-        ]);
-        const item = {
-            path: PASSKEYS_FILE,
-            from: sha256(passkeysJson(KEY)),
-            to: sha256(passkeysJson(k2)),
-            reason: null,
-        };
-        commit(r, { "visual-baselines/reviews/r.json": signed({ ...v2(null), items: [item] }) });
-        expect(check(r)).toEqual([]);
-        // Before the base holds a key, adding the first one is the owner's merge.
-        const first = repoWith();
-        commit(first, { [PASSKEYS_FILE]: passkeysJson(KEY) });
-        expect(unrecordedChanges("master", "pr", first.repo)).toEqual([]);
     });
 
     it("warns about a change to any of the tool's code, its capture, passkeys.json or the workflow", () => {
@@ -998,44 +675,48 @@ describe("passkey approvals", () => {
 
     describe("the gate command", () => {
         const GATE = fileURLToPath(new URL("../trusted/gate.mjs", import.meta.url));
-        const captures = () =>
+        const captures = (statuses = ["unchanged"]) =>
             artifacts(
-                Object.fromEntries(Object.keys(CONFIG.projects).map((p) => [`visual-${p}-1`, results(["unchanged"])])),
+                Object.fromEntries(Object.keys(CONFIG.projects).map((p) => [`visual-${p}-1`, results(statuses)])),
             );
-        const run = (r, ...extra) =>
-            spawnSync(
-                process.execPath,
-                [GATE, "--captures", captures(), "--base", "master", "--head", "pr", ...extra],
-                {
-                    cwd: r.repo,
-                    encoding: "utf8",
-                },
-            );
+        const run = (r, extra = [], dir = captures()) =>
+            spawnSync(process.execPath, [GATE, "--captures", dir, "--base", "master", "--head", "pr", ...extra], {
+                cwd: r.repo,
+                encoding: "utf8",
+            });
 
-        it("fails an unapproved record once enforced, and passes an approved one", () => {
+        it("passes a signed tree whose captures match its baselines, and fails a capture that differs", () => {
             const r = repoWith(passkeysJson(KEY));
-            commit(r, { [PATH]: "new image", "visual-baselines/reviews/r.json": v2() });
-            const out = run(r, "--pr", "7");
+            commit(r, { [PATH]: "new image" });
+            const unsigned = run(r, ["--pr", "7"]);
+            expect(unsigned.stdout).toContain(
+                "::error::baselines not approved -- visual-baselines/ differs from the base",
+            );
+            expect(unsigned.status).toBe(1);
+            approveTree(r);
+            const out = run(r, ["--pr", "7"]);
+            expect(out.stdout).toContain("the baselines are the base's or approved by the owner");
+            expect(out.status).toBe(0);
+            // --pr is reported only: the approval is not for one pull request.
+            expect(run(r).status).toBe(0);
+            const differs = run(r, [], captures(["unchanged", "changed"]));
+            expect(differs.stdout).toMatch(/::error::visual changes not accepted -- .*1 changed/);
+            expect(differs.status).toBe(1);
+            expect(run(r, ["--pr", "seven"]).status).toBe(2);
+        });
+
+        it("fails a pull request that moves the approvals directory", () => {
+            const r = repoWith(passkeysJson(KEY));
+            const config = JSON.parse(readFileSync(join(r.repo, "visual-review.config.json"), "utf8"));
+            commit(r, { "visual-review.config.json": { ...config, approvals: "elsewhere" } });
+            const out = run(r);
             expect(out.stdout).toContain(
-                "::error::baseline without a review -- visual-baselines/reviews/r.json: the record has no passkey approval",
+                "::error::passkey approval -- this pull request moves the approvals directory from visual-review-approvals to elsewhere",
             );
             expect(out.status).toBe(1);
-            const s = repoWith(passkeysJson(KEY));
-            commit(s, { [PATH]: "new image", "visual-baselines/reviews/r.json": signed(v2()) });
-            expect(run(s, "--pr", "7").status).toBe(0);
-            const noPr = run(s);
-            expect(noPr.stdout).toMatch(/::error::.*needs --pr <number>/);
-            expect(noPr.status).toBe(1);
-            expect(run(s, "--pr", "seven").status).toBe(2);
         });
 
         describe("a merge-queue batch (--queue-event)", () => {
-            const ADDED = "visual-baselines/compact-mantine/card--added.png";
-            const added = (pr) => ({
-                ...v2(pr),
-                items: [{ path: ADDED, from: null, to: sha256("added image"), reason: null }],
-                reviewedAt: "2026-09-28T13:00:00.000Z",
-            });
             // The draft's event; the batch sits on `base` (a ref of r, or null for no checking_base_sha).
             const event = (r, base, ...prs) => {
                 const file = join(tempDir("vr-event-"), "event.json");
@@ -1045,104 +726,40 @@ describe("passkey approvals", () => {
                 writeFileSync(file, JSON.stringify({ pull_request: { number: 995, body } }));
                 return file;
             };
-            // Two pull requests merged into one queue tree: #7 changes a baseline, #8 adds one.
-            const batch = (sign8 = true) => {
+
+            it("passes a batch whose tree the owner signed, and compares it with the commit it sits on", () => {
                 const r = repoWith(passkeysJson(KEY));
-                commit(r, {
-                    [PATH]: "new image",
-                    "visual-baselines/reviews/r7.json": signed(v2(7)),
-                    [ADDED]: "added image",
-                    "visual-baselines/reviews/r8.json": sign8 ? signed(added(8)) : added(8),
-                });
-                return r;
-            };
-
-            it("passes when every record is approved for a pull request of the batch", () => {
-                const r = batch();
-                const out = run(r, "--queue-event", event(r, "master", 7, 8, 9));
-                expect(out.stdout).toContain("Merge-queue batch: #7, #8, #9");
-                expect(out.status).toBe(0);
-            });
-
-            it("fails a record for a pull request outside the batch, and one with no approval", () => {
-                const b = batch();
-                const outside = run(b, "--queue-event", event(b, "master", 7));
-                expect(outside.stdout).toContain(
-                    "visual-baselines/reviews/r8.json: the record is for pull request #8, not #7",
-                );
-                expect(outside.status).toBe(1);
-                const u = batch(false);
-                const unsigned = run(u, "--queue-event", event(u, "master", 7, 8));
-                expect(unsigned.stdout).toContain(
-                    "visual-baselines/reviews/r8.json: the record has no passkey approval",
-                );
-                expect(unsigned.status).toBe(1);
-            });
-
-            it("fails a batch whose capture differs from the approved images", () => {
-                const changed = artifacts(
-                    Object.fromEntries(
-                        Object.keys(CONFIG.projects).map((p) => [`visual-${p}-1`, results(["unchanged", "changed"])]),
-                    ),
-                );
-                const r = batch();
-                const out = spawnSync(
-                    process.execPath,
-                    [
-                        GATE,
-                        "--captures",
-                        changed,
-                        "--base",
-                        "master",
-                        "--head",
-                        "pr",
-                        "--queue-event",
-                        event(r, "master", 7, 8),
-                    ],
-                    { cwd: r.repo, encoding: "utf8" },
-                );
-                expect(out.stdout).toMatch(/::error::visual changes not accepted -- .*1 changed/);
+                commit(r, { [PATH]: "new image" });
+                git(r.repo, "branch", "first");
+                const out = run(r, ["--queue-event", event(r, "master", 7, 8)]);
+                expect(out.stdout).toContain("Merge-queue batch: #7, #8");
                 expect(out.status).toBe(1);
+                // Stacked on a batch with the same baselines, it changes none.
+                const stacked = run(r, ["--queue-event", event(r, "first", 8)]);
+                expect(stacked.stdout).toContain("Baseline changes compared with the batch's base");
+                expect(stacked.status).toBe(0);
+                approveTree(r);
+                expect(run(r, ["--queue-event", event(r, "master", 7, 8)]).status).toBe(0);
             });
 
             it("fails closed on an event that names no pull request, and refuses --pr with it", () => {
-                const r = batch();
+                const r = repoWith(passkeysJson(KEY));
                 const empty = join(tempDir("vr-event-"), "event.json");
                 writeFileSync(empty, JSON.stringify({ pull_request: { body: "no yaml here" } }));
-                expect(run(r, "--queue-event", empty).status).toBe(1);
-                expect(run(r, "--queue-event", join(r.repo, "missing.json")).status).toBe(1);
-                expect(run(r, "--pr", "7", "--queue-event", event(r, "master", 7)).status).toBe(2);
-            });
-
-            it("compares a batch stacked on another batch with the commit it sits on, not the base branch", () => {
-                // Branch `first`: the earlier batch, #942's approved change, not yet on master. Branch
-                // `pr`: this batch, #9's approved added image, stacked on it.
-                const r = repoWith(passkeysJson(KEY));
-                commit(r, { [PATH]: "new image", "visual-baselines/reviews/r942.json": signed(v2(942)) });
-                git(r.repo, "branch", "first");
-                commit(r, { [ADDED]: "added image", "visual-baselines/reviews/r9.json": signed(added(9)) });
-                const stacked = run(r, "--queue-event", event(r, "first", 9));
-                expect(stacked.stdout).toContain("Baseline changes compared with the batch's base");
-                expect(stacked.status).toBe(0);
-                // Against master, #942's record is outside this batch.
-                const onMaster = run(r, "--queue-event", event(r, "master", 9));
-                expect(onMaster.stdout).toContain("r942.json: the record is for pull request #942, not #9");
-                expect(onMaster.status).toBe(1);
-                // The batch's own changes still need their records.
-                const own = run(r, "--queue-event", event(r, "first", 942));
-                expect(own.stdout).toContain("r9.json: the record is for pull request #9, not #942");
-                expect(own.status).toBe(1);
+                expect(run(r, ["--queue-event", empty]).status).toBe(1);
+                expect(run(r, ["--queue-event", join(r.repo, "missing.json")]).status).toBe(1);
+                expect(run(r, ["--pr", "7", "--queue-event", event(r, "master", 7)]).status).toBe(2);
             });
 
             it("fails closed when the draft names no checking_base_sha, or one that is not in the repository", () => {
-                const r = batch();
-                const missing = run(r, "--queue-event", event(r, null, 7, 8));
+                const r = repoWith(passkeysJson(KEY));
+                const missing = run(r, ["--queue-event", event(r, null, 7, 8)]);
                 expect(missing.stdout).toContain("names no checking_base_sha the gate can read (missing)");
                 expect(missing.status).toBe(1);
                 const file = join(tempDir("vr-event-"), "event.json");
                 const body = `\`\`\`yaml\nchecking_base_sha: ${"f".repeat(40)}\npull_requests:\n  - number: 7\n\`\`\`\n`;
                 writeFileSync(file, JSON.stringify({ pull_request: { body } }));
-                const unknown = run(r, "--queue-event", file);
+                const unknown = run(r, ["--queue-event", file]);
                 expect(unknown.stdout).toContain(`names no checking_base_sha the gate can read (${"f".repeat(40)})`);
                 expect(unknown.status).toBe(1);
                 expect(queueBaseSha({ pull_request: { body: "```yaml\nchecking_base_sha: c0f44c1da\n```" } })).toBe(
@@ -1172,7 +789,7 @@ describe("passkey approvals", () => {
         it("warns, and still passes, when the pull request changes a file that decides what the gate accepts", () => {
             const r = repoWith();
             commit(r, { [PASSKEYS_FILE]: passkeysJson(KEY) });
-            const out = run(r, "--pr", "7");
+            const out = run(r, ["--pr", "7"]);
             expect(out.stdout).toContain(
                 "::warning::this pull request changes visual-review/passkeys.json, which decides what the visual gate accepts: review that change with care",
             );
