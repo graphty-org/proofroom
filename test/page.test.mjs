@@ -15,12 +15,14 @@ import { PNG } from "pngjs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
+import { sha256 } from "../trusted/lib/compare.mjs";
 import { withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import {
     CONFIG,
     capturedItems,
     FIXTURE,
+    FIXTURE_CONFIG,
     fakeGh,
     git,
     interceptedPage,
@@ -45,6 +47,9 @@ let dialogs;
 // Every URL the page requested (the page's own `performance` is Playwright's clock's).
 let requested;
 let confirmFinish = false;
+// How the question before a Finish that leaves images undecided is answered: "yes" (Finish anyway),
+// "no" or "other" (Go to the first undecided).
+let undecidedAnswer = "yes";
 // The fixture's grid tiles, made once (keepTiles) and put in every server's tmp directory.
 let tiles = null;
 // The app open() started. Its tiles made in advance run on after the server closes: afterEach waits
@@ -120,9 +125,13 @@ async function open(
     requested = [];
     page.on("request", (q) => requested.push(q.url()));
     // The page asks in its own dialog (ask in review.js). Accept all, Undo and Exclude are
-    // confirmed; Finish is refused unless a test sets confirmFinish.
+    // confirmed; Finish is refused unless a test sets confirmFinish; Finish with images undecided
+    // is answered with undecidedAnswer.
     await page.exposeFunction("asked", (message) => {
         dialogs.push(message);
+        if (/^\d+ images? still undecided/.test(message)) {
+            return undecidedAnswer;
+        }
         return !message.startsWith("Finish") || confirmFinish;
     });
     await page.addInitScript(() => {
@@ -131,9 +140,10 @@ async function open(
         new MutationObserver(() => {
             for (const d of document.querySelectorAll("dialog.ask[open]:not([data-seen])")) {
                 d.dataset.seen = "";
-                globalThis
-                    .asked(d.querySelector(".ask-text").innerText)
-                    .then((yes) => d.querySelectorAll(".actions button")[yes ? 1 : 0].click());
+                globalThis.asked(d.querySelector(".ask-text").innerText).then((yes) => {
+                    const which = { yes: "#ask-yes", other: "#ask-other", no: ".actions button" };
+                    d.querySelector(which[yes] ?? (yes ? "#ask-yes" : ".actions button")).click();
+                });
             }
         }).observe(document, { childList: true, subtree: true, attributes: true });
     });
@@ -153,6 +163,7 @@ async function open(
 
 afterEach(async () => {
     confirmFinish = false;
+    undecidedAnswer = "yes";
     await page?.close();
     // Until every request has been answered: a list refresh still running would write its state
     // into the repository after the test file removed it (tempDir).
@@ -1487,21 +1498,47 @@ describe("review page: a pull request", () => {
         const finish = page.getByRole("button", { name: /^Finish/ });
         expect(await finish.textContent()).toBe("Finish #123 (4)");
         await finish.click();
-        await expect.poll(() => dialogs.length).toBe(2);
-        const sheet = dialogs[1].split("\n").filter(Boolean);
+        await expect.poll(() => dialogs.length).toBe(3);
+        expect(dialogs[1]).toBe(
+            "3 images still undecided\n\n3 images are still undecided; they will block the merge. 4 of 7 are decided.",
+        );
+        const sheet = dialogs[2].split("\n").filter(Boolean);
         expect(sheet.slice(0, 6)).toEqual([
             "Finish #123, every project:",
             "Commit 4 accepts to feature.",
             "Then set the commit status 'Visual review' to pending (3 undecided; not loaded: layout, algorithms, graphty, cytoscape-extensions, graph-io-fidelity).",
             "Accepted without opening: 4.",
-            "Still undecided, left for a later round: compact-mantine 2, graphty-element 1.",
+            "Still undecided, and blocking the merge: compact-mantine 2, graphty-element 1.",
             "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions, graph-io-fidelity.",
         ]);
-        expect(dialogs[1]).toMatch(/Finish commits are (signed with|NOT signed)/);
-        expect(dialogs[1]).toContain(`start the server from your own shell:\n${START}`);
+        expect(dialogs[2]).toMatch(/Finish commits are (signed with|NOT signed)/);
+        expect(dialogs[2]).toContain(`start the server from your own shell:\n${START}`);
         await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
         await page.locator("#home").click();
         await expect.poll(() => page.locator(".signer pre").textContent()).toBe(START);
+    });
+
+    it("counts decided and undecided images beside Finish, and a decision moves the count (issue 3235)", async () => {
+        const tally = () => page.locator("#finish-slot .finish-tally").textContent();
+        expect(await tally()).toBe("0 of 7 decided -- 7 left");
+        expect(await page.locator("#finish-slot .finish-tally").getAttribute("class")).toContain("left");
+        await page.locator('.component[data-component="badge"] h3 button').click();
+        await expect.poll(tally).toBe("1 of 7 decided -- 6 left");
+    });
+
+    it("before a Finish that leaves images undecided, says so and goes to the first of them (issue 3235)", async () => {
+        await page.keyboard.press("Shift+A");
+        await expect.poll(progress).toBe("4 of 6 decided");
+        undecidedAnswer = "other";
+        await page.getByRole("button", { name: /^Finish/ }).click();
+        await expect.poll(() => dialogs.length).toBe(2);
+        expect(dialogs[1]).toBe(
+            "3 images still undecided\n\n3 images are still undecided; they will block the merge. 4 of 7 are decided.",
+        );
+        // No Finish sheet: the first undecided image is open instead.
+        await expect.poll(position).toMatch(/^1 of 2 -- 2 left$/);
+        expect(dialogs).toHaveLength(2);
+        expect(await page.locator("dialog.ask").count()).toBe(0);
     });
 
     it("shows at once that Finish is checking, and says when it is cancelled", async () => {
@@ -1520,8 +1557,9 @@ describe("review page: a pull request", () => {
         expect(await finish.locator(".spinner").count()).toBe(1);
         answer();
         await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
-        expect(dialogs).toHaveLength(2);
-        expect(dialogs[1]).toMatch(/^Finish #123, every project:/);
+        expect(dialogs).toHaveLength(3);
+        expect(dialogs[1]).toMatch(/^3 images still undecided/);
+        expect(dialogs[2]).toMatch(/^Finish #123, every project:/);
         expect(await finish.getAttribute("aria-disabled")).toBe("false");
     });
 
@@ -2560,13 +2598,14 @@ describe("review page: Finish", () => {
         });
         confirmFinish = true;
         await page.getByRole("button", { name: /^Finish/ }).click();
-        await expect.poll(() => dialogs.length).toBe(2);
+        await expect.poll(() => dialogs.length).toBe(3);
+        expect(dialogs.shift()).toMatch(/^5 images still undecided/);
         expect(dialogs[0].split("\n").filter(Boolean).slice(0, 7)).toEqual([
             "Finish #123, every project:",
             "Commit 1 accept to feature.",
             "Post 1 reject as a comment on #123.",
             "Then set the commit status 'Visual review' to failure (1 rejected).",
-            "Still undecided, left for a later round: compact-mantine 4, graphty-element 1.",
+            "Still undecided, and blocking the merge: compact-mantine 4, graphty-element 1.",
             "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions, graph-io-fidelity.",
             "Notes to publish:",
         ]);
@@ -2724,6 +2763,38 @@ describe("review page: update from master", () => {
     });
 });
 
+describe("review page: against the default branch", () => {
+    it("shows an image the branch already changed as a change against master's baseline", async () => {
+        const badge = readFileSync(join(FIXTURE, "compact-mantine/badge--default.light.png"));
+        const BASELINE = "visual-baselines/compact-mantine/input--default.png";
+        await open((r) => {
+            // An earlier Finish already put the capture into the branch's baseline: against the
+            // branch the capture is unchanged, against master it is not.
+            git(r.repo, "checkout", "-q", "feature");
+            writeFileSync(join(r.repo, BASELINE), badge);
+            git(r.repo, "commit", "-q", "-am", "an earlier accept");
+            git(r.repo, "push", "-q", "origin", "feature");
+            const head = git(r.repo, "rev-parse", "HEAD");
+            git(r.repo, "checkout", "-q", "master");
+            const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+            const items = fixture.items.map((i) =>
+                i.file === "input--default.png" ? { ...i, baseline: sha256(badge), capture: sha256(badge) } : i,
+            );
+            const results = {
+                "visual-compact-mantine-1": { commit: head, headSha: head, items },
+                "visual-graphty-element-1": { commit: head, headSha: head },
+            };
+            return { config: FIXTURE_CONFIG, gh: onePr({ results })({ ...r, head }) };
+        });
+        await page.locator(".component").first().waitFor();
+        await expect.poll(progress).toBe("0 of 7 decided");
+        await page.locator("#find").fill("input--default");
+        await page.locator("#find").press("Enter");
+        await expect.poll(() => page.locator("h2").textContent()).toContain("input--default");
+        await ready();
+    });
+});
+
 describe("review page: the passkey", () => {
     // Chromium's virtual authenticator (CDP) stands in for Face ID: a real browser makes the
     // registration and the approval, and the server's own checks verify them.
@@ -2733,6 +2804,9 @@ describe("review page: the passkey", () => {
             (repo) => {
                 const gh = onePr()(repo);
                 return {
+                    // The two projects captured: a project with no capture leaves its baselines
+                    // unseen, and a Finish then signs nothing.
+                    config: FIXTURE_CONFIG,
                     gh: async (args, input) => {
                         if (args[1] === "repos/{owner}/{repo}/pulls") {
                             opened.push(JSON.parse(input));
@@ -2789,25 +2863,59 @@ describe("review page: the passkey", () => {
         await page.locator(".component").first().waitFor();
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
-        confirmFinish = true;
         const finish = page.getByRole("button", { name: /^Finish #123/ });
+
+        // Images left undecided: the sheet says nothing is signed, and no passkey is asked for.
+        let asked = dialogs.length;
+        await finish.click();
+        await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
+        expect(dialogs.slice(asked).join("\n")).toContain(
+            "Nothing is signed, because images are still undecided: the merge stays blocked until a Finish with every image decided and none rejected signs the baselines.",
+        );
+        expect(await page.evaluate(() => globalThis.whileAsking.length)).toBe(1);
+
+        // The rest decided (as in another tab): this Finish signs.
+        for (const [project, file, decision, reason] of [
+            ["compact-mantine", "tooltip--hover.png", "exclude", "noisy"],
+            ["compact-mantine", "menu--open.png", "exclude", "noisy"],
+            ["graphty-element", "graph--basic.png", "accept", null],
+        ]) {
+            const res = await fetch(`${origin}/api/decide`, {
+                method: "POST",
+                headers: { "x-review-token": TOKEN, origin, "content-type": "application/json" },
+                body: JSON.stringify({ id: "123", project, file, decision, reason }),
+            });
+            expect(res.status).toBe(200);
+        }
+        confirmFinish = true;
 
         // Face ID refused: nothing is pushed, and the sheet stays to try again.
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: false });
-        const asked = dialogs.length;
+        asked = dialogs.length;
         await finish.click();
-        await expect.poll(() => dialogs.length).toBeGreaterThan(asked + 1);
-        expect(dialogs[asked]).toContain("Your passkey confirms this Finish (Face ID or a security key).");
-        expect(dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
+        await expect.poll(() => dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
+        expect(dialogs.slice(asked).join("\n")).toContain(
+            "Your passkey signs the baselines this Finish leaves on the branch (Face ID or a security key).",
+        );
         expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
 
-        // The retry, with Face ID passing, signs and finishes.
+        // The retry, with Face ID passing, signs and finishes: the accept commit, then the signed
+        // statement about its baselines tree.
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: true });
         await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toBe("Finished #123.");
-        const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const [file] = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        const statement = JSON.parse(git(r.remote, "show", `feature:${file}`));
+        expect(file).toBe(`visual-review-approvals/${statement.tree}.json`);
+        expect(statement).toMatchObject({
+            version: 1,
+            pr: 123,
+            commit: git(r.remote, "rev-parse", "feature^"),
+            tree: git(r.remote, "rev-parse", "feature:visual-baselines"),
+        });
+        expect(verifyApproval(statement, [entry], { origin })).toBeNull();
+        const files = git(r.remote, "show", "--name-only", "--format=", "feature^").split("\n");
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
-        expect(record).toMatchObject({ version: 2, pr: 123 });
-        expect(verifyApproval(record, [entry], { origin })).toBeNull();
+        expect(record).toMatchObject({ version: 3, pr: 123 });
         expect(new Set(await page.evaluate(() => globalThis.whileAsking))).toEqual(new Set([true]));
     });
 
@@ -2830,7 +2938,7 @@ describe("review page: the passkey", () => {
         );
         const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
-        expect(record).toMatchObject({ version: 1, unproven: true });
+        expect(record).toMatchObject({ version: 3, pr: 123 });
     });
 
     it("finishes rejects alone without asking for a passkey to be registered first", async () => {

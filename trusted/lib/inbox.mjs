@@ -4,8 +4,9 @@
  * `inboxOf` sorts the review server's pull requests into what is waiting for the owner ("ready":
  * images to decide, or decisions not yet finished), what cannot be reviewed ("notReady": a capture
  * that failed, or a capture with a story that failed, with its reason) and three counts (capturing, nothing to decide,
- * drafts: a draft pull request is still being worked on, so it is never offered). The server answers
- * it on GET /api/inbox and keeps it in `<workDir>/state/inbox.json`.
+ * drafts: a draft pull request is still being worked on, so it is never offered, unless the owner
+ * already Finished part of it). The server answers it on GET /api/inbox and keeps it in
+ * `<workDir>/state/inbox.json`.
  *
  * `coupledGroups` finds the pull requests that change the same baseline files: they conflict when
  * the first of them merges, so the inbox shows them as one group, oldest first, with
@@ -108,8 +109,9 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
             continue;
         }
         // A draft is still being worked on: nothing in it is ready for the owner, even a capture
-        // CI made before it went back to draft.
-        if (t.draft) {
+        // CI made before it went back to draft. One the owner already Finished part of (a cut
+        // reviewed on a local preview) still waits for the rest.
+        if (t.draft && !t.projects.some((p) => p.finished > 0)) {
             state.set(t.id, "draft");
             inbox.drafts++;
             continue;
@@ -132,6 +134,7 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
             inbox.ready.push({
                 ...about,
                 undecided,
+                decided: loaded.reduce((n, p) => n + (p.decided ?? 0), 0),
                 unpublished: t.unpublished,
                 loaded: loaded.length,
                 total: t.projects.length,
