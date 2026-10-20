@@ -2771,4 +2771,31 @@ describe("serve: against the default branch", () => {
         const after = (await s.api("GET", "/api/target/123")).body;
         expect(after.projects.find((p) => p.project === "compact-mantine").undecided).toBe(undecided - 2);
     });
+
+    it("keeps an item unchanged within tolerance whose baseline is master's, though its bytes differ", async () => {
+        const r = makeRepo();
+        const DIR = "visual-baselines/compact-mantine";
+        const head = git(r.repo, "rev-parse", "feature");
+        const master = contentHash(Buffer.from(git(r.repo, "show", `master:${DIR}/input--default.png`)));
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        // The capture matched the baseline within its threshold, and the artifact does not hold it.
+        const items = fixture.items.map((i) =>
+            i.file === "input--default.png" ? { ...i, baseline: master, capture: "f".repeat(64) } : i,
+        );
+        const s = await start({
+            ...r,
+            head,
+            gh: onePr({
+                results: {
+                    "visual-compact-mantine-1": { commit: head, headSha: head, items, expected: items.length },
+                    "visual-graphty-element-1": { commit: head, headSha: head },
+                },
+            }),
+        });
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.problem ?? null).toBeNull();
+        const item = body.items.find((i) => i.file === "input--default.png");
+        expect(item).toMatchObject({ status: "unchanged", baseline: master });
+        expect(item.vsBase).toBeUndefined();
+    });
 });

@@ -453,7 +453,9 @@ function compareWithBase(results, blobs, hashOf) {
             seen.add(item.mode === null ? `${item.from}.png` : `${item.from}.${item.mode}.png`);
         }
         const base = hashOf(item.file);
-        if (item.status !== "unchanged" || base === item.capture) {
+        // Unchanged means within the story's tolerance of `baseline`, not byte for byte: when the
+        // default branch holds that same baseline, the capture's verdict stands.
+        if (item.status !== "unchanged" || base === item.baseline || base === item.capture) {
             continue;
         }
         const status = base === null ? "new" : "changed";
