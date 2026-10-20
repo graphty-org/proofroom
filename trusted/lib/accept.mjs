@@ -621,7 +621,7 @@ export async function prepareApproval({ repo, target, projects, decisions, now, 
  * @returns {Promise<{ version: 1, commit: string, tree: string, baselines: string, pr: number | null,
  *     approvedAt: string }>} the statement
  */
-export async function treeStatement({ repo, commit, config, pr, now }) {
+async function treeStatement({ repo, commit, config, pr, now }) {
     const tree = await git(repo, ["rev-parse", `${commit}:${config.baselines}`]);
     return { version: 1, commit, tree, baselines: config.baselines, pr, approvedAt: now.toISOString() };
 }

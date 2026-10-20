@@ -396,7 +396,7 @@ async function blobsOf(repo, names) {
  * @returns {Promise<void>} resolves once the items and images are in place; rejects when the
  *     default branch's baselines or images cannot be read
  */
-export async function againstBase({ repo, ref, head, baselines, project, dir, results }) {
+async function againstBase({ repo, ref, head, baselines, project, dir, results }) {
     const prefix = `${baselines}/${project}/`;
     const blobs = await pngBlobs(repo, ref, prefix);
     const contents = await blobsOf(repo, [...new Set(blobs.values())]);
