@@ -2052,11 +2052,20 @@ export function createApp({
                 refused: [400, { error: "this Finish needs your passkey approval (Face ID): press Finish again" }],
             };
         }
+        const stale = {
+            refused: [
+                409,
+                {
+                    error: "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again",
+                },
+            ],
+        };
         const p = approvals.get(t.id);
-        if (!p || p.challenge !== body.challenge || p.expires < Date.now() || p.digest !== work.digest) {
-            const error =
-                "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again";
-            return { refused: [409, { error }] };
+        if (p === undefined) {
+            return stale;
+        }
+        if (p.challenge !== body.challenge || p.expires < Date.now() || p.digest !== work.digest) {
+            return stale;
         }
         const statement = { ...p.statement, approval: body.approval };
         const why = verifyApproval(statement, trusted, { origin });
