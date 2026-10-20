@@ -2035,7 +2035,7 @@ export function createApp({
      * @param {{ digest: string }} work as finishWork returns now
      * @param {{ challenge?: string, approval?: object }} body the request
      * @param {boolean} sign whether this Finish signs (signingProblem)
-     * @returns {Promise<{ refused?: Array<unknown>, approval: object | null, work?: object }>} the
+     * @returns {Promise<{ refused?: Array<unknown>, approval?: object | null, work?: object }>} the
      *     answer refusing it, or finish's `approval` (null when none is needed) and the prepared
      *     work it signs
      */
@@ -2052,8 +2052,8 @@ export function createApp({
                 refused: [400, { error: "this Finish needs your passkey approval (Face ID): press Finish again" }],
             };
         }
-        const p = approvals.get(t.id) ?? {};
-        if (p.challenge !== body.challenge || (p.expires ?? 0) < Date.now() || p.digest !== work.digest) {
+        const p = approvals.get(t.id);
+        if (!p || p.challenge !== body.challenge || p.expires < Date.now() || p.digest !== work.digest) {
             const error =
                 "the approval is stale (made on another tab, expired, or the decisions changed): press Finish again";
             return { refused: [409, { error }] };
