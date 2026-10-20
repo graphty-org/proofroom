@@ -3124,7 +3124,7 @@ function explanation(item, d) {
     if (d?.approvedBefore) {
         return (
             `${approvedText(d.approvedBefore)}: you accepted this exact image for this story there, so it is ` +
-            "accepted again, and the CI gate checks that approval. Reject or Exclude replaces it."
+            "accepted again, and your Finish signs it with the rest. Reject or Exclude replaces it."
         );
     }
     if (item.noise) {
@@ -4786,20 +4786,8 @@ function sheet(t, f, prepared, notice) {
         f.accepts > 0 ? plural(f.accepts, "accept") : null,
         f.excludes > 0 ? plural(f.excludes, "exclusion") : null,
     ].filter(Boolean);
-    const legacy = f.legacy && f.legacy.files + f.legacy.records.length > 0 ? f.legacy : null;
-    if (legacy) {
-        // Approved in this pull request before passkeys existed: the gate counts those approvals
-        // for nothing until they are signed.
-        lines.push(
-            `Sign again ${plural(legacy.files, "file")} approved before passkeys, and remove ` +
-                `${plural(legacy.records.length, "unsigned review record")} from ${t.branch}: ` +
-                `${legacy.records.join(", ")}.`,
-        );
-    }
     if (kinds.length === 0) {
-        if (!legacy) {
-            lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
-        }
+        lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
     } else if (seed) {
         const day = new Date().toISOString().slice(0, 10);
         lines.push(
@@ -4825,7 +4813,7 @@ function sheet(t, f, prepared, notice) {
     }
     if (f.approvedBefore > 0) {
         lines.push(
-            `Approved before: ${f.approvedBefore}, the same images you accepted for the same stories elsewhere; the record names each earlier approval and the CI gate checks it.`,
+            `Approved before: ${f.approvedBefore}, the same images you accepted for the same stories elsewhere; the record names each earlier approval, and your passkey signs them with the rest.`,
         );
     }
     if (f.undecided.length > 0) {
@@ -4895,14 +4883,28 @@ function approvedList(t, items) {
 }
 
 // What the passkey does for this Finish, from POST /api/finish-prepare: once a passkey is known it
-// approves the whole record (rejects too); before that, accepts are not yet protected, and the
+// signs the baselines the Finish leaves on the branch, unless the Finish rejects anything or leaves
+// anything undecided, which signs nothing; before that, accepts are not yet protected, and the
 // sheet says so. Rejects alone never wait for a passkey to be registered.
 function passkeySentence(f, prepared) {
     if (prepared.error) {
         return el("p", { class: "error", id: "sheet-passkey" }, `Finish cannot be approved now: ${prepared.error}`);
     }
     if (prepared.required) {
-        return el("p", { class: "passkey" }, "Your passkey confirms this Finish (Face ID or a security key).");
+        return el(
+            "p",
+            { class: "passkey" },
+            "Your passkey signs the baselines this Finish leaves on the branch (Face ID or a security key).",
+        );
+    }
+    if (prepared.unsigned) {
+        const why = prepared.unsigned === "rejects" ? "something is rejected" : "images are still undecided";
+        return el(
+            "p",
+            { class: "warning", id: "sheet-unsigned" },
+            `Nothing is signed, because ${why}: the merge stays blocked until a Finish with every image ` +
+                "decided and none rejected signs the baselines.",
+        );
     }
     if (f.accepts + f.excludes === 0) {
         return null;
@@ -5006,7 +5008,7 @@ async function finishTarget(id, button) {
         }
         const f = t.finish;
         const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
-        const commits = f.accepts + f.excludes > 0 || (f.legacy !== null && f.legacy !== undefined);
+        const commits = f.accepts + f.excludes > 0;
         // When the server cannot prepare an approval the final button is unavailable, and the sheet
         // says why.
         let approval = null;

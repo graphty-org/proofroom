@@ -161,6 +161,12 @@ export function buildRepo() {
     for (const file of ["button--primary.dark.png", "card--legacy.png", "tooltip--hover.png"]) {
         cpSync(join(FIXTURE, "compact-mantine/baselines", file), join(repo, "visual-baselines/compact-mantine", file));
     }
+    // The fixture's unchanged item, whose capture is this image: master's baseline of it is the
+    // captured one, so it stays unchanged against master too.
+    cpSync(
+        join(FIXTURE, "graphty-element/graph--basic.png"),
+        join(repo, "visual-baselines/compact-mantine/input--default.png"),
+    );
     git(repo, "add", "-A");
     git(repo, "commit", "-q", "-m", "init");
     git(repo, "push", "-q", "origin", "master");
