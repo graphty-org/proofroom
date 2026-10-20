@@ -16,6 +16,7 @@ const DEFAULTS = {
     defaultBranch: "main",
     workflow: "visual-review.yml",
     baselines: "visual-baselines",
+    approvals: "visual-review-approvals",
     workDir: ".visual-review",
     commitPrefix: "test",
     issueLabels: ["bug"],
@@ -33,7 +34,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
 /**
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
- * @returns {{ defaultBranch: string, workflow: string, baselines: string, workDir: string,
+ * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, workDir: string,
  *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, usage: boolean, projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
@@ -48,7 +49,7 @@ export function normalizeConfig(input) {
     }
     /** @type {any} */
     const out = { ...DEFAULTS };
-    for (const key of ["defaultBranch", "workflow", "baselines", "workDir", "commitPrefix"]) {
+    for (const key of ["defaultBranch", "workflow", "baselines", "approvals", "workDir", "commitPrefix"]) {
         if (raw[key] !== undefined) {
             if (typeof raw[key] !== "string" || raw[key] === "") {
                 fail(`${key} must be a non-empty string`);
@@ -56,12 +57,13 @@ export function normalizeConfig(input) {
             out[key] = raw[key];
         }
     }
-    for (const key of ["baselines", "workDir"]) {
+    for (const key of ["baselines", "approvals", "workDir"]) {
         if (!REPO_PATH.test(out[key])) {
             fail(`${key} must be a path inside the repository, relative and without ".."`);
         }
         out[key] = out[key].replace(/\/+$/, "");
     }
+    apart(out, fail);
     // The fontconfig file every capture draws with (FONTCONFIG_FILE), so local and CI captures use
     // the same committed fonts instead of whatever the host has installed. Null: host fonts.
     if (raw.fontconfig !== undefined && raw.fontconfig !== null) {
@@ -133,6 +135,18 @@ export function normalizeConfig(input) {
         };
     }
     return out;
+}
+
+/**
+ * Refuses an approvals directory inside the baselines directory, or the other way round: the
+ * owner's approvals sign the baselines directory's tree, so adding one must not change it.
+ * @param {{ baselines: string, approvals: string }} out the settings
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function apart({ baselines, approvals }, fail) {
+    if (`${approvals}/`.startsWith(`${baselines}/`) || `${baselines}/`.startsWith(`${approvals}/`)) {
+        fail("approvals must be a directory outside baselines, and baselines outside approvals");
+    }
 }
 
 /**

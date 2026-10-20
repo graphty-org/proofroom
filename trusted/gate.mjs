@@ -28,39 +28,30 @@
  * branch, and never for a project whose baselines the pull request changes. Anywhere else a marker
  * is a missing capture.
  *
- * It also fails when a baseline PNG or a story's settings file differs from the base without the
- * review records added in the pull request (<baselines>/reviews/*.json) taking that path from its
- * contents on the base branch to its new ones: each record item moves a path `from` one hash `to`
- * another, replayed in `reviewedAt` order, so a record approved for other contents (an old seed,
- * a decision a later one replaced) moves nothing. An item marked `approvedBefore` (the page took it
- * because the owner approved the identical image for the same story on another pull request) moves
- * its path only when the review record it names, at the commit it names, approves exactly that
- * image for that path, with its own passkey approval once approvals are enforced. Without that, committing the captured PNGs
- * straight into the baselines directory would turn the capture check green with no review at all.
- *
- * Once visual-review/passkeys.json on the base branch holds a key, every record the pull request
- * adds must also be version 2, for this pull request (`--pr`) or for none (a seed), with a passkey
- * approval by one of the base branch's keys over exactly that record (approval.mjs), and not a
- * copy of a record already on the base branch; a record that fails is reported and moves nothing.
- * Keys are never read from the pull request, a pull request that would leave no key fails, and a
- * change to passkeys.json itself needs an approved record like a baseline. Records already on the
- * base branch are never checked again. Before that, records are read but not verified, so the gate
- * proves a record names the change, not that the owner approved it (the README, "What the gate
- * does and does not guarantee").
+ * It also fails when the baselines directory's git tree differs from the base's without the owner's
+ * signed approval of exactly that tree: a file `<approvals>/<tree>.json` (the config's
+ * `approvals`, outside the baselines directory, so adding it leaves the tree it signs alone) whose
+ * statement names a commit X that is an ancestor of the head, the tree of the baselines directory at
+ * X, and that tree equal to the head's (treeApprovalProblems). Baseline PNGs are Git LFS pointers,
+ * which name each image's SHA-256, so the tree hash covers every pixel. Once
+ * visual-review/passkeys.json on the base branch holds a key, the statement must carry a passkey
+ * approval by one of the base branch's keys over exactly that statement (approval.mjs). Keys are
+ * never read from the pull request, a pull request that would leave no key fails, and a change to
+ * passkeys.json itself is merged by an administrator. The per-pull-request review records under
+ * <baselines>/reviews/ are part of the tree like any file, and the gate gives them no other meaning.
+ * Without that approval, committing the captured PNGs straight into the baselines directory would
+ * turn the capture check green with no review at all.
  *
  * CI runs this file as the base branch has it, never the pull request's copy, so a pull request
  * cannot loosen the gate that judges it.
  *
  * In a merge-queue run (`--queue-event`) the head is a batch of several pull requests merged onto the
- * base, and a record counts when it is for any pull request of the batch, read from the queue's
- * draft pull request. Baseline changes are compared with the commit the batch sits on (the draft's
+ * base. Baseline changes are compared with the commit the batch sits on (the draft's
  * `checking_base_sha`), not with the base branch, since a batch stacked on another holds that
- * batch's changes; a draft that names no such commit fails. Nothing else changes: every capture
- * must still equal a baseline in the combined tree, so the queue passes a batch only on images the
- * owner already approved on its pull requests, and never asks for a new approval.
+ * batch's changes; a draft that names no such commit fails. Nothing else changes.
  *
  * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> |
- * --queue-event <file>], or node gate.mjs with the same options. Standard library only (results.mjs, config.mjs and approval.mjs
+ * --queue-event <file>], or node gate.mjs with the same options. `--pr` is only reported. Standard library only (results.mjs, config.mjs and approval.mjs
  * have no dependencies), so it runs from a checkout of this package without an install.
  */
 
@@ -71,7 +62,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyRecord } from "./lib/approval.mjs";
+import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRecord } from "./lib/approval.mjs";
 import { loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { isSkipMarker, SKIPPED_FILE, validateResults } from "./lib/results.mjs";
 
@@ -293,6 +284,438 @@ function notSeeded(config, p) {
 const gitOut = (cwd, args) => execFileSync("git", args, { cwd, maxBuffer: 1 << 28 });
 
 /**
+ * Why an earlier review record does not show that the owner approved image `to` for the baseline
+ * `path` (one story in one mode of one project), or null when it does. The review server offers an
+ * "approved before" accept only from a record that passes this.
+ * @param {any} earlier the earlier record, parsed (untrusted)
+ * @param {{ path: string, to: string | null }} claim the baseline and the image
+ * @param {object[] | null} keys the base branch's keys once approvals are enforced: then the
+ *     earlier record must carry a valid passkey approval itself
+ * @returns {string | null} why not, or null
+ */
+export function earlierApprovalProblem(earlier, { path, to }, keys) {
+    if (typeof earlier !== "object" || earlier === null || !Array.isArray(earlier.items)) {
+        return "the earlier record is not a review record";
+    }
+    // A direct decision only: an approval never chains through another "approved before".
+    const approves = (i) => i?.path === path && i.to === to && i.approvedBefore === undefined;
+    if (typeof to !== "string" || !earlier.items.some(approves)) {
+        return "the earlier record does not approve this image for this story";
+    }
+    return keys ? verifyRecord(earlier, keys, { pr: earlier.pr ?? null }) : null;
+}
+
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * The SHA-256 of the file a blob stands for. Baseline PNGs are Git LFS pointers in git, and a
+ * pointer names its object's SHA-256 (`oid sha256:<hex>`), which is the PNG's own hash, so no
+ * LFS object is ever downloaded to check a record. Any other blob is hashed as it is.
+ * @param {Buffer} bytes the blob
+ * @returns {string} the hex SHA-256 of the content
+ */
+export function contentHash(bytes) {
+    const text = bytes.subarray(0, 200).toString("latin1");
+    const oid = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:([0-9a-f]{64})\n/.exec(text);
+    return oid ? oid[1] : sha256(bytes);
+}
+
+function parseOr(bytes) {
+    try {
+        return JSON.parse(bytes.toString("utf8"));
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The projects with at least one baseline PNG at a git ref: the directories under the baselines
+ * directory at the base tip. They are gated whatever the config says.
+ * @param {string} ref the base branch tip
+ * @param {string} [cwd] the repository
+ * @param {string} [baselines] the baselines directory
+ * @returns {Set<string>} the seeded ones
+ */
+export function seededAt(ref, cwd = process.cwd(), baselines = "visual-baselines") {
+    const files = execFileSync("git", ["ls-tree", "-r", "--name-only", ref, "--", `${baselines}/`], {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 1 << 28,
+    }).split("\n");
+    const prefix = `${baselines}/`;
+    return new Set(
+        files
+            .filter((f) => f.startsWith(prefix) && f.endsWith(".png"))
+            .map((f) => f.slice(prefix.length).split("/"))
+            .filter((parts) => parts.length > 1)
+            .map((parts) => parts[0]),
+    );
+}
+
+/**
+ * A file at a git ref, or null when the ref does not hold it.
+ * @param {string} ref the commit
+ * @param {string} path the path
+ * @param {string} cwd the repository
+ * @returns {string | null} its text
+ */
+function fileAt(ref, path, cwd) {
+    const listed = gitOut(cwd, ["ls-tree", "--name-only", ref, "--", path]).toString("utf8").trim();
+    return listed === "" ? null : gitOut(cwd, ["show", `${ref}:${path}`]).toString("utf8");
+}
+
+/**
+ * Whether approvals are enforced, and the keys they must come from: those of passkeys.json on the
+ * base branch, never the pull request's. Absent, or with no key, enforcement is off.
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @param {string} [cwd] the repository
+ * @returns {{ keys: object[] | null, problems: string[] }} the keys (null when off), and what fails
+ *     the gate: an invalid base file, or a pull request that would switch enforcement off
+ */
+export function approvalKeys(base, head, cwd = process.cwd()) {
+    const text = fileAt(base, PASSKEYS_FILE, cwd);
+    let keys = [];
+    try {
+        keys = text === null ? [] : parsePasskeys(text);
+    } catch (err) {
+        return { keys: null, problems: [`${PASSKEYS_FILE} on the base branch is invalid: ${err.message}`] };
+    }
+    if (keys.length === 0) {
+        return { keys: null, problems: [] };
+    }
+    const problems = [];
+    let left = 0;
+    try {
+        const own = fileAt(head, PASSKEYS_FILE, cwd);
+        left = own === null ? 0 : parsePasskeys(own).length;
+    } catch {
+        // Invalid: counts as no key.
+    }
+    if (left === 0) {
+        problems.push(
+            `this pull request would switch approval enforcement off: its ${PASSKEYS_FILE} is missing, invalid or holds no key`,
+        );
+    }
+    return { keys, problems };
+}
+
+const TREE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+/**
+ * The git tree of a directory at a commit, or null when the commit has no such directory.
+ * @param {string} ref the commit
+ * @param {string} dir the directory
+ * @param {string} cwd the repository
+ * @returns {string | null} the tree hash
+ */
+export function treeAt(ref, dir, cwd) {
+    try {
+        return (
+            gitOut(cwd, ["rev-parse", "--verify", "--quiet", `${ref}:${dir}`])
+                .toString("utf8")
+                .trim() || null
+        );
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Why a signed tree approval does not approve the baselines at `head`, or null when it does.
+ * @param {any} statement the parsed approval file (untrusted)
+ * @param {{ head: string, tree: string, baselines: string, keys: object[] | null, cwd: string }} at
+ *     the head, its baselines tree, the baselines directory, the base branch's keys (null: approvals
+ *     are not enforced, so the signature is not checked) and the repository
+ * @returns {string | null} why not, or null
+ */
+export function treeApprovalProblem(statement, { head, tree, baselines, keys, cwd }) {
+    if (typeof statement !== "object" || statement === null || statement.version !== 1) {
+        return "not a version 1 tree approval";
+    }
+    const { commit } = statement;
+    if (statement.baselines !== baselines || statement.tree !== tree) {
+        return `it signs ${statement.baselines}/ at tree ${statement.tree}, not ${baselines}/ at ${tree}`;
+    }
+    if (typeof commit !== "string" || !TREE.test(commit) || !haveCommit(commit, cwd)) {
+        return `its commit ${commit} is not in this repository`;
+    }
+    try {
+        gitOut(cwd, ["merge-base", "--is-ancestor", commit, head]);
+    } catch {
+        return `its commit ${commit} is not an ancestor of ${head}`;
+    }
+    if (treeAt(commit, baselines, cwd) !== tree) {
+        return `${baselines}/ at its commit ${commit} is not the tree it signs`;
+    }
+    return keys ? verifyApproval(statement, keys) : null;
+}
+
+/**
+ * What blocks the baselines at `head`: nothing when the baselines directory's tree is the base's;
+ * otherwise the owner's approval of exactly the head's tree must be at the head
+ * (`<approvals>/<tree>.json`, treeApprovalProblem). Once approvals are enforced, a change to
+ * passkeys.json fails too: an administrator merges it.
+ * @param {object} input the work
+ * @param {string} input.base the base branch tip, or a merge-queue batch's base
+ * @param {string} input.head the commit being merged
+ * @param {string} input.cwd the repository
+ * @param {string} input.baselines the baselines directory
+ * @param {string} input.approvals the approvals directory
+ * @param {object[] | null} input.keys the base branch's keys, null while approvals are not enforced
+ * @returns {string[]} one line per problem; empty when the baselines are approved
+ */
+export function treeApprovalProblems({ base, head, cwd, baselines, approvals, keys }) {
+    const problems = [];
+    if (keys && gitOut(cwd, ["diff", "--name-only", base, head, "--", PASSKEYS_FILE]).toString("utf8").trim()) {
+        problems.push(
+            `${PASSKEYS_FILE}: changed; once a key is registered, adding or replacing one is merged by an administrator (the README, "Replacing the passkey")`,
+        );
+    }
+    const tree = treeAt(head, baselines, cwd);
+    if (tree === treeAt(base, baselines, cwd)) {
+        return problems;
+    }
+    if (tree === null) {
+        return [...problems, `${baselines}/ is gone at ${head}, and no approval can sign that`];
+    }
+    const file = `${approvals}/${tree}.json`;
+    const text = fileAt(head, file, cwd);
+    const how = "review the changes with `visual-review serve` and Finish, which signs the tree";
+    if (text === null) {
+        return [...problems, `${baselines}/ differs from the base (tree ${tree}), and no ${file} approves it: ${how}`];
+    }
+    const why = treeApprovalProblem(parseOr(Buffer.from(text)), { head, tree, baselines, keys, cwd });
+    return why ? [...problems, `${file}: ${why}; ${how}`] : problems;
+}
+
+/**
+ * The files a pull request could loosen the gate with: passkeys.json, the tool's trusted code and
+ * its capture, and the workflow that runs them. A change to one is a warning, never a failure (CI
+ * runs the base branch's copy of the code, and work on the tool changes it), so code review looks
+ * at it.
+ * @param {string} base the base branch tip
+ * @param {string} head the pull request's checkout
+ * @param {string} workflow the workflow file that runs the gate
+ * @param {string} [cwd] the repository
+ * @returns {string[]} the changed ones
+ */
+export function trustFilesChanged(base, head, workflow, cwd = process.cwd()) {
+    const files = [PASSKEYS_FILE, "visual-review/trusted/", "visual-review/capture/", `.github/workflows/${workflow}`];
+    return gitOut(cwd, ["diff", "--name-only", base, head, "--", ...files])
+        .toString("utf8")
+        .split("\n")
+        .filter(Boolean);
+}
+
+/**
+ * The pull requests of a Mergify merge-queue batch, from its draft pull request's event: the body
+ * ends with a fenced yaml block whose `pull_requests:` list names each one (`- number: 988`).
+ * @param {any} event the parsed GITHUB_EVENT_PATH of the queue run
+ * @returns {number[]} the batch's pull request numbers; empty when the block is missing
+ */
+export function queuePullRequests(event) {
+    const list = /^pull_requests:\r?\n((?:[ \t-].*(?:\r?\n|$))*)/m.exec(queueYaml(event))?.[1] ?? "";
+    return [...list.matchAll(/^[ \t]*- number: *(\d+)[ \t]*\r?$/gm)].map((m) => Number(m[1]));
+}
+
+/**
+ * The commit a Mergify merge-queue batch sits on, from the same yaml block: `checking_base_sha:`.
+ * It is the default branch for the first batch, and the previous batch's draft branch for a batch
+ * stacked on it (Mergify checks two batches at once).
+ * @param {any} event the parsed GITHUB_EVENT_PATH of the queue run
+ * @returns {string | null} the full commit hash; null when it is missing or not a full hash
+ */
+export function queueBaseSha(event) {
+    return /^checking_base_sha: *([0-9a-f]{40})[ \t]*\r?$/m.exec(queueYaml(event))?.[1] ?? null;
+}
+
+/**
+ * The last fenced yaml block of a queue draft's body, where Mergify writes the batch.
+ * @param {any} event the parsed event
+ * @returns {string} the block's text; empty when there is none
+ */
+function queueYaml(event) {
+    const body = String(event?.pull_request?.body ?? "");
+    return [...body.matchAll(/```yaml\r?\n([\s\S]*?)```/g)].at(-1)?.[1] ?? "";
+}
+
+/**
+ * Whether the repository holds a commit, fetching it from origin when it does not (a queue base
+ * on a mergify/merge-queue/* branch is not in CI's shallow checkout).
+ * @param {string} sha the full commit hash
+ * @param {string} cwd the repository
+ * @returns {boolean} whether the commit is there now
+ */
+function haveCommit(sha, cwd) {
+    const git = (args) => {
+        try {
+            gitOut(cwd, args);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    const has = () => git(["cat-file", "-e", `${sha}^{commit}`]);
+    return has() || (git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", sha]) && has());
+}
+
+/**
+ * Reads a merge-queue draft's event: its batch's pull requests and the commit the batch sits on,
+ * printing what the gate reports about them.
+ * @param {string} file the event file
+ * @returns {string | null} the batch's base commit; null when the gate fails on the event
+ */
+function queueBaseOf(file) {
+    let event = null;
+    try {
+        event = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+        // Unreadable: no pull requests, which fails below.
+    }
+    const prs = queuePullRequests(event);
+    if (prs.length === 0) {
+        console.log("::error::merge queue -- the queue's draft pull request names no pull requests of the batch");
+        return null;
+    }
+    console.log(`Merge-queue batch: #${prs.join(", #")}`);
+    const base = queueBaseSha(event);
+    if (base === null || !haveCommit(base, repoRoot())) {
+        console.log(
+            `::error::merge queue -- the queue's draft pull request names no checking_base_sha the gate can read (${base ?? "missing"})`,
+        );
+        return null;
+    }
+    console.log(`Baseline changes compared with the batch's base ${base}`);
+    return base;
+}
+
+/**
+ * Prints and returns what fails the gate about the owner's approval: the keys (approvalKeys), the
+ * approvals directory, and the approval of the head's baselines tree (treeApprovalProblems).
+ * @param {object} at what to check
+ * @param {string} at.base the base branch tip, where keys and config are read
+ * @param {string} at.diffBase what baseline changes are measured from
+ * @param {string} at.head the head
+ * @param {string} at.root the repository
+ * @param {{ baselines: string, approvals: string }} at.config the base branch's config
+ * @param {{ approvals: string }} at.headConfig the head's config
+ * @returns {string[]} the failing lines
+ */
+function approvalLines({ base, diffBase, head, root, config, headConfig }) {
+    const { keys, problems } = approvalKeys(base, head, root);
+    if (headConfig.approvals !== config.approvals) {
+        problems.push(
+            `this pull request moves the approvals directory from ${config.approvals} to ${headConfig.approvals}`,
+        );
+    }
+    const lines = problems.map((line) => `::error::passkey approval -- ${line}`);
+    const { baselines, approvals } = config;
+    for (const line of treeApprovalProblems({ base: diffBase, head, cwd: root, baselines, approvals, keys })) {
+        lines.push(`::error::baselines not approved -- ${line}`);
+    }
+    for (const line of lines) {
+        console.log(line);
+    }
+    return lines;
+}
+
+export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
+
+Fails (exit 1) while a pull request holds visual changes nobody accepted, or baselines whose
+tree the owner has not approved: when the baselines directory differs from the base, the head
+must hold the owner's approval of exactly its tree, made at an ancestor of the head. Once
+${PASSKEYS_FILE} on the base branch holds a key, that approval must carry the owner's passkey
+signature. Run it in CI after the capture jobs, on the pull request's merge commit.
+
+  --captures <dir>  the downloaded visual-<project>-<attempt> artifacts of this run
+  --base <ref>      the base branch tip (HEAD^1 on a pull request's merge commit)
+  --head <ref>      the pull request's checkout (default HEAD), with its history
+  --pr <number>     the pull request's number, reported only
+  --queue-event <file>  in a merge-queue run, the event file of the queue's draft pull request
+                    (GITHUB_EVENT_PATH): baseline changes are compared with the batch's
+                    checking_base_sha instead of --base`;
+
+/**
+ * The gate as a command.
+ * @param {string[]} args the command line after "gate"
+ * @returns {number} the exit code
+ */
+export function runGate(args) {
+    const { values } = parseArgs({
+        args,
+        options: {
+            captures: { type: "string" },
+            base: { type: "string" },
+            head: { type: "string", default: "HEAD" },
+            pr: { type: "string" },
+            "queue-event": { type: "string" },
+            help: { type: "boolean", default: false },
+        },
+    });
+    if (values.help) {
+        console.log(GATE_USAGE);
+        return 0;
+    }
+    const queueEvent = values["queue-event"];
+    const pr = values.pr === undefined ? undefined : Number(values.pr);
+    // A batch's changes are those since the commit it sits on, not since the base branch: a batch
+    // stacked on another holds that batch's approved changes, which its own run gated. If that batch
+    // fails, Mergify rebuilds this one on a new base. The config, the seeded projects and the keys
+    // are still read from --base.
+    let queueBase = null;
+    if (
+        !values.captures ||
+        !values.base ||
+        (pr !== undefined && !(Number.isInteger(pr) && pr > 0)) ||
+        (pr !== undefined && queueEvent !== undefined)
+    ) {
+        console.error(GATE_USAGE);
+        return 2;
+    }
+    if (queueEvent !== undefined) {
+        queueBase = queueBaseOf(queueEvent);
+        if (queueBase === null) {
+            return 1;
+        }
+    }
+    const root = repoRoot();
+    const config = loadConfigAt(values.base, root);
+    const seeded = seededAt(values.base, root, config.baselines);
+    const headConfig = loadConfigAt(values.head, root);
+    const captures = newestResults(values.captures);
+    const queue = queueEvent !== undefined;
+    const diffBase = queueBase ?? values.base;
+    const baselinesChanged = baselinesChangedBetween(diffBase, values.head, root, config.baselines);
+    const notAffected = [];
+    const problems = gateProblems({ config, headConfig, seeded, captures, queue, baselinesChanged, notAffected });
+    for (const p of notAffected) {
+        console.log(`::notice::${p} was not captured: this pull request does not affect it`);
+    }
+    for (const line of problems) {
+        console.log(`::error::visual changes not accepted -- ${line}`);
+    }
+    const unrecorded = approvalLines({ base: values.base, diffBase, head: values.head, root, config, headConfig });
+    for (const file of trustFilesChanged(diffBase, values.head, config.workflow, root)) {
+        console.log(
+            `::warning::this pull request changes ${file}, which decides what the visual gate accepts: review that change with care`,
+        );
+    }
+    if (problems.length + unrecorded.length > 0) {
+        console.log("Review them with `visual-review serve` (the @graphty/visual-review README).");
+        return 1;
+    }
+    console.log("No unaccepted visual changes, and the baselines are the base's or approved by the owner.");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// TEMPORARY: the per-pull-request review-record checks of the previous gate. The gate no longer
+// calls them; the review server (lib/accept.mjs, reviewGaps) and its tests still do until the
+// tree-approval review server replaces them, which deletes this block.
+// ---------------------------------------------------------------------------------------------
+
+/**
  * Baseline changes between two refs that the review records added between them do not account
  * for. A changed PNG, story settings file (and, once approvals are enforced, passkeys.json) counts
  * as reviewed only when the added records' items, replayed oldest `reviewedAt` first, take it from
@@ -424,28 +847,6 @@ export function reviewGaps(base, head, cwd, baselines, approvals = {}) {
 }
 
 /**
- * Why an earlier review record does not show that the owner approved image `to` for the baseline
- * `path` (one story in one mode of one project), or null when it does. The review server offers an
- * "approved before" accept only from a record that passes this, and the gate checks it again.
- * @param {any} earlier the earlier record, parsed (untrusted)
- * @param {{ path: string, to: string | null }} claim the baseline and the image
- * @param {object[] | null} keys the base branch's keys once approvals are enforced: then the
- *     earlier record must carry a valid passkey approval itself
- * @returns {string | null} why not, or null
- */
-export function earlierApprovalProblem(earlier, { path, to }, keys) {
-    if (typeof earlier !== "object" || earlier === null || !Array.isArray(earlier.items)) {
-        return "the earlier record is not a review record";
-    }
-    // A direct decision only: an approval never chains through another "approved before".
-    const approves = (i) => i?.path === path && i.to === to && i.approvedBefore === undefined;
-    if (typeof to !== "string" || !earlier.items.some(approves)) {
-        return "the earlier record does not approve this image for this story";
-    }
-    return keys ? verifyRecord(earlier, keys, { pr: earlier.pr ?? null }) : null;
-}
-
-/**
  * Why an "approved before" record item does not stand, or null when it does: its `approvedBefore`
  * names a commit and a review record there, which must approve exactly this image for this path.
  * @param {any} item the record item, with `approvedBefore: { pr, commit, record }`
@@ -507,291 +908,6 @@ function baseRecordHashes(base, cwd, baselines) {
         }
     }
     return out;
-}
-
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-
-/**
- * The SHA-256 of the file a blob stands for. Baseline PNGs are Git LFS pointers in git, and a
- * pointer names its object's SHA-256 (`oid sha256:<hex>`), which is the PNG's own hash, so no
- * LFS object is ever downloaded to check a record. Any other blob is hashed as it is.
- * @param {Buffer} bytes the blob
- * @returns {string} the hex SHA-256 of the content
- */
-export function contentHash(bytes) {
-    const text = bytes.subarray(0, 200).toString("latin1");
-    const oid = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:([0-9a-f]{64})\n/.exec(text);
-    return oid ? oid[1] : sha256(bytes);
-}
-
-function parseOr(bytes) {
-    try {
-        return JSON.parse(bytes.toString("utf8"));
-    } catch {
-        return null;
-    }
-}
-
-/**
- * The projects with at least one baseline PNG at a git ref: the directories under the baselines
- * directory at the base tip. They are gated whatever the config says.
- * @param {string} ref the base branch tip
- * @param {string} [cwd] the repository
- * @param {string} [baselines] the baselines directory
- * @returns {Set<string>} the seeded ones
- */
-export function seededAt(ref, cwd = process.cwd(), baselines = "visual-baselines") {
-    const files = execFileSync("git", ["ls-tree", "-r", "--name-only", ref, "--", `${baselines}/`], {
-        cwd,
-        encoding: "utf8",
-        maxBuffer: 1 << 28,
-    }).split("\n");
-    const prefix = `${baselines}/`;
-    return new Set(
-        files
-            .filter((f) => f.startsWith(prefix) && f.endsWith(".png"))
-            .map((f) => f.slice(prefix.length).split("/"))
-            .filter((parts) => parts.length > 1)
-            .map((parts) => parts[0]),
-    );
-}
-
-/**
- * A file at a git ref, or null when the ref does not hold it.
- * @param {string} ref the commit
- * @param {string} path the path
- * @param {string} cwd the repository
- * @returns {string | null} its text
- */
-function fileAt(ref, path, cwd) {
-    const listed = gitOut(cwd, ["ls-tree", "--name-only", ref, "--", path]).toString("utf8").trim();
-    return listed === "" ? null : gitOut(cwd, ["show", `${ref}:${path}`]).toString("utf8");
-}
-
-/**
- * Whether approvals are enforced, and the keys they must come from: those of passkeys.json on the
- * base branch, never the pull request's. Absent, or with no key, enforcement is off.
- * @param {string} base the base branch tip
- * @param {string} head the pull request's checkout
- * @param {number | number[] | undefined} pr the pull request (`--pr`), or a batch's pull requests
- * @param {string} [cwd] the repository
- * @returns {{ keys: object[] | null, problems: string[] }} the keys (null when off), and what fails
- *     the gate: an invalid base file, no `--pr`, or a pull request that would switch enforcement off
- */
-export function approvalKeys(base, head, pr, cwd = process.cwd()) {
-    const text = fileAt(base, PASSKEYS_FILE, cwd);
-    let keys = [];
-    try {
-        keys = text === null ? [] : parsePasskeys(text);
-    } catch (err) {
-        return { keys: null, problems: [`${PASSKEYS_FILE} on the base branch is invalid: ${err.message}`] };
-    }
-    if (keys.length === 0) {
-        return { keys: null, problems: [] };
-    }
-    const problems = [];
-    if (pr === undefined) {
-        problems.push(
-            `approvals are enforced (${PASSKEYS_FILE} on the base branch holds a key), so the gate needs --pr <number>`,
-        );
-    }
-    let left = 0;
-    try {
-        const own = fileAt(head, PASSKEYS_FILE, cwd);
-        left = own === null ? 0 : parsePasskeys(own).length;
-    } catch {
-        // Invalid: counts as no key.
-    }
-    if (left === 0) {
-        problems.push(
-            `this pull request would switch approval enforcement off: its ${PASSKEYS_FILE} is missing, invalid or holds no key`,
-        );
-    }
-    return { keys, problems };
-}
-
-/**
- * The files a pull request could loosen the gate with: passkeys.json, the tool's trusted code and
- * its capture, and the workflow that runs them. A change to one is a warning, never a failure (CI
- * runs the base branch's copy of the code, and work on the tool changes it), so code review looks
- * at it.
- * @param {string} base the base branch tip
- * @param {string} head the pull request's checkout
- * @param {string} workflow the workflow file that runs the gate
- * @param {string} [cwd] the repository
- * @returns {string[]} the changed ones
- */
-export function trustFilesChanged(base, head, workflow, cwd = process.cwd()) {
-    const files = [PASSKEYS_FILE, "visual-review/trusted/", "visual-review/capture/", `.github/workflows/${workflow}`];
-    return gitOut(cwd, ["diff", "--name-only", base, head, "--", ...files])
-        .toString("utf8")
-        .split("\n")
-        .filter(Boolean);
-}
-
-/**
- * The pull requests of a Mergify merge-queue batch, from its draft pull request's event: the body
- * ends with a fenced yaml block whose `pull_requests:` list names each one (`- number: 988`).
- * @param {any} event the parsed GITHUB_EVENT_PATH of the queue run
- * @returns {number[]} the batch's pull request numbers; empty when the block is missing
- */
-export function queuePullRequests(event) {
-    const list = /^pull_requests:\r?\n((?:[ \t-].*(?:\r?\n|$))*)/m.exec(queueYaml(event))?.[1] ?? "";
-    return [...list.matchAll(/^[ \t]*- number: *(\d+)[ \t]*\r?$/gm)].map((m) => Number(m[1]));
-}
-
-/**
- * The commit a Mergify merge-queue batch sits on, from the same yaml block: `checking_base_sha:`.
- * It is the default branch for the first batch, and the previous batch's draft branch for a batch
- * stacked on it (Mergify checks two batches at once).
- * @param {any} event the parsed GITHUB_EVENT_PATH of the queue run
- * @returns {string | null} the full commit hash; null when it is missing or not a full hash
- */
-export function queueBaseSha(event) {
-    return /^checking_base_sha: *([0-9a-f]{40})[ \t]*\r?$/m.exec(queueYaml(event))?.[1] ?? null;
-}
-
-/**
- * The last fenced yaml block of a queue draft's body, where Mergify writes the batch.
- * @param {any} event the parsed event
- * @returns {string} the block's text; empty when there is none
- */
-function queueYaml(event) {
-    const body = String(event?.pull_request?.body ?? "");
-    return [...body.matchAll(/```yaml\r?\n([\s\S]*?)```/g)].at(-1)?.[1] ?? "";
-}
-
-/**
- * Whether the repository holds a commit, fetching it from origin when it does not (a queue base
- * on a mergify/merge-queue/* branch is not in CI's shallow checkout).
- * @param {string} sha the full commit hash
- * @param {string} cwd the repository
- * @returns {boolean} whether the commit is there now
- */
-function haveCommit(sha, cwd) {
-    const git = (args) => {
-        try {
-            gitOut(cwd, args);
-            return true;
-        } catch {
-            return false;
-        }
-    };
-    const has = () => git(["cat-file", "-e", `${sha}^{commit}`]);
-    return has() || (git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", sha]) && has());
-}
-
-export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
-
-Fails (exit 1) while a pull request holds visual changes nobody accepted, or a baseline change
-with no review record. Once ${PASSKEYS_FILE} on the base branch holds a key, every review
-record the pull request adds must also carry a passkey approval for this pull request. Run it in
-CI after the capture jobs, on the pull request's merge commit.
-
-  --captures <dir>  the downloaded visual-<project>-<attempt> artifacts of this run
-  --base <ref>      the base branch tip (HEAD^1 on a pull request's merge commit)
-  --head <ref>      the pull request's checkout (default HEAD)
-  --pr <number>     the pull request's number (required once approvals are enforced)
-  --queue-event <file>  in a merge-queue run, the event file of the queue's draft pull request
-                    (GITHUB_EVENT_PATH): the gate accepts a batch, whose records may be for
-                    any of its pull requests, in place of --pr, and baseline changes are
-                    compared with the batch's checking_base_sha instead of --base`;
-
-/**
- * The gate as a command.
- * @param {string[]} args the command line after "gate"
- * @returns {number} the exit code
- */
-export function runGate(args) {
-    const { values } = parseArgs({
-        args,
-        options: {
-            captures: { type: "string" },
-            base: { type: "string" },
-            head: { type: "string", default: "HEAD" },
-            pr: { type: "string" },
-            "queue-event": { type: "string" },
-            help: { type: "boolean", default: false },
-        },
-    });
-    if (values.help) {
-        console.log(GATE_USAGE);
-        return 0;
-    }
-    const queueEvent = values["queue-event"];
-    /** @type {number | number[] | undefined} */
-    let pr = values.pr === undefined ? undefined : Number(values.pr);
-    // A batch's changes are those since the commit it sits on, not since the base branch: a batch
-    // stacked on another holds that batch's approved changes, which its own run gated. If that batch
-    // fails, Mergify rebuilds this one on a new base. The config, the seeded projects and the keys
-    // are still read from --base.
-    let queueBase = null;
-    if (
-        !values.captures ||
-        !values.base ||
-        (pr !== undefined && !(Number.isInteger(pr) && pr > 0)) ||
-        (pr !== undefined && queueEvent !== undefined)
-    ) {
-        console.error(GATE_USAGE);
-        return 2;
-    }
-    if (queueEvent !== undefined) {
-        let event = null;
-        try {
-            event = JSON.parse(readFileSync(queueEvent, "utf8"));
-        } catch {
-            // Unreadable: no pull requests, which fails below.
-        }
-        pr = queuePullRequests(event);
-        if (pr.length === 0) {
-            console.log("::error::merge queue -- the queue's draft pull request names no pull requests of the batch");
-            return 1;
-        }
-        console.log(`Merge-queue batch: #${pr.join(", #")}`);
-        queueBase = queueBaseSha(event);
-        if (queueBase === null || !haveCommit(queueBase, repoRoot())) {
-            console.log(
-                `::error::merge queue -- the queue's draft pull request names no checking_base_sha the gate can read (${queueBase ?? "missing"})`,
-            );
-            return 1;
-        }
-        console.log(`Baseline changes compared with the batch's base ${queueBase}`);
-    }
-    const root = repoRoot();
-    const config = loadConfigAt(values.base, root);
-    const seeded = seededAt(values.base, root, config.baselines);
-    const headConfig = loadConfigAt(values.head, root);
-    const captures = newestResults(values.captures);
-    const queue = queueEvent !== undefined;
-    const diffBase = queueBase ?? values.base;
-    const baselinesChanged = baselinesChangedBetween(diffBase, values.head, root, config.baselines);
-    const notAffected = [];
-    const problems = gateProblems({ config, headConfig, seeded, captures, queue, baselinesChanged, notAffected });
-    for (const p of notAffected) {
-        console.log(`::notice::${p} was not captured: this pull request does not affect it`);
-    }
-    for (const line of problems) {
-        console.log(`::error::visual changes not accepted -- ${line}`);
-    }
-    const { keys, problems: approval } = approvalKeys(values.base, values.head, pr, root);
-    for (const line of approval) {
-        console.log(`::error::passkey approval -- ${line}`);
-    }
-    const unrecorded = unrecordedChanges(diffBase, values.head, root, config.baselines, { keys, pr });
-    for (const line of unrecorded) {
-        console.log(`::error::baseline without a review -- ${line}`);
-    }
-    for (const file of trustFilesChanged(diffBase, values.head, config.workflow, root)) {
-        console.log(
-            `::warning::this pull request changes ${file}, which decides what the visual gate accepts: review that change with care`,
-        );
-    }
-    if (problems.length + approval.length + unrecorded.length > 0) {
-        console.log("Review them with `visual-review serve` (the @graphty/visual-review README).");
-        return 1;
-    }
-    console.log("No unaccepted visual changes, and every baseline change has a review record.");
-    return 0;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
