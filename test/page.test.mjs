@@ -2865,12 +2865,12 @@ describe("review page: the passkey", () => {
         await expect.poll(progress).toBe("4 of 6 decided");
         const finish = page.getByRole("button", { name: /^Finish #123/ });
 
-        // Images left undecided: the sheet says nothing is signed, and no passkey is asked for.
+        // Images left undecided: the sheet says the decisions are signed but the baselines are not.
         let asked = dialogs.length;
         await finish.click();
         await expect.poll(status).toBe("Finish cancelled: nothing was changed.");
         expect(dialogs.slice(asked).join("\n")).toContain(
-            "Nothing is signed, because images are still undecided: the merge stays blocked until a Finish with every image decided and none rejected signs the baselines.",
+            "Your passkey signs your decisions (Face ID or a security key). The baselines are not signed, because images are still undecided: the merge stays blocked until a Finish with every image decided and none rejected signs the baselines.",
         );
         expect(await page.evaluate(() => globalThis.whileAsking.length)).toBe(1);
 
@@ -2895,12 +2895,13 @@ describe("review page: the passkey", () => {
         await finish.click();
         await expect.poll(() => dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
         expect(dialogs.slice(asked).join("\n")).toContain(
-            "Your passkey signs the baselines this Finish leaves on the branch (Face ID or a security key).",
+            "Your passkey signs your decisions, then the baselines this Finish leaves on the branch: two prompts (Face ID or a security key).",
         );
         expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
 
-        // The retry, with Face ID passing, signs and finishes: the accept commit, then the signed
-        // statement about its baselines tree.
+        // The retry, with Face ID passing, signs and finishes: the accept commit with the signed
+        // record, then, after a second sheet and prompt, the signed statement about its tree.
+        const before = await page.evaluate(() => globalThis.whileAsking.length);
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: true });
         await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toBe("Finished #123.");
         const [file] = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
@@ -2915,8 +2916,122 @@ describe("review page: the passkey", () => {
         expect(verifyApproval(statement, [entry], { origin })).toBeNull();
         const files = git(r.remote, "show", "--name-only", "--format=", "feature^").split("\n");
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
-        expect(record).toMatchObject({ version: 3, pr: 123 });
+        expect(record).toMatchObject({ version: 2, pr: 123 });
+        expect(verifyApproval(record, [entry], { origin })).toBeNull();
+        expect(dialogs.some((d) => d.startsWith("Sign the baselines of #123"))).toBe(true);
+        expect((await page.evaluate(() => globalThis.whileAsking.length)) - before).toBe(2);
         expect(new Set(await page.evaluate(() => globalThis.whileAsking))).toEqual(new Set([true]));
+    });
+
+    it("signs the decisions of a Finish with a reject in one prompt, and leaves the baselines unsigned", async () => {
+        const r = await open((repo) => ({ config: FIXTURE_CONFIG, gh: onePr()(repo) }), {
+            review: false,
+            host: "localhost",
+        });
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("WebAuthn.enable");
+        await cdp.send("WebAuthn.addVirtualAuthenticator", {
+            options: {
+                protocol: "ctap2",
+                transport: "internal",
+                hasResidentKey: true,
+                hasUserVerification: true,
+                isUserVerified: true,
+                automaticPresenceSimulation: true,
+            },
+        });
+        await page.evaluate(() => {
+            const { navigator } = globalThis;
+            globalThis.gets = 0;
+            const real = navigator.credentials.get.bind(navigator.credentials);
+            navigator.credentials.get = (o) => {
+                globalThis.gets++;
+                return real(o);
+            };
+        });
+        await page.getByRole("button", { name: "Register passkey" }).click();
+        await expect.poll(status).toMatch(/^Passkey registered/);
+        for (const [project, file, decision, reason] of [
+            ["compact-mantine", "badge--default.light.png", "accept", null],
+            ["compact-mantine", "slider--sizes.png", "reject", "tall"],
+        ]) {
+            const res = await fetch(`${origin}/api/decide`, {
+                method: "POST",
+                headers: { "x-review-token": TOKEN, origin, "content-type": "application/json" },
+                body: JSON.stringify({ id: "123", project, file, decision, reason }),
+            });
+            expect(res.status).toBe(200);
+        }
+        confirmFinish = true;
+        const asked = dialogs.length;
+        await page.getByRole("button", { name: /^Finish #123/ }).click();
+        await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toMatch(/^Finished #123/);
+        expect(dialogs.slice(asked).join("\n")).toContain(
+            "Your passkey signs your decisions (Face ID or a security key). The baselines are not signed, because something is rejected: the merge stays blocked until a Finish with every image decided and none rejected signs the baselines.",
+        );
+        expect(await page.evaluate(() => globalThis.gets)).toBe(1);
+        const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
+        expect(files.some((f) => f.startsWith("visual-review-approvals/"))).toBe(false);
+        const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
+        expect(record).toMatchObject({ version: 2, pr: 123 });
+        expect(record.rejects).toHaveLength(1);
+        expect(record.approval).toBeDefined();
+    });
+
+    it("signs an earlier Finish's unsigned record when Finish is pressed with nothing new to decide", async () => {
+        const r = await open((repo) => ({ config: FIXTURE_CONFIG, gh: onePr()(repo) }), {
+            review: false,
+            host: "localhost",
+        });
+        // Before any passkey: a Finish with a reject pushes its record unsigned.
+        for (const [project, file, decision, reason] of [
+            ["compact-mantine", "badge--default.light.png", "accept", null],
+            ["compact-mantine", "slider--sizes.png", "reject", "tall"],
+        ]) {
+            const res = await fetch(`${origin}/api/decide`, {
+                method: "POST",
+                headers: { "x-review-token": TOKEN, origin, "content-type": "application/json" },
+                body: JSON.stringify({ id: "123", project, file, decision, reason }),
+            });
+            expect(res.status).toBe(200);
+        }
+        confirmFinish = true;
+        await page.getByRole("button", { name: /^Finish #123/ }).click();
+        await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toMatch(/^Finished #123/);
+        const first = git(r.remote, "rev-parse", "feature");
+        const path = git(r.remote, "show", "--name-only", "--format=", "feature")
+            .split("\n")
+            .find((f) => f.includes("reviews/"));
+        expect(JSON.parse(git(r.remote, "show", `feature:${path}`)).approval).toBeUndefined();
+
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("WebAuthn.enable");
+        await cdp.send("WebAuthn.addVirtualAuthenticator", {
+            options: {
+                protocol: "ctap2",
+                transport: "internal",
+                hasResidentKey: true,
+                hasUserVerification: true,
+                isUserVerified: true,
+                automaticPresenceSimulation: true,
+            },
+        });
+        await page.getByRole("button", { name: "Register passkey" }).click();
+        await expect.poll(status).toMatch(/^Passkey registered/);
+        // Nothing new to decide, and Finish is still offered: it signs the earlier record.
+        const finish = page.getByRole("button", { name: "Finish #123 (0)" });
+        await expect.poll(() => finish.getAttribute("aria-disabled")).toBe("false");
+        const asked = dialogs.length;
+        await finish.click();
+        await expect
+            .poll(() => page.locator(".finish-outcome").textContent())
+            .toContain("Signed the decisions of the earlier Finish");
+        expect(dialogs.slice(asked).join("\n")).toContain(
+            "Nothing new to decide: your passkey signs the decisions of the earlier Finish, which were pushed unsigned, so they count as approved before.",
+        );
+        expect(git(r.remote, "rev-parse", "feature^")).toBe(first);
+        expect(git(r.remote, "show", "--name-only", "--format=", "feature")).toBe(path);
+        expect(JSON.parse(git(r.remote, "show", `feature:${path}`))).toMatchObject({ version: 2, pr: 123 });
     });
 
     it("says plainly that accepts are not yet protected while no passkey is registered", async () => {

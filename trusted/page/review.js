@@ -1178,9 +1178,11 @@ function drawHeader() {
 // reason's tail is only for wide windows and screen readers, so a narrow header keeps Finish whole.
 function finishControl(t) {
     const count = t.unpublished ?? 0;
-    const can = count > 0 && !running() && !t.headMoved;
-    let why = count === 0 ? ["Nothing new", " to finish"] : null;
-    if (t.headMoved) {
+    // Nothing new, but an earlier Finish's record waits for the passkey: Finish signs it.
+    const resign = count === 0 && t.resign === true && t.passkey?.required === true;
+    const can = (count > 0 || resign) && !running() && (!t.headMoved || resign);
+    let why = count === 0 && !resign ? ["Nothing new", " to finish"] : null;
+    if (t.headMoved && !resign) {
         why = ["New preview needed", " to finish"];
     }
     return [
@@ -4883,28 +4885,42 @@ function approvedList(t, items) {
 }
 
 // What the passkey does for this Finish, from POST /api/finish-prepare: once a passkey is known it
-// signs the baselines the Finish leaves on the branch, unless the Finish rejects anything or leaves
-// anything undecided, which signs nothing; before that, accepts are not yet protected, and the
-// sheet says so. Rejects alone never wait for a passkey to be registered.
+// signs the decisions of every Finish that commits any, and also the baselines the Finish leaves on
+// the branch when nothing is rejected or left undecided. With nothing new to decide, it signs the
+// record of an earlier Finish that was pushed unsigned. Before a passkey is known, accepts are not
+// yet protected, and the sheet says so. Rejects alone never wait for a passkey to be registered.
 function passkeySentence(f, prepared) {
     if (prepared.error) {
         return el("p", { class: "error", id: "sheet-passkey" }, `Finish cannot be approved now: ${prepared.error}`);
     }
-    if (prepared.required) {
+    const blocked =
+        "the merge stays blocked until a Finish with every image decided and none rejected signs the baselines.";
+    const why = prepared.unsigned === "rejects" ? "something is rejected" : "images are still undecided";
+    if (prepared.required && prepared.resign) {
         return el(
             "p",
             { class: "passkey" },
-            "Your passkey signs the baselines this Finish leaves on the branch (Face ID or a security key).",
+            "Nothing new to decide: your passkey signs the decisions of the earlier Finish, which were pushed " +
+                `unsigned, so they count as approved before. The baselines are not signed: ${blocked}`,
         );
     }
-    if (prepared.unsigned) {
-        const why = prepared.unsigned === "rejects" ? "something is rejected" : "images are still undecided";
+    if (prepared.required && prepared.tree) {
+        return el(
+            "p",
+            { class: "passkey" },
+            "Your passkey signs your decisions, then the baselines this Finish leaves on the branch: two " +
+                "prompts (Face ID or a security key).",
+        );
+    }
+    if (prepared.required) {
         return el(
             "p",
             { class: "warning", id: "sheet-unsigned" },
-            `Nothing is signed, because ${why}: the merge stays blocked until a Finish with every image ` +
-                "decided and none rejected signs the baselines.",
+            `Your passkey signs your decisions (Face ID or a security key). The baselines are not signed, because ${why}: ${blocked}`,
         );
+    }
+    if (prepared.unsigned) {
+        return el("p", { class: "warning", id: "sheet-unsigned" }, `Nothing is signed, because ${why}: ${blocked}`);
     }
     if (f.accepts + f.excludes === 0) {
         return null;
@@ -4916,6 +4932,27 @@ function passkeySentence(f, prepared) {
             "does not check who accepted. Register a passkey on the targets screen and merge its pull request " +
             "to turn that on.",
     );
+}
+
+// After the passkey signed the decisions, a Finish that signs the baselines too asks again: the
+// baselines hold the signed decisions, so one approval cannot cover both. Safari starts WebAuthn
+// only from a press, so this is a second sheet. Resolves to the approval, or null when cancelled.
+async function approveTree(t, prepared) {
+    let approval = null;
+    const go = await ask(
+        [
+            el("h2", { id: "tree-title" }, `Sign the baselines of ${labelOf(t)}`),
+            el(
+                "p",
+                {},
+                "Your decisions are signed. Now your passkey signs the baselines this Finish leaves on the branch, " +
+                    "which lets the merge go ahead.",
+            ),
+        ],
+        `Sign the baselines of ${labelOf(t)}`,
+        { label: "tree-title", onYes: () => (approval = approve(prepared)) },
+    );
+    return go ? approval : null;
 }
 
 // Finish publishes every decision of one target. It asks the server what it would do, states it
@@ -5024,15 +5061,38 @@ async function finishTarget(id, button) {
             say("Finish cancelled: nothing was changed.");
             return;
         }
+        const cancelled = (err) =>
+            err?.name === "NotAllowedError" || err?.name === "AbortError"
+                ? "Passkey cancelled: nothing was changed."
+                : passkeyFailure(err, t.passkey);
         if (approval) {
             sayBusy("Waiting for your passkey...");
             try {
                 approval = await approval;
             } catch (err) {
-                notice =
-                    err?.name === "NotAllowedError" || err?.name === "AbortError"
-                        ? "Passkey cancelled: nothing was changed."
-                        : passkeyFailure(err, t.passkey);
+                notice = cancelled(err);
+                say(notice);
+                continue;
+            }
+        }
+        // The decisions are signed into the accept commit (not pushed yet); the baselines, when this
+        // Finish signs them, take a second approval.
+        let signedRecord = false;
+        if (approval && prepared.signs === "record") {
+            sayBusy("Signing your decisions...");
+            try {
+                const next = await api("/api/finish-prepare", { id, challenge: prepared.challenge, approval });
+                signedRecord = true;
+                // approveTree's promise settles with Face ID's answer, or null when cancelled.
+                approval = next.required ? await approveTree(t, next) : null;
+                if (next.required && !approval) {
+                    reset();
+                    say("Finish cancelled: nothing was changed.");
+                    return;
+                }
+                prepared = next;
+            } catch (err) {
+                notice = err?.status ? `${err.message}. Nothing was changed.` : cancelled(err);
                 say(notice);
                 continue;
             }
@@ -5042,7 +5102,7 @@ async function finishTarget(id, button) {
         sayBusy("Starting Finish...");
         // A seed's accept notes go into its pull request's description: only rejects post anything.
         const posts = t.pr === null ? f.rejects > 0 : f.rejects + f.acceptNotes > 0;
-        state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) };
+        state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) || signedRecord };
         try {
             state.job = (
                 await api("/api/finish", {
@@ -5284,6 +5344,9 @@ function commitLine(out, repo) {
         return el("p", {}, "No commit: nothing was accepted or excluded.");
     }
     const commit = repo ? link(`${repo}/commit/${out.commit}`, short(out.commit)) : short(out.commit);
+    if (out.resigned) {
+        return el("p", {}, "Signed the decisions of the earlier Finish: committed ", commit, ` to ${out.branch}.`);
+    }
     if (out.alreadyFinished) {
         return el(
             "p",
@@ -5298,7 +5361,7 @@ function commitLine(out, repo) {
 
 // The commit status a Finish posted, or why posting it failed; none when it was already finished.
 function finishStatusLine(out) {
-    if (out.alreadyFinished) {
+    if (out.alreadyFinished || out.resigned) {
         return [];
     }
     const counts = (out.status ?? "").replace(/^Reviewed: /, "").replace(" left undecided", " undecided");

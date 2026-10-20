@@ -14,19 +14,24 @@
  * switched off nothing else uploads them, so this module checks git-lfs is set up, checks every
  * committed PNG is a pointer, and runs `git lfs push` before `git push`.
  *
- * The owner's approval is a signed statement about the baselines directory's git tree, not about
- * the record (gate.mjs treeApprovalProblems). A Finish with nothing rejected and nothing left
- * undecided signs; one that rejects anything, or leaves anything undecided, commits its accepts
- * and record and signs nothing. Signing goes in this order, so the tree signed is the tree that
+ * Once a passkey is known, every Finish that commits decisions has the owner sign its review
+ * record (version 2, with `approval`, the form gate.mjs earlierApprovalProblem verifies), so its
+ * accepts count as "approved before" on later pull requests. The merge itself is approved by a
+ * signed statement about the baselines directory's git tree (gate.mjs treeApprovalProblems),
+ * which only a Finish with nothing rejected and nothing left undecided signs. The tree holds the
+ * signed record, so the two are signed one after the other, and the tree signed is the tree that
  * lands:
  *
  * 1. the accept commit X: the accepted baselines and the review record, under the baselines
  *    directory (prepareApproval, before the owner is asked; X is not pushed yet);
- * 2. the statement: X, the tree of the baselines directory at X, the pull request (treeStatement);
- *    the owner's device signs its SHA-256 (WebAuthn);
- * 3. the approval commit Y on X: only `<approvals>/<tree>.json`, the statement with its signature,
+ * 2. the record: the owner's device signs its SHA-256 (WebAuthn), and X is amended to X' holding
+ *    the signed record (signRecord). An accept commit an earlier, unsigned Finish already pushed
+ *    gets a commit on top instead, which only signs its record;
+ * 3. the statement: X', the tree of the baselines directory at X', the pull request
+ *    (treeStatement); the owner's device signs its SHA-256;
+ * 4. the approval commit Y on X': only `<approvals>/<tree>.json`, the statement with its signature,
  *    outside the baselines directory, so Y's baselines tree is still the one signed
- *    (pushApproval); then X and Y are pushed together.
+ *    (pushApproval); then X' and Y are pushed together. Without a tree to sign, X' alone is pushed.
  *
  * Without a passkey (none registered) the same statement is committed unsigned. `proposeKey` opens
  * the pull request that registers a passkey.
@@ -264,15 +269,18 @@ function check(projects, decisions, pr) {
  * @param {boolean} [input.sign] whether this Finish approves the baselines tree it leaves (nothing
  *     rejected, nothing undecided): with `approval` the statement carries the owner's signature,
  *     without it (no key known) it is committed unsigned
- * @param {{ statement: object, commit: string, branch: string, record: string, pendingKeys?: object[],
- *     origin: string } | null} [input.approval] the accept commit prepareApproval built and its
- *     statement with the owner's `approval`, the keys registered but not yet on the default
- *     branch, and the page's origin
+ * @param {{ statement?: object, commit: string, branch: string, record: string,
+ *     pendingKeys?: object[], origin: string, resign?: boolean } | null} [input.approval] the accept
+ *     commit prepareApproval built and signRecord signed, and its statement with the owner's
+ *     `approval` when the Finish signs the tree, the keys registered but not yet on the default
+ *     branch, and the page's origin; `resign`: the commit only signs the record of an earlier
+ *     Finish, so nothing is posted again
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, acceptNotes: number, state: string | null,
  *     status: string | null, statusError: string | null, commentError: string | null,
- *     alreadyFinished?: true }>} what was pushed and posted (`alreadyFinished`: an earlier Finish
- *     already pushed these decisions as `commit`, and nothing was pushed or posted now; `issue`: master's rejects; `acceptNotes`: the accept notes published, in the comment or the
+ *     alreadyFinished?: true, resigned?: true }>} what was pushed and posted (`alreadyFinished`: an earlier Finish
+ *     already pushed these decisions as `commit`, and nothing was pushed or posted now; `resigned`:
+ *     `commit` only signs the record of an earlier Finish, and nothing was posted; `issue`: master's rejects; `acceptNotes`: the accept notes published, in the comment or the
  *     seed pull request's description; `state` and `status`: the commit status's state and
  *     description, or `statusError` when posting it failed; `commentError` when a comment holding
  *     only accept notes failed after the accepts were pushed)
@@ -307,6 +315,10 @@ export async function finish({
     let pullRequest = null;
     if (approval) {
         pushed = await pushApproval({ repo, target, approval, progress, net, config });
+        if (approval.resign) {
+            // Only the earlier Finish's record was signed: its comment and status stand as posted.
+            return { ...unposted(pushed), resigned: true };
+        }
         if (isMaster) {
             pullRequest = await openSeedPullRequest(gh, decided, pushed);
         }
@@ -325,19 +337,7 @@ export async function finish({
         });
         if (pushed.alreadyFinished) {
             // The earlier Finish posted the comment and the status too: nothing is posted again.
-            return {
-                commit: pushed.commit,
-                branch: pushed.branch,
-                alreadyFinished: true,
-                pullRequest: null,
-                issue: null,
-                rejects: 0,
-                acceptNotes: 0,
-                state: null,
-                status: null,
-                statusError: null,
-                commentError: null,
-            };
+            return { ...unposted(pushed), alreadyFinished: true };
         }
         if (isMaster) {
             pullRequest = await openSeedPullRequest(gh, decided, pushed);
@@ -365,6 +365,20 @@ export async function finish({
         commentError,
     };
 }
+
+// A Finish result that posted nothing.
+const unposted = ({ commit, branch }) => ({
+    commit,
+    branch,
+    pullRequest: null,
+    issue: null,
+    rejects: 0,
+    acceptNotes: 0,
+    state: null,
+    status: null,
+    statusError: null,
+    commentError: null,
+});
 
 /**
  * Finish's step reporter and network runner. Each network call is tried again while it fails on
@@ -559,9 +573,10 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
 
 /**
  * Step 1 of a signed Finish: the accept commit X of these decisions, built and committed in a
- * throwaway worktree but not pushed, and the statement about it the owner's device signs. When an
- * earlier Finish already pushed exactly these decisions (unsigned), X is that commit. Every check
- * Finish makes runs here, so a refusal comes before the owner is asked.
+ * throwaway worktree but not pushed, and its review record (version 2, without its approval yet),
+ * which the owner's device signs next. When an earlier Finish already pushed exactly these
+ * decisions (unsigned), X is that commit (`pushed`), and the record is its record as version 2.
+ * Every check Finish makes runs here, so a refusal comes before the owner is asked.
  * @param {object} input the work
  * @param {string} input.repo the repository, with the captured head fetched
  * @param {{ pr: number | null, branch: string | null }} input.target as in finish
@@ -571,9 +586,10 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  *     statement's `approvedAt`
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
  * @param {number[]} [input.retryDelays] as in finish
- * @returns {Promise<{ statement: object, commit: string, branch: string, record: string | null,
- *     accepts: number, excludes: number, rejects: number }>} the statement to sign, the accept
- *     commit and branch it goes to, the record's path, and what the Finish holds
+ * @returns {Promise<{ commit: string, branch: string, record: string, recordBody: object,
+ *     pushed: boolean, accepts: number, excludes: number, rejects: number }>} the accept commit and
+ *     branch it goes to, the record's path and the record to sign, whether the commit is pushed
+ *     already, and what the Finish holds
  */
 export async function prepareApproval({ repo, target, projects, decisions, now, config, retryDelays }) {
     const { accepts, rejects } = check(projects, decisions, target.pr);
@@ -597,12 +613,27 @@ export async function prepareApproval({ repo, target, projects, decisions, now, 
         net,
         config,
         push: false,
+        recordVersion: 2,
     });
+    const message = await git(repo, ["log", "-1", "--format=%B", built.commit]);
+    const record = built.record ?? /^Record: (.+)$/m.exec(message)?.[1];
+    const recordBody = record
+        ? await git(repo, ["show", `${built.commit}:${record}`])
+              .then(JSON.parse)
+              .catch(() => null)
+        : null;
+    if (!recordBody) {
+        throw new AcceptError(`the review record of ${built.commit.slice(0, 10)} cannot be read`);
+    }
+    if (recordBody.approval !== undefined) {
+        throw new AcceptError("an earlier Finish already signed these decisions: nothing is left to sign");
+    }
     return {
-        statement: await treeStatement({ repo, commit: built.commit, config, pr: target.pr, now }),
         commit: built.commit,
         branch: built.branch,
-        record: built.record,
+        record,
+        recordBody: { ...recordBody, version: 2 },
+        pushed: built.alreadyFinished === true || built.record === null,
         accepts: accepts.filter((a) => a.decision === "accept").length,
         excludes: accepts.filter((a) => a.decision !== "accept").length,
         rejects: rejects.length,
@@ -627,12 +658,89 @@ async function treeStatement({ repo, commit, config, pr, now }) {
 }
 
 /**
- * Step 3: commits the signed statement on the accept commit, outside the baselines directory, and
- * pushes both. The push is the staleness check: a branch that moved since step 1 refuses it.
+ * Step 2: the owner's approval of the review record, written into it. The accept commit is amended
+ * while it is not pushed; on a commit an earlier Finish pushed, a commit on top signs its record.
+ * The approval is checked first, with the gate's own code.
  * @param {object} input the work
  * @param {string} input.repo the repository
  * @param {{ pr: number | null }} input.target as in finish
- * @param {{ statement: object, commit: string, branch: string, record: string, pendingKeys?: object[],
+ * @param {{ commit: string, record: string, recordBody: object, pushed: boolean }} input.prepared
+ *     as prepareApproval returns
+ * @param {object} input.approval the owner's approval of `recordBody`
+ * @param {object[]} input.keys the keys it may come from
+ * @param {string} input.origin the page's origin
+ * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
+ * @param {Date} input.now when, for the statement
+ * @param {boolean} [input.statement] also return the statement about the signed commit's tree
+ * @returns {Promise<{ commit: string, statement?: object }>} the commit holding the signed record
+ *     (not pushed), and the statement to sign next
+ */
+export async function signRecord({ repo, target, prepared, approval, keys, origin, config, now, statement = false }) {
+    const signed = { ...prepared.recordBody, approval };
+    const why = verifyApproval(signed, keys, { origin });
+    if (why) {
+        throw new AcceptError(`the approval does not verify (${why}); nothing was committed`);
+    }
+    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr === null ? "master" : target.pr}`);
+    await removeWorktree(repo, tree);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, prepared.commit]);
+    try {
+        await put(join(tree, prepared.record), `${JSON.stringify(signed, null, 2)}\n`);
+        await git(tree, ["add", "--", prepared.record]);
+        if (prepared.pushed) {
+            const who = target.pr === null ? "the seed" : `#${target.pr}`;
+            const message = `${config.commitPrefix}: sign the review record of ${who}\n\nSigned by the owner's passkey.\nRecord: ${prepared.record}\n`;
+            await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
+        } else {
+            await git(tree, ["commit", "-q", "--no-verify", "--amend", "--no-edit"]);
+        }
+        const commit = await git(tree, ["rev-parse", "HEAD"]);
+        return statement
+            ? { commit, statement: await treeStatement({ repo, commit, config, pr: target.pr, now }) }
+            : { commit };
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    } finally {
+        await removeWorktree(repo, tree).catch((err) =>
+            console.error(`visual-review: could not remove the accept worktree ${tree}: ${err.message}`),
+        );
+    }
+}
+
+/**
+ * The review record of a pull request's branch tip that an earlier Finish pushed unsigned: the tip
+ * is that Finish's accept commit, and its record carries no approval. A Finish with nothing new to
+ * decide signs it (prepareApproval finds it again and checks it holds exactly the saved decisions).
+ * @param {string} repo the repository
+ * @param {string | null | undefined} tip the branch tip
+ * @param {number | null} pr the pull request
+ * @param {{ commitPrefix: string }} config the settings
+ * @returns {Promise<string | null>} the record's path, or null
+ */
+export async function unsignedRecordAt(repo, tip, pr, config) {
+    if (pr === null || !tip) {
+        return null;
+    }
+    const log = await git(repo, ["log", "-1", "--format=%P%n%B", tip]).catch(() => "");
+    const [parents, subject] = log.split("\n");
+    const path = /^Record: (.+)$/m.exec(log)?.[1];
+    if (!path || parents.includes(" ") || subject !== `${config.commitPrefix}: accept visual baselines for #${pr}`) {
+        return null;
+    }
+    const record = await git(repo, ["show", `${tip}:${path}`])
+        .then(JSON.parse)
+        .catch(() => null);
+    return record?.pr === pr && Array.isArray(record.items) && record.approval === undefined ? path : null;
+}
+
+/**
+ * Step 4: commits the signed statement on the accept commit, outside the baselines directory, and
+ * pushes both; without a statement (the tree is not signed), pushes the accept commit alone. The
+ * push is the staleness check: a branch that moved since step 1 refuses it.
+ * @param {object} input the work
+ * @param {string} input.repo the repository
+ * @param {{ pr: number | null }} input.target as in finish
+ * @param {{ statement?: object, commit: string, branch: string, record: string, pendingKeys?: object[],
  *     origin: string }} input.approval as in finish, the statement with its `approval`
  * @param {(step: string) => void} input.progress as in finish
  * @param {Function} input.net as in finish
@@ -641,26 +749,30 @@ async function treeStatement({ repo, commit, config, pr, now }) {
  */
 async function pushApproval({ repo, target, approval, progress, net, config }) {
     const { statement, commit, branch } = approval;
-    progress("checking the approval");
-    const tracking = ownRef(config.defaultBranch);
-    await net(`git fetch ${config.defaultBranch}`, () =>
-        git(repo, [
-            "fetch",
-            "-q",
-            "--no-write-fetch-head",
-            "origin",
-            `+refs/heads/${config.defaultBranch}:${tracking}`,
-        ]),
-    );
-    await requireApproval(repo, tracking, statement, approval);
-    if ((await git(repo, ["rev-parse", `${commit}:${config.baselines}`])) !== statement.tree) {
-        throw new AcceptError("the accept commit is not the one approved; press Finish again");
+    if (statement) {
+        progress("checking the approval");
+        const tracking = ownRef(config.defaultBranch);
+        await net(`git fetch ${config.defaultBranch}`, () =>
+            git(repo, [
+                "fetch",
+                "-q",
+                "--no-write-fetch-head",
+                "origin",
+                `+refs/heads/${config.defaultBranch}:${tracking}`,
+            ]),
+        );
+        await requireApproval(repo, tracking, statement, approval);
+        if ((await git(repo, ["rev-parse", `${commit}:${config.baselines}`])) !== statement.tree) {
+            throw new AcceptError("the accept commit is not the one approved; press Finish again");
+        }
     }
     const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr === null ? "master" : target.pr}`);
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, commit]);
     try {
-        await writeStatement(tree, statement, config);
+        if (statement) {
+            await writeStatement(tree, statement, config);
+        }
         const pushed = await pushAccepts({ progress, net }, { tree, writes: [], branch });
         return { commit: pushed, branch, record: approval.record };
     } catch (err) {
@@ -696,8 +808,8 @@ async function writeStatement(tree, statement, config) {
 }
 
 /**
- * A review record: version 3, the owner's decisions, kept in the tree the owner signs. It carries
- * no signature of its own (versions 1 and 2, from before signed trees, were per pull request).
+ * A review record: the owner's decisions, kept in the tree the owner signs. Version 3 carries no
+ * signature (no passkey known); version 2 is the one the owner signs (signRecord adds `approval`).
  * @param {object} input what it records
  * @param {{ pr: number | null }} input.target the pull request, or null for master
  * @param {object} input.first the results.json of the first decided project
@@ -707,12 +819,13 @@ async function writeStatement(tree, statement, config) {
  * @param {object[]} input.rejects the checked rejects
  * @param {Date} input.now the review time
  * @param {string} input.baselines the baselines directory
+ * @param {2 | 3} [input.version] 2 for a record the owner signs
  * @returns {object} the record
  */
-function buildRecord({ target, first, local = [], items, rejects, now, baselines }) {
+function buildRecord({ target, first, local = [], items, rejects, now, baselines, version = 3 }) {
     const byPath = (a, b) => a.path.localeCompare(b.path);
     return {
-        version: 3,
+        version,
         pr: target.pr,
         subject: {
             builtMerge: first.commit,
@@ -766,6 +879,8 @@ async function keysAt(repo, ref) {
  * @param {boolean} [input.push] false: commit only, for prepareApproval (the worktree is removed,
  *     the commit stays in the repository)
  * @param {boolean} [input.statement] also commit the unsigned tree statement (no key known)
+ * @param {2 | 3} [input.recordVersion] 2 for a record the owner signs next: then an accept commit
+ *     an earlier Finish pushed is reused only when its record holds exactly these decisions
  * @returns {Promise<{ commit: string, branch: string, record: string | null, alreadyFinished?: true }>}
  *     the commit (pushed unless `push` is false) and branch, and the record's path (null for a seed
  *     pushed earlier and reused)
@@ -782,6 +897,7 @@ async function commitAccepts({
     config,
     push = true,
     statement = false,
+    recordVersion = 3,
 }) {
     const { baselines, defaultBranch } = config;
     const isMaster = target.pr === null;
@@ -807,9 +923,14 @@ async function commitAccepts({
             git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${ownRef(b)}`]),
         );
     await fetch(defaultBranch);
-    const { parent, seed } = await acceptParent({ repo, target, net, config, rejects }, { base, branch, plan, fetch });
+    const exact = recordVersion === 2;
+    const { parent, seed } = await acceptParent(
+        { repo, target, net, config, rejects },
+        { base, branch, plan, fetch, exact },
+    );
     if (seed) {
-        // Already pushed: a signed Finish signs that commit; an unsigned one has nothing to add.
+        // Already pushed: a signed Finish signs that commit's record (signRecord, a commit on top)
+        // and, when it signs the tree, its baselines; an unsigned one has nothing to add.
         return seed;
     }
     // No refusal when the default branch has newer baselines than the capture: each record item
@@ -826,6 +947,7 @@ async function commitAccepts({
         rejects,
         now,
         baselines,
+        version: recordVersion,
     });
 
     const tree = join(repo, config.workDir, "worktrees", `accept-${isMaster ? "master" : target.pr}`);
@@ -903,12 +1025,13 @@ async function verifiedWrites(accepts) {
  * request failed to open is used as it is; on a pull request, an accept commit an earlier Finish
  * pushed for these same decisions is reported as already finished (finishedBefore).
  * @param {object} input finish's repo, target, net, config and rejects
- * @param {{ base: string, branch: string, plan: object, fetch: (b: string) => Promise<any> }} at
- *     the captured commit, the branch, the planned writes and the fetcher
+ * @param {{ base: string, branch: string, plan: object, fetch: (b: string) => Promise<any>,
+ *     exact?: boolean }} at the captured commit, the branch, the planned writes and the fetcher, and
+ *     whether an earlier Finish's record must hold exactly these decisions (finishedBefore)
  * @returns {Promise<{ parent?: string, seed?: { commit: string, branch: string, record: string | null,
  *     alreadyFinished?: true } }>} the parent, or the commit already pushed
  */
-async function acceptParent(input, { base, branch, plan, fetch }) {
+async function acceptParent(input, { base, branch, plan, fetch, exact = false }) {
     const { repo, target, net, config, rejects } = input;
     if (target.pr !== null) {
         await fetch(branch);
@@ -919,7 +1042,7 @@ async function acceptParent(input, { base, branch, plan, fetch }) {
         const why = await moved(parent);
         const { items } = plan;
         const record =
-            why && (await finishedBefore(repo, { tip: parent, base, target, config, items, rejects, moved }));
+            why && (await finishedBefore(repo, { tip: parent, base, target, config, items, rejects, moved, exact }));
         if (record) {
             return { seed: { commit: parent, branch, record, alreadyFinished: true } };
         }
@@ -958,9 +1081,11 @@ async function acceptParent(input, { base, branch, plan, fetch }) {
  * @param {object[]} at.items the record items this Finish would write
  * @param {object[]} at.rejects the checked rejects
  * @param {(tip: string) => Promise<string | null>} at.moved why a tip is stale for this capture
+ * @param {boolean} [at.exact] the record must hold nothing else either: it is about to be signed,
+ *     and the owner signs only what they decided
  * @returns {Promise<string | null>} the record's path, or null
  */
-async function finishedBefore(repo, { tip, base, target, config, items, rejects, moved }) {
+async function finishedBefore(repo, { tip, base, target, config, items, rejects, moved, exact = false }) {
     const [subject, parents] = (await git(repo, ["log", "-1", "--format=%s%n%P", tip])).split("\n");
     if (subject !== `${config.commitPrefix}: accept visual baselines for #${target.pr}` || parents.includes(" ")) {
         return null;
@@ -983,20 +1108,20 @@ async function finishedBefore(repo, { tip, base, target, config, items, rejects,
         ...record.items.map((i) => key(i)),
         ...(record.rejects ?? []).map((r) => key({ ...r, to: r.capture }, "reject")),
     ]);
-    const same =
-        items.every((i) => recorded.has(key(i))) &&
-        rejects.every((r) =>
-            recorded.has(
-                key(
-                    {
-                        path: `${config.baselines}/${r.project}/${r.item.file}`,
-                        to: r.item.capture ?? r.item.baseline ?? null,
-                        reason: r.reason,
-                    },
-                    "reject",
-                ),
+    const wanted = new Set([
+        ...items.map((i) => key(i)),
+        ...rejects.map((r) =>
+            key(
+                {
+                    path: `${config.baselines}/${r.project}/${r.item.file}`,
+                    to: r.item.capture ?? r.item.baseline ?? null,
+                    reason: r.reason,
+                },
+                "reject",
             ),
-        );
+        ),
+    ]);
+    const same = [...wanted].every((k) => recorded.has(k)) && (!exact || recorded.size === wanted.size);
     return same ? path : null;
 }
 
