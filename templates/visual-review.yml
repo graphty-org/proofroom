@@ -123,11 +123,13 @@ jobs:
 
     # Fails while a project of the base branch's or the pull request's config, or with baselines on
     # the base branch (seeded or not), holds anything but unchanged or excluded items in its newest
-    # capture, or a baseline file changed without a review record. Once visual-review/passkeys.json
-    # on the base branch holds a key, every review record the pull request adds must carry a passkey
-    # approval for this pull request (--pr) by one of the base branch's keys.
+    # capture, or baselines whose git tree differs from the base branch's without the owner's
+    # approval of exactly that tree, made at a commit in the pull request's history. Once
+    # visual-review/passkeys.json on the base branch holds a key, that approval must carry a passkey
+    # signature by one of the base branch's keys.
     # It runs the published gate at a pinned version, so a pull request's own dependencies cannot
-    # change it. Depth 2: HEAD^1, the merge commit's first parent, is the base branch tip.
+    # change it. Full history (fetch-depth 0, blobs on demand): the approval's commit must be an
+    # ancestor of the merge commit, and HEAD^1, the merge commit's first parent, is the base branch tip.
     visual-gate:
         name: Visual gate
         needs: visual
@@ -136,7 +138,7 @@ jobs:
         steps:
             - uses: actions/checkout@v4
               with:
-                  fetch-depth: 2
+                  fetch-depth: 0
                   filter: blob:none
 
             - name: Download visual captures

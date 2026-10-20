@@ -51,6 +51,7 @@ describe("normalizeConfig", () => {
             defaultBranch: "main",
             workflow: "visual-review.yml",
             baselines: "visual-baselines",
+            approvals: "visual-review-approvals",
             workDir: ".visual-review",
             commitPrefix: "test",
             issueLabels: ["bug"],
@@ -93,6 +94,10 @@ describe("normalizeConfig", () => {
         [{ projects: { a: { storybook: "../elsewhere" } } }, /storybook must be/],
         [{ projects: { a: { storybook: "/abs" } } }, /storybook must be/],
         [{ baselines: "../up", projects: { a: { storybook: "s" } } }, /baselines must be a path/],
+        [
+            { approvals: "visual-baselines/approvals", projects: { a: { storybook: "s" } } },
+            /approvals must be a directory outside/,
+        ],
         [{ projects: { a: { storybook: "s", workers: 0 } } }, /workers/],
         [{ projects: { a: { storybook: "s", gate: false } } }, /gate is not a setting/],
         [{ projects: { a: { storybook: "s", waitFor: { selector: "x" } } } }, /waitFor needs/],

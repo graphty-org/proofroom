@@ -16,6 +16,7 @@ const DEFAULTS = {
     defaultBranch: "main",
     workflow: "visual-review.yml",
     baselines: "visual-baselines",
+    approvals: "visual-review-approvals",
     workDir: ".visual-review",
     commitPrefix: "test",
     issueLabels: ["bug"],
@@ -33,7 +34,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
 /**
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
- * @returns {{ defaultBranch: string, workflow: string, baselines: string, workDir: string,
+ * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, workDir: string,
  *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, usage: boolean, projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
@@ -48,7 +49,31 @@ export function normalizeConfig(input) {
     }
     /** @type {any} */
     const out = { ...DEFAULTS };
-    for (const key of ["defaultBranch", "workflow", "baselines", "workDir", "commitPrefix"]) {
+    stringSettings(raw, out, fail);
+    pathSettings(out, fail);
+    apart(out, fail);
+    commandSettings(raw, out, fail);
+    // Usage events: the review page's timeline, kept only in the work directory (README, "Usage
+    // events"). Off unless a repository turns it on.
+    out.usage = usageSetting(raw.usage, fail);
+    if (raw.issueLabels !== undefined) {
+        if (!Array.isArray(raw.issueLabels) || raw.issueLabels.some((l) => typeof l !== "string")) {
+            fail("issueLabels must be an array of strings");
+        }
+        out.issueLabels = raw.issueLabels;
+    }
+    out.projects = projectsSetting(raw.projects, fail);
+    return out;
+}
+
+/**
+ * The plain string settings: each, when set, a non-empty string.
+ * @param {any} raw the parsed config
+ * @param {any} out the settings being filled in
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function stringSettings(raw, out, fail) {
+    for (const key of ["defaultBranch", "workflow", "baselines", "approvals", "workDir", "commitPrefix"]) {
         if (raw[key] !== undefined) {
             if (typeof raw[key] !== "string" || raw[key] === "") {
                 fail(`${key} must be a non-empty string`);
@@ -56,12 +81,29 @@ export function normalizeConfig(input) {
             out[key] = raw[key];
         }
     }
-    for (const key of ["baselines", "workDir"]) {
+}
+
+/**
+ * The directory settings: each a path inside the repository, without a trailing slash.
+ * @param {any} out the settings being filled in
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function pathSettings(out, fail) {
+    for (const key of ["baselines", "approvals", "workDir"]) {
         if (!REPO_PATH.test(out[key])) {
             fail(`${key} must be a path inside the repository, relative and without ".."`);
         }
         out[key] = out[key].replace(/\/+$/, "");
     }
+}
+
+/**
+ * The optional fontconfig file and update check command.
+ * @param {any} raw the parsed config
+ * @param {any} out the settings being filled in
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function commandSettings(raw, out, fail) {
     // The fontconfig file every capture draws with (FONTCONFIG_FILE), so local and CI captures use
     // the same committed fonts instead of whatever the host has installed. Null: host fonts.
     if (raw.fontconfig !== undefined && raw.fontconfig !== null) {
@@ -78,61 +120,93 @@ export function normalizeConfig(input) {
         }
         out.updateCheck = raw.updateCheck;
     }
-    // Usage events: the review page's timeline, kept only in the work directory (README, "Usage
-    // events"). Off unless a repository turns it on.
-    out.usage = usageSetting(raw.usage, fail);
-    if (raw.issueLabels !== undefined) {
-        if (!Array.isArray(raw.issueLabels) || raw.issueLabels.some((l) => typeof l !== "string")) {
-            fail("issueLabels must be an array of strings");
-        }
-        out.issueLabels = raw.issueLabels;
-    }
-    const projects = raw.projects;
+}
+
+/**
+ * The `projects` setting: at least one, each checked by projectSetting.
+ * @param {any} projects the config's value
+ * @param {(msg: string) => never} fail throws the config error
+ * @returns {Record<string, any>} the projects by id
+ */
+function projectsSetting(projects, fail) {
     if (typeof projects !== "object" || projects === null || Object.keys(projects).length === 0) {
         fail('projects must name at least one Storybook, e.g. { "web": { "storybook": "storybook-static" } }');
     }
-    out.projects = {};
+    const out = {};
     for (const [id, p] of Object.entries(projects)) {
-        const where = `projects.${id}`;
-        if (!PROJECT_ID.test(id)) {
-            fail(`${where}: a project id is lowercase letters, digits and "-"`);
-        }
-        if (typeof p !== "object" || p === null) {
-            fail(`${where} must be an object`);
-        }
-        if (typeof p.storybook !== "string" || !REPO_PATH.test(p.storybook)) {
-            fail(`${where}.storybook must be the built Storybook's directory, relative to the repository`);
-        }
-        if (p.build !== undefined && typeof p.build !== "string") {
-            fail(`${where}.build must be a shell command`);
-        }
-        const workers = p.workers ?? 4;
-        if (!Number.isInteger(workers) || workers < 1) {
-            fail(`${where}.workers must be a positive integer`);
-        }
-        if (p.seedFromDefaultBranch !== undefined && typeof p.seedFromDefaultBranch !== "boolean") {
-            fail(`${where}.seedFromDefaultBranch must be true or false`);
-        }
-        if (p.gate !== undefined) {
-            fail(`${where}.gate is not a setting: every project is gated, and every story needs an approved baseline`);
-        }
-        let waitFor = null;
-        if (p.waitFor !== undefined && p.waitFor !== null) {
-            const w = p.waitFor;
-            if (typeof w?.selector !== "string" || typeof w?.method !== "string") {
-                fail(`${where}.waitFor needs a "selector" and a "method" to call on each matching element`);
-            }
-            waitFor = { selector: w.selector, method: w.method, failOnConsole: w.failOnConsole ?? null };
-        }
-        out.projects[id] = {
-            storybook: p.storybook.replace(/\/+$/, ""),
-            build: p.build ?? null,
-            workers,
-            seedFromDefaultBranch: p.seedFromDefaultBranch ?? true,
-            waitFor,
-        };
+        out[id] = projectSetting(id, p, fail);
     }
     return out;
+}
+
+/**
+ * One project's settings, with the defaults filled in.
+ * @param {string} id the project id
+ * @param {any} p the config's value
+ * @param {(msg: string) => never} fail throws the config error
+ * @returns {{ storybook: string, build: string | null, workers: number, seedFromDefaultBranch: boolean,
+ *     waitFor: { selector: string, method: string, failOnConsole: string | null } | null }} the project
+ */
+function projectSetting(id, p, fail) {
+    const where = `projects.${id}`;
+    if (!PROJECT_ID.test(id)) {
+        fail(`${where}: a project id is lowercase letters, digits and "-"`);
+    }
+    if (typeof p !== "object" || p === null) {
+        fail(`${where} must be an object`);
+    }
+    if (typeof p.storybook !== "string" || !REPO_PATH.test(p.storybook)) {
+        fail(`${where}.storybook must be the built Storybook's directory, relative to the repository`);
+    }
+    if (p.build !== undefined && typeof p.build !== "string") {
+        fail(`${where}.build must be a shell command`);
+    }
+    const workers = p.workers ?? 4;
+    if (!Number.isInteger(workers) || workers < 1) {
+        fail(`${where}.workers must be a positive integer`);
+    }
+    if (p.seedFromDefaultBranch !== undefined && typeof p.seedFromDefaultBranch !== "boolean") {
+        fail(`${where}.seedFromDefaultBranch must be true or false`);
+    }
+    if (p.gate !== undefined) {
+        fail(`${where}.gate is not a setting: every project is gated, and every story needs an approved baseline`);
+    }
+    return {
+        storybook: p.storybook.replace(/\/+$/, ""),
+        build: p.build ?? null,
+        workers,
+        seedFromDefaultBranch: p.seedFromDefaultBranch ?? true,
+        waitFor: waitForSetting(where, p.waitFor, fail),
+    };
+}
+
+/**
+ * A project's `waitFor` setting, or null when unset.
+ * @param {string} where the project's place in the config, for errors
+ * @param {any} w the config's value
+ * @param {(msg: string) => never} fail throws the config error
+ * @returns {{ selector: string, method: string, failOnConsole: string | null } | null} the setting
+ */
+function waitForSetting(where, w, fail) {
+    if (w === undefined || w === null) {
+        return null;
+    }
+    if (typeof w?.selector !== "string" || typeof w?.method !== "string") {
+        fail(`${where}.waitFor needs a "selector" and a "method" to call on each matching element`);
+    }
+    return { selector: w.selector, method: w.method, failOnConsole: w.failOnConsole ?? null };
+}
+
+/**
+ * Refuses an approvals directory inside the baselines directory, or the other way round: the
+ * owner's approvals sign the baselines directory's tree, so adding one must not change it.
+ * @param {{ baselines: string, approvals: string }} out the settings
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function apart({ baselines, approvals }, fail) {
+    if (`${approvals}/`.startsWith(`${baselines}/`) || `${baselines}/`.startsWith(`${approvals}/`)) {
+        fail("approvals must be a directory outside baselines, and baselines outside approvals");
+    }
 }
 
 /**
