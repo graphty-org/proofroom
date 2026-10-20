@@ -2798,4 +2798,38 @@ describe("serve: against the default branch", () => {
         expect(item).toMatchObject({ status: "unchanged", baseline: master });
         expect(item.vsBase).toBeUndefined();
     });
+
+    it("shows the branch's baseline for an item unchanged within tolerance of a baseline the branch changed", async () => {
+        const r = makeRepo();
+        const DIR = "visual-baselines/compact-mantine";
+        const badge = readFileSync(join(FIXTURE, "compact-mantine/badge--default.light.png"));
+        git(r.repo, "checkout", "-q", "feature");
+        writeFileSync(join(r.repo, DIR, "input--default.png"), badge);
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "earlier accepts");
+        git(r.repo, "push", "-q", "origin", "feature");
+        const head = git(r.repo, "rev-parse", "HEAD");
+        git(r.repo, "checkout", "-q", "master");
+        const master = contentHash(Buffer.from(git(r.repo, "show", `master:${DIR}/input--default.png`)));
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        // Within tolerance of the branch's baseline, with bytes of its own the artifact does not hold.
+        const items = fixture.items.map((i) =>
+            i.file === "input--default.png" ? { ...i, baseline: sha256(badge), capture: "f".repeat(64) } : i,
+        );
+        const s = await start({
+            ...r,
+            head,
+            gh: onePr({
+                results: {
+                    "visual-compact-mantine-1": { commit: head, headSha: head, items, expected: items.length },
+                    "visual-graphty-element-1": { commit: head, headSha: head },
+                },
+            }),
+        });
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const item = body.items.find((i) => i.file === "input--default.png");
+        expect(item).toMatchObject({ status: "changed", baseline: master, capture: sha256(badge), vsBase: true });
+        const capture = await s.api("GET", "/api/img/123/compact-mantine/capture/input--default.png");
+        expect(sha256(capture.body)).toBe(sha256(badge));
+    });
 });

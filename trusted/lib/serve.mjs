@@ -459,8 +459,11 @@ function compareWithBase(results, blobs, hashOf) {
             continue;
         }
         const status = base === null ? "new" : "changed";
+        // What the branch holds, and what a signature covers, is its baseline: the capture only
+        // matched it within tolerance, and the artifact does not keep an unchanged capture.
         Object.assign(item, {
             status,
+            capture: item.baseline,
             baseline: base,
             baselineSize: null,
             changedPixels: null,
