@@ -1506,10 +1506,10 @@ describe("review page: a pull request", () => {
         expect(sheet.slice(0, 6)).toEqual([
             "Finish #123, every project:",
             "Commit 4 accepts to feature.",
-            "Then set the commit status 'Visual review' to pending (3 undecided; not loaded: layout, algorithms, graphty, cytoscape-extensions).",
+            "Then set the commit status 'Visual review' to pending (3 undecided; not loaded: layout, algorithms, graphty, cytoscape-extensions, graph-io-fidelity).",
             "Accepted without opening: 4.",
             "Still undecided, and blocking the merge: compact-mantine 2, graphty-element 1.",
-            "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions.",
+            "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions, graph-io-fidelity.",
         ]);
         expect(dialogs[2]).toMatch(/Finish commits are (signed with|NOT signed)/);
         expect(dialogs[2]).toContain(`start the server from your own shell:\n${START}`);
@@ -2631,7 +2631,7 @@ describe("review page: Finish", () => {
             "Post 1 reject as a comment on #123.",
             "Then set the commit status 'Visual review' to failure (1 rejected).",
             "Still undecided, and blocking the merge: compact-mantine 4, graphty-element 1.",
-            "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions.",
+            "Not loaded, so not reviewed: layout, algorithms, graphty, cytoscape-extensions, graph-io-fidelity.",
             "Notes to publish:",
         ]);
         expect(dialogs[0]).toContain("Rejected compact-mantine/slider--sizes.png: too tall");
@@ -2676,6 +2676,13 @@ describe("review page: Finish", () => {
             "Pushing: done",
         ]);
 
+        // The reloaded page's list answers before it learns of the running Finish: the cards drawn
+        // from the list must still be drawn again without Finish.
+        const listed = page.waitForResponse((res) => new URL(res.url()).pathname === "/api/prs");
+        await page.route("**/api/finish-status", async (route) => {
+            await listed;
+            await route.continue();
+        });
         await page.reload();
         await expect.poll(status).toBe("Finishing #123: posting the status...");
         await expect
@@ -2691,7 +2698,7 @@ describe("review page: Finish", () => {
         await expect
             .poll(() => page.locator(".finish-outcome").textContent())
             .toMatch(
-                /^Finished #123\.Committed \w{10} to feature\.Commit status: pending -- 4 accepted, 0 rejected, 0 excluded, 3 undecided, not loaded: layout, algorithms, graphty, cytoscape-extensions\./,
+                /^Finished #123\.Committed \w{10} to feature\.Commit status: pending -- 4 accepted, 0 rejected, 0 excluded, 3 undecided, not loaded: layout, algorithms, graphty, cytoscape-extensions, graph-io-fidelity\./,
             );
         expect(await page.locator(".finish-running").count()).toBe(0);
         expect(await box()).toBeNull();
