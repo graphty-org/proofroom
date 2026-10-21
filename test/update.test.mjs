@@ -9,7 +9,7 @@ import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { gateProblems, reviewGaps, unrecordedChanges } from "../trusted/gate.mjs";
+import { gateProblems, treeApprovalProblems } from "../trusted/gate.mjs";
 import { updateFromMaster } from "../trusted/lib/accept.mjs";
 import { classify } from "../trusted/lib/compare.mjs";
 import {
@@ -66,20 +66,20 @@ describe("update from master", () => {
         expect(git(r.repo, "worktree", "list").split("\n")).toHaveLength(1);
     });
 
-    it("needs no review record: the gate finds the baseline unchanged and the capture shows it as changed", async () => {
+    it("takes master's baseline, and the merged tree needs the owner's approval again: the capture shows it as changed", async () => {
         const r = conflicted();
-        // Before the update, the branch's baseline is not what master's record approved.
-        expect(unrecordedChanges(r.master, r.feature, r.remote)).toEqual([
-            `${PATH}: changed with no review record taking it from its base branch contents to these`,
-        ]);
         await update(r);
         const head = git(r.remote, "rev-parse", "feature");
-        expect(unrecordedChanges(r.master, head, r.remote)).toEqual([]);
-        // With approvals enforced too: the update itself needs none (the old unsigned record is
-        // the pull request's own, refused as before, and covers nothing the gate needs).
-        const gaps = reviewGaps(r.master, head, r.remote, "visual-baselines", { keys: [makeKey().entry], pr: 123 });
-        expect(gaps.missing).toEqual([]);
-        expect(gaps.refused).toEqual(["visual-baselines/reviews/20260927T150405Z-pr123.json"]);
+        expect(git(r.remote, "show", `${head}:${PATH}`)).toBe(git(r.remote, "show", `${r.master}:${PATH}`));
+        const check = treeApprovalProblems({
+            base: r.master,
+            head,
+            cwd: r.remote,
+            baselines: "visual-baselines",
+            approvals: "visual-review-approvals",
+            keys: [makeKey().entry],
+        });
+        expect(check[0]).toMatch(/approves it/);
         // CI captures the story again against master's baseline: the pull request's image differs,
         // so it is `changed`, and the gate blocks until the owner reviews it.
         const item = classify({
