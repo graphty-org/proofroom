@@ -1,3 +1,13 @@
+## 0.2.34 (2026-10-20)
+
+### 🚀 Features
+
+- **visual-review:** approve screenshots by a signed baselines tree ([d0bdc047c](https://github.com/graphty-org/graphty-monorepo/commit/d0bdc047c))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.33 (2026-10-18)
 
 This was a version bump only for visual-review to align it with other projects, there were no code changes.
