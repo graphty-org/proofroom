@@ -5657,8 +5657,13 @@ async function checkFinish() {
         return;
     }
     if (running()) {
-        // The list may have answered first and drawn the cards with Finish offered: draw them again.
-        drawTargets();
+        // The screen may already be drawn from a list that answered first, with Finish offered:
+        // draw it again now that a Finish is known to run.
+        if (state.screen === "targets") {
+            drawTargets();
+        } else {
+            drawHeader();
+        }
         watchFinish();
     }
 }
