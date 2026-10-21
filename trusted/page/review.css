@@ -1659,3 +1659,25 @@ dialog.context {
 .comments {
     padding-left: 1.5em;
 }
+
+/* The images still undecided, beside Finish: never out of sight. */
+.finish-tally {
+    color: var(--muted);
+}
+
+.finish-tally.left {
+    color: var(--warn);
+    font-weight: 600;
+}
+
+/* A narrow header has no room beside Finish: there the target menu carries the count ("#123 (17)"),
+   and the tally stays for screen readers. */
+@media (max-width: 1049.98px) {
+    #crumbs:not([hidden]) ~ #finish-slot .finish-tally {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+    }
+}

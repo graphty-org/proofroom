@@ -1,3 +1,31 @@
+## 0.2.35 (2026-10-21)
+
+### 🚀 Features
+
+- **visual-review:** approve baselines by a signed tree, not per pull request ([a19570386](https://github.com/graphty-org/graphty-monorepo/commit/a19570386))
+
+### 🩹 Fixes
+
+- **visual-review:** show the branch's baseline for an item changed only against master ([3ca52fcd5](https://github.com/graphty-org/graphty-monorepo/commit/3ca52fcd5))
+- **visual-review:** keep an image unchanged within tolerance when master holds its baseline ([80e413c2c](https://github.com/graphty-org/graphty-monorepo/commit/80e413c2c))
+- **visual-review:** check the prepared approval exists before comparing it ([80da7b8b2](https://github.com/graphty-org/graphty-monorepo/commit/80da7b8b2))
+- **visual-review:** type the finish approval lookup so a missing entry is handled ([c6dcb5fec](https://github.com/graphty-org/graphty-monorepo/commit/c6dcb5fec))
+- **visual-review:** make undecided images obvious and keep them after a partial Finish ([#3235](https://github.com/graphty-org/graphty-monorepo/issues/3235))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
+## 0.2.34 (2026-10-20)
+
+### 🚀 Features
+
+- **visual-review:** approve screenshots by a signed baselines tree ([d0bdc047c](https://github.com/graphty-org/graphty-monorepo/commit/d0bdc047c))
+
+### ❤️ Thank You
+
+- Adam Powers @apowers313
+
 ## 0.2.33 (2026-10-18)
 
 This was a version bump only for visual-review to align it with other projects, there were no code changes.

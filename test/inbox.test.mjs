@@ -26,8 +26,10 @@ describe("inboxOf", () => {
         target(4, [project("a", { problem: "capture failed", logUrl: "https://gh/job/a" }), project("b")]),
         target(5, [project("a", { problem: "download failed: boom; reload the page to retry" }), project("b")]),
         target(6, [project("a", { problem: "waiting for CI on 1234567890" }), project("b")]),
+        target(11, [project("a", { problem: "local preview still capturing" }), project("b")]),
         target(7, [project("a"), project("b", { problem: "no capture" }), project("c", { problem: "not affected" })]),
         target(8, [project("a"), project("b")], { unpublished: 3 }),
+        target(10, [project("a", { rejected: 2 }), project("b")]),
         target(null, [project("a", { undecided: 9 })], { id: "master" }),
         target(9, [project("a", { undecided: 9 })], { local: true }),
     ];
@@ -57,7 +59,7 @@ describe("inboxOf", () => {
             }),
             expect.objectContaining({ pr: 5, reason: "download failed: boom", retry: true }),
         ]);
-        expect(inbox).toMatchObject({ capturing: 1, done: 1 });
+        expect(inbox).toMatchObject({ capturing: 2, done: 1, rejected: 1 });
     });
 
     it("keeps when a pull request became ready, and orders equal counts by it", () => {
@@ -79,6 +81,13 @@ describe("inboxOf", () => {
         expect(inbox.ready.map((r) => r.pr)).toEqual([3]);
         expect(inbox.notReady).toEqual([]);
         expect(inbox).toMatchObject({ drafts: 2, capturing: 0, done: 0 });
+    });
+
+    it("keeps a draft the owner Finished part of waiting, with the count left (issue 3235)", () => {
+        const draft = target(1, [project("a", { undecided: 17, decided: 93, finished: 93 })], { draft: true });
+        const inbox = inboxOf([draft], { now: 1 });
+        expect(inbox.ready).toEqual([expect.objectContaining({ pr: 1, undecided: 17, decided: 93 })]);
+        expect(inbox.drafts).toBe(0);
     });
 });
 

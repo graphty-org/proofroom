@@ -3,10 +3,12 @@ import { createServer, request } from "node:http";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
-import { parsePasskeys, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
+import { contentHash } from "../trusted/gate.mjs";
+import { parsePasskeys, recordHash, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
+import { sha256 } from "../trusted/lib/compare.mjs";
+import { approvalIndex } from "../trusted/lib/filters.mjs";
 import { downloadCaptures, hurry, newestMasterCapture, openPullRequests, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { unrecordedChanges } from "../trusted/gate.mjs";
 import { thumbnail } from "../trusted/lib/thumbs.mjs";
 import { PNG } from "pngjs";
 import { notifyOnce } from "../trusted/lib/inbox.mjs";
@@ -298,9 +300,9 @@ describe("serve: pull requests", () => {
     });
 
     it("answers other requests while a git call of the list's refresh is held", async () => {
-        // A git that holds the default branch's passkeys.json read (legacyApprovals' first call,
-        // or the check for the file before it) until the test releases it. Run on the server's own thread, as it once was, that read
-        // blocked every request, and a git that stalled for seconds timed out the list (#1496).
+        // A git that holds the read of the default branch's baselines (againstBase's cat-file) until
+        // the test releases it. A git call of the refresh run on the server's own thread, as one once
+        // was, blocked every request, and a git that stalled for seconds timed out the list (#1496).
         // On such a server the test cannot release it, so the hold ends by itself once the suite's
         // 60 s test limit has passed (6000 sleeps of at least 10 ms): git then fails, leaving a mark
         // the test checks, instead of carrying on as if released.
@@ -313,7 +315,7 @@ describe("serve: pull requests", () => {
             join(bin, "git"),
             [
                 "#!/bin/sh",
-                'case "$*" in "show "*":visual-review/passkeys.json" | *"cat-file -e "*":visual-review/passkeys.json")',
+                'case "$*" in "cat-file --batch")',
                 `  : > '${gate.held}'; i=0`,
                 `  while [ ! -e '${gate.release}' ]; do`,
                 `    [ $i -ge 6000 ] && { : > '${gate.expired}'; echo 'fake git: the held read was never released' >&2; exit 1; }`,
@@ -857,6 +859,40 @@ describe("serve: decisions and Finish", () => {
         expect(await unpublished()).toBe(1);
     });
 
+    it("lets a reject an earlier Finish posted be changed to an accept, which the next Finish commits", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const decide = (file, decision, reason) =>
+            s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
+        await decide("badge--default.light.png", "accept");
+        await decide("slider--sizes.png", "reject", "thumb moved");
+        const first = (await finishJob(s, "123")).job;
+        expect(first.error).toBeNull();
+        // Counted as rejected, waiting for a fix, never as nothing to decide.
+        const listed = (await s.api("GET", "/api/prs")).body;
+        expect(listed.targets[0].projects[0]).toMatchObject({ rejected: 1 });
+        expect(listed.inbox).toMatchObject({ done: 0 });
+        expect((await decide("slider--sizes.png", "accept")).status).toBe(200);
+        expect((await s.api("GET", "/api/target/123")).body.unpublished).toBe(1);
+        // The capture is of the head; the branch holds only the first Finish's commit on top of it.
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        expect(git(s.remote, "rev-parse", "feature~1")).toBe(first.result.commit);
+        const record = (commit) => {
+            const path = /Record: (\S+)/.exec(git(s.remote, "log", "-1", "--format=%B", commit))[1];
+            return JSON.parse(git(s.remote, "show", `${commit}:${path}`));
+        };
+        const slider = "visual-baselines/compact-mantine/slider--sizes.png";
+        // The earlier record keeps the reject; the new one accepts the image.
+        expect(record(first.result.commit).rejects).toEqual([
+            expect.objectContaining({ path: slider, reason: "thumb moved" }),
+        ]);
+        expect(record(job.result.commit).items).toEqual([expect.objectContaining({ path: slider })]);
+        expect(record(job.result.commit).rejects).toEqual([]);
+    });
+
     it("treats a finished accept as unpublished when the branch's baseline no longer holds its image", async () => {
         vi.spyOn(console, "log").mockImplementation(() => {});
         onTestFinished(() => vi.restoreAllMocks());
@@ -1169,6 +1205,83 @@ describe("serve: local previews of a pull request", () => {
         ]);
     });
 
+    it("keeps a preview current after a Finish's own commits, finishes on it again, and asks for a new one after any other commit (issue 3235)", async () => {
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => out.mockRestore());
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        // Without the fixture's failed story, which would hold the pull request out of the inbox.
+        preview(previews, "compact-mantine", r.head, { items: capturedItems() });
+        // GitHub lists the branch's tip as the draft's head.
+        const s = await start({
+            ...r,
+            gh: (x) => (args, input) =>
+                fakeGh({
+                    prs: [{ number: 123, head: git(x.remote, "rev-parse", "feature"), branch: "feature", draft: true }],
+                })(args, input),
+            previews,
+        });
+        await s.api("GET", "/api/prs");
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        expect((await finishJob(s, "123")).job.error).toBeNull();
+        const accepted = git(s.remote, "rev-parse", "feature");
+        // A Finish's approval commit, which changes only the approvals directory.
+        const approved = pushCommit(s.remote, "feature", `${FIXTURE_CONFIG.approvals}/t.json`);
+
+        // The head is the approval commit: the preview of the old head is still current, the accept
+        // finished and the rest undecided, and the draft still waits in the inbox with its count.
+        const after = (await s.api("GET", "/api/prs")).body;
+        const [t] = after.targets;
+        expect(t).toMatchObject({ headSha: r.head });
+        expect(t.projects[0]).toMatchObject({ preview: true, problem: null, decided: 1, finished: 1, undecided: 4 });
+        expect(after.inbox.ready).toEqual([expect.objectContaining({ pr: 123, undecided: 4, decided: 1 })]);
+        // A second Finish on the same preview commits on top of the earlier Finish's commits.
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        expect((await finishJob(s, "123")).job.error).toBeNull();
+        expect(git(s.remote, "rev-parse", "feature~1")).toBe(approved);
+        expect(git(s.remote, "rev-parse", "feature~2")).toBe(accepted);
+
+        // Anything else on the branch: no preview, and it says a new one is needed.
+        const other = pushCommit(s.remote, "feature", "src/other.txt");
+        const [moved] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(moved.projects[0]).toMatchObject({
+            preview: false,
+            problem: `a new preview is needed for this head (${other.slice(0, 10)}): run tools/visual-preview.sh 123`,
+        });
+    });
+
+    it("shows a project a preview of the head is still capturing as not loaded, and reads it again once status.json changes", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head, { items: capturedItems() });
+        const status = (state) =>
+            writeFileSync(
+                join(previews, "123/status.json"),
+                JSON.stringify({ state, head: r.head, pr: 123, projects: ["compact-mantine", "graphty-element"] }),
+            );
+        status("running");
+        // A CI run with no visual job (a draft's): every project of it is "no capture".
+        const s = await start({
+            ...r,
+            previews,
+            gh: () =>
+                fakeGh({
+                    prs: [{ number: 123, head: r.head, branch: "feature" }],
+                    runs: { [r.head]: { id: 1000, head: r.head } },
+                    jobs: { 1000: [] },
+                    artifacts: { 1000: [] },
+                }),
+        });
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.projects[0]).toMatchObject({ project: "compact-mantine", preview: true });
+        expect(t.projects[1]).toMatchObject({ project: "graphty-element", problem: "local preview still capturing" });
+
+        // The preview writes graphty-element and finishes: the page's next look at the list reads it.
+        preview(previews, "graphty-element", r.head);
+        status("done");
+        await until(async () => (await s.api("GET", "/api/prs?cached=1")).body.targets[0].projects[1].preview === true);
+    });
+
     it("carries decisions over to CI's capture where its bytes are identical, and shows a differing image undecided", async () => {
         // The made-up hash of CI's slider--sizes has no such bytes on disk: its thumbnail says so.
         const err = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1447,11 +1560,6 @@ describe("serve: safe filters", () => {
         const name = git(s.repo, "diff", "--name-only", s.master, "origin/feature", "--", "visual-baselines/reviews/");
         const committed = JSON.parse(git(s.repo, "show", `origin/feature:${name}`));
         expect(committed.items).toEqual([{ path: BUTTON, from: BASELINE, to: CAPTURE, reason: null, approvedBefore }]);
-        // CI gates the pull request merged into master, which holds the earlier approval. Merged as
-        // objects only: a checkout and a merge in the working tree run the Git LFS hooks and filter.
-        const tree = git(s.repo, "merge-tree", "--write-tree", "master", "origin/feature");
-        const merged = git(s.repo, "commit-tree", tree, "-p", "master", "-p", "origin/feature", "-m", "merge");
-        expect(unrecordedChanges("master", merged, s.repo)).toEqual([]);
         // What Finish published stays shown as published.
         ({ body } = await s.api("GET", "/api/pr/123/compact-mantine"));
         expect(body.decisions["button--primary.dark.png"]).toMatchObject({ approvedBefore, posted: true });
@@ -2380,11 +2488,14 @@ describe("serve: passkeys", () => {
 
     /**
      * Pull request #123, with a gh that also opens pull requests and records them.
+     * @param {string} [served] the origin the page says it is served from: an https one makes
+     *     approvals the gate (and approvalIndex) accepts, which never take a plain http origin
      * @returns {Promise<object>} the started app, plus `opened`, the pull requests opened
      */
-    async function startWithPulls() {
+    async function startWithPulls(served) {
         const opened = [];
         const s = await start({
+            ...(served && { origin: served }),
             gh: (r) => {
                 const gh = onePr()(r);
                 return async (args, input) => {
@@ -2396,9 +2507,37 @@ describe("serve: passkeys", () => {
                 };
             },
         });
+        if (served) {
+            const api = s.api;
+            s.api = (method, path, body, headers = {}) => api(method, path, body, { origin: served, ...headers });
+            s.origin = served;
+        }
         await s.api("GET", "/api/prs");
         return { ...s, opened };
     }
+    const HTTPS = "https://127.0.0.1:9443";
+
+    // finish-prepare's second call: the prepared record, signed by the key.
+    const signStep = (s, prepared, key = KEY) =>
+        s.api("POST", "/api/finish-prepare", {
+            id: "123",
+            challenge: prepared.challenge,
+            approval: approve(prepared.record, key, { origin: s.origin }),
+        });
+
+    // The images approvalIndex counts as approved before from the review records at the branch's tip.
+    const approvedBefore = (s) => {
+        const names = git(s.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/").split("\n");
+        const records = names.map((path) => ({
+            ref: "feature",
+            commit: "feature",
+            path,
+            record: JSON.parse(git(s.remote, "show", `feature:${path}`)),
+            main: false,
+        }));
+        return [...approvalIndex(records, [KEY.entry]).keys()];
+    };
+    const approvalsOn = (s) => git(s.remote, "log", "--format=%H", "feature", "--", "visual-review-approvals/");
 
     async function registerKey(s, key = KEY) {
         const { challenge } = (await s.api("POST", "/api/passkey-challenge", {})).body;
@@ -2411,6 +2550,24 @@ describe("serve: passkeys", () => {
     const decide = (s, file, decision = "accept", reason = null) =>
         s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
 
+    // Decides every image of #123: accepts what can be accepted, excludes the rest.
+    async function decideAll(s) {
+        for (const project of ["compact-mantine", "graphty-element"]) {
+            const { body } = await s.api("GET", `/api/pr/123/${project}`);
+            for (const { file, status } of body.items) {
+                const exclude = ["unstable", "failed"].includes(status);
+                if (exclude || ["changed", "moved", "new", "unseeded", "removed"].includes(status)) {
+                    const decision = exclude ? "exclude" : "accept";
+                    const reason = exclude ? "noisy" : null;
+                    expect(
+                        (await s.api("POST", "/api/decide", { id: "123", project, file, decision, reason })).status,
+                    ).toBe(200);
+                }
+            }
+        }
+    }
+    const filesOf = (s, ref = "feature") => git(s.remote, "show", "--name-only", "--format=", ref).split("\n");
+
     it("takes the session token and the served origin on every passkey route", async () => {
         const s = await startWithPulls();
         for (const route of ["passkey-challenge", "register", "finish-prepare"]) {
@@ -2420,24 +2577,27 @@ describe("serve: passkeys", () => {
         expect((await s.api("GET", "/api/passkeys", undefined, { "x-review-token": "x" })).status).toBe(401);
     });
 
-    it("needs nothing while no key is known", async () => {
+    it("needs nothing while no key is known, and signs nothing while images are undecided", async () => {
         const s = await startWithPulls();
         expect((await s.api("GET", "/api/passkeys")).body).toEqual({ rpId: "127.0.0.1", keys: [], required: false });
         await decide(s, "badge--default.light.png");
         expect((await s.api("POST", "/api/finish-prepare", { id: "123" })).body).toEqual({ required: false });
-        const { job } = await finishJob(s, "123");
-        expect(job.error).toBeNull();
-        expect(
-            JSON.parse(
-                git(
-                    s.remote,
-                    "show",
-                    `feature:${git(s.remote, "show", "--name-only", "--format=", "feature")
-                        .split("\n")
-                        .find((f) => f.includes("reviews/"))}`,
-                ),
-            ).version,
-        ).toBe(1);
+        expect((await finishJob(s, "123")).job.error).toBeNull();
+        const record = filesOf(s).find((f) => f.includes("reviews/"));
+        expect(JSON.parse(git(s.remote, "show", `feature:${record}`)).version).toBe(3);
+        expect(filesOf(s).some((f) => f.startsWith("visual-review-approvals/"))).toBe(false);
+    });
+
+    it("commits the statement unsigned while no key is known, once every image is decided", async () => {
+        const s = await startWithPulls();
+        await decideAll(s);
+        expect((await finishJob(s, "123")).job.error).toBeNull();
+        const [file] = filesOf(s);
+        expect(file).toMatch(/^visual-review-approvals\/[0-9a-f]{40}\.json$/);
+        const statement = JSON.parse(git(s.remote, "show", `feature:${file}`));
+        expect(statement).toMatchObject({ version: 1, commit: git(s.remote, "rev-parse", "feature^"), pr: 123 });
+        expect(statement.tree).toBe(git(s.remote, "rev-parse", "feature:visual-baselines"));
+        expect(statement.approval).toBeUndefined();
     });
 
     it("registers a passkey: a pull request adding it, and approval required from then on", async () => {
@@ -2494,14 +2654,10 @@ describe("serve: passkeys", () => {
         const added = await registerKey(s, later);
         expect(added.status).toBe(200);
         expect(added.body.gated).toBe(true);
-        await decide(s, "badge--default.light.png");
+        await decideAll(s);
         const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
         expect(prepared.allowCredentials).toEqual([KEY.entry.id]);
-        const refused = await s.api("POST", "/api/finish", {
-            id: "123",
-            challenge: prepared.challenge,
-            approval: approve(prepared.record, later, { origin: s.origin }),
-        });
+        const refused = await signStep(s, prepared, later);
         expect(refused.status).toBe(403);
         expect(refused.body.error).toMatch(/key not in passkeys.json/);
     });
@@ -2534,69 +2690,180 @@ describe("serve: passkeys", () => {
         expect(s.opened).toEqual([]);
     });
 
-    it("finishes only with a fresh, valid approval of the prepared record", async () => {
+    it("finishes only with fresh, valid approvals of the record and then the statement, and pushes both signed", async () => {
         quiet();
         const s = await startWithPulls();
         await registerKey(s);
-        await decide(s, "badge--default.light.png");
-        await decide(s, "slider--sizes.png", "reject", "tall");
+        await decideAll(s);
 
         expect((await s.api("POST", "/api/finish", { id: "123" })).status).toBe(400);
         const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
         expect(prepared).toMatchObject({
             required: true,
+            signs: "record",
+            tree: true,
             rpId: "127.0.0.1",
             allowCredentials: [KEY.entry.id],
-            accepts: 1,
-            excludes: 0,
-            rejects: 1,
+            record: { version: 2, pr: 123 },
         });
-        const approval = approve(prepared.record, KEY, { origin: s.origin });
-        // Another key's signature, and an approval for another origin.
+        expect(prepared.challenge).toBe(recordHash(prepared.record).toString("base64url"));
+        // Another key's signature of the record.
         const forged = approve(prepared.record, makeKey("127.0.0.1"), { origin: s.origin });
         forged.credentialId = KEY.entry.id;
-        const refused = await s.api("POST", "/api/finish", {
+        const bad = await s.api("POST", "/api/finish-prepare", {
             id: "123",
             challenge: prepared.challenge,
             approval: forged,
         });
+        expect(bad.status).toBe(403);
+        expect(bad.body.error).toMatch(/signature does not verify/);
+
+        // The record signed: the statement about the tree of the commit that holds it comes next.
+        const tree = (await signStep(s, prepared)).body;
+        expect(tree).toMatchObject({
+            required: true,
+            signs: "tree",
+            allowCredentials: [KEY.entry.id],
+            statement: { version: 1, baselines: "visual-baselines", pr: 123 },
+        });
+        const { statement } = tree;
+        // The accept commit is made, not pushed, and the statement signs its baselines tree.
+        expect(git(s.repo, "rev-parse", `${statement.commit}:visual-baselines`)).toBe(statement.tree);
+        expect(git(s.remote, "rev-parse", "feature")).toBe(git(s.repo, "rev-parse", `${statement.commit}^`));
+        expect(tree.challenge).toBe(recordHash(statement).toString("base64url"));
+        // The record approval answered once: a second one is stale.
+        expect((await signStep(s, prepared)).status).toBe(409);
+        const approval = approve(statement, KEY, { origin: s.origin });
+        const forgedTree = approve(statement, makeKey("127.0.0.1"), { origin: s.origin });
+        forgedTree.credentialId = KEY.entry.id;
+        const refused = await s.api("POST", "/api/finish", {
+            id: "123",
+            challenge: tree.challenge,
+            approval: forgedTree,
+        });
         expect(refused.status).toBe(403);
         expect(refused.body.error).toMatch(/signature does not verify/);
-        const elsewhere = approve(prepared.record, KEY, { origin: "https://127.0.0.1:1" });
+        const elsewhere = approve(statement, KEY, { origin: "https://127.0.0.1:1" });
         expect(
-            (await s.api("POST", "/api/finish", { id: "123", challenge: prepared.challenge, approval: elsewhere }))
-                .status,
+            (await s.api("POST", "/api/finish", { id: "123", challenge: tree.challenge, approval: elsewhere })).status,
         ).toBe(403);
         expect((await s.api("POST", "/api/finish", { id: "123", challenge: "x", approval })).status).toBe(409);
 
         // A decision changed after the prepare: the approval is stale.
-        await decide(s, "card--legacy.png");
-        expect(
-            (await s.api("POST", "/api/finish", { id: "123", challenge: prepared.challenge, approval })).status,
-        ).toBe(409);
-        await decide(s, "card--legacy.png", null);
+        await decide(s, "button--primary.dark.png", null);
+        expect((await s.api("POST", "/api/finish", { id: "123", challenge: tree.challenge, approval })).status).toBe(
+            409,
+        );
+        await decide(s, "button--primary.dark.png", "accept");
 
         const fresh = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        const freshTree = (await signStep(s, fresh)).body;
         const begun = await s.api("POST", "/api/finish", {
             id: "123",
-            challenge: fresh.challenge,
-            approval: approve(fresh.record, KEY, { origin: s.origin }),
+            challenge: freshTree.challenge,
+            approval: approve(freshTree.statement, KEY, { origin: s.origin }),
         });
         expect(begun.status).toBe(202);
         const job = await endedJob(s);
         expect(job.error).toBeNull();
-        const files = git(s.remote, "show", "--name-only", "--format=", "feature").split("\n");
-        const record = JSON.parse(git(s.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
-        expect(record).toMatchObject({ version: 2, pr: 123, reviewedAt: fresh.record.reviewedAt });
-        expect(record.rejects).toHaveLength(1);
-        expect(verifyApproval(record, [KEY.entry], { origin: s.origin })).toBeNull();
+        const file = `visual-review-approvals/${freshTree.statement.tree}.json`;
+        expect(filesOf(s)).toEqual([file]);
+        expect(git(s.remote, "rev-parse", "feature^")).toBe(freshTree.statement.commit);
+        const signed = JSON.parse(git(s.remote, "show", `feature:${file}`));
+        expect(signed).toMatchObject(freshTree.statement);
+        expect(verifyApproval(signed, [KEY.entry], { origin: s.origin })).toBeNull();
         // The gate takes only an https origin; this test server is plain http.
-        expect(verifyRecord(record, [KEY.entry], { pr: 123 })).toMatch(/not on the review page's origin/);
+        expect(verifyApproval(signed, [KEY.entry])).toMatch(/not on the review page's origin/);
+        // The record in the signed tree carries its own approval.
+        const path = filesOf(s, "feature^").find((f) => f.includes("reviews/"));
+        const record = JSON.parse(git(s.remote, "show", `feature:${path}`));
+        expect(record).toMatchObject({ version: 2, pr: 123 });
+        expect(verifyApproval(record, [KEY.entry], { origin: s.origin })).toBeNull();
         // Used once.
         expect(
-            (await s.api("POST", "/api/finish", { id: "123", challenge: fresh.challenge, approval: record.approval }))
-                .status,
+            (
+                await s.api("POST", "/api/finish", {
+                    id: "123",
+                    challenge: freshTree.challenge,
+                    approval: signed.approval,
+                })
+            ).status,
         ).toBe(409);
+    });
+
+    it("signs the decisions of a Finish that rejects or leaves anything undecided, never its tree, and they count as approved before", async () => {
+        quiet();
+        const s = await startWithPulls(HTTPS);
+        await registerKey(s);
+        await decide(s, "badge--default.light.png");
+        expect((await s.api("POST", "/api/finish-prepare", { id: "123" })).body).toMatchObject({
+            required: true,
+            signs: "record",
+            tree: false,
+            unsigned: "undecided",
+        });
+        await decideAll(s);
+        await decide(s, "slider--sizes.png", null);
+        await decide(s, "slider--sizes.png", "reject", "tall");
+        const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        expect(prepared).toMatchObject({ required: true, signs: "record", tree: false, unsigned: "rejects" });
+        // Without the record's approval, nothing is pushed.
+        expect((await s.api("POST", "/api/finish", { id: "123" })).status).toBe(400);
+        expect(git(s.remote, "rev-parse", "feature")).toBe(s.head);
+
+        expect((await signStep(s, prepared)).body).toEqual({ required: false, signed: true });
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        expect(job.result.rejects).toBe(1);
+        // One commit: the accepts and the signed record. No statement: the merge stays blocked.
+        expect(git(s.remote, "rev-parse", "feature^")).toBe(s.head);
+        expect(approvalsOn(s)).toBe("");
+        const path = filesOf(s).find((f) => f.includes("reviews/"));
+        const record = JSON.parse(git(s.remote, "show", `feature:${path}`));
+        expect(record).toMatchObject({ version: 2, pr: 123 });
+        expect(record.rejects).toHaveLength(1);
+        expect(verifyRecord(record, [KEY.entry], { pr: 123 })).toBeNull();
+        expect(approvedBefore(s).length).toBe(record.items.filter((i) => i.to !== null).length);
+        expect(approvedBefore(s).length).toBeGreaterThan(0);
+    });
+
+    it("signs an earlier Finish's record that was pushed unsigned when Finish is pressed with nothing new", async () => {
+        quiet();
+        const s = await startWithPulls(HTTPS);
+        // Before any key: the Finish with a reject pushes its record unsigned.
+        await decide(s, "badge--default.light.png");
+        await decide(s, "slider--sizes.png", "reject", "tall");
+        expect((await finishJob(s, "123")).job.error).toBeNull();
+        const first = git(s.remote, "rev-parse", "feature");
+        const path = filesOf(s).find((f) => f.includes("reviews/"));
+        const unsigned = JSON.parse(git(s.remote, "show", `feature:${path}`));
+        expect(unsigned.approval).toBeUndefined();
+        expect(approvedBefore(s)).toEqual([]);
+
+        await registerKey(s);
+        expect((await s.api("GET", "/api/target/123")).body).toMatchObject({ unpublished: 0, resign: true });
+        const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        expect(prepared).toMatchObject({ required: true, signs: "record", resign: true, tree: false });
+        expect(prepared.record).toEqual({ ...unsigned, version: 2 });
+        expect((await signStep(s, prepared)).body).toEqual({ required: false, signed: true });
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        expect(job.result).toMatchObject({ resigned: true, rejects: 0 });
+
+        // One commit on top, changing only that record: no decision is added or posted again.
+        expect(git(s.remote, "rev-parse", "feature^")).toBe(first);
+        expect(filesOf(s)).toEqual([path]);
+        expect(git(s.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/")).toBe(path);
+        const signed = JSON.parse(git(s.remote, "show", `feature:${path}`));
+        expect({ ...signed, approval: undefined, version: 3 }).toEqual({ ...unsigned, approval: undefined });
+        expect(verifyRecord(signed, [KEY.entry], { pr: 123 })).toBeNull();
+        expect(approvedBefore(s)).toEqual([
+            "visual-baselines/compact-mantine/badge--default.light.png " + unsigned.items[0].to,
+        ]);
+        expect(approvalsOn(s)).toBe("");
+        // Signed once: nothing is left to sign.
+        expect((await s.api("GET", "/api/target/123")).body.resign).toBe(false);
+        expect((await s.api("POST", "/api/finish-prepare", { id: "123" })).body).toMatchObject({ required: false });
     });
 
     it("says so when no key is registered for the page's host", async () => {
@@ -2604,9 +2871,145 @@ describe("serve: passkeys", () => {
         const s = await startWithPulls();
         mkdirSync(join(s.tmp, "state"), { recursive: true });
         writeFileSync(join(s.tmp, "state/passkeys-pending.json"), passkeysJson(makeKey("dev.ato.ms")));
-        await decide(s, "badge--default.light.png");
+        await decideAll(s);
         const r = await s.api("POST", "/api/finish-prepare", { id: "123" });
         expect(r.status).toBe(409);
         expect(r.body.error).toMatch(/^no passkey is registered for 127\.0\.0\.1: .*\(dev\.ato\.ms\)/);
+    });
+});
+
+describe("serve: against the default branch", () => {
+    it("shows what the branch already changed against master's baselines, and serves master's image", async () => {
+        const r = makeRepo();
+        const DIR = "visual-baselines/compact-mantine";
+        const badge = readFileSync(join(FIXTURE, "compact-mantine/badge--default.light.png"));
+        const master = (file) => contentHash(Buffer.from(git(r.repo, "show", `master:${DIR}/${file}`)));
+        // The branch already holds its own baseline of input--default (an earlier Finish), and has
+        // deleted card--legacy's; the capture matches the branch, so against it both look unchanged.
+        git(r.repo, "checkout", "-q", "feature");
+        writeFileSync(join(r.repo, DIR, "input--default.png"), badge);
+        git(r.repo, "rm", "-q", `${DIR}/card--legacy.png`);
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "earlier accepts");
+        git(r.repo, "push", "-q", "origin", "feature");
+        const head = git(r.repo, "rev-parse", "HEAD");
+        git(r.repo, "checkout", "-q", "master");
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        const items = fixture.items
+            .filter((i) => i.file !== "card--legacy.png")
+            .map((i) =>
+                i.file === "input--default.png" ? { ...i, baseline: sha256(badge), capture: sha256(badge) } : i,
+            );
+        const s = await start({
+            ...r,
+            head,
+            gh: onePr({
+                results: {
+                    "visual-compact-mantine-1": { commit: head, headSha: head, items, expected: items.length },
+                    "visual-graphty-element-1": { commit: head, headSha: head },
+                },
+            }),
+        });
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const byFile = Object.fromEntries(body.items.map((i) => [i.file, i]));
+        expect(byFile["input--default.png"]).toMatchObject({
+            status: "changed",
+            baseline: master("input--default.png"),
+            capture: sha256(badge),
+            vsBase: true,
+        });
+        expect(byFile["card--legacy.png"]).toMatchObject({
+            status: "removed",
+            baseline: master("card--legacy.png"),
+            capture: null,
+            vsBase: true,
+        });
+        // What the branch changes against its own baselines is shown as before.
+        expect(byFile["button--primary.dark.png"]).toMatchObject({ status: "changed" });
+        expect(byFile["button--primary.dark.png"].vsBase).toBeUndefined();
+        for (const file of ["input--default.png", "card--legacy.png"]) {
+            const img = await s.api("GET", `/api/img/123/compact-mantine/baseline/${file}`);
+            expect(img.status).toBe(200);
+            expect(sha256(img.body)).toBe(master(file));
+        }
+        // The capture of an unchanged item is not in the artifact: it is the branch's baseline.
+        const capture = await s.api("GET", "/api/img/123/compact-mantine/capture/input--default.png");
+        expect(sha256(capture.body)).toBe(sha256(badge));
+        // Both are decided like any other change, and count as undecided until they are.
+        const summary = (await s.api("GET", "/api/target/123")).body;
+        const undecided = summary.projects.find((p) => p.project === "compact-mantine").undecided;
+        const decide = (file) =>
+            s.api("POST", "/api/decide", {
+                id: "123",
+                project: "compact-mantine",
+                file,
+                decision: "accept",
+                reason: null,
+            });
+        expect((await decide("input--default.png")).status).toBe(200);
+        expect((await decide("card--legacy.png")).status).toBe(200);
+        const after = (await s.api("GET", "/api/target/123")).body;
+        expect(after.projects.find((p) => p.project === "compact-mantine").undecided).toBe(undecided - 2);
+    });
+
+    it("keeps an item unchanged within tolerance whose baseline is master's, though its bytes differ", async () => {
+        const r = makeRepo();
+        const DIR = "visual-baselines/compact-mantine";
+        const head = git(r.repo, "rev-parse", "feature");
+        const master = contentHash(Buffer.from(git(r.repo, "show", `master:${DIR}/input--default.png`)));
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        // The capture matched the baseline within its threshold, and the artifact does not hold it.
+        const items = fixture.items.map((i) =>
+            i.file === "input--default.png" ? { ...i, baseline: master, capture: "f".repeat(64) } : i,
+        );
+        const s = await start({
+            ...r,
+            head,
+            gh: onePr({
+                results: {
+                    "visual-compact-mantine-1": { commit: head, headSha: head, items, expected: items.length },
+                    "visual-graphty-element-1": { commit: head, headSha: head },
+                },
+            }),
+        });
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        expect(body.problem ?? null).toBeNull();
+        const item = body.items.find((i) => i.file === "input--default.png");
+        expect(item).toMatchObject({ status: "unchanged", baseline: master });
+        expect(item.vsBase).toBeUndefined();
+    });
+
+    it("shows the branch's baseline for an item unchanged within tolerance of a baseline the branch changed", async () => {
+        const r = makeRepo();
+        const DIR = "visual-baselines/compact-mantine";
+        const badge = readFileSync(join(FIXTURE, "compact-mantine/badge--default.light.png"));
+        git(r.repo, "checkout", "-q", "feature");
+        writeFileSync(join(r.repo, DIR, "input--default.png"), badge);
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "earlier accepts");
+        git(r.repo, "push", "-q", "origin", "feature");
+        const head = git(r.repo, "rev-parse", "HEAD");
+        git(r.repo, "checkout", "-q", "master");
+        const master = contentHash(Buffer.from(git(r.repo, "show", `master:${DIR}/input--default.png`)));
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        // Within tolerance of the branch's baseline, with bytes of its own the artifact does not hold.
+        const items = fixture.items.map((i) =>
+            i.file === "input--default.png" ? { ...i, baseline: sha256(badge), capture: "f".repeat(64) } : i,
+        );
+        const s = await start({
+            ...r,
+            head,
+            gh: onePr({
+                results: {
+                    "visual-compact-mantine-1": { commit: head, headSha: head, items, expected: items.length },
+                    "visual-graphty-element-1": { commit: head, headSha: head },
+                },
+            }),
+        });
+        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
+        const item = body.items.find((i) => i.file === "input--default.png");
+        expect(item).toMatchObject({ status: "changed", baseline: master, capture: sha256(badge), vsBase: true });
+        const capture = await s.api("GET", "/api/img/123/compact-mantine/capture/input--default.png");
+        expect(sha256(capture.body)).toBe(sha256(badge));
     });
 });

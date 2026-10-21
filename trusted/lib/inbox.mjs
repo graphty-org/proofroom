@@ -4,8 +4,9 @@
  * `inboxOf` sorts the review server's pull requests into what is waiting for the owner ("ready":
  * images to decide, or decisions not yet finished), what cannot be reviewed ("notReady": a capture
  * that failed, or a capture with a story that failed, with its reason) and three counts (capturing, nothing to decide,
- * drafts: a draft pull request is still being worked on, so it is never offered). The server answers
- * it on GET /api/inbox and keeps it in `<workDir>/state/inbox.json`.
+ * drafts: a draft pull request is still being worked on, so it is never offered, unless the owner
+ * already Finished part of it). The server answers it on GET /api/inbox and keeps it in
+ * `<workDir>/state/inbox.json`.
  *
  * `coupledGroups` finds the pull requests that change the same baseline files: they conflict when
  * the first of them merges, so the inbox shows them as one group, oldest first, with
@@ -26,8 +27,10 @@ import { promisify } from "node:util";
 
 import { NOT_AFFECTED } from "./results.mjs";
 
+/** A project a local preview of the head is still capturing: not loaded yet, never "nothing to decide". */
+export const PREVIEW_CAPTURING = "local preview still capturing";
 // A project still being captured or downloaded, rather than one whose capture failed.
-const CAPTURING = /^(waiting for CI|CI still running)/;
+const CAPTURING = new RegExp(`^(waiting for CI|CI still running|${PREVIEW_CAPTURING})`);
 // A project the run did not capture at all (no job ran for it, or the pull request does not affect
 // it): nothing to decide.
 const NONE = new Set(["no capture", NOT_AFFECTED]);
@@ -94,22 +97,25 @@ function notReadyEntry(about, failed, failedStory) {
  * @param {{ now: number, since?: Map<string, number>, coupling?: Map<string, { paths: string[],
  *     images: string[], packages: string[] | null }> }} at the time, when each ready entry (by
  *     readyKey) entered the ready list before, and what each pull request changes (coupledGroups)
- * @returns {{ ready: object[], notReady: object[], capturing: number, done: number, drafts: number,
+ * @returns {{ ready: object[], notReady: object[], capturing: number, done: number, rejected: number,
+ *     drafts: number,
  *     groups: (ReturnType<typeof coupledGroups>[number] & { states: string[] })[] }} the inbox;
  *     `ready` complete ones first, then fewest undecided images, then longest waiting; `groups`
  *     those with a member listed, with each member's state ("ready", "notReady", "capturing",
- *     "done", "draft" or "unknown") in `ids` order
+ *     "done", "rejected", "draft" or "unknown") in `ids` order; `rejected` counts those with nothing
+ *     to decide but rejects an earlier Finish posted, waiting for a fix
  */
 export function inboxOf(targets, { now, since = new Map(), coupling = new Map() }) {
-    const inbox = { ready: [], notReady: [], capturing: 0, done: 0, drafts: 0, groups: [] };
+    const inbox = { ready: [], notReady: [], capturing: 0, done: 0, rejected: 0, drafts: 0, groups: [] };
     const state = new Map();
     for (const t of targets) {
         if (t.pr === null || t.local) {
             continue;
         }
         // A draft is still being worked on: nothing in it is ready for the owner, even a capture
-        // CI made before it went back to draft.
-        if (t.draft) {
+        // CI made before it went back to draft. One the owner already Finished part of (a cut
+        // reviewed on a local preview) still waits for the rest.
+        if (t.draft && !t.projects.some((p) => p.finished > 0)) {
             state.set(t.id, "draft");
             inbox.drafts++;
             continue;
@@ -132,6 +138,7 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
             inbox.ready.push({
                 ...about,
                 undecided,
+                decided: loaded.reduce((n, p) => n + (p.decided ?? 0), 0),
                 unpublished: t.unpublished,
                 loaded: loaded.length,
                 total: t.projects.length,
@@ -142,6 +149,9 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
         } else if (loaded.length < t.projects.length) {
             state.set(t.id, "capturing");
             inbox.capturing++;
+        } else if (loaded.some((p) => p.rejected > 0)) {
+            state.set(t.id, "rejected");
+            inbox.rejected++;
         } else {
             state.set(t.id, "done");
             inbox.done++;

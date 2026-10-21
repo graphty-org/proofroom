@@ -10,11 +10,17 @@ beforeAll(isolateGit);
 
 const CI = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
 
-// The `visual` job's matrix: "- project: <name>" followed by "artifact: <name>".
+// The `visual` job's matrix: "- project: <name>" followed by "artifact: <name>" and, for a Storybook that is not
+// at <name>/storybook-static, "storybook: <directory>".
 function visualMatrix() {
     const job = CI.slice(CI.indexOf("\n    visual:\n"));
     const include = job.slice(job.indexOf("include:"), job.indexOf("steps:"));
-    return Object.fromEntries([...include.matchAll(/- project: (\S+)\s+artifact: (\S+)/g)].map((m) => [m[1], m[2]]));
+    return Object.fromEntries(
+        [...include.matchAll(/- project: (\S+)\s+artifact: (\S+)(?:\s+storybook: (\S+))?/g)].map((m) => [
+            m[1],
+            { artifact: m[2], storybook: m[3] ?? `${m[1]}/storybook-static` },
+        ]),
+    );
 }
 
 // The `build` job alone, so a matching download step in a later job cannot stand in for its upload.
@@ -29,9 +35,13 @@ describe("the monorepo's visual-review.config.json", () => {
     });
 
     it("points each project at the Storybook the build job uploads, where the visual job puts it", () => {
-        for (const [name, artifact] of Object.entries(visualMatrix())) {
+        // The download step puts the artifact at the row's storybook, else at <name>/storybook-static.
+        expect(CI.slice(CI.indexOf("\n    visual:\n"))).toContain(
+            "path: ${{ matrix.storybook || format('{0}/storybook-static', matrix.project) }}/",
+        );
+        for (const [name, { artifact, storybook }] of Object.entries(visualMatrix())) {
             const dir = CONFIG.projects[name].storybook;
-            expect(dir).toBe(`${name}/storybook-static`);
+            expect(dir).toBe(storybook);
             expect(buildJob()).toMatch(
                 new RegExp(`uses: actions/upload-artifact@v4\\s+with:\\s+name: ${artifact}\\s+path: ${dir}/`),
             );
@@ -51,6 +61,7 @@ describe("normalizeConfig", () => {
             defaultBranch: "main",
             workflow: "visual-review.yml",
             baselines: "visual-baselines",
+            approvals: "visual-review-approvals",
             workDir: ".visual-review",
             commitPrefix: "test",
             issueLabels: ["bug"],
@@ -93,6 +104,10 @@ describe("normalizeConfig", () => {
         [{ projects: { a: { storybook: "../elsewhere" } } }, /storybook must be/],
         [{ projects: { a: { storybook: "/abs" } } }, /storybook must be/],
         [{ baselines: "../up", projects: { a: { storybook: "s" } } }, /baselines must be a path/],
+        [
+            { approvals: "visual-baselines/approvals", projects: { a: { storybook: "s" } } },
+            /approvals must be a directory outside/,
+        ],
         [{ projects: { a: { storybook: "s", workers: 0 } } }, /workers/],
         [{ projects: { a: { storybook: "s", gate: false } } }, /gate is not a setting/],
         [{ projects: { a: { storybook: "s", waitFor: { selector: "x" } } } }, /waitFor needs/],
