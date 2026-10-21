@@ -4778,36 +4778,38 @@ function statusWhy(f) {
     return ` (${parts.filter(Boolean).join("; ")})`;
 }
 
-function sheet(t, f, prepared, notice) {
-    const label = labelOf(t);
-    const seed = t.pr === null;
-    const lines = [];
+// What Finish commits or pushes: the accepts and exclusions, to the branch or to a seed branch.
+function finishCommitLine(t, f, seed) {
     const kinds = [
         f.accepts > 0 ? plural(f.accepts, "accept") : null,
         f.excludes > 0 ? plural(f.excludes, "exclusion") : null,
     ].filter(Boolean);
     if (kinds.length === 0) {
-        lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
-    } else if (seed) {
-        const day = new Date().toISOString().slice(0, 10);
-        lines.push(
-            `Push visual/seed-${day} with ${kinds.join(" and ")} and open its pull request` +
-                `${f.acceptNotes > 0 ? `, with ${plural(f.acceptNotes, "accept note")} in its description` : ""}.`,
-        );
-    } else {
-        lines.push(`Commit ${kinds.join(" and ")} to ${t.branch}.`);
+        return f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.";
     }
+    if (seed) {
+        const day = new Date().toISOString().slice(0, 10);
+        const notes = f.acceptNotes > 0 ? `, with ${plural(f.acceptNotes, "accept note")} in its description` : "";
+        return `Push visual/seed-${day} with ${kinds.join(" and ")} and open its pull request${notes}.`;
+    }
+    return `Commit ${kinds.join(" and ")} to ${t.branch}.`;
+}
+
+// What Finish posts: the rejects and accept notes, as a comment or (for a seed) one issue.
+function finishPostLine(f, seed, label) {
     const posts = [
         f.rejects > 0 ? plural(f.rejects, "reject") : null,
         !seed && f.acceptNotes > 0 ? plural(f.acceptNotes, "accept note") : null,
     ].filter(Boolean);
     if (seed && f.rejects > 0) {
-        lines.push(`Open one issue for ${plural(f.rejects, "reject")}.`);
-    } else if (posts.length > 0) {
-        lines.push(`Post ${posts.join(" and ")} as a comment on ${label}.`);
+        return `Open one issue for ${plural(f.rejects, "reject")}.`;
     }
-    const why = statusWhy(f);
-    lines.push(`Then set the commit status 'Visual review' to ${f.status.state}${why}.`);
+    return posts.length > 0 ? `Post ${posts.join(" and ")} as a comment on ${label}.` : null;
+}
+
+// The sheet's closing lines: what was accepted unopened or before, and what is still open.
+function finishDetailLines(f) {
+    const lines = [];
     if (f.notOpened > 0) {
         lines.push(`Accepted without opening: ${f.notOpened}.`);
     }
@@ -4830,6 +4832,19 @@ function sheet(t, f, prepared, notice) {
                 "CI will check them, and anything CI draws differently comes back to you.",
         );
     }
+    return lines;
+}
+
+function sheet(t, f, prepared, notice) {
+    const label = labelOf(t);
+    const seed = t.pr === null;
+    const post = finishPostLine(f, seed, label);
+    const lines = [
+        finishCommitLine(t, f, seed),
+        ...(post === null ? [] : [post]),
+        `Then set the commit status 'Visual review' to ${f.status.state}${statusWhy(f)}.`,
+        ...finishDetailLines(f),
+    ];
     return [
         el("h2", { id: "sheet-title" }, `Finish ${label}, every project:`),
         notice ? el("p", { class: "error" }, notice) : null,
@@ -4968,6 +4983,118 @@ async function finishWithUndecided(id) {
     return go;
 }
 
+// The target with its Finish preview, and the passkey's challenge. The challenge is fetched before
+// the sheet shows its button, so the button can start Face ID inside the tap. A refusal (a passkey
+// for another host) is shown in the sheet, not thrown.
+function fetchFinish(id) {
+    return Promise.all([
+        api(`/api/target/${encodeURIComponent(id)}?finish=1`),
+        api("/api/finish-prepare", { id }).catch((err) => {
+            if (err.status === 409) {
+                return { error: err.message };
+            }
+            throw err;
+        }),
+    ]);
+}
+
+// What the sheet says when the passkey did not sign.
+function passkeyNotice(err, t) {
+    return err?.name === "NotAllowedError" || err?.name === "AbortError"
+        ? "Passkey cancelled: nothing was changed."
+        : passkeyFailure(err, t.passkey);
+}
+
+// What the sheet says when the server refused a Finish that can be tried again, or null.
+function finishRetryNotice(err) {
+    if (err.status === 409 && /Decisions changed/.test(err.message)) {
+        return err.message;
+    }
+    if ((err.status === 400 || err.status === 403 || err.status === 409) && /passkey|approval/.test(err.message)) {
+        return `${err.message}. Nothing was changed.`;
+    }
+    return null;
+}
+
+// Start Finish on the server. Finish runs there and can take minutes; the page only starts it and
+// then asks how it is going, so a dropped connection or a reload loses nothing.
+async function startFinish(id, t, prepared, approval, reset) {
+    const f = t.finish;
+    sayBusy("Starting Finish...");
+    // A seed's accept notes go into its pull request's description: only rejects post anything.
+    const posts = t.pr === null ? f.rejects > 0 : f.rejects + f.acceptNotes > 0;
+    const commits = f.accepts + f.excludes > 0;
+    state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) };
+    try {
+        state.job = (
+            await api("/api/finish", {
+                id,
+                digest: f.digest,
+                ...(approval ? { challenge: prepared.challenge, approval } : {}),
+            })
+        ).job;
+        return { started: true };
+    } catch (err) {
+        const notice = finishRetryNotice(err);
+        if (notice !== null) {
+            say(notice);
+            return { notice };
+        }
+        // The request may have been lost after the server started it: ask before calling it failed.
+        state.job = await api("/api/finish-status")
+            .then((s) => s.job)
+            .catch(() => null);
+        if (!running() || state.job.target !== id) {
+            reset();
+            say(`Finish of ${labelOf(t)} failed: ${err.message}`, true);
+            return { stop: true };
+        }
+        return { started: true };
+    }
+}
+
+// One showing of Finish's sheet: { started } when Finish started, { stop } when it ends here, or
+// { notice } to show the sheet again with that notice.
+async function finishRound(id, notice, reset) {
+    let t;
+    let prepared;
+    try {
+        [t, prepared] = await fetchFinish(id);
+    } catch (err) {
+        reset();
+        say(`Finish not started: ${err.message}`, true);
+        return { stop: true };
+    }
+    const f = t.finish;
+    const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
+    // When the server cannot prepare an approval the final button is unavailable, and the sheet
+    // says why.
+    let approval = null;
+    const go = await ask(sheet(t, f, prepared, notice), finishTitle(t, f, prepared.required, onlyRejects), {
+        label: "sheet-title",
+        unavailable: prepared.error ? "Finish cannot be approved now: see the sheet." : null,
+        why: "sheet-passkey",
+        focusYes: notice !== "",
+        onYes: () => (approval = prepared.required ? approve(prepared) : null),
+    });
+    if (!go) {
+        reset();
+        say("Finish cancelled: nothing was changed.");
+        return { stop: true };
+    }
+    if (approval) {
+        sayBusy("Waiting for your passkey...");
+        try {
+            approval = await approval;
+        } catch (err) {
+            const cancelled = passkeyNotice(err, t);
+            say(cancelled);
+            return { notice: cancelled };
+        }
+    }
+    return startFinish(id, t, prepared, approval, reset);
+}
+
 async function finishTarget(id, button) {
     if (running()) {
         say("A Finish is running: wait for it to end.");
@@ -4986,97 +5113,14 @@ async function finishTarget(id, button) {
     }
     let notice = "";
     for (;;) {
-        let t;
-        let prepared;
-        try {
-            // The passkey's challenge is fetched before the sheet shows its button, so the button
-            // can start Face ID inside the tap. A refusal (a passkey for another host) is shown in
-            // the sheet, not thrown.
-            [t, prepared] = await Promise.all([
-                api(`/api/target/${encodeURIComponent(id)}?finish=1`),
-                api("/api/finish-prepare", { id }).catch((err) => {
-                    if (err.status === 409) {
-                        return { error: err.message };
-                    }
-                    throw err;
-                }),
-            ]);
-        } catch (err) {
-            reset();
-            say(`Finish not started: ${err.message}`, true);
+        const round = await finishRound(id, notice, reset);
+        if (round.stop) {
             return;
         }
-        const f = t.finish;
-        const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
-        const commits = f.accepts + f.excludes > 0;
-        // When the server cannot prepare an approval the final button is unavailable, and the sheet
-        // says why.
-        let approval = null;
-        const go = await ask(sheet(t, f, prepared, notice), finishTitle(t, f, prepared.required, onlyRejects), {
-            label: "sheet-title",
-            unavailable: prepared.error ? "Finish cannot be approved now: see the sheet." : null,
-            why: "sheet-passkey",
-            focusYes: notice !== "",
-            onYes: () => (approval = prepared.required ? approve(prepared) : null),
-        });
-        if (!go) {
-            reset();
-            say("Finish cancelled: nothing was changed.");
-            return;
-        }
-        if (approval) {
-            sayBusy("Waiting for your passkey...");
-            try {
-                approval = await approval;
-            } catch (err) {
-                notice =
-                    err?.name === "NotAllowedError" || err?.name === "AbortError"
-                        ? "Passkey cancelled: nothing was changed."
-                        : passkeyFailure(err, t.passkey);
-                say(notice);
-                continue;
-            }
-        }
-        // Finish runs on the server and can take minutes; the page only starts it and then asks how
-        // it is going, so a dropped connection or a reload loses nothing.
-        sayBusy("Starting Finish...");
-        // A seed's accept notes go into its pull request's description: only rejects post anything.
-        const posts = t.pr === null ? f.rejects > 0 : f.rejects + f.acceptNotes > 0;
-        state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) };
-        try {
-            state.job = (
-                await api("/api/finish", {
-                    id,
-                    digest: f.digest,
-                    ...(approval ? { challenge: prepared.challenge, approval } : {}),
-                })
-            ).job;
-            break;
-        } catch (err) {
-            if (err.status === 409 && /Decisions changed/.test(err.message)) {
-                notice = err.message;
-                say(notice);
-                continue;
-            }
-            if (
-                (err.status === 400 || err.status === 403 || err.status === 409) &&
-                /passkey|approval/.test(err.message)
-            ) {
-                notice = `${err.message}. Nothing was changed.`;
-                say(notice);
-                continue;
-            }
-            // The request may have been lost after the server started it: ask before calling it failed.
-            state.job = await api("/api/finish-status")
-                .then((s) => s.job)
-                .catch(() => null);
-            if (!running() || state.job.target !== id) {
-                reset();
-                say(`Finish of ${labelOf(t)} failed: ${err.message}`, true);
-                return;
-            }
+        if (round.started) {
             break;
         }
+        notice = round.notice;
     }
     state.finishSeen = performance.now();
     showTargets();
