@@ -2651,6 +2651,13 @@ describe("review page: Finish", () => {
             "Pushing: done",
         ]);
 
+        // The reloaded page's list answers before it learns of the running Finish: the cards drawn
+        // from the list must still be drawn again without Finish.
+        const listed = page.waitForResponse((res) => new URL(res.url()).pathname === "/api/prs");
+        await page.route("**/api/finish-status", async (route) => {
+            await listed;
+            await route.continue();
+        });
         await page.reload();
         await expect.poll(status).toBe("Finishing #123: posting the status...");
         await expect

@@ -5527,6 +5527,8 @@ async function checkFinish() {
         return;
     }
     if (running()) {
+        // The list may have answered first and drawn the cards with Finish offered: draw them again.
+        drawTargets();
         watchFinish();
     }
 }
