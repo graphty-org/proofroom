@@ -311,38 +311,24 @@ export async function finish({
     const notes = accepts.filter((a) => a.decision === "accept" && a.reason !== null);
     const decided = { target, first, accepts, rejects, notes, isMaster, progress, net, config };
 
-    let pushed = { commit: null, branch: target.branch, record: null };
-    let pullRequest = null;
-    if (approval) {
-        pushed = await pushApproval({ repo, target, approval, progress, net, config });
-        if (approval.resign) {
-            // Only the earlier Finish's record was signed: its comment and status stand as posted.
-            return { ...unposted(pushed), resigned: true };
-        }
-        if (isMaster) {
-            pullRequest = await openSeedPullRequest(gh, decided, pushed);
-        }
-    } else if (accepts.length > 0) {
-        pushed = await commitAccepts({
-            repo,
-            target,
-            accepts,
-            rejects,
-            first,
-            now,
-            progress,
-            net,
-            config,
-            statement: sign,
-        });
-        if (pushed.alreadyFinished) {
-            // The earlier Finish posted the comment and the status too: nothing is posted again.
-            return { ...unposted(pushed), alreadyFinished: true };
-        }
-        if (isMaster) {
-            pullRequest = await openSeedPullRequest(gh, decided, pushed);
-        }
+    const made = await pushDecisions({
+        repo,
+        target,
+        approval,
+        accepts,
+        rejects,
+        first,
+        now,
+        progress,
+        net,
+        config,
+        sign,
+    });
+    if (made.done) {
+        return made.done;
     }
+    const pushed = made.pushed ?? { commit: null, branch: target.branch, record: null };
+    const pullRequest = made.pushed && isMaster ? await openSeedPullRequest(gh, decided, pushed) : null;
     const { commit, branch } = pushed;
     // On a pull request, one comment holds the rejects and the accept notes; on master the accept
     // notes are in the seed pull request's description, and only rejects open the issue.
@@ -363,6 +349,40 @@ export async function finish({
         status,
         statusError,
         commentError,
+    };
+}
+
+// Pushes what a Finish decided: the accept commit the owner signed, or the accepts committed here.
+// `pushed` is null when there was nothing to push; `done` is the whole Finish result when an
+// earlier Finish already posted everything, so nothing is posted again.
+async function pushDecisions({ repo, target, approval, accepts, rejects, first, now, progress, net, config, sign }) {
+    if (approval) {
+        const pushed = await pushApproval({ repo, target, approval, progress, net, config });
+        // Only the earlier Finish's record was signed: its comment and status stand as posted.
+        return {
+            pushed,
+            done: approval.resign ? { ...unposted(pushed), resigned: /** @type {const} */ (true) } : null,
+        };
+    }
+    if (accepts.length === 0) {
+        return { pushed: null, done: null };
+    }
+    const pushed = await commitAccepts({
+        repo,
+        target,
+        accepts,
+        rejects,
+        first,
+        now,
+        progress,
+        net,
+        config,
+        statement: sign,
+    });
+    // The earlier Finish posted the comment and the status too: nothing is posted again.
+    return {
+        pushed,
+        done: pushed.alreadyFinished ? { ...unposted(pushed), alreadyFinished: /** @type {const} */ (true) } : null,
     };
 }
 
