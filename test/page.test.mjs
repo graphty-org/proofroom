@@ -1526,6 +1526,26 @@ describe("review page: a pull request", () => {
         await expect.poll(tally).toBe("1 of 7 decided -- 6 left");
     });
 
+    it("counts the rejects an earlier Finish posted beside Finish, as waiting for a fix", async () => {
+        const tally = () => page.locator("#finish-slot .finish-tally").textContent();
+        const mark = (t) => {
+            if (t?.projects) {
+                t.projects[0].rejected = 2;
+            }
+        };
+        await page.route(/\/api\/(prs|pr\/|target\/)/, async (route) => {
+            const res = await route.fetch();
+            const body = await res.json();
+            (body.targets ?? []).forEach(mark);
+            mark(body.target);
+            mark(body);
+            await route.fulfill({ response: res, json: body });
+        });
+        await page.reload();
+        await page.locator(".component").first().waitFor();
+        await expect.poll(tally).toBe("0 of 7 decided -- 7 left, 2 rejected, waiting for a fix");
+    });
+
     it("before a Finish that leaves images undecided, says so and goes to the first of them (issue 3235)", async () => {
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
@@ -1658,7 +1678,7 @@ describe("review page: a pull request", () => {
         expect(await progress()).toBe("3 of 6 decided");
     });
 
-    it("keeps a reject an earlier Finish posted, and says so on its tile", async () => {
+    it("lets the owner change a reject an earlier Finish posted, and says so on its tile", async () => {
         await page.route("**/api/pr/**", async (route) => {
             const res = await route.fetch();
             const body = await res.json();
@@ -1670,13 +1690,18 @@ describe("review page: a pull request", () => {
         await page.locator(".component").first().waitFor();
         await show("reject");
         const line = page.locator('.decision[data-file="slider--sizes.png"]');
-        await expect.poll(() => line.textContent()).toBe("Rejected: thumb movedPosted by an earlier Finish: it stays.");
-        expect(await line.locator("button").count()).toBe(0);
-        // Nothing else is decided, so no bulk Undo applies to the posted reject.
-        expect(await page.locator(".undo-all").getAttribute("aria-disabled")).toBe("true");
+        await expect
+            .poll(() => line.textContent())
+            .toBe(
+                "Rejected: thumb movedRejected by an earlier Finish, waiting for a fix. Accept or Exclude replaces it.Undo",
+            );
         await openStory(3);
-        await page.keyboard.press("u");
-        await expect.poll(status).toBe("Posted by an earlier Finish: it stays.");
+        // Accept, Exclude and Undo change it; Reject again does not.
+        const unavailable = (id) => page.locator(`#${id}`).getAttribute("aria-disabled");
+        expect(await unavailable("accept")).toBe("false");
+        expect(await unavailable("exclude")).toBe("false");
+        expect(await unavailable("undo")).toBe("false");
+        expect(await unavailable("reject")).toBe("true");
     });
 
     it("shows a re-review flag on an item whose earlier accept master replaced", async () => {

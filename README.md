@@ -272,12 +272,13 @@ token, or the whole URL `serve` printed, and it loads. The field hides what you 
   and compares it with the images you accepted, so the pull request passes with nothing left to
   decide when CI draws the same bytes, and any image CI draws differently comes back to you
   undecided. Decisions are kept by image hash, so when CI's capture of the same head lands every
-  identical image keeps its decision. A Finish that leaves images undecided moves the head (its
-  accept commit), and the preview of the old head stays listed while the branch has gained only
-  accept commits since: what you decided shows as decided, the rest undecided, and you keep
-  deciding there. Finish waits for a preview of the new head (`tools/visual-preview.sh <pr>`),
-  which keeps every decision. After any other commit, a draft says "a new preview is needed for
-  this head". See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
+  identical image keeps its decision. A Finish moves the head (its accept commit, and its approval
+  commit), and a preview stays current while the branch has gained only such commits since (one
+  parent each, changing nothing outside the baselines and approvals directories): what you decided
+  shows as decided, the rest undecided, and you keep deciding and finishing there. While a
+  preview of the head is still capturing, a project it has not written yet shows as not loaded,
+  and the page reads the preview again as soon as its `status.json` changes. After any other
+  commit, a draft says "a new preview is needed for this head". See [local previews](https://github.com/graphty-org/graphty-monorepo/blob/master/design/visual-testing/local-previews.md).
 
 ### What is waiting for you, and one quiet notification
 
@@ -288,7 +289,8 @@ ready" while some are still being captured, and how long ago it became ready; ta
 its first undecided image. Under it, **Not ready** lists the pull requests whose capture failed,
 or that have a story whose capture failed (these are fixed before review, never sent for it),
 each with the project, the story and the reason, its job log and Retry where a retry can help; then one line
-counts the pull requests still capturing, those with nothing to decide and the drafts. A draft pull
+counts the pull requests still capturing, those whose only open images are rejects an earlier
+Finish posted ("with rejects waiting for a fix"), those with nothing to decide and the drafts. A draft pull
 request is never offered or announced, even with a capture made before it went back to draft: its
 author is still working on it. Mark it ready when it is. A draft you already Finished part of is
 the exception: it stays listed with the images left ("17 of 110 images left"). The cards of every
@@ -371,7 +373,8 @@ skipping the rest; its grid from the grid, its first undecided item from a story
 back into it in its pass at its place. Escape goes up one level (story to grid, grid to targets),
 and the browser's Back and Forward move between the screens. Then **Finish** with the number of decisions it
 would publish ("Finish #201 (12)"), after the running count of the target's images ("93 of 110
-decided -- 17 left"; from 1050 px wide, below which the target menu's count says it). Pressing
+decided -- 17 left", and ", 5 rejected, waiting for a fix" while rejects an earlier Finish posted
+are open; from 1050 px wide, below which the target menu's count says it). Pressing
 Finish with images undecided first says "17 images are still undecided; they will block the
 merge", with **Go to the first undecided** and **Finish anyway**. At 0 decisions Finish is unavailable and says "Nothing new to finish",
 shortened to "Nothing new" on an iPad and left to Finish itself to say below 900 px; whether a
@@ -455,8 +458,11 @@ downloading captures nobody has opened yet) is said in the status row and never 
    Enter (or a tap) takes that one too. **Undo N** clears a component's decisions, after asking. Under every decided tile its decision is spelled out: "Accepted",
    "Accepted (not opened)" for one Accept all took, or "Rejected" or "Excluded" with the reason,
    with an **Undo** that clears it without opening the story. A reject an earlier Finish already
-   posted says "Posted by an earlier Finish: it stays.", and an accept or exclusion it pushed says
-   "Finished: it is on the branch, and the next CI run no longer shows it."; neither has an Undo. Many Undos at once show
+   posted says "Rejected by an earlier Finish, waiting for a fix. Accept or Exclude replaces it.":
+   while the image is still the one rejected, Accept, Exclude or Undo changes it, the next Finish
+   commits the new decision, and the earlier Finish's record keeps the reject. An accept or
+   exclusion an earlier Finish pushed says "Finished: it is on the branch, and the next CI run no
+   longer shows it." and has no Undo. Many Undos at once show
    their progress, with Stop. **Find story** narrows the grid as you type; Enter opens the first
    match, or the item with that number. Coming back from a story, its tile is outlined and
    scrolled into view.

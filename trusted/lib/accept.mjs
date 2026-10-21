@@ -1037,8 +1037,14 @@ async function acceptParent(input, { base, branch, plan, fetch, exact = false })
         await fetch(branch);
         const parent = await git(repo, ["rev-parse", ownRef(branch)]);
         const paths = plan.files.map((f) => f.path);
-        const moved = (tip) =>
-            tip === base ? null : masterMergeProblem(repo, base, tip, ownRef(config.defaultBranch), paths);
+        // A tip that is the captured head plus earlier Finishes' own commits is current for this capture,
+        // unless one of them wrote a file this Finish writes (its `from` would no longer be the tip's).
+        const moved = async (tip) =>
+            tip === base ||
+            ((await onlyFinishCommits(repo, base, tip, config)) &&
+                !(await changedSince(repo, base, tip)).some((f) => paths.includes(f)))
+                ? null
+                : masterMergeProblem(repo, base, tip, ownRef(config.defaultBranch), paths);
         const why = await moved(parent);
         const { items } = plan;
         const record =
@@ -1468,6 +1474,48 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     }
+}
+
+/**
+ * The files changed between two commits.
+ * @param {string} repo the repository
+ * @param {string} a the older commit
+ * @param {string} b the newer one
+ * @returns {Promise<string[]>} their paths
+ */
+const changedSince = async (repo, a, b) =>
+    (await git(repo, ["diff", "-z", "--name-only", "--no-renames", a, b])).split("\0").filter(Boolean);
+
+/**
+ * Whether `tip` is `head` plus nothing but commits a Finish makes (its accept, approval and signing
+ * commits): `head` is an ancestor, and every commit after it has one parent and changes nothing
+ * outside the baselines and approvals directories. Such commits change no capture, so a capture
+ * of `head` is still current for `tip`. Unknown commits (not fetched yet) count as no.
+ * @param {string} repo the repository
+ * @param {string} head the captured head
+ * @param {string} tip the branch's tip
+ * @param {{ baselines: string, approvals: string }} config the settings
+ * @returns {Promise<boolean>} whether it is
+ */
+export async function onlyFinishCommits(repo, head, tip, config) {
+    if (head === tip) {
+        return true;
+    }
+    if (!(await gitOk(repo, ["merge-base", "--is-ancestor", head, tip]))) {
+        return false;
+    }
+    const log = await git(repo, ["log", "-z", "--format=%x01%P", "--name-only", `${head}..${tip}`]).catch(() => null);
+    if (log === null) {
+        return false;
+    }
+    const inside = (f) => [config.baselines, config.approvals].some((d) => f.startsWith(`${d}/`));
+    return log
+        .split("\x01")
+        .filter(Boolean)
+        .every((record) => {
+            const [parents, ...files] = record.split(/[\n\0]/).filter(Boolean);
+            return !parents.includes(" ") && files.every(inside);
+        });
 }
 
 /**

@@ -83,6 +83,7 @@ import {
     readFileSync,
     renameSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -101,6 +102,7 @@ import {
     finish,
     isPreviewOf,
     newerOnMaster,
+    onlyFinishCommits,
     prepareApproval,
     proposeKey,
     signRecord,
@@ -122,7 +124,7 @@ import {
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
 import { approvalIndex, clusters, isNoise, knownNoise, observations } from "./filters.mjs";
-import { coupledGroups, inboxOf, readyKey, writeJson } from "./inbox.mjs";
+import { coupledGroups, inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { SPOT_KINDS, scaled } from "./thumbs.mjs";
 import { USAGE_FILE } from "./usage.mjs";
@@ -1229,16 +1231,20 @@ export function createApp({
     /**
      * Puts a pull request's local preview in place of every project CI has not captured (nor is
      * downloading): only a complete preview of the head GitHub lists now, or of an older head the
-     * branch has since added only accept commits to (a Finish that left images undecided), so one
-     * of an older push, or one still capturing, is never offered. A draft (whose CI never
-     * captures) with a preview of an older push says a new preview is needed instead.
+     * branch has since added only a Finish's own commits to (onlyFinishCommits: they change no
+     * capture), so one of an older push, or one still capturing, is never offered. A draft (whose CI
+     * never captures) with a preview of an older push says a new preview is needed instead. While
+     * a preview of this head is still capturing (its status.json), or it finished without a project
+     * it lists, that project shows as not loaded, never as having nothing to decide; `previewStamp`
+     * is when status.json last changed, so a change re-reads the list (previewsChanged).
      * @param {object} t the target, changed in place; `head` is the pull request's head
-     * @returns {Promise<object>} the target; `headMoved` is the head when a preview is of an older one
+     * @returns {Promise<object>} the target
      */
     async function withPreviews(t) {
         if (!previews || t.pr === null) {
             return t;
         }
+        t.previewStamp = previewStamp(t.pr);
         for (const [i, p] of t.projects.entries()) {
             const dir = join(previews, String(t.pr), p.project);
             if (p.results || p.downloading || !existsSync(join(dir, "results.json"))) {
@@ -1249,60 +1255,68 @@ export function createApp({
             if (!r?.complete || !isPreviewOf(r, t.pr)) {
                 continue;
             }
-            const current = r.headSha === t.head;
-            if (current || (await onlyAccepts(r.headSha, t.head, t.pr))) {
+            // A head pushed since the last fetch (a Finish's commits): wait for this refresh's fetch.
+            if (r.headSha !== t.head && !(await haveCommit(t.head))) {
+                await branchesFetched;
+            }
+            if (await onlyFinishCommits(repo, r.headSha, t.head, config)) {
                 t.projects[i] = { ...local, preview: true, ciProblem: p.problem, logUrl: p.logUrl ?? null };
-                if (!current) {
-                    t.headMoved = t.head;
-                }
             } else if (t.draft) {
                 t.projects[i] = { ...p, problem: newPreviewNeeded(t) };
+            }
+        }
+        const status = readPreviewStatus(t.pr);
+        if (status?.head && (await onlyFinishCommits(repo, status.head, t.head, config))) {
+            for (const [i, p] of t.projects.entries()) {
+                const listed = (status.projects ?? []).includes(p.project);
+                if (p.results || p.downloading || p.problem === NOT_AFFECTED) {
+                    continue;
+                }
+                if (status.state === "running") {
+                    t.projects[i] = { ...p, problem: PREVIEW_CAPTURING };
+                } else if (listed) {
+                    t.projects[i] = { ...p, problem: `local preview not loaded (${status.state}): reload the page` };
+                }
             }
         }
         return t;
     }
 
-    // Why a target has no Finish now, as a response; null when it has one.
-    // A Finish that only signs an earlier Finish's record (`resign`) commits nothing from the
-    // capture, so a preview of the head that Finish was made on still does.
-    const finishRefused = (t, resign = false) => {
-        if (t.local) {
-            return [403, { error: "a local preview has no Finish" }];
+    const previewStatusFile = (pr) => join(previews, String(pr), "status.json");
+    const readPreviewStatus = (pr) => {
+        try {
+            return JSON.parse(readFileSync(previewStatusFile(pr), "utf8"));
+        } catch {
+            return null;
         }
-        return t.headMoved && !resign ? [409, { error: movedHead(t) }] : null;
     };
-    const movedHead = (t) =>
-        `the head moved to ${t.headMoved.slice(0, 10)} after a Finish; this preview is of ${t.headSha.slice(0, 10)}: ` +
-        `${newPreviewNeeded(t)} to Finish. Decisions taken here carry over to it`;
+    // When a pull request's preview status.json last changed; null when it has none.
+    const previewStamp = (pr) => {
+        try {
+            return statSync(previewStatusFile(pr)).mtimeMs;
+        } catch {
+            return null;
+        }
+    };
+    // Whether a listed pull request's local preview changed since the list read it, each change
+    // counted once: a refresh that cannot reach GitHub keeps the old list, and must not start another.
+    const previewSeen = new Map();
+    const previewsChanged = () => {
+        let changed = false;
+        for (const t of previews ? targets.values() : []) {
+            const now = previewStamp(t.pr);
+            if ("previewStamp" in t && now !== t.previewStamp && now !== previewSeen.get(t.pr)) {
+                previewSeen.set(t.pr, now);
+                changed = true;
+            }
+        }
+        return changed;
+    };
+
+    // Why a target has no Finish now, as a response; null when it has one.
+    const finishRefused = (t) => (t.local ? [403, { error: "a local preview has no Finish" }] : null);
     const newPreviewNeeded = (t) =>
         `a new preview is needed for this head (${t.head.slice(0, 10)}): run tools/visual-preview.sh ${t.pr}`;
-
-    /**
-     * Whether `tip` is `head` plus nothing but accept commits a Finish pushed for this pull request
-     * (the subject and single parent finishedBefore in accept.mjs recognizes). Unknown commits (a
-     * branch not fetched yet) count as no.
-     * @param {string} head the previewed head
-     * @param {string} tip the pull request's head now
-     * @param {number} pr the pull request
-     * @returns {Promise<boolean>} whether it is
-     */
-    async function onlyAccepts(head, tip, pr) {
-        const subject = `${config.commitPrefix}: accept visual baselines for #${pr}`;
-        const log = await exec("git", ["log", "--format=%P%x09%s", `${head}..${tip}`], { cwd: repo }).catch(() => "");
-        const ancestor = await exec("git", ["merge-base", "--is-ancestor", head, tip], { cwd: repo }).then(
-            () => true,
-            () => false,
-        );
-        const commits = log.split("\n").filter(Boolean);
-        return (
-            ancestor &&
-            commits.length > 0 &&
-            commits.every((line) => {
-                const [parents, ...rest] = line.split("\t");
-                return !parents.includes(" ") && rest.join("\t") === subject;
-            })
-        );
-    }
 
     // Why a project's capture is missing, from its download and its CI job; null when it is there.
     function problemOf(name, got, run, jobs) {
@@ -1345,6 +1359,8 @@ export function createApp({
 
     // Concurrent callers (the startup refresh, the page's first request) share one refresh.
     let refreshing = null;
+    /** The running refresh's fetch of the pull requests' branches (load). */
+    let branchesFetched = Promise.resolve();
     let refreshedAt = 0;
     let loadedOnce = false;
     /** Why the last refresh failed as a whole (no list at all), for the page; null once one works. */
@@ -1447,6 +1463,7 @@ export function createApp({
                     });
                 }
             })();
+            branchesFetched = fetched;
             // Every pull request at once: one after another took about 40 s for 18 of them.
             let found = 0;
             step("finding CI runs", 0, prs.length);
@@ -1776,9 +1793,6 @@ export function createApp({
             runUrl: t.runUrl,
             commit: t.commit,
             headSha: t.headSha,
-            // The pull request's head when the preview shown is of an older one it only added
-            // accept commits to: decide here, Finish on a preview of the new head.
-            headMoved: t.headMoved ?? null,
             mergeMasterFirst: t.mergeMasterFirst,
             downloading: t.downloading === true,
             // While downloading: how many artifacts and bytes have landed of how many, and since when
@@ -1846,6 +1860,8 @@ export function createApp({
                     undecided: reviewable - mine.length,
                     // Accepts and exclusions an earlier Finish pushed, waiting for a new CI run.
                     finished: mine.filter(([, d]) => d.posted && d.decision !== "reject").length,
+                    // Rejects an earlier Finish posted, waiting for a fix (or for the owner to change them).
+                    rejected: mine.filter(([, d]) => d.posted && d.decision === "reject").length,
                     notOpened: mine.filter(([, d]) => d.bulk).length,
                     acceptable: acceptable(t, p.project),
                     local: p.results?.local ?? null,
@@ -2420,7 +2436,9 @@ export function createApp({
             await restored;
             const cachedOnly = query?.get("cached") === "1" || query?.get("refresh") === "1";
             if (cachedOnly) {
-                if (query.get("refresh") === "1" || (!loadedOnce && failure === null)) {
+                // A local preview that moved on (a project's capture written, or the preview done)
+                // is read again at once, so a project is never left showing a capture it lacked.
+                if (query.get("refresh") === "1" || previewsChanged() || (!loadedOnce && failure === null)) {
                     refresh().catch((err) => console.error(`visual-review: refresh failed: ${err.message}`));
                 }
             } else {
@@ -2609,9 +2627,14 @@ export function createApp({
             }
             // Nothing silently reverses a decision: changing one takes an explicit Undo first. The
             // same decision again is allowed (opening an item Accept all decided re-sends it).
-            // An accept taken because the image was approved before is replaced by any decision.
+            // An accept taken because the image was approved before is replaced by any decision, and
+            // a reject an earlier Finish posted by an accept or exclusion (that Finish's record keeps
+            // the reject; the next Finish commits the new decision).
             const before = decisionsOf(t).get(key);
-            if (before && !before.approvedBefore && (before.decision !== body.decision || before.reason !== reason)) {
+            const replaceable =
+                before?.approvedBefore ||
+                (before?.posted && before.decision === "reject" && body.decision !== "reject");
+            if (before && !replaceable && (before.decision !== body.decision || before.reason !== reason)) {
                 const done = { accept: "accepted", reject: "rejected", exclude: "excluded" }[before.decision];
                 return [409, { error: `${body.file} is already ${done}: Undo it first to change it` }];
             }
@@ -2856,7 +2879,7 @@ export function createApp({
                 return gone(String(body.id));
             }
             const resign = resignOf(t);
-            const refused = finishRefused(t, resign);
+            const refused = finishRefused(t);
             if (refused) {
                 return refused;
             }
@@ -2949,7 +2972,7 @@ export function createApp({
                 return gone(String(body.id));
             }
             const resign = resignOf(t);
-            const refused = finishRefused(t, resign);
+            const refused = finishRefused(t);
             if (refused) {
                 return refused;
             }

@@ -859,6 +859,40 @@ describe("serve: decisions and Finish", () => {
         expect(await unpublished()).toBe(1);
     });
 
+    it("lets a reject an earlier Finish posted be changed to an accept, which the next Finish commits", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        const s = await start({ gh: onePr() });
+        await s.api("GET", "/api/prs");
+        const decide = (file, decision, reason) =>
+            s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
+        await decide("badge--default.light.png", "accept");
+        await decide("slider--sizes.png", "reject", "thumb moved");
+        const first = (await finishJob(s, "123")).job;
+        expect(first.error).toBeNull();
+        // Counted as rejected, waiting for a fix, never as nothing to decide.
+        const listed = (await s.api("GET", "/api/prs")).body;
+        expect(listed.targets[0].projects[0]).toMatchObject({ rejected: 1 });
+        expect(listed.inbox).toMatchObject({ done: 0 });
+        expect((await decide("slider--sizes.png", "accept")).status).toBe(200);
+        expect((await s.api("GET", "/api/target/123")).body.unpublished).toBe(1);
+        // The capture is of the head; the branch holds only the first Finish's commit on top of it.
+        const { job } = await finishJob(s, "123");
+        expect(job.error).toBeNull();
+        expect(git(s.remote, "rev-parse", "feature~1")).toBe(first.result.commit);
+        const record = (commit) => {
+            const path = /Record: (\S+)/.exec(git(s.remote, "log", "-1", "--format=%B", commit))[1];
+            return JSON.parse(git(s.remote, "show", `${commit}:${path}`));
+        };
+        const slider = "visual-baselines/compact-mantine/slider--sizes.png";
+        // The earlier record keeps the reject; the new one accepts the image.
+        expect(record(first.result.commit).rejects).toEqual([
+            expect.objectContaining({ path: slider, reason: "thumb moved" }),
+        ]);
+        expect(record(job.result.commit).items).toEqual([expect.objectContaining({ path: slider })]);
+        expect(record(job.result.commit).rejects).toEqual([]);
+    });
+
     it("treats a finished accept as unpublished when the branch's baseline no longer holds its image", async () => {
         vi.spyOn(console, "log").mockImplementation(() => {});
         onTestFinished(() => vi.restoreAllMocks());
@@ -1171,7 +1205,7 @@ describe("serve: local previews of a pull request", () => {
         ]);
     });
 
-    it("keeps a draft's preview after a Finish moved its head by an accept commit, and asks for a new one after any other commit (issue 3235)", async () => {
+    it("keeps a preview current after a Finish's own commits, finishes on it again, and asks for a new one after any other commit (issue 3235)", async () => {
         const out = vi.spyOn(console, "log").mockImplementation(() => {});
         onTestFinished(() => out.mockRestore());
         const r = makeRepo();
@@ -1189,31 +1223,63 @@ describe("serve: local previews of a pull request", () => {
         });
         await s.api("GET", "/api/prs");
         expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
-        const { job } = await finishJob(s, "123");
-        expect(job.error).toBeNull();
+        expect((await finishJob(s, "123")).job.error).toBeNull();
         const accepted = git(s.remote, "rev-parse", "feature");
+        // A Finish's approval commit, which changes only the approvals directory.
+        const approved = pushCommit(s.remote, "feature", `${FIXTURE_CONFIG.approvals}/t.json`);
 
-        // The head is the accept commit: the preview of the old head is still shown, the accept as
+        // The head is the approval commit: the preview of the old head is still current, the accept
         // finished and the rest undecided, and the draft still waits in the inbox with its count.
         const after = (await s.api("GET", "/api/prs")).body;
         const [t] = after.targets;
-        expect(t).toMatchObject({ headSha: r.head, headMoved: accepted });
+        expect(t).toMatchObject({ headSha: r.head });
         expect(t.projects[0]).toMatchObject({ preview: true, problem: null, decided: 1, finished: 1, undecided: 4 });
         expect(after.inbox.ready).toEqual([expect.objectContaining({ pr: 123, undecided: 4, decided: 1 })]);
-        // Decisions are still taken on it; Finish waits for a preview of the new head.
+        // A second Finish on the same preview commits on top of the earlier Finish's commits.
         expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
-        const refused = await s.api("POST", "/api/finish", { id: "123" });
-        expect(refused.status).toBe(409);
-        expect(refused.body.error).toMatch(/a new preview is needed for this head .*tools\/visual-preview\.sh 123/);
+        expect((await finishJob(s, "123")).job.error).toBeNull();
+        expect(git(s.remote, "rev-parse", "feature~1")).toBe(approved);
+        expect(git(s.remote, "rev-parse", "feature~2")).toBe(accepted);
 
         // Anything else on the branch: no preview, and it says a new one is needed.
         const other = pushCommit(s.remote, "feature", "src/other.txt");
         const [moved] = (await s.api("GET", "/api/prs")).body.targets;
-        expect(moved.headMoved).toBeNull();
         expect(moved.projects[0]).toMatchObject({
             preview: false,
             problem: `a new preview is needed for this head (${other.slice(0, 10)}): run tools/visual-preview.sh 123`,
         });
+    });
+
+    it("shows a project a preview of the head is still capturing as not loaded, and reads it again once status.json changes", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        preview(previews, "compact-mantine", r.head, { items: capturedItems() });
+        const status = (state) =>
+            writeFileSync(
+                join(previews, "123/status.json"),
+                JSON.stringify({ state, head: r.head, pr: 123, projects: ["compact-mantine", "graphty-element"] }),
+            );
+        status("running");
+        // A CI run with no visual job (a draft's): every project of it is "no capture".
+        const s = await start({
+            ...r,
+            previews,
+            gh: () =>
+                fakeGh({
+                    prs: [{ number: 123, head: r.head, branch: "feature" }],
+                    runs: { [r.head]: { id: 1000, head: r.head } },
+                    jobs: { 1000: [] },
+                    artifacts: { 1000: [] },
+                }),
+        });
+        const [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.projects[0]).toMatchObject({ project: "compact-mantine", preview: true });
+        expect(t.projects[1]).toMatchObject({ project: "graphty-element", problem: "local preview still capturing" });
+
+        // The preview writes graphty-element and finishes: the page's next look at the list reads it.
+        preview(previews, "graphty-element", r.head);
+        status("done");
+        await until(async () => (await s.api("GET", "/api/prs?cached=1")).body.targets[0].projects[1].preview === true);
     });
 
     it("carries decisions over to CI's capture where its bytes are identical, and shows a differing image undecided", async () => {

@@ -924,6 +924,9 @@ const short = (sha) => (sha ? sha.slice(0, 10) : "none");
 const decisionOf = (item) => state.data?.decisions[item.file] ?? null;
 // A decision the owner took, not an accept the server took because the image was approved before.
 const firmDecision = (item) => (decisionOf(item)?.approvedBefore ? null : decisionOf(item));
+// A reject an earlier Finish posted: it stays in that Finish's record, and while the image is the one
+// rejected the owner can still change it here (Accept, Exclude or Undo); the next Finish commits that.
+const postedReject = (d) => d?.posted === true && d.decision === "reject";
 const day = (iso) => (iso ? String(iso).slice(0, 10) : "");
 const prName = (pr) => (pr === null ? "seed" : "#" + pr);
 const approvedText = (a) => `Approved before (${prName(a.pr)}, ${day(a.reviewedAt)})`;
@@ -944,6 +947,9 @@ const labelOf = (t) => {
 const undecidedOf = (t) => t.projects.reduce((n, p) => n + p.undecided, 0);
 const finishedOf = (t) => t.projects.reduce((n, p) => n + (p.finished ?? 0), 0);
 const reviewableOf = (t) => t.projects.reduce((n, p) => n + p.reviewable, 0);
+const rejectedOf = (t) => t.projects.reduce((n, p) => n + (p.rejected ?? 0), 0);
+// "5 rejected, waiting for a fix": rejects an earlier Finish posted, never "nothing to decide".
+const rejectsText = (t) => (rejectedOf(t) > 0 ? `${rejectedOf(t)} rejected, waiting for a fix` : null);
 const draftKey = (item) => `${state.target.id}/${state.project}/${item.file}`;
 
 // Errors first, then components by their most urgent item, stories the same way within one, and
@@ -1180,11 +1186,8 @@ function finishControl(t) {
     const count = t.unpublished ?? 0;
     // Nothing new, but an earlier Finish's record waits for the passkey: Finish signs it.
     const resign = count === 0 && t.resign === true && t.passkey?.required === true;
-    const can = (count > 0 || resign) && !running() && (!t.headMoved || resign);
-    let why = count === 0 && !resign ? ["Nothing new", " to finish"] : null;
-    if (t.headMoved && !resign) {
-        why = ["New preview needed", " to finish"];
-    }
+    const can = (count > 0 || resign) && !running();
+    const why = count === 0 && !resign ? ["Nothing new", " to finish"] : null;
     return [
         tallyLine(t),
         el(
@@ -1197,8 +1200,6 @@ function finishControl(t) {
                 onclick: (e) => {
                     if (can) {
                         finishTarget(t.id, e.currentTarget);
-                    } else if (t.headMoved) {
-                        say(movedText(t));
                     } else {
                         say(running() ? "A Finish is running: wait for it to end." : "Nothing new to finish.");
                     }
@@ -1237,18 +1238,15 @@ function tallyLine(t) {
         return null;
     }
     const left = undecidedOf(t);
+    const rejects = rejectsText(t);
     return el(
         "span",
-        { class: left > 0 ? "finish-tally left" : "finish-tally", "data-tally": t.id },
+        { class: left > 0 || rejects ? "finish-tally left" : "finish-tally", "data-tally": t.id },
         el("span", { class: "wide-only" }, `${total - left} of ${total} decided -- `),
         `${left} left`,
+        rejects ? `, ${rejects}` : null,
     );
 }
-
-// Why a target whose head moved past its preview (an earlier Finish's accept commit) cannot finish.
-const movedText = (t) =>
-    `This preview is of ${short(t.headSha)}; a Finish moved the head to ${short(t.headMoved)}. Decide here: ` +
-    `a new preview of the head is needed to Finish (tools/visual-preview.sh ${t.pr}), and your decisions carry over to it.`;
 
 // ---------------------------------------------------------------- screen: targets
 
@@ -1502,7 +1500,12 @@ function inboxView(inbox) {
                 return badRow(bad);
             }
             // Only a member the server counted as done has nothing to decide; never guess it.
-            const said = { done: "nothing to decide", capturing: "still capturing", draft: "draft" }[g.states?.[n]];
+            const said = {
+                done: "nothing to decide",
+                rejected: "rejected, waiting for a fix",
+                capturing: "still capturing",
+                draft: "draft",
+            }[g.states?.[n]];
             return el("li", { class: "meta" }, `#${g.prs[n]}: ${said ?? "status unknown: reload the page"}`);
         });
         const first = g.ids.find((id) => inbox.ready.some((r) => r.id === id && r.undecided > 0));
@@ -1546,6 +1549,7 @@ function inboxView(inbox) {
     const readyCount = inbox.ready.length;
     const rest = [
         inbox.capturing > 0 ? `${inbox.capturing} capturing` : null,
+        inbox.rejected > 0 ? `${inbox.rejected} with rejects waiting for a fix` : null,
         inbox.done > 0 ? `${inbox.done} with nothing to decide` : null,
         inbox.drafts > 0 ? `${inbox.drafts} still a draft` : null,
     ].filter(Boolean);
@@ -1861,7 +1865,6 @@ function targetCard(t) {
             ),
         ),
         t.downloading ? el("p", { class: "meta" }, spinner(), downloadText(t)) : null,
-        t.headMoved ? el("p", { class: "warning" }, movedText(t)) : null,
         !t.local && t.unpublished > 0
             ? el("p", { class: "meta" }, `${plural(t.unpublished, "decision")} not yet finished`)
             : null,
@@ -2369,15 +2372,15 @@ function tile(item) {
     return el("div", { class: "tile-box", "data-file": item.file }, button, decisionLine(item));
 }
 
-// A decision an earlier Finish published: a reject stays; an accept or exclusion is on the branch
-// until the next CI run, which no longer shows it.
+// A decision an earlier Finish published: a reject can still be changed; an accept or exclusion is on
+// the branch until the next CI run, which no longer shows it.
 const postedText = (d) =>
     d.decision === "reject"
-        ? "Posted by an earlier Finish: it stays."
+        ? "Rejected by an earlier Finish, waiting for a fix. Accept or Exclude replaces it."
         : "Finished: it is on the branch, and the next CI run no longer shows it.";
 
-// An item's decision, with its reason, and an Undo that clears it without opening the story. A
-// reject an earlier Finish already posted stays: it is shown, never undone from the grid.
+// An item's decision, with its reason, and an Undo that clears it without opening the story. An
+// accept or exclusion an earlier Finish already published stays: it is shown, never undone.
 function decisionLine(item) {
     const d = decisionOf(item);
     if (!d) {
@@ -2387,7 +2390,9 @@ function decisionLine(item) {
     // An accept taken as approved before has nothing to undo: Reject or Exclude replaces it.
     const fixed = d.approvedBefore && !d.posted;
     let after = null;
-    if (d.posted) {
+    if (postedReject(d)) {
+        after = [el("span", { class: "meta" }, postedText(d)), undoButton(item, d)];
+    } else if (d.posted) {
         after = el("span", { class: "meta" }, postedText(d));
     } else if (!fixed) {
         after = undoButton(item, d);
@@ -2547,6 +2552,9 @@ function showGrid() {
     const next = left ? projectAt(1) : null;
     if (state.filter === "undecided") {
         empty = isLocal() ? "Nothing here." : `Everything is decided. Finish ${labelOf(state.target)} when ready.`;
+        if (!isLocal() && rejectsText(state.target)) {
+            empty = `Everything is decided; ${rejectsText(state.target)}.`;
+        }
         if (left) {
             empty = [
                 `${left}.`,
@@ -3102,12 +3110,12 @@ function available(item, d) {
     const open = !isLocal() && !state.ended;
     const acceptable = state.data.acceptable;
     // Approved before: Reject or Exclude replaces it; there is nothing to undo.
-    const firm = d && !(d.approvedBefore && !d.posted);
+    const firm = d && !(d.approvedBefore && !d.posted) && !postedReject(d);
     return {
-        accept: open && acceptable && !onlyExclude(item) && !d,
-        reject: open && !onlyExclude(item) && !firm,
+        accept: open && acceptable && !onlyExclude(item) && (!d || postedReject(d)),
+        reject: open && !onlyExclude(item) && !firm && !postedReject(d),
         exclude: open && acceptable && !firm,
-        undo: open && Boolean(d) && !d.posted && !d.approvedBefore,
+        undo: open && Boolean(d) && (!d.posted || postedReject(d)) && !d.approvedBefore,
     };
 }
 
@@ -4107,7 +4115,10 @@ async function fillEnd(card, seq) {
     const waitingFor = others.filter((p) => p.downloading);
     const left = leftToReview(t, state.project);
     const offers = endOffers(t, here, next, left);
-    const verdict = left ? `${left}.` : `Every project of ${labelOf(t)} is decided.`;
+    let verdict = left ? `${left}.` : `Every project of ${labelOf(t)} is decided.`;
+    if (!left && rejectsText(t)) {
+        verdict = `Every project of ${labelOf(t)} is decided; ${rejectsText(t)}.`;
+    }
     card.replaceChildren(
         ...[
             el(
@@ -4316,7 +4327,7 @@ function undoRefusal(item) {
     if (!firmDecision(item)) {
         return "Nothing to undo.";
     }
-    return before.posted ? postedText(before) : null;
+    return before.posted && !postedReject(before) ? postedText(before) : null;
 }
 
 // Why `decision` (null: Undo) cannot be taken on `item` now, or null when it can.
@@ -4326,7 +4337,11 @@ function refusal(decision, item, press) {
     }
     const before = decisionOf(item);
     const firm = firmDecision(item);
-    // No press reverses a decision: changing one is an explicit Undo first.
+    // No press reverses a decision: changing one is an explicit Undo first. A reject an earlier
+    // Finish posted is the exception: Accept or Exclude replaces it.
+    if (postedReject(before)) {
+        return decision === "reject" ? postedText(before) : null;
+    }
     if (before?.posted) {
         return postedText(before);
     }
