@@ -2509,8 +2509,42 @@ function showGrid() {
     const approvedItems = ordered(reviewable().filter((i) => decisionOf(i)?.approvedBefore));
     const visible = visibleItems().filter((i) => !decisionOf(i)?.approvedBefore);
     const noiseItems = visible.filter((i) => i.noise);
-    const { shown: clustered, rest } = clustersOf(visible.filter((i) => !i.noise));
-    const items = rest;
+    const { shown: clustered, rest: items } = clustersOf(visible.filter((i) => !i.noise));
+    const { errors, sections } = gridSections(items);
+    render(
+        isLocal()
+            ? el(
+                  "p",
+                  { class: "badge warn" },
+                  "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
+              )
+            : null,
+        staleBanner(),
+        errors.length > 0 ? errorsGroup(errors) : null,
+        approvedItems.length > 0 ? approvedGroup(approvedItems) : null,
+        noiseItems.length > 0 ? noiseGroup(noiseItems) : null,
+        ...(items.length + clustered.length + noiseItems.length === 0
+            ? [el("p", { class: "empty" }, ...[emptyGridText()].flat())]
+            : [
+                  ...sections,
+                  clustered.length > 0 && items.length > 0
+                      ? el("h3", { class: "clusters-head" }, `Similar changes, ${plural(clustered.length, "group")}`)
+                      : null,
+                  ...clustered.map(clusterSection),
+              ]),
+    );
+    applyFind();
+    remember();
+    if (keep !== null) {
+        app.scrollTop = keep;
+        return;
+    }
+    // Back from a story: show where it is in the grid.
+    app.querySelector(".current")?.scrollIntoView({ block: "center" });
+}
+
+// The grid's items as error rows and component sections, each a story's tiles across its modes.
+function gridSections(items) {
     const errors = [];
     const groups = new Map(); // component -> story id -> [tile]
     for (const item of items) {
@@ -2547,86 +2581,68 @@ function showGrid() {
             ),
         ),
     );
-    let empty = "No stories match this filter.";
-    const left = isLocal() ? null : leftToReview(state.target, state.project);
-    const next = left ? projectAt(1) : null;
-    if (state.filter === "undecided") {
-        empty = isLocal() ? "Nothing here." : `Everything is decided. Finish ${labelOf(state.target)} when ready.`;
-        if (!isLocal() && rejectsText(state.target)) {
-            empty = `Everything is decided; ${rejectsText(state.target)}.`;
-        }
-        if (left) {
-            empty = [
-                `${left}.`,
-                next
-                    ? el(
-                          "button",
-                          { type: "button", onclick: () => openProject(state.target.id, next.project) },
-                          `Next project: ${next.project} (${next.undecided} undecided)`,
-                      )
-                    : null,
-            ];
-        }
-    }
-    render(
-        isLocal()
-            ? el(
-                  "p",
-                  { class: "badge warn" },
-                  "Local preview: look only. Nothing can be decided here; only a CI capture of a pushed commit can.",
-              )
-            : null,
-        staleBanner(),
-        errors.length > 0
-            ? el(
-                  "details",
-                  {
-                      class: "errors",
-                      open: loadOptions().showFailed === true,
-                      ontoggle: (e) => saveOptions({ showFailed: e.target.open }),
-                  },
-                  el("summary", {}, `${plural(errors.length, "failed capture")}: only Exclude applies`),
-                  el(
-                      "p",
-                      { class: "meta" },
-                      "An error is never accepted. Fix the story, re-run the visual job for a one-off timeout, " +
-                          "or exclude the story with a reason.",
-                  ),
-                  el("ol", { class: "error-list" }, errors),
-              )
-            : null,
-        approvedItems.length > 0
-            ? el(
-                  "details",
-                  { class: "group approved-before" },
-                  el(
-                      "summary",
-                      {},
-                      `Approved before (${approvedItems.length}): the same image you accepted for the same story on another pull request`,
-                  ),
-                  el("div", { class: "modes" }, approvedItems.map(tile)),
-              )
-            : null,
-        noiseItems.length > 0 ? noiseGroup(noiseItems) : null,
-        ...(items.length + clustered.length + noiseItems.length === 0
-            ? [el("p", { class: "empty" }, ...[empty].flat())]
-            : [
-                  ...sections,
-                  clustered.length > 0 && items.length > 0
-                      ? el("h3", { class: "clusters-head" }, `Similar changes, ${plural(clustered.length, "group")}`)
-                      : null,
-                  ...clustered.map(clusterSection),
-              ]),
-    );
-    applyFind();
-    remember();
-    if (keep !== null) {
-        app.scrollTop = keep;
-        return;
-    }
-    // Back from a story: show where it is in the grid.
-    app.querySelector(".current")?.scrollIntoView({ block: "center" });
+    return { errors, sections };
 }
+
+// What an empty grid says: under the undecided filter, what is left to do and where.
+function emptyGridText() {
+    if (state.filter !== "undecided") {
+        return "No stories match this filter.";
+    }
+    const left = isLocal() ? null : leftToReview(state.target, state.project);
+    if (left) {
+        const next = projectAt(1);
+        return [
+            `${left}.`,
+            next
+                ? el(
+                      "button",
+                      { type: "button", onclick: () => openProject(state.target.id, next.project) },
+                      `Next project: ${next.project} (${next.undecided} undecided)`,
+                  )
+                : null,
+        ];
+    }
+    if (isLocal()) {
+        return "Nothing here.";
+    }
+    const rejects = rejectsText(state.target);
+    return rejects
+        ? `Everything is decided; ${rejects}.`
+        : `Everything is decided. Finish ${labelOf(state.target)} when ready.`;
+}
+
+// The failed captures, folded: an error is never accepted, only excluded.
+const errorsGroup = (errors) =>
+    el(
+        "details",
+        {
+            class: "errors",
+            open: loadOptions().showFailed === true,
+            ontoggle: (e) => saveOptions({ showFailed: e.target.open }),
+        },
+        el("summary", {}, `${plural(errors.length, "failed capture")}: only Exclude applies`),
+        el(
+            "p",
+            { class: "meta" },
+            "An error is never accepted. Fix the story, re-run the visual job for a one-off timeout, " +
+                "or exclude the story with a reason.",
+        ),
+        el("ol", { class: "error-list" }, errors),
+    );
+
+// The accepts approved before, folded into a group of their own.
+const approvedGroup = (items) =>
+    el(
+        "details",
+        { class: "group approved-before" },
+        el(
+            "summary",
+            {},
+            `Approved before (${items.length}): the same image you accepted for the same story on another pull request`,
+        ),
+        el("div", { class: "modes" }, items.map(tile)),
+    );
 
 // The clusters of the grouped review as the grid shows them now: those with two or more items the
 // filter shows, and every other item (the outliers, shown first, one by one).
@@ -4354,6 +4370,12 @@ function refusal(decision, item, press) {
     if (!state.data.acceptable && decision !== "reject") {
         return notSeeded();
     }
+    return tooSoon(decision, item, press);
+}
+
+// Why a press came too soon to count: Accept before its images loaded, or any press on an image
+// that only just appeared. Null when it can count.
+function tooSoon(decision, item, press) {
     if (decision === "accept" && stageShown !== item.file) {
         return "Loading images: Accept waits for them.";
     }
@@ -4795,8 +4817,8 @@ function statusWhy(f) {
     return ` (${parts.filter(Boolean).join("; ")})`;
 }
 
-function sheet(t, f, prepared, notice) {
-    const label = labelOf(t);
+// What a Finish commits and posts, as the sheet's first lines.
+function commitAndPostLines(t, f) {
     const seed = t.pr === null;
     const lines = [];
     const kinds = [
@@ -4821,8 +4843,14 @@ function sheet(t, f, prepared, notice) {
     if (seed && f.rejects > 0) {
         lines.push(`Open one issue for ${plural(f.rejects, "reject")}.`);
     } else if (posts.length > 0) {
-        lines.push(`Post ${posts.join(" and ")} as a comment on ${label}.`);
+        lines.push(`Post ${posts.join(" and ")} as a comment on ${labelOf(t)}.`);
     }
+    return lines;
+}
+
+function sheet(t, f, prepared, notice) {
+    const label = labelOf(t);
+    const lines = commitAndPostLines(t, f);
     const why = statusWhy(f);
     lines.push(`Then set the commit status 'Visual review' to ${f.status.state}${why}.`);
     if (f.notOpened > 0) {
@@ -5036,126 +5064,150 @@ async function finishTarget(id, button) {
         reset();
         return;
     }
-    let notice = "";
-    for (;;) {
-        let t;
-        let prepared;
-        try {
-            // The passkey's challenge is fetched before the sheet shows its button, so the button
-            // can start Face ID inside the tap. A refusal (a passkey for another host) is shown in
-            // the sheet, not thrown.
-            [t, prepared] = await Promise.all([
-                api(`/api/target/${encodeURIComponent(id)}?finish=1`),
-                api("/api/finish-prepare", { id }).catch((err) => {
-                    if (err.status === 409) {
-                        return { error: err.message };
-                    }
-                    throw err;
-                }),
-            ]);
-        } catch (err) {
-            reset();
-            say(`Finish not started: ${err.message}`, true);
-            return;
-        }
-        const f = t.finish;
-        const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
-        const commits = f.accepts + f.excludes > 0;
-        // When the server cannot prepare an approval the final button is unavailable, and the sheet
-        // says why.
-        let approval = null;
-        const go = await ask(sheet(t, f, prepared, notice), finishTitle(t, f, prepared.required, onlyRejects), {
-            label: "sheet-title",
-            unavailable: prepared.error ? "Finish cannot be approved now: see the sheet." : null,
-            why: "sheet-passkey",
-            focusYes: notice !== "",
-            onYes: () => (approval = prepared.required ? approve(prepared) : null),
-        });
-        if (!go) {
-            reset();
-            say("Finish cancelled: nothing was changed.");
-            return;
-        }
-        const cancelled = (err) =>
-            err?.name === "NotAllowedError" || err?.name === "AbortError"
-                ? "Passkey cancelled: nothing was changed."
-                : passkeyFailure(err, t.passkey);
-        if (approval) {
-            sayBusy("Waiting for your passkey...");
-            try {
-                approval = await approval;
-            } catch (err) {
-                notice = cancelled(err);
-                say(notice);
-                continue;
-            }
-        }
-        // The decisions are signed into the accept commit (not pushed yet); the baselines, when this
-        // Finish signs them, take a second approval.
-        let signedRecord = false;
-        if (approval && prepared.signs === "record") {
-            sayBusy("Signing your decisions...");
-            try {
-                const next = await api("/api/finish-prepare", { id, challenge: prepared.challenge, approval });
-                signedRecord = true;
-                // approveTree's promise settles with Face ID's answer, or null when cancelled.
-                approval = next.required ? await approveTree(t, next) : null;
-                if (next.required && !approval) {
-                    reset();
-                    say("Finish cancelled: nothing was changed.");
-                    return;
-                }
-                prepared = next;
-            } catch (err) {
-                notice = err?.status ? `${err.message}. Nothing was changed.` : cancelled(err);
-                say(notice);
-                continue;
-            }
-        }
-        // Finish runs on the server and can take minutes; the page only starts it and then asks how
-        // it is going, so a dropped connection or a reload loses nothing.
-        sayBusy("Starting Finish...");
-        // A seed's accept notes go into its pull request's description: only rejects post anything.
-        const posts = t.pr === null ? f.rejects > 0 : f.rejects + f.acceptNotes > 0;
-        state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) || signedRecord };
-        try {
-            state.job = (
-                await api("/api/finish", {
-                    id,
-                    digest: f.digest,
-                    ...(approval ? { challenge: prepared.challenge, approval } : {}),
-                })
-            ).job;
-            break;
-        } catch (err) {
-            if (err.status === 409 && /Decisions changed/.test(err.message)) {
-                notice = err.message;
-                say(notice);
-                continue;
-            }
-            if (
-                (err.status === 400 || err.status === 403 || err.status === 409) &&
-                /passkey|approval/.test(err.message)
-            ) {
-                notice = `${err.message}. Nothing was changed.`;
-                say(notice);
-                continue;
-            }
-            // The request may have been lost after the server started it: ask before calling it failed.
-            state.job = await api("/api/finish-status")
-                .then((s) => s.job)
-                .catch(() => null);
-            if (!running() || state.job.target !== id) {
-                reset();
-                say(`Finish of ${labelOf(t)} failed: ${err.message}`, true);
-                return;
-            }
-            break;
-        }
+    let out = await finishAttempt(id, "");
+    while (out.retry !== undefined) {
+        say(out.retry);
+        out = await finishAttempt(id, out.retry);
+    }
+    if (!out.started) {
+        reset();
+        say(...out.stop);
+        return;
     }
     state.finishSeen = performance.now();
     showTargets();
     await watchFinish();
+}
+
+const FINISH_CANCELLED = { stop: ["Finish cancelled: nothing was changed."] };
+
+// One try at starting a Finish of target `id`: the sheet (with `notice`, why the last try did not
+// start), the passkey, then the start on the server. Answers `{ retry: notice }` to show the sheet
+// again, `{ stop: [message, isError] }` when it ended without starting, or `{ started: true }`.
+async function finishAttempt(id, notice) {
+    let t;
+    let prepared;
+    try {
+        [t, prepared] = await fetchFinish(id);
+    } catch (err) {
+        return { stop: [`Finish not started: ${err.message}`, true] };
+    }
+    const answer = await askToFinish(t, prepared, notice);
+    if (!answer.go) {
+        return FINISH_CANCELLED;
+    }
+    let approval = answer.approval;
+    if (approval) {
+        sayBusy("Waiting for your passkey...");
+        try {
+            approval = await approval;
+        } catch (err) {
+            return { retry: passkeyCancelled(err, t) };
+        }
+    }
+    // The decisions are signed into the accept commit (not pushed yet); the baselines, when this
+    // Finish signs them, take a second approval.
+    if (approval && prepared.signs === "record") {
+        const signed = await signDecisions(id, t, prepared, approval);
+        return signed.prepared ? startFinish(id, t, signed.prepared, signed.approval, true) : signed;
+    }
+    return startFinish(id, t, prepared, approval, false);
+}
+
+// The target with its Finish summary, and the server's preparation of the passkey approval. The
+// passkey's challenge is fetched before the sheet shows its button, so the button can start Face ID
+// inside the tap. A refusal (a passkey for another host) is shown in the sheet, not thrown.
+const fetchFinish = (id) =>
+    Promise.all([
+        api(`/api/target/${encodeURIComponent(id)}?finish=1`),
+        api("/api/finish-prepare", { id }).catch((err) => {
+            if (err.status === 409) {
+                return { error: err.message };
+            }
+            throw err;
+        }),
+    ]);
+
+// The Finish sheet. Resolves to whether the owner went on, and, when the Finish signs, the passkey's
+// approval (a promise: Face ID starts inside the press). When the server cannot prepare an approval
+// the final button is unavailable, and the sheet says why.
+async function askToFinish(t, prepared, notice) {
+    const f = t.finish;
+    const onlyRejects = f.accepts + f.excludes === 0 && f.acceptNotes === 0 && f.rejects > 0;
+    let approval = null;
+    const go = await ask(sheet(t, f, prepared, notice), finishTitle(t, f, prepared.required, onlyRejects), {
+        label: "sheet-title",
+        unavailable: prepared.error ? "Finish cannot be approved now: see the sheet." : null,
+        why: "sheet-passkey",
+        focusYes: notice !== "",
+        onYes: () => (approval = prepared.required ? approve(prepared) : null),
+    });
+    return { go, approval };
+}
+
+// Why a passkey approval failed, as the sheet says it.
+const passkeyCancelled = (err, t) =>
+    err?.name === "NotAllowedError" || err?.name === "AbortError"
+        ? "Passkey cancelled: nothing was changed."
+        : passkeyFailure(err, t.passkey);
+
+// Signs the decisions with the passkey's `approval`, then asks for the baselines' approval when this
+// Finish signs them too. Answers `{ prepared, approval }` for the start (approval null when nothing
+// more is signed), or a finishAttempt answer when it did not get that far.
+async function signDecisions(id, t, prepared, approval) {
+    sayBusy("Signing your decisions...");
+    try {
+        const next = await api("/api/finish-prepare", { id, challenge: prepared.challenge, approval });
+        // approveTree's promise settles with Face ID's answer, or null when cancelled.
+        const tree = next.required ? await approveTree(t, next) : null;
+        if (next.required && !tree) {
+            return FINISH_CANCELLED;
+        }
+        return { prepared: next, approval: tree };
+    } catch (err) {
+        return { retry: err?.status ? `${err.message}. Nothing was changed.` : passkeyCancelled(err, t) };
+    }
+}
+
+// Starts the Finish on the server. It can take minutes there; the page only starts it and then asks
+// how it is going, so a dropped connection or a reload loses nothing.
+async function startFinish(id, t, prepared, approval, signedRecord) {
+    const f = t.finish;
+    sayBusy("Starting Finish...");
+    // A seed's accept notes go into its pull request's description: only rejects post anything.
+    const posts = t.pr === null ? f.rejects > 0 : f.rejects + f.acceptNotes > 0;
+    const commits = f.accepts + f.excludes > 0;
+    state.plan = { seed: t.pr === null, commits, posts, signed: Boolean(approval) || signedRecord };
+    try {
+        state.job = (
+            await api("/api/finish", {
+                id,
+                digest: f.digest,
+                ...(approval ? { challenge: prepared.challenge, approval } : {}),
+            })
+        ).job;
+        return { started: true };
+    } catch (err) {
+        return finishStartFailed(id, t, err);
+    }
+}
+
+// A refused or failed start: decisions changed or a refused approval shows the sheet again; any
+// other failure is checked against the server, which may have started it before the answer was lost.
+async function finishStartFailed(id, t, err) {
+    if (err.status === 409 && /Decisions changed/.test(err.message)) {
+        return { retry: err.message };
+    }
+    if ((err.status === 400 || err.status === 403 || err.status === 409) && /passkey|approval/.test(err.message)) {
+        return { retry: `${err.message}. Nothing was changed.` };
+    }
+    state.job = await api("/api/finish-status")
+        .then((s) => s.job)
+        .catch(() => null);
+    if (!running() || state.job.target !== id) {
+        return { stop: [`Finish of ${labelOf(t)} failed: ${err.message}`, true] };
+    }
+    return { started: true };
 }
 
 let watching = false;
@@ -5605,6 +5657,13 @@ async function checkFinish() {
         return;
     }
     if (running()) {
+        // The screen may already be drawn from a list that answered first, with Finish offered:
+        // draw it again now that a Finish is known to run.
+        if (state.screen === "targets") {
+            drawTargets();
+        } else {
+            drawHeader();
+        }
         watchFinish();
     }
 }
