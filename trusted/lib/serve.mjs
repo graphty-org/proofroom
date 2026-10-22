@@ -1246,40 +1246,52 @@ export function createApp({
         }
         t.previewStamp = previewStamp(t.pr);
         for (const [i, p] of t.projects.entries()) {
-            const dir = join(previews, String(t.pr), p.project);
-            if (p.results || p.downloading || !existsSync(join(dir, "results.json"))) {
-                continue;
-            }
-            const local = await project(p.project, dir, null, true);
-            const r = local.results;
-            if (!r?.complete || !isPreviewOf(r, t.pr)) {
-                continue;
-            }
-            // A head pushed since the last fetch (a Finish's commits): wait for this refresh's fetch.
-            if (r.headSha !== t.head && !(await haveCommit(t.head))) {
-                await branchesFetched;
-            }
-            if (await onlyFinishCommits(repo, r.headSha, t.head, config)) {
-                t.projects[i] = { ...local, preview: true, ciProblem: p.problem, logUrl: p.logUrl ?? null };
-            } else if (t.draft) {
-                t.projects[i] = { ...p, problem: newPreviewNeeded(t) };
-            }
+            t.projects[i] = await withPreview(t, p);
         }
-        const status = readPreviewStatus(t.pr);
-        if (status?.head && (await onlyFinishCommits(repo, status.head, t.head, config))) {
-            for (const [i, p] of t.projects.entries()) {
-                const listed = (status.projects ?? []).includes(p.project);
-                if (p.results || p.downloading || p.problem === NOT_AFFECTED) {
-                    continue;
-                }
-                if (status.state === "running") {
-                    t.projects[i] = { ...p, problem: PREVIEW_CAPTURING };
-                } else if (listed) {
-                    t.projects[i] = { ...p, problem: `local preview not loaded (${status.state}): reload the page` };
-                }
-            }
-        }
+        await markPreviewStatus(t);
         return t;
+    }
+
+    // One project of a target with its local preview in place when CI has not captured it and the
+    // preview is of this head; as it was otherwise (or saying a draft needs a new preview).
+    async function withPreview(t, p) {
+        const dir = join(previews, String(t.pr), p.project);
+        if (p.results || p.downloading || !existsSync(join(dir, "results.json"))) {
+            return p;
+        }
+        const local = await project(p.project, dir, null, true);
+        const r = local.results;
+        if (!r?.complete || !isPreviewOf(r, t.pr)) {
+            return p;
+        }
+        // A head pushed since the last fetch (a Finish's commits): wait for this refresh's fetch.
+        if (r.headSha !== t.head && !(await haveCommit(t.head))) {
+            await branchesFetched;
+        }
+        if (await onlyFinishCommits(repo, r.headSha, t.head, config)) {
+            return { ...local, preview: true, ciProblem: p.problem, logUrl: p.logUrl ?? null };
+        }
+        return t.draft ? { ...p, problem: newPreviewNeeded(t) } : p;
+    }
+
+    // Marks each project a preview of this head is still capturing, or finished without loading,
+    // as not loaded (from the preview's status.json).
+    async function markPreviewStatus(t) {
+        const status = readPreviewStatus(t.pr);
+        if (!status?.head || !(await onlyFinishCommits(repo, status.head, t.head, config))) {
+            return;
+        }
+        for (const [i, p] of t.projects.entries()) {
+            const listed = (status.projects ?? []).includes(p.project);
+            if (p.results || p.downloading || p.problem === NOT_AFFECTED) {
+                continue;
+            }
+            if (status.state === "running") {
+                t.projects[i] = { ...p, problem: PREVIEW_CAPTURING };
+            } else if (listed) {
+                t.projects[i] = { ...p, problem: `local preview not loaded (${status.state}): reload the page` };
+            }
+        }
     }
 
     const previewStatusFile = (pr) => join(previews, String(pr), "status.json");
@@ -2165,7 +2177,7 @@ export function createApp({
      */
     async function signPrepared(t, work, body) {
         const p = approvals.get(t.id);
-        if (!p || p.stage !== "record" || p.challenge !== body.challenge || p.expires < Date.now()) {
+        if (p?.stage !== "record" || p.challenge !== body.challenge || p.expires < Date.now()) {
             return STALE.refused;
         }
         if (p.digest !== work.digest) {
