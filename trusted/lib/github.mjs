@@ -157,13 +157,14 @@ const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String) {
  * commit, in one GraphQL query per 100 pull requests: one REST call per pull request spent about
  * 1,500 of the account's 5,000 calls an hour with 50 of them open.
  * @param {Function} gh the gh runner
- * @param {{ workflow: string }} config the workflow file that captures (the config's `workflow`)
+ * @param {{ workflow: string, ignoreBranches?: string[] }} config the workflow file that captures (the
+ *     config's `workflow`), and the branch-name prefixes whose pull requests are left out
  * @returns {Promise<{ number: number, title: string, url: string, headSha: string, branch: string, draft: boolean,
  *     run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null }[]>}
  *     the pull requests; `run` is null when CI never ran on the head, and its status and
  *     conclusion are lowercase, as REST spells them
  */
-export async function openPullRequests(gh, { workflow }) {
+export async function openPullRequests(gh, { workflow, ignoreBranches = [] }) {
     const out = [];
     for (let after = null; ;) {
         const args = ["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", `query=${PULLS_QUERY}`];
@@ -172,6 +173,9 @@ export async function openPullRequests(gh, { workflow }) {
         }
         const page = JSON.parse(await gh(args)).data.repository.pullRequests;
         for (const p of page.nodes) {
+            if (ignoreBranches.some((prefix) => p.headRefName.startsWith(prefix))) {
+                continue;
+            }
             const suites = (p.commits.nodes[0]?.commit.checkSuites.nodes ?? []).filter((s) =>
                 s.workflowRun?.workflow.resourcePath.endsWith(`/${workflow}`),
             );

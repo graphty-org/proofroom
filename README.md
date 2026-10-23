@@ -132,19 +132,20 @@ Every command has `--help`; `visual-review --help` lists them.
 }
 ```
 
-| Key             | Default                   | Meaning                                                                                                             |
-| --------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `defaultBranch` | `main`                    | The branch baselines are seeded from and pull requests merge into                                                   |
-| `workflow`      | `visual-review.yml`       | The workflow file whose runs hold the captures; the review page looks runs up by it                                 |
-| `baselines`     | `visual-baselines`        | Where baselines live: `<baselines>/<project>/<story id>[.<mode>].png`, and review records in `<baselines>/reviews/` |
-| `approvals`     | `visual-review-approvals` | Where Finish commits your approvals of the baselines tree, `<approvals>/<tree>.json`; outside `baselines`           |
-| `workDir`       | `.visual-review`          | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                      |
-| `commitPrefix`  | `test`                    | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
-| `issueLabels`   | `["bug"]`                 | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
-| `fontconfig`    | none (host fonts)         | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
-| `updateCheck`   | none                      | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                  |
-| `usage`         | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
-| `projects`      | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
+| Key              | Default                   | Meaning                                                                                                             |
+| ---------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `defaultBranch`  | `main`                    | The branch baselines are seeded from and pull requests merge into                                                   |
+| `workflow`       | `visual-review.yml`       | The workflow file whose runs hold the captures; the review page looks runs up by it                                 |
+| `baselines`      | `visual-baselines`        | Where baselines live: `<baselines>/<project>/<story id>[.<mode>].png`, and review records in `<baselines>/reviews/` |
+| `approvals`      | `visual-review-approvals` | Where Finish commits your approvals of the baselines tree, `<approvals>/<tree>.json`; outside `baselines`           |
+| `workDir`        | `.visual-review`          | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                      |
+| `commitPrefix`   | `test`                    | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
+| `issueLabels`    | `["bug"]`                 | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
+| `fontconfig`     | none (host fonts)         | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
+| `updateCheck`    | none                      | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                  |
+| `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
+| `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                        |
+| `projects`       | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:
 
