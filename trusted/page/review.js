@@ -2557,6 +2557,8 @@ function showGrid() {
     const approvedItems = ordered(reviewable().filter((i) => decisionOf(i)?.approvedBefore));
     const visible = visibleItems().filter((i) => !decisionOf(i)?.approvedBefore);
     const noiseItems = visible.filter((i) => i.noise);
+    // Unchanged only on the second capture: not reviewable, but a timing race in the story.
+    const flakyItems = state.data.items.filter((i) => i.flaky && !REVIEWABLE.includes(i.status));
     const { shown: clustered, rest: items } = clustersOf(visible.filter((i) => !i.noise));
     const { errors, sections } = gridSections(items);
     render(
@@ -2571,6 +2573,7 @@ function showGrid() {
         errors.length > 0 ? errorsGroup(errors) : null,
         approvedItems.length > 0 ? approvedGroup(approvedItems) : null,
         noiseItems.length > 0 ? noiseGroup(noiseItems) : null,
+        flakyItems.length > 0 ? flakyGroup(flakyItems) : null,
         ...(items.length + clustered.length + noiseItems.length === 0
             ? [el("p", { class: "empty" }, ...[emptyGridText()].flat())]
             : [
@@ -2677,6 +2680,24 @@ const errorsGroup = (errors) =>
                 "or exclude the story with a reason.",
         ),
         el("ol", { class: "error-list" }, errors),
+    );
+
+// The flaky captures: the first shot differed from the baseline and the second matched, so the gate
+// counts them unchanged. Nothing to decide; listed so the race in the story is seen and fixed.
+const flakyGroup = (items) =>
+    el(
+        "details",
+        { class: "group flaky", open: true },
+        el(
+            "summary",
+            {},
+            `Flaky (${items.length}): unchanged only on the second capture, so the story has a timing race`,
+        ),
+        el(
+            "ul",
+            {},
+            items.map((i) => el("li", {}, itemName(i))),
+        ),
     );
 
 // The accepts approved before, folded into a group of their own.

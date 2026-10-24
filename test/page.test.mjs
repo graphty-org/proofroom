@@ -3352,6 +3352,29 @@ describe("review page: narrow windows, touch and wording", () => {
     });
 });
 
+describe("review page: flaky captures", () => {
+    beforeEach(async () => {
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        const items = fixture.items.map((i) => (i.file === "input--default.png" ? { ...i, flaky: true } : i));
+        await open((r) => {
+            const at = { commit: r.head, headSha: r.head };
+            return {
+                gh: onePr({
+                    results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at },
+                })(r),
+            };
+        });
+        await page.locator(".component").first().waitFor();
+    });
+
+    it("lists an item unchanged only on its second capture as flaky", async () => {
+        expect(await page.locator(".group.flaky > summary").textContent()).toBe(
+            "Flaky (1): unchanged only on the second capture, so the story has a timing race",
+        );
+        expect(await page.locator(".group.flaky li").allTextContents()).toEqual(["input--default"]);
+    });
+});
+
 describe("review page: renamed stories", () => {
     const REASON =
         "renames.json renames old-menu--gone to menu--gone, but the Storybook has no story menu--gone: fix renames.json";
