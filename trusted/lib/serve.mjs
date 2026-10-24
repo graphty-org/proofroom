@@ -1275,7 +1275,7 @@ export function createApp({
      * hash, so a later capture with the same picture keeps them), but never finished, since Finish signs
      * only a capture of the head GitHub lists. A capture that failed is never offered.
      * @param {object} t the target
-     * @returns {Promise<{ dir: string, head: string } | null>} the capture
+     * @returns {Promise<{ dir: string, head: string, at?: string } | null>} the capture
      */
     async function pendingPreview(t) {
         const sha = (x) => /^[0-9a-f]{40}$/.test(x ?? "");
