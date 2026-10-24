@@ -2206,6 +2206,67 @@ export function createApp({
     const commitsOf = (work) => work.list.some((d) => d.decision !== "reject");
 
     /**
+     * finish-prepare's answer when this Finish needs no passkey (no key is known, it commits
+     * nothing, or it cannot sign the tree and no key is for this host), or when it needs one and
+     * none is registered for this host.
+     * @param {object} t the target
+     * @param {{ list: object[] }} work as finishWork returns
+     * @param {object} keys the keys
+     * @param {object[]} keys.trusted every trusted key
+     * @param {object[]} keys.here the trusted keys for this host
+     * @param {string | null} keys.unsigned why the tree cannot be signed, if it cannot
+     * @returns {Array<unknown> | null} the answer, or null when finish-prepare goes on to sign
+     */
+    const prepareWithoutKey = (t, work, { trusted, here, unsigned }) => {
+        if (trusted.length === 0 || !commitsOf(work) || (unsigned && here.length === 0)) {
+            approvals.delete(t.id);
+            return [200, { required: false, ...(trusted.length > 0 && unsigned && { unsigned }) }];
+        }
+        if (here.length > 0) {
+            return null;
+        }
+        const hosts = [...new Set(trusted.map((k) => k.rpId))].join(", ");
+        return [
+            409,
+            {
+                error: `no passkey is registered for ${rpId}: serve this page from the host your passkey is for (${hosts}), or register one here`,
+            },
+        ];
+    };
+
+    /**
+     * Makes a Finish's accept commit in the accept worktree, holding the Finish lock meanwhile so
+     * nothing else uses that worktree.
+     * @param {object} t the target
+     * @param {{ captures: object, list: object[] }} work as finishWork returns
+     * @param {Date} now the Finish's time
+     * @returns {Promise<{ prepared?: object, refused?: Array<unknown> }>} what prepareApproval
+     *     returned, or the answer refusing it
+     */
+    async function prepareLocked(t, work, now) {
+        finishing = true;
+        try {
+            const prepared = await prepareApproval({
+                repo,
+                target: { pr: t.pr, branch: t.branch },
+                projects: work.captures,
+                decisions: work.list,
+                now,
+                config,
+                retryDelays,
+            });
+            return { prepared };
+        } catch (err) {
+            if (err instanceof AcceptError) {
+                return { refused: [409, { error: err.message }] };
+            }
+            throw err;
+        } finally {
+            finishing = false;
+        }
+    }
+
+    /**
      * The owner's approval POST /api/finish carries, checked against what finish-prepare built and
      * signed: the tree statement's approval when the Finish signs the tree, else the commit holding
      * the signed record.
@@ -2989,43 +3050,18 @@ export function createApp({
             if (body.approval !== undefined) {
                 return signPrepared(t, work, body);
             }
-            const { trusted: keys } = await knownKeys();
+            const { trusted } = await knownKeys();
             const unsigned = signingProblem(t, work);
-            const here = keys.filter((k) => k.rpId === rpId);
-            if (keys.length === 0 || !commitsOf(work) || (unsigned && here.length === 0)) {
-                approvals.delete(t.id);
-                return [200, { required: false, ...(keys.length > 0 && unsigned && { unsigned }) }];
+            const here = trusted.filter((k) => k.rpId === rpId);
+            const keyless = prepareWithoutKey(t, work, { trusted, here, unsigned });
+            if (keyless) {
+                return keyless;
             }
-            if (here.length === 0) {
-                const hosts = [...new Set(keys.map((k) => k.rpId))].join(", ");
-                return [
-                    409,
-                    {
-                        error: `no passkey is registered for ${rpId}: serve this page from the host your passkey is for (${hosts}), or register one here`,
-                    },
-                ];
-            }
-            let prepared;
             const now = new Date();
             // The accept commit is made now, in the accept worktree: nothing else may use it meanwhile.
-            finishing = true;
-            try {
-                prepared = await prepareApproval({
-                    repo,
-                    target: { pr: t.pr, branch: t.branch },
-                    projects: work.captures,
-                    decisions: work.list,
-                    now,
-                    config,
-                    retryDelays,
-                });
-            } catch (err) {
-                if (err instanceof AcceptError) {
-                    return [409, { error: err.message }];
-                }
-                throw err;
-            } finally {
-                finishing = false;
+            const { prepared, refused: notPrepared } = await prepareLocked(t, work, now);
+            if (notPrepared) {
+                return notPrepared;
             }
             if (resign && !prepared.pushed) {
                 return [
