@@ -582,6 +582,9 @@ async function loadResults(dir, name) {
  *     (`<previews>/<pr>/<project>/results.json`): a complete preview of a pull request's current
  *     head stands in for each project CI has not captured yet, marked "CI pending", and is decided
  *     and finished like a CI capture. CI's capture replaces it project by project as it lands.
+ *     A capture staged as `<previews>/.pending-<commit>/` for a pull request, of a commit that holds
+ *     its head but is not pushed yet (the pre-push gate's own, `visual-preview.sh --head`), is
+ *     offered as "pending push": decided, never finished, until GitHub lists that commit as the head.
  * @param {number} [options.patience] how long, in milliseconds, a page load waits for a run's
  *     captures before listing the target as downloading; Infinity waits for them
  * @param {number[]} [options.retryDelays] milliseconds before each retry of a Finish's network call
@@ -1245,11 +1248,68 @@ export function createApp({
             return t;
         }
         t.previewStamp = previewStamp(t.pr);
+        t.pendingPush = null;
+        const pending = await pendingPreview(t);
         for (const [i, p] of t.projects.entries()) {
-            t.projects[i] = await withPreview(t, p);
+            t.projects[i] = (pending && (await withPending(t, p, pending))) ?? (await withPreview(t, p));
         }
         await markPreviewStatus(t);
         return t;
+    }
+
+    /**
+     * The newest capture of a commit not pushed yet that holds the pull request's head: the pre-push
+     * gate's own capture (tools/visual-preview.sh --head, staged as `.pending-<commit>`), made for this
+     * pull request while the gate checks the commit it is about to push. It is offered as "pending push":
+     * decided like any preview of the pull request (its decisions are saved by story file and image
+     * hash, so a later capture with the same picture keeps them), but never finished, since Finish signs
+     * only a capture of the head GitHub lists. A capture that failed is never offered.
+     * @param {object} t the target
+     * @returns {Promise<{ dir: string, head: string } | null>} the capture
+     */
+    async function pendingPreview(t) {
+        const sha = (x) => /^[0-9a-f]{40}$/.test(x ?? "");
+        if (!sha(t.head)) {
+            return null;
+        }
+        let best = null;
+        for (const name of pendingNames()) {
+            const dir = join(previews, name);
+            const status = readStatusIn(dir);
+            if (status?.pr !== t.pr || !sha(status.head) || status.head === t.head || status.state === "failed") {
+                continue;
+            }
+            if (best && String(best.at) >= String(status.updatedAt)) {
+                continue;
+            }
+            if (!(await haveCommit(t.head))) {
+                await branchesFetched;
+            }
+            const holds = await gitIn(["merge-base", "--is-ancestor", t.head, status.head]).then(
+                () => true,
+                () => false,
+            );
+            if (holds) {
+                best = { dir, head: status.head, at: status.updatedAt };
+            }
+        }
+        return best;
+    }
+
+    // One project of a target with the pending capture in place when CI has not captured it and the
+    // capture has it complete; null otherwise (the project as withPreview leaves it).
+    async function withPending(t, p, pending) {
+        const dir = join(pending.dir, p.project);
+        if (p.results || p.downloading || !existsSync(join(dir, "results.json"))) {
+            return null;
+        }
+        const local = await project(p.project, dir, null, true);
+        const r = local.results;
+        if (!r?.complete || !isPreviewOf(r, t.pr) || r.headSha !== pending.head) {
+            return null;
+        }
+        t.pendingPush = pending.head;
+        return { ...local, preview: true, pending: true, ciProblem: p.problem, logUrl: p.logUrl ?? null };
     }
 
     // One project of a target with its local preview in place when CI has not captured it and the
@@ -1295,21 +1355,36 @@ export function createApp({
     }
 
     const previewStatusFile = (pr) => join(previews, String(pr), "status.json");
-    const readPreviewStatus = (pr) => {
+    const readStatusIn = (dir) => {
         try {
-            return JSON.parse(readFileSync(previewStatusFile(pr), "utf8"));
+            return JSON.parse(readFileSync(join(dir, "status.json"), "utf8"));
         } catch {
             return null;
         }
     };
-    // When a pull request's preview status.json last changed; null when it has none.
-    const previewStamp = (pr) => {
+    const readPreviewStatus = (pr) => readStatusIn(join(previews, String(pr)));
+    // The captures the pre-push gate staged under the commit it checks (pendingPreview).
+    const pendingNames = () => {
         try {
-            return statSync(previewStatusFile(pr)).mtimeMs;
+            return readdirSync(previews).filter((n) => n.startsWith(".pending-"));
+        } catch {
+            return [];
+        }
+    };
+    const mtimeOf = (file) => {
+        try {
+            return statSync(file).mtimeMs;
         } catch {
             return null;
         }
     };
+    // When a pull request's preview status.json, or any staged capture's, last changed: a staged
+    // capture may be a pending push of this pull request.
+    const previewStamp = (pr) =>
+        [
+            mtimeOf(previewStatusFile(pr)),
+            ...pendingNames().map((n) => `${n}:${mtimeOf(join(previews, n, "status.json"))}`),
+        ].join(",");
     // Whether a listed pull request's local preview changed since the list read it, each change
     // counted once: a refresh that cannot reach GitHub keeps the old list, and must not start another.
     const previewSeen = new Map();
@@ -1326,7 +1401,18 @@ export function createApp({
     };
 
     // Why a target has no Finish now, as a response; null when it has one.
-    const finishRefused = (t) => (t.local ? [403, { error: "a local preview has no Finish" }] : null);
+    const finishRefused = (t) => {
+        if (t.local) {
+            return [403, { error: "a local preview has no Finish" }];
+        }
+        if (t.pendingPush) {
+            return [409, { error: pendingPushText(t) }];
+        }
+        return null;
+    };
+    const pendingPushText = (t) =>
+        `pending push: these screenshots are of ${t.pendingPush.slice(0, 10)}, which the gate is still checking; ` +
+        `Finish opens once it is the head of #${t.pr}`;
     const newPreviewNeeded = (t) =>
         `a new preview is needed for this head (${t.head.slice(0, 10)}): run tools/visual-preview.sh ${t.pr}`;
 
@@ -1806,6 +1892,8 @@ export function createApp({
             commit: t.commit,
             headSha: t.headSha,
             mergeMasterFirst: t.mergeMasterFirst,
+            // The commit a pending push's capture is of (withPending): decisions yes, Finish not yet.
+            pendingPush: t.pendingPush ?? null,
             downloading: t.downloading === true,
             // While downloading: how many artifacts and bytes have landed of how many, and since when
             // (server time). `bytes` is null until GitHub has listed the artifacts.
@@ -1879,6 +1967,8 @@ export function createApp({
                     local: p.results?.local ?? null,
                     // A local preview of the head, decided like CI's capture until CI's replaces it.
                     preview: p.preview === true,
+                    // A capture of a commit the gate is still checking, not yet the head (pendingPreview).
+                    pending: p.pending === true,
                     // The default branch's baseline files this capture was not compared with.
                     newer: p.newer ?? [],
                 };
