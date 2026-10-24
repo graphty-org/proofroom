@@ -15,6 +15,8 @@ import {
     proposeKey,
     rejectComment,
     signRecord,
+    treeSignedRecords,
+    treeStatement,
     unsignedRecordAt,
     updateFromMaster,
 } from "../trusted/lib/accept.mjs";
@@ -866,8 +868,8 @@ describe("finish with a signed tree approval", () => {
     const REJECT = { project: "compact-mantine", file: "slider--sizes.png", decision: "reject", reason: "tall" };
 
     /**
-     * prepareApproval, its record and (with `tree`) its statement signed by the key, as the review
-     * server hands it to finish.
+     * prepareApproval, then (with `tree`) the statement about its accept commit's tree signed by the
+     * key, or else its record signed, as the review server hands it to finish: one approval.
      * @param {object} s the setup
      * @param {object[]} decisions the decisions
      * @param {object} [target] the target
@@ -883,38 +885,47 @@ describe("finish with a signed tree approval", () => {
             now: NOW,
             config: CONFIG,
         });
-        const { commit, statement } = await signRecord({
-            repo: s.repo,
-            target,
-            prepared,
-            approval: approve(prepared.recordBody, KEY, { origin: ORIGIN }),
-            keys: [KEY.entry],
-            origin: ORIGIN,
-            config: CONFIG,
-            now: NOW,
-            statement: tree,
-        });
+        const statement = tree
+            ? await treeStatement({ repo: s.repo, commit: prepared.commit, config: CONFIG, pr: target.pr, now: NOW })
+            : null;
+        const { commit } = tree
+            ? prepared
+            : await signRecord({
+                  repo: s.repo,
+                  target,
+                  prepared,
+                  approval: approve(prepared.recordBody, KEY, { origin: ORIGIN }),
+                  keys: [KEY.entry],
+                  origin: ORIGIN,
+                  config: CONFIG,
+              });
         return {
             ...(tree && { statement: { ...statement, approval: approve(statement, KEY, { origin: ORIGIN }) } }),
             commit,
             branch: prepared.branch,
             record: prepared.record,
-            resign: prepared.pushed,
+            resign: !tree && prepared.pushed,
             pendingKeys: [KEY.entry],
             origin: ORIGIN,
             prepared,
         };
     }
-    // The images approvalIndex counts as approved before from the records at the branch's tip.
-    const approvedBefore = (s) => {
-        const names = git(s.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/").split("\n");
-        const records = names.map((path) => ({
-            ref: "feature",
-            commit: "feature",
-            path,
-            record: JSON.parse(show(s, "feature", path)),
-            main: false,
-        }));
+    // The images approvalIndex counts as approved before from the records at the branch's tip, as
+    // the review server reads them: signed themselves, or held by a baselines tree the owner signed.
+    const approvedBefore = async (s) => {
+        const signed = await treeSignedRecords(s.remote, "feature", CONFIG, [KEY.entry]);
+        const lines = git(s.remote, "ls-tree", "feature", "visual-baselines/reviews/").split("\n");
+        const records = lines.map((line) => {
+            const [meta, path] = line.split("\t");
+            return {
+                ref: "feature",
+                commit: "feature",
+                path,
+                record: JSON.parse(show(s, "feature", path)),
+                main: false,
+                treeSigned: signed.has(meta.split(" ")[2]),
+            };
+        });
         return [...approvalIndex(records, [KEY.entry]).keys()].map((k) => k.split(" ")[0]).sort();
     };
     const run = (s, decisions, approval) =>
@@ -966,11 +977,13 @@ describe("finish with a signed tree approval", () => {
         expect(treeAt(signed, CONFIG.baselines, s.remote)).toBe(statement.tree);
         expect(JSON.parse(show(s, "feature", file))).toEqual(statement);
         expect(recordHash(JSON.parse(show(s, "feature", file)))).toEqual(recordHash(statement));
-        // The record of the decisions is in the accept commit, signed by the owner too.
+        // The record of the decisions is in the signed tree, so the one approval signs it too.
         const record = JSON.parse(show(s, "feature", RECORD));
         expect(record).toMatchObject({ version: 2, pr: 123, rejects: [] });
-        expect(verifyRecord(record, [KEY.entry], { pr: 123 })).toBeNull();
-        expect(approvedBefore(s)).toHaveLength(3);
+        expect(record.approval).toBeUndefined();
+        expect(await approvedBefore(s)).toHaveLength(3);
+        // Only a statement signed by a known key covers the records in its tree.
+        expect((await treeSignedRecords(s.remote, "feature", CONFIG, [makeKey().entry])).size).toBe(0);
         expect(gate(s)).toEqual([]);
     });
 
@@ -1043,10 +1056,10 @@ describe("finish with a signed tree approval", () => {
             config: CONFIG,
         });
         const approval = await approved(s, decisions);
-        // Pushed already, so the record is signed by a commit on top, never by rewriting it.
-        expect(git(s.repo, "rev-parse", `${approval.commit}^`)).toBe(first.commit);
+        // Pushed already: the statement signs that commit's tree, and only the approval goes on top.
+        expect(approval.commit).toBe(first.commit);
         await run(s, decisions, approval);
-        expect(remoteLog(s, "feature").slice(1, 3)).toEqual([approval.commit, first.commit]);
+        expect(remoteLog(s, "feature").slice(1, 2)).toEqual([first.commit]);
         expect(gate(s)).toEqual([]);
     });
 
@@ -1073,7 +1086,7 @@ describe("finish with a signed tree approval", () => {
         expect(record).toMatchObject({ version: 2, pr: 123, reviewedAt: NOW.toISOString() });
         expect(record.rejects).toHaveLength(1);
         expect(verifyRecord(record, [KEY.entry], { pr: 123 })).toBeNull();
-        expect(approvedBefore(s)).toEqual([
+        expect(await approvedBefore(s)).toEqual([
             "visual-baselines/compact-mantine/button--primary.dark.png",
             "visual-baselines/compact-mantine/tooltip--hover.json",
             "visual-baselines/graphty-element/graph--basic.png",
@@ -1089,7 +1102,7 @@ describe("finish with a signed tree approval", () => {
         const first = await s.run(decisions);
         const unsigned = JSON.parse(show(s, "feature", RECORD));
         expect(unsigned.approval).toBeUndefined();
-        expect(approvedBefore(s)).toEqual([]);
+        expect(await approvedBefore(s)).toEqual([]);
         git(s.repo, "fetch", "-q", "origin");
         expect(await unsignedRecordAt(s.repo, "origin/feature", 123, CONFIG)).toBe(RECORD);
         const calls = s.calls.length;
@@ -1115,7 +1128,7 @@ describe("finish with a signed tree approval", () => {
         expect(git(s.remote, "ls-tree", "--name-only", "feature", "visual-baselines/reviews/")).toBe(RECORD);
         const signed = JSON.parse(show(s, "feature", RECORD));
         expect({ ...signed, approval: undefined, version: 3 }).toEqual({ ...unsigned, approval: undefined });
-        expect(approvedBefore(s)).toHaveLength(3);
+        expect(await approvedBefore(s)).toHaveLength(3);
         git(s.repo, "fetch", "-q", "origin");
         expect(await unsignedRecordAt(s.repo, "origin/feature", 123, CONFIG)).toBeNull();
     });

@@ -2833,7 +2833,7 @@ describe("review page: against the default branch", () => {
 describe("review page: the passkey", () => {
     // Chromium's virtual authenticator (CDP) stands in for Face ID: a real browser makes the
     // registration and the approval, and the server's own checks verify them.
-    it("registers a passkey, then Finish asks for it; a refused approval changes nothing", async () => {
+    it("registers a passkey, then Finish asks for it in one prompt; a refused approval changes nothing", async () => {
         const opened = [];
         const r = await open(
             (repo) => {
@@ -2930,12 +2930,12 @@ describe("review page: the passkey", () => {
         await finish.click();
         await expect.poll(() => dialogs.at(-1)).toContain("Passkey cancelled: nothing was changed.");
         expect(dialogs.slice(asked).join("\n")).toContain(
-            "Your passkey signs your decisions, then the baselines this Finish leaves on the branch: two prompts (Face ID or a security key).",
+            "Your passkey signs your decisions and the baselines this Finish leaves on the branch, in one prompt (Face ID or a security key).",
         );
         expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
 
-        // The retry, with Face ID passing, signs and finishes: the accept commit with the signed
-        // record, then, after a second sheet and prompt, the signed statement about its tree.
+        // The retry, with Face ID passing, signs and finishes with ONE passkey prompt: the accept
+        // commit, then the signed statement about its tree, which holds the review record.
         const before = await page.evaluate(() => globalThis.whileAsking.length);
         await cdp.send("WebAuthn.setUserVerified", { authenticatorId, isUserVerified: true });
         await expect.poll(() => page.locator(".finish-outcome h2").textContent()).toBe("Finished #123.");
@@ -2952,9 +2952,10 @@ describe("review page: the passkey", () => {
         const files = git(r.remote, "show", "--name-only", "--format=", "feature^").split("\n");
         const record = JSON.parse(git(r.remote, "show", `feature:${files.find((f) => f.includes("reviews/"))}`));
         expect(record).toMatchObject({ version: 2, pr: 123 });
-        expect(verifyApproval(record, [entry], { origin })).toBeNull();
-        expect(dialogs.some((d) => d.startsWith("Sign the baselines of #123"))).toBe(true);
-        expect((await page.evaluate(() => globalThis.whileAsking.length)) - before).toBe(2);
+        expect(record.approval).toBeUndefined();
+        expect(dialogs.some((d) => d.startsWith("Sign the baselines of #123"))).toBe(false);
+        // One Finish, one passkey assertion: never a second prompt for the same Finish.
+        expect((await page.evaluate(() => globalThis.whileAsking.length)) - before).toBe(1);
         expect(new Set(await page.evaluate(() => globalThis.whileAsking))).toEqual(new Set([true]));
     });
 

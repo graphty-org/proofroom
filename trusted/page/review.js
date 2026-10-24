@@ -4928,8 +4928,9 @@ function approvedList(t, items) {
 }
 
 // What the passkey does for this Finish, from POST /api/finish-prepare: once a passkey is known it
-// signs the decisions of every Finish that commits any, and also the baselines the Finish leaves on
-// the branch when nothing is rejected or left undecided. With nothing new to decide, it signs the
+// signs the decisions of every Finish that commits any, with one prompt; when nothing is rejected
+// or left undecided, that prompt signs the baselines the Finish leaves on the branch, which hold
+// the decisions. With nothing new to decide, it signs the
 // record of an earlier Finish that was pushed unsigned. Before a passkey is known, accepts are not
 // yet protected, and the sheet says so. Rejects alone never wait for a passkey to be registered.
 function passkeySentence(f, prepared) {
@@ -4951,8 +4952,8 @@ function passkeySentence(f, prepared) {
         return el(
             "p",
             { class: "passkey" },
-            "Your passkey signs your decisions, then the baselines this Finish leaves on the branch: two " +
-                "prompts (Face ID or a security key).",
+            "Your passkey signs your decisions and the baselines this Finish leaves on the branch, in one " +
+                "prompt (Face ID or a security key).",
         );
     }
     if (prepared.required) {
@@ -4975,27 +4976,6 @@ function passkeySentence(f, prepared) {
             "does not check who accepted. Register a passkey on the targets screen and merge its pull request " +
             "to turn that on.",
     );
-}
-
-// After the passkey signed the decisions, a Finish that signs the baselines too asks again: the
-// baselines hold the signed decisions, so one approval cannot cover both. Safari starts WebAuthn
-// only from a press, so this is a second sheet. Resolves to the approval, or null when cancelled.
-async function approveTree(t, prepared) {
-    let approval = null;
-    const go = await ask(
-        [
-            el("h2", { id: "tree-title" }, `Sign the baselines of ${labelOf(t)}`),
-            el(
-                "p",
-                {},
-                "Your decisions are signed. Now your passkey signs the baselines this Finish leaves on the branch, " +
-                    "which lets the merge go ahead.",
-            ),
-        ],
-        `Sign the baselines of ${labelOf(t)}`,
-        { label: "tree-title", onYes: () => (approval = approve(prepared)) },
-    );
-    return go ? approval : null;
 }
 
 // Finish publishes every decision of one target. It asks the server what it would do, states it
@@ -5105,11 +5085,10 @@ async function finishAttempt(id, notice) {
             return { retry: passkeyCancelled(err, t) };
         }
     }
-    // The decisions are signed into the accept commit (not pushed yet); the baselines, when this
-    // Finish signs them, take a second approval.
+    // A Finish that does not sign the baselines signs its decisions into the accept commit (not
+    // pushed yet); one that does signs them with the baselines, which hold them.
     if (approval && prepared.signs === "record") {
-        const signed = await signDecisions(id, t, prepared, approval);
-        return signed.prepared ? startFinish(id, t, signed.prepared, signed.approval, true) : signed;
+        return (await signDecisions(id, prepared, approval)) ?? startFinish(id, t, prepared, null, true);
     }
     return startFinish(id, t, prepared, approval, false);
 }
@@ -5151,21 +5130,15 @@ const passkeyCancelled = (err, t) =>
         ? "Passkey cancelled: nothing was changed."
         : passkeyFailure(err, t.passkey);
 
-// Signs the decisions with the passkey's `approval`, then asks for the baselines' approval when this
-// Finish signs them too. Answers `{ prepared, approval }` for the start (approval null when nothing
-// more is signed), or a finishAttempt answer when it did not get that far.
-async function signDecisions(id, t, prepared, approval) {
+// Signs the decisions with the passkey's `approval`. Answers null when signed, else a finishAttempt
+// answer to show the sheet again.
+async function signDecisions(id, prepared, approval) {
     sayBusy("Signing your decisions...");
     try {
-        const next = await api("/api/finish-prepare", { id, challenge: prepared.challenge, approval });
-        // approveTree's promise settles with Face ID's answer, or null when cancelled.
-        const tree = next.required ? await approveTree(t, next) : null;
-        if (next.required && !tree) {
-            return FINISH_CANCELLED;
-        }
-        return { prepared: next, approval: tree };
+        await api("/api/finish-prepare", { id, challenge: prepared.challenge, approval });
+        return null;
     } catch (err) {
-        return { retry: err?.status ? `${err.message}. Nothing was changed.` : passkeyCancelled(err, t) };
+        return { retry: `${err.message}. Nothing was changed.` };
     }
 }
 

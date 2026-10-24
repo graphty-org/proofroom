@@ -743,15 +743,16 @@ Finish applies every decision on one target, across all its projects, at once:
   [Approving with a passkey](#approving-with-a-passkey)): a second commit holding only
   `<approvals>/<tree>.json` (the config's `approvals`, `visual-review-approvals` by default),
   your signed statement that the baselines directory of the accept commit, git tree `<tree>`, is
-  approved. Once a passkey is known, the sheet says "Your passkey signs your decisions, then the
-  baselines this Finish leaves on the branch: two prompts (Face ID or a security key)." and its
+  approved. Once a passkey is known, the sheet says "Your passkey signs your decisions and the
+  baselines this Finish leaves on the branch, in one prompt (Face ID or a security key)." and its
   final button reads **Sign and finish #201**. Pressing it opens the Face ID (or Touch ID) prompt
-  for your decisions at once; then a second sheet, **Sign the baselines of #201**, asks for the
-  baselines. Cancelling either changes nothing: the sheet comes back saying "Passkey cancelled:
-  nothing was changed." with its final button focused, so Enter tries again.
-- **Your decisions are signed whenever Finish commits any**, once a passkey is known: the review
-  record carries your approval, so the images you accepted count as approved before on later pull
-  requests. When anything is rejected or left undecided, or a project's capture did not load, only
+  at once. The baselines tree holds the review record, so that one approval signs your decisions
+  too. Cancelling changes nothing: the sheet comes back saying "Passkey cancelled: nothing was
+  changed." with its final button focused, so Enter tries again.
+- **Your decisions are signed whenever Finish commits any**, once a passkey is known, so the
+  images you accepted count as approved before on later pull requests: by your approval of the
+  baselines tree that holds the review record, or, when the baselines are not signed, by your
+  approval written into the record itself. When anything is rejected or left undecided, or a project's capture did not load, only
   the decisions are signed, with one prompt: the sheet says "Your passkey signs your decisions
   ... The baselines are not signed, because ...", and Finish commits the accepts and the signed
   record and posts the rejects. The pull request stays blocked until a later Finish, with every
@@ -865,18 +866,19 @@ Finish asks for your passkey when the server knows of a key for the page's host 
 commits anything. It runs in this order, so what you sign is what lands:
 
 1. When the sheet opens, the server commits your accepts and the review record (the accept
-   commit), without pushing it. The SHA-256 of the record's canonical JSON is the first challenge
-   your device signs.
-2. When you approve, the server checks the signature with the gate's own code and writes it into
-   the record, in the accept commit. A Finish that rejects anything or leaves anything undecided
-   pushes that commit now.
-3. Otherwise it builds the statement: that commit, the git tree of the baselines directory in it
-   (which holds the signed record), the baselines directory's name, the pull request and the time.
-   Its SHA-256 is the second challenge. The tree holds the signed record, so one approval cannot
-   cover both.
-4. When you approve again, Finish checks that signature too, commits the statement with your
-   approval as `<approvals>/<tree>.json` on top of the accept commit (outside the baselines
-   directory, so the tree you signed stays exactly as it was), and pushes both.
+   commit), without pushing it, and builds the statement: that commit, the git tree of the
+   baselines directory in it (which holds the review record), the baselines directory's name, the
+   pull request and the time. The SHA-256 of the statement's canonical JSON is the challenge your
+   device signs, once.
+2. When you approve, Finish checks the signature with the gate's own code, commits the statement
+   with your approval as `<approvals>/<tree>.json` on top of the accept commit (outside the
+   baselines directory, so the tree you signed stays exactly as it was), and pushes both. The tree
+   hash covers the review record's bytes, so the review server counts its accepts as approved
+   before on later pull requests.
+
+A Finish that rejects anything or leaves anything undecided signs no tree: the challenge is the
+SHA-256 of the review record instead, and the server writes your approval into the record in the
+accept commit and pushes it.
 
 A branch that moved after the sheet opened refuses the push ("capture is stale"), and nothing is
 pushed. On a Mac, Touch ID or your login password takes Face ID's place.

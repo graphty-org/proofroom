@@ -20,19 +20,19 @@
  *
  * Passkeys: once any key is known (passkeys.json on the fetched default branch, or one this server
  * registered whose pull request is not merged yet, `<tmp>/state/passkeys-pending.json`), a Finish
- * that commits decisions needs the owner's approval of its review record, so its accepts count as
- * "approved before" later (filters.mjs approvalIndex). A pending key approves only while the
+ * that commits decisions needs one passkey approval from the owner, which also makes its accepts
+ * count as "approved before" later (filters.mjs approvalIndex). A pending key approves only while the
  * default branch holds none: once it does, only its keys count, as in the gate, so a key
  * registered later (by anyone who can reach this page) approves nothing until its pull request
  * merges. A Finish also signs the baselines tree it leaves only when it rejects nothing and, on a
  * pull request, leaves nothing undecided and every project loaded (signingProblem). POST
- * /api/finish-prepare commits the accepts (not pushed) and returns the hash of the record as the
- * WebAuthn challenge (accept.mjs prepareApproval); the same route with that approval signs the
- * record into the commit (signRecord) and, when the tree is signed too, returns the hash of the
- * statement about the signed commit's baselines tree as a second challenge: the tree holds the
- * signed record, so one approval cannot cover both. POST /api/finish takes the tree's approval
- * when there is one, checks it, and pushes the commit with the signed statement on it, or the
- * commit alone. A Finish with nothing new to decide signs the record of an earlier Finish that was
+ * /api/finish-prepare commits the accepts (not pushed, accept.mjs prepareApproval) and returns the
+ * WebAuthn challenge: when the tree is signed, the hash of the statement about that commit's
+ * baselines tree, which holds the review record, so the one approval covers the decisions too
+ * (accept.mjs treeSignedRecords); otherwise the hash of the record, and the same route with that
+ * approval signs the record into the commit (signRecord). POST /api/finish takes the tree's
+ * approval when there is one, checks it, and pushes the commit with the signed statement on it, or
+ * the commit alone. A Finish with nothing new to decide signs the record of an earlier Finish that was
  * pushed unsigned, when the branch tip is that Finish's accept commit (`resign`). The server
  * decides whether approval is required, so leaving it out never skips it. The rpId is the host
  * name of the page's own origin.
@@ -106,6 +106,8 @@ import {
     prepareApproval,
     proposeKey,
     signRecord,
+    treeSignedRecords,
+    treeStatement,
     unsignedRecordAt,
     updateFromMaster,
 } from "./accept.mjs";
@@ -635,6 +637,8 @@ export function createApp({
     const recordBlobs = new Map();
     /** The default branch's commit that added each review record blob. */
     const addedIn = new Map();
+    /** The record blobs each signed tree statement covers (accept.mjs treeSignedRecords). */
+    const statementRecords = new Map();
     /** The stories proven to be capture noise, by `<project>/<file>` (filters.mjs knownNoise). */
     let noise = new Map();
     const evidenceFile = join(stateDir, "noise-evidence.json");
@@ -914,8 +918,9 @@ export function createApp({
 
     /**
      * Reads the review records on the default branch and on every listed pull request's branch,
-     * each blob once, into the index of approved images. Records verify as the gate verifies them;
-     * with the keys unreadable, nothing counts as approved before.
+     * each blob once, into the index of approved images. Records verify as the gate verifies them,
+     * by their own approval or by a signed statement of a baselines tree that holds them; with the
+     * keys unreadable, nothing counts as approved before.
      * @param {object[]} list the targets
      */
     async function readApprovals(list) {
@@ -923,11 +928,15 @@ export function createApp({
             approved = new Map();
             return;
         }
+        const keys = passkeyState.main.length > 0 ? passkeyState.main : null;
         const records = [];
         for (const { sha, main } of await approvalRefs(list)) {
-            records.push(...(await reviewRecordsAt(sha, main)));
+            const signed = keys ? await treeSignedRecords(repo, sha, config, keys, statementRecords) : new Set();
+            for (const r of await reviewRecordsAt(sha, main)) {
+                records.push({ ...r, treeSigned: signed.has(r.blob) });
+            }
         }
-        approved = approvalIndex(records, passkeyState.main.length > 0 ? passkeyState.main : null);
+        approved = approvalIndex(records, keys);
     }
 
     const gitIn = (args) => exec("git", args, { cwd: repo });
@@ -963,7 +972,8 @@ export function createApp({
      * commit that added it, which the gate finds on the base of every pull request branched later.
      * @param {string} sha the commit
      * @param {boolean} main whether it is the default branch's tip
-     * @returns {Promise<{ ref: string, commit: string, path: string, record: any, main: boolean }[]>} them
+     * @returns {Promise<{ ref: string, commit: string, path: string, blob: string, record: any,
+     *     main: boolean }[]>} them
      */
     async function reviewRecordsAt(sha, main) {
         const out = [];
@@ -981,7 +991,7 @@ export function createApp({
                 addedIn.set(blob, await gitIn(["log", "-1", "--format=%H", "--diff-filter=A", sha, "--", path]));
             }
             const commit = (main && addedIn.get(blob)) || sha;
-            out.push({ ref: sha, commit, path, record: recordBlobs.get(blob), main });
+            out.push({ ref: sha, commit, path, blob, record: recordBlobs.get(blob), main });
         }
         return out;
     }
@@ -2167,9 +2177,8 @@ export function createApp({
     };
 
     /**
-     * POST /api/finish-prepare's second call: the owner's approval of the prepared record, written
-     * into the accept commit (not pushed). Answers the tree statement to sign next, or that nothing
-     * more is needed.
+     * POST /api/finish-prepare's second call, for a Finish that does not sign the tree: the owner's
+     * approval of the prepared record, written into the accept commit (not pushed).
      * @param {object} t the target
      * @param {{ digest: string }} work as finishWork returns now
      * @param {{ challenge?: string, approval: object }} body the request
@@ -2200,8 +2209,6 @@ export function createApp({
                 keys: trusted,
                 origin,
                 config,
-                now: new Date(p.now),
-                statement: p.tree,
             });
         } catch (err) {
             if (err instanceof AcceptError) {
@@ -2213,18 +2220,8 @@ export function createApp({
         }
         p.commit = out.commit;
         p.expires = Date.now() + APPROVAL_MS;
-        if (!p.tree) {
-            p.stage = "signed";
-            return [200, { required: false, signed: true }];
-        }
-        p.stage = "tree";
-        p.statement = out.statement;
-        p.challenge = recordHash(out.statement).toString("base64url");
-        const allowCredentials = trusted.filter((k) => k.rpId === rpId).map((k) => k.id);
-        return [
-            200,
-            { required: true, signs: "tree", challenge: p.challenge, rpId, allowCredentials, statement: p.statement },
-        ];
+        p.stage = "signed";
+        return [200, { required: false, signed: true }];
     }
 
     /**
@@ -2946,13 +2943,18 @@ export function createApp({
                     { error: "the earlier Finish's record is not on the branch tip any more: reload the page" },
                 ];
             }
-            const challenge = recordHash(prepared.recordBody).toString("base64url");
             // Signing an earlier Finish's record signs nothing else: the tree is a Finish's of its own.
             const tree = !unsigned && !resign;
+            // The tree holds the record, so signing the tree signs the decisions too: one approval.
+            const statement = tree
+                ? await treeStatement({ repo, commit: prepared.commit, config, pr: t.pr, now })
+                : undefined;
+            const challenge = recordHash(statement ?? prepared.recordBody).toString("base64url");
             approvals.set(t.id, {
                 ...prepared,
-                stage: "record",
+                stage: tree ? "tree" : "record",
                 challenge,
+                statement,
                 tree,
                 resign,
                 now: now.toISOString(),
@@ -2964,9 +2966,10 @@ export function createApp({
                 200,
                 {
                     required: true,
-                    signs: "record",
+                    signs: tree ? "tree" : "record",
                     tree,
                     resign,
+                    ...(tree && { statement }),
                     ...(unsigned && { unsigned }),
                     challenge,
                     rpId,
