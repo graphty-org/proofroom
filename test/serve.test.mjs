@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    chmodSync,
+    cpSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { createServer, request } from "node:http";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -1203,6 +1213,76 @@ describe("serve: local previews of a pull request", () => {
         expect(record.items).toEqual([
             expect.objectContaining({ path: "visual-baselines/compact-mantine/badge--default.light.png", from: null }),
         ]);
+    });
+
+    it("offers the gate's capture of a commit not yet pushed as pending push: decided, Finish refused until it is the head", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        // The landing the gate checks: the pull request's head merged with a branch, not on GitHub yet.
+        const candidate = (n) => git(r.repo, "commit-tree", `${r.head}^{tree}`, "-p", r.head, "-m", `land ${n}`);
+        const items = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
+        // As tools/visual-preview.sh --head stages it for #123 (VISUAL_PREVIEW_BRANCH).
+        const stage = (sha, at, captured = items) => {
+            const dir = join(previews, `.pending-${sha}`);
+            preview(previews, "compact-mantine", sha, { items: captured });
+            rmSync(dir, { recursive: true, force: true });
+            mkdirSync(dir, { recursive: true });
+            renameSync(join(previews, "123/compact-mantine"), join(dir, "compact-mantine"));
+            if (captured !== items) {
+                // Another picture of the badge: the slider's image, under the badge's file.
+                cpSync(
+                    join(dir, "compact-mantine/slider--sizes.png"),
+                    join(dir, "compact-mantine/badge--default.light.png"),
+                );
+            }
+            writeFileSync(
+                join(dir, "status.json"),
+                JSON.stringify({ state: "done", pr: 123, head: sha, updatedAt: at, projects: ["compact-mantine"] }),
+            );
+            return dir;
+        };
+        let head = r.head;
+        const gh = () => (args, input) => fakeGh({ prs: [{ number: 123, head, branch: "feature" }] })(args, input);
+        const first = candidate(1);
+        const staged = stage(first, "2026-10-24T10:00:00Z");
+        // A capture of a commit that does not hold the head (an older golden) is never offered.
+        stage(git(r.repo, "commit-tree", `${r.head}^{tree}`, "-m", "unrelated"), "2026-10-24T11:00:00Z");
+        const s = await start({ ...r, gh, previews });
+        let [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.pendingPush).toBe(first);
+        expect(t.projects[0]).toMatchObject({ preview: true, pending: true, acceptable: true, reviewable: 6 });
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const refused = await s.api("POST", "/api/finish-prepare", { id: "123" });
+        expect(refused.status).toBe(409);
+        expect(refused.body.error).toMatch(new RegExp(`^pending push: .*${first.slice(0, 10)}.*head of #123`));
+        expect((await s.api("POST", "/api/finish", { id: "123" })).status).toBe(409);
+
+        // The gate failed (its capture discarded); the next candidate draws the same image: the decision
+        // holds. One whose image for that story differs never takes it.
+        rmSync(staged, { recursive: true });
+        const second = candidate(2);
+        const again = stage(second, "2026-10-24T12:00:00Z");
+        [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.pendingPush).toBe(second);
+        expect(t.projects[0]).toMatchObject({ pending: true, decided: 1 });
+        rmSync(again, { recursive: true });
+        const slider = items.find((i) => i.file === "slider--sizes.png");
+        const redrawn = items.map((i) =>
+            i.file === "badge--default.light.png" ? { ...i, capture: slider.capture, size: slider.size } : i,
+        );
+        const third = candidate(3);
+        stage(third, "2026-10-24T13:00:00Z", redrawn);
+        [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.projects[0]).toMatchObject({ pending: true, decided: 0 });
+
+        // Pushed: GitHub lists it as the head and land.mjs made it the pull request's preview. Finish opens.
+        renameSync(join(previews, `.pending-${third}`), join(previews, "123"));
+        head = third;
+        [t] = (await s.api("GET", "/api/prs")).body.targets;
+        expect(t.pendingPush).toBeNull();
+        expect(t.projects[0]).toMatchObject({ preview: true, pending: false });
+        const opened = await s.api("POST", "/api/finish-prepare", { id: "123" });
+        expect(opened.body.error ?? "").not.toMatch(/pending push/);
     });
 
     it("keeps a preview current after a Finish's own commits, finishes on it again, and asks for a new one after any other commit (issue 3235)", async () => {

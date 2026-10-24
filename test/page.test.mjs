@@ -6,7 +6,7 @@
  * last block serves the fixture as a local preview.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
@@ -21,6 +21,7 @@ import { createApp } from "../trusted/lib/serve.mjs";
 import {
     CONFIG,
     capturedItems,
+    copyFixture,
     FIXTURE,
     FIXTURE_CONFIG,
     fakeGh,
@@ -3398,6 +3399,78 @@ describe("review page: renamed stories", () => {
             TOKEN,
         );
         expect(decisions["slider--sizes.png"]).toMatchObject({ decision: "accept" });
+    });
+});
+
+describe("review page: a pending push", () => {
+    it("decides on the gate's capture of a commit not yet pushed, and turns Finish on once it is the head", async () => {
+        let previews;
+        let head;
+        let candidate;
+        await open(
+            (r) => {
+                previews = join(r.dir, "previews");
+                head = r.head;
+                candidate = git(r.repo, "commit-tree", `${r.head}^{tree}`, "-p", r.head, "-m", "land: x");
+                // As tools/visual-preview.sh --head stages it for #123 while the gate checks `candidate`.
+                const dir = join(previews, `.pending-${candidate}`);
+                copyFixture("compact-mantine", join(dir, "compact-mantine"), {
+                    headSha: candidate,
+                    pr: 123,
+                    runId: null,
+                    runAttempt: null,
+                    items: capturedItems(),
+                    local: {
+                        describe: "x",
+                        diff: "0".repeat(64),
+                        preview: { merge: "3".repeat(40), host: "h", tool: "t" },
+                    },
+                });
+                writeFileSync(
+                    join(dir, "status.json"),
+                    JSON.stringify({ state: "done", pr: 123, head: candidate, updatedAt: "2026-10-24T10:00:00Z" }),
+                );
+                return {
+                    previews,
+                    gh: (args, input) => fakeGh({ prs: [{ number: 123, head, branch: "feature" }] })(args, input),
+                };
+            },
+            { review: false },
+        );
+        const card = page.locator('.card[data-target="123"]');
+        const finish = card.getByRole("button", { name: /^Finish/ });
+        await expect.poll(() => card.textContent()).toContain("pending push");
+        expect(await card.textContent()).toContain("Pending push");
+        expect(await finish.getAttribute("aria-disabled")).toBe("true");
+        const decided = await page.evaluate(
+            async (token) =>
+                (
+                    await fetch("/api/decide", {
+                        method: "POST",
+                        headers: { "x-review-token": token, "content-type": "application/json" },
+                        body: JSON.stringify({
+                            id: "123",
+                            project: "compact-mantine",
+                            file: "badge--default.light.png",
+                            decision: "accept",
+                        }),
+                    })
+                ).status,
+            TOKEN,
+        );
+        expect(decided).toBe(200);
+
+        // Pushed: land.mjs made the capture #123's preview and GitHub lists the commit as the head.
+        renameSync(join(previews, `.pending-${candidate}`), join(previews, "123"));
+        head = candidate;
+        await expect
+            .poll(async () => {
+                await page.clock.fastForward(5000);
+                return finish.getAttribute("aria-disabled");
+            })
+            .toBe("false");
+        expect(await card.textContent()).not.toContain("pending push");
+        expect(await finish.textContent()).toMatch(/\(1\)$/);
     });
 });
 

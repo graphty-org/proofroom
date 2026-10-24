@@ -1176,6 +1176,41 @@ function drawHeader() {
     if (!isLocal()) {
         finishSlot.append(...finishControl(state.target));
     }
+    watchPending();
+}
+
+// A pending push (the server's pendingPush): the capture is of a commit the pre-push gate is still
+// checking, not yet the pull request's head. Its images are decided as usual; Finish waits until that
+// commit is the head, and the header asks the server again every PENDING_POLL_MS meanwhile, so Finish
+// turns on by itself once the push lands.
+const PENDING_POLL_MS = 15000;
+let pendingTimer = null;
+const pendingText = (t) =>
+    `Pending push: these images are of ${t.pendingPush.slice(0, 10)}, which the gate is still checking. ` +
+    "Decide them now; Finish opens once it is pushed.";
+function watchPending() {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+    const id = state.target?.id;
+    if (!state.target?.pendingPush || state.screen === "targets") {
+        return;
+    }
+    pendingTimer = setTimeout(async () => {
+        pendingTimer = null;
+        try {
+            const list = await api("/api/prs?cached=1");
+            const fresh = list.targets?.find((t) => t.id === id);
+            if (fresh && state.target?.id === id) {
+                state.list = list;
+                state.target = { ...state.target, pendingPush: fresh.pendingPush, headSha: fresh.headSha };
+                drawHeader();
+                return;
+            }
+        } catch {
+            // asked again below
+        }
+        watchPending();
+    }, PENDING_POLL_MS);
 }
 
 // Finish names its target and how many decisions it would publish. At 0 it is unavailable, and
@@ -1186,8 +1221,12 @@ function finishControl(t) {
     const count = t.unpublished ?? 0;
     // Nothing new, but an earlier Finish's record waits for the passkey: Finish signs it.
     const resign = count === 0 && t.resign === true && t.passkey?.required === true;
-    const can = (count > 0 || resign) && !running();
-    const why = count === 0 && !resign ? ["Nothing new", " to finish"] : null;
+    const pending = Boolean(t.pendingPush);
+    const can = (count > 0 || resign) && !running() && !pending;
+    let why = count === 0 && !resign ? ["Nothing new", " to finish"] : null;
+    if (pending) {
+        why = ["Pending push", `: ${t.pendingPush.slice(0, 10)} is not pushed yet`];
+    }
     return [
         tallyLine(t),
         el(
@@ -1200,6 +1239,8 @@ function finishControl(t) {
                 onclick: (e) => {
                     if (can) {
                         finishTarget(t.id, e.currentTarget);
+                    } else if (pending) {
+                        say(pendingText(t));
                     } else {
                         say(running() ? "A Finish is running: wait for it to end." : "Nothing new to finish.");
                     }
@@ -1938,6 +1979,10 @@ const PREVIEW_NOTE =
     "Captured on this computer from the pull request's head, before CI. Decide and Finish on it as on CI's " +
     "capture: CI checks it, and anything CI draws differently comes back to you.";
 
+const PENDING_NOTE =
+    "Captured on this computer from the commit the pre-push gate is checking, before it is pushed. Decide it " +
+    "now: a later capture with the same image keeps your decision. Finish opens once the commit is pushed.";
+
 function projectRow(t, p) {
     const results = Object.entries(p.counts)
         .filter(([s]) => REVIEWABLE.includes(s))
@@ -1954,7 +1999,10 @@ function projectRow(t, p) {
             p.acceptable || t.local || p.downloading || p.problem
                 ? null
                 : el("span", { class: "badge" }, "Reject only here: accept on a pull request"),
-            p.preview ? [" ", el("span", { class: "badge", title: PREVIEW_NOTE }, "local preview, CI pending")] : null,
+            p.preview && !p.pending
+                ? [" ", el("span", { class: "badge", title: PREVIEW_NOTE }, "local preview, CI pending")]
+                : null,
+            p.pending ? [" ", el("span", { class: "badge", title: PENDING_NOTE }, "pending push")] : null,
         ),
         el(
             "td",
@@ -4205,7 +4253,8 @@ const endFinish = (t, primary) =>
             type: "button",
             class: primary ? "primary" : null,
             "aria-describedby": "end-heading",
-            onclick: (e) => finishTarget(t.id, e.currentTarget),
+            "aria-disabled": t.pendingPush ? "true" : null,
+            onclick: (e) => (t.pendingPush ? say(pendingText(t)) : finishTarget(t.id, e.currentTarget)),
         },
         `Finish ${labelOf(t)} (${t.unpublished})`,
     );
