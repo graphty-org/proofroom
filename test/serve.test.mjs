@@ -2092,6 +2092,9 @@ describe("serve: loading without waiting", () => {
             [3, null, true],
         ]);
         expect(prs[1].run).toMatchObject({ status: "in_progress", conclusion: null });
+        asked.length = 0;
+        const kept = await openPullRequests(gh, { workflow: "ci.yml", ignoreBranches: ["b2", "x/"] });
+        expect(kept.map((p) => p.number)).toEqual([1, 3]);
     });
 
     it("downloads a run's projects at once, eight at most, and the one asked for next", async () => {
