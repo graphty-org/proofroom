@@ -68,6 +68,7 @@ describe("normalizeConfig", () => {
             fontconfig: null,
             updateCheck: null,
             usage: false,
+            ignoreBranches: [],
             projects: {
                 web: {
                     storybook: "storybook-static",
@@ -113,6 +114,8 @@ describe("normalizeConfig", () => {
         [{ projects: { a: { storybook: "s", waitFor: { selector: "x" } } } }, /waitFor needs/],
         [{ defaultBranch: "", projects: { a: { storybook: "s" } } }, /defaultBranch must be/],
         [{ issueLabels: "bug", projects: { a: { storybook: "s" } } }, /issueLabels/],
+        [{ ignoreBranches: "dependabot/", projects: { a: { storybook: "s" } } }, /ignoreBranches/],
+        [{ ignoreBranches: [""], projects: { a: { storybook: "s" } } }, /ignoreBranches/],
     ])("refuses %j", (raw, message) => {
         expect(() => normalizeConfig(raw)).toThrow(message);
     });
