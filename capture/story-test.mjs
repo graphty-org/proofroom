@@ -141,8 +141,8 @@ async function encodeAsChromium(page, image, size) {
 }
 
 /**
- * In the page: gives every visible, opaque position: fixed element (in open shadow roots too) a
- * compositing layer of its own, as iframe.html's document has when it is the page: there the
+ * In the page: gives every visible, opaque element fixed to the viewport (in open shadow roots
+ * too) a compositing layer of its own, as iframe.html's document has when it is the page: there the
  * root scroller is composited, and a fixed element over it is composited too (reason "overlap").
  * The tester iframe's document scrolls nothing, so it paints them into its own layer, where a
  * pop-out's box-shadow rasterizes up to 9 levels off and a rounded border's anti-aliasing moves.
@@ -173,10 +173,27 @@ function compositeFixedInPage(undo) {
         }
     };
     walk(document);
+    // A transform, filter, perspective or paint containment makes an ancestor the containing block
+    // of a fixed element: then it is not fixed to the viewport, and the page composites nothing.
+    const holds = (style) =>
+        style.transform !== "none" ||
+        style.perspective !== "none" ||
+        style.filter !== "none" ||
+        /paint|layout|strict|content/.test(style.contain) ||
+        /transform|perspective|filter/.test(style.willChange);
+    const toViewport = (el) => {
+        for (let up = el.parentElement ?? el.getRootNode().host; up; up = up.parentElement ?? up.getRootNode().host) {
+            if (holds(getComputedStyle(up))) {
+                return false;
+            }
+        }
+        return true;
+    };
     const fixed = all.filter((el) => {
         const style = getComputedStyle(el);
         const own = style.willChange !== "auto";
-        return style.position === "fixed" && style.opacity === "1" && !own && el.getBoundingClientRect().width > 0;
+        const shown = el.getBoundingClientRect().width > 0;
+        return style.position === "fixed" && style.opacity === "1" && !own && shown && toViewport(el);
     });
     globalThis[key] = fixed.map((el) => [
         el,
@@ -262,6 +279,8 @@ async function shootFrame(page, frame) {
         }
     }
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+    // Composited first: pinned, they are no longer fixed, and the full-page shot draws them composited.
+    await frame.evaluate(compositeFixedInPage, false);
     await frame.evaluate(pinFixedInPage, false);
     try {
         for (let top = 0; top < size.height; top += VIEWPORT.height) {
@@ -276,6 +295,7 @@ async function shootFrame(page, frame) {
     } finally {
         await scrollFrame(frame, 0, 0);
         await frame.evaluate(pinFixedInPage, true);
+        await frame.evaluate(compositeFixedInPage, true);
     }
     return encodeAsChromium(page, out, size);
 }
