@@ -417,14 +417,18 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         /**
          * Moves the pointer off the page and gives the tester iframe the focus: iframe.html is its
          * page's only document, so it has the focus a story's play gives an element, and the focus
-         * ring that shows it.
+         * ring that shows it. It also composites the iframe in a layer of its own, as iframe.html's
+         * document is when it is the page: painted into the orchestrator page's layer instead, a
+         * translucent element (the console button, opacity 0.6) blends 1 level off at its edges.
          * @param {{ page: import("playwright").Page, frame: () => Promise<import("playwright").Frame> }} ctx
          *     the command's context
          * @returns {Promise<void>} once done
          */
         async visualPark(ctx) {
             await park(ctx.page);
-            await (await (await ctx.frame()).frameElement()).focus();
+            const iframe = await (await ctx.frame()).frameElement();
+            await iframe.evaluate((el) => el.style.setProperty("will-change", "transform"));
+            await iframe.focus();
         },
         /**
          * What the browser side does for one story: its modes, the project's wait and the delay.
