@@ -66,7 +66,8 @@ export function storyVerdict(results, { blocking, quarantine = [], gh = false })
     let failing = 0;
     const say = (line, fails) => {
         failing += fails ? 1 : 0;
-        lines.push(gh ? `::${fails ? "error" : "warning"}::${line}` : `visual-review: ${line}`);
+        const level = fails ? "error" : "warning";
+        lines.push(gh ? `::${level}::${line}` : `visual-review: ${line}`);
     };
     for (const item of items) {
         if (item.status === "unstable" || item.unstableFirst) {
