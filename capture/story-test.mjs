@@ -59,8 +59,15 @@ const measure = (frame) =>
  * @param {import("playwright").Frame} frame the tester iframe
  * @returns {Promise<void>} once they are drawn
  */
-const twoFrames = (frame) =>
-    frame.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
+
+/**
+ * In the page: waits for two frames to be drawn.
+ * @returns {Promise<void>} once they are drawn
+ */
+function twoFramesInPage() {
+    return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
 
 /**
  * A play function's real pointer stays where it last was and hovers whatever is under it;
@@ -360,7 +367,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
                     }
                 }
             }
-            const missing = [...ran].filter((id) => !planned.has(id)).sort();
+            const missing = [...ran].filter((id) => !planned.has(id)).sort((a, b) => a.localeCompare(b));
             const reported = results.commit !== null && missing.length === 0 && pending.size === 0;
             results.partial = { shard, reported, missing };
             results.items.sort((a, b) => (a.file < b.file ? -1 : 1));

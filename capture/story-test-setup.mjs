@@ -10,7 +10,7 @@
  * console rule and an unstable story (two shots that disagree) fail the test.
  */
 
-/* global document, requestAnimationFrame, history, location, localStorage, sessionStorage, indexedDB, window -- browser only */
+/* global document, requestAnimationFrame, history, location, localStorage, sessionStorage, indexedDB -- browser only */
 
 const CLOCK_START = "2026-01-01T12:00:00Z";
 const TYPES = { log: "log", info: "info", warn: "warning", error: "error", debug: "debug" };
@@ -50,7 +50,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, vi, commands }) 
             original(...args);
         };
     }
-    window.addEventListener("error", (e) => lines.push(`pageerror: ${e.error?.stack ?? e.message}`));
+    globalThis.addEventListener("error", (e) => lines.push(`pageerror: ${e.error?.stack ?? e.message}`));
 
     let head = null;
     const layout = (name) => {
