@@ -100,7 +100,7 @@ jobs:
             # Kept even when capture crashed, so the reviewer sees the partial results.json.
             - name: Upload captures
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: visual-${{ matrix.project }}-${{ github.run_attempt }}
                   path: ${{ runner.temp }}/visual/
@@ -143,7 +143,7 @@ jobs:
 
             - name: Download visual captures
               continue-on-error: true
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: visual-*
                   path: ${{ runner.temp }}/visual
