@@ -1024,6 +1024,102 @@ after each change. Such an ad hoc capture is look only. To approve before CI has
 capture the pull request's merge tree as a local preview (`serve --previews` above), and accept it
 on the pull request; CI's capture stays the judge.
 
+## Checking that two machines draw the same pixels
+
+Two captures of the same commit should hold the same bytes, wherever they ran. To check, capture
+the same stories in both places and compare the two results:
+
+```bash
+npx visual-review parity --project web ci-capture/web local-capture/web
+```
+
+Each argument is a capture's `--out` directory (or its `results.json`). The command prints one
+line per story and mode whose image bytes differ, that only one side captured, or that one side
+failed to capture, and exits 1 if there is any. No threshold applies: from the same commit, any
+difference means one of the two environments draws differently (a missing font, a GPU path), and
+that is the thing to fix.
+
+## Taking the screenshots inside the story tests
+
+A Storybook project whose stories already run as Vitest tests (`@storybook/addon-vitest`) can take
+each story's screenshot at the end of its own test instead of rendering every story again from a
+built Storybook. The pictures, the comparison and the results are the same as `capture`'s, so
+`serve` and `gate` read them unchanged.
+
+```ts
+// vitest.config.ts: the storybook project
+import { PRODUCTION, visualStoryTest } from "@graphty/visual-review/vitest";
+
+const visual = visualStoryTest({ project: "web", out: "tmp/stories/web" });
+
+export default defineConfig({
+    test: {
+        reporters: ["default", visual.reporter],
+        projects: [
+            {
+                ...PRODUCTION, // as capture: production mode and NODE_ENV, a 404 for a missing file
+                plugins: [storybookTest({ configDir: ".storybook" })],
+                test: {
+                    name: "storybook",
+                    browser: {
+                        enabled: true,
+                        provider: playwright(visual.providerOptions),
+                        instances: [{ browser: "chromium" }],
+                        viewport: visual.viewport,
+                        commands: visual.commands,
+                    },
+                    setupFiles: [".storybook/vitest.setup.visual.ts", ".storybook/vitest.setup.ts"],
+                },
+            },
+        ],
+    },
+});
+```
+
+```ts
+// .storybook/vitest.setup.visual.ts
+import { afterEach, beforeEach } from "vitest";
+import { commands } from "vitest/browser";
+import { installVisualStoryTest } from "@graphty/visual-review/vitest/setup";
+
+installVisualStoryTest({ afterEach, beforeEach, commands });
+```
+
+Each run writes a partial capture into `out`. Run the tests in shards if you like (`vitest run
+--shard=1/3`, each into its own directory), then combine the partials into the capture the review
+page and the gate read:
+
+```bash
+npx visual-review merge-results --project web --out captures/web tmp/stories/web-1 tmp/stories/web-2 tmp/stories/web-3
+```
+
+It is complete only when every shard is there once, the shards between them ran every story file of
+the project (a run of some files, or a file that failed to load, leaves it incomplete) and each
+reported every story test it ran; a baseline no story drew is reported removed.
+A story test fails when its play fails, when the project's `waitFor` console rule matches, or when
+two renders of it draw different pictures (unstable); a changed or new picture passes and waits for
+review. A second run of the same commit into the same directory (a retry of the failed story files)
+keeps the first run's items and replaces only the stories it shoots again, so a story that was
+unstable and then settled reads as one capture; a new run needs an empty directory.
+
+A story test renders each story several times in one page -- once for the test, again for each
+mode, and again when a shot differs -- where `capture` gives every render a fresh page. So a story
+must draw the same picture however often it is rendered: state its play changes (a store, a module
+variable, a registry keyed by it) is made anew for each render, in a loader, never once when the
+story file loads. Between renders the page's local and session storage are cleared, every IndexedDB
+store is emptied (its database kept, so a connection the page still holds never blocks it) and the
+clock starts again at 2026-01-01T12:00:00Z.
+
+The story tests' server answers a path that is no file with a 404, as `capture`'s static server does
+(spread `PRODUCTION` into the project's config), so a story that fetches a missing file is refused in
+both.
+
+A story taller or wider than the 1200 x 900 viewport is shot in viewport-sized tiles: the test's
+frame keeps the viewport's size (so `vh` units and a layout centered in the window draw as in
+`capture`'s full-page shot), its document is scrolled to each tile, elements with `position: fixed`
+are pinned where they are first, and the stitched picture is encoded by Chromium's own screenshot,
+as `capture`'s is.
+
 ## How captures and baselines move
 
 - **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale
