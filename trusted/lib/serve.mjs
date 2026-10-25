@@ -1506,6 +1506,29 @@ export function createApp({
             }
         })());
 
+    /**
+     * The default branch's target: the run given with --master-run (a seed), or the candidate
+     * offered (offeredCandidate), or null when there is neither.
+     * @returns {Promise<object | null>} the target
+     */
+    async function masterTarget() {
+        const pick = !masterRun && candidates ? await offeredCandidate() : null;
+        const runId = masterRun ?? pick?.offered?.runId;
+        if (!runId) {
+            return null;
+        }
+        step(`reading ${defaultBranch}'s CI run`);
+        const info = { id: "master", pr: null, title: defaultBranch, url: null, branch: null };
+        if (pick?.offered) {
+            const { commit } = pick.offered;
+            info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${pick.queued.length} queued)`;
+            info.candidate = { commit, runId, queued: pick.queued.map((c) => ({ commit: c.commit, runId: c.runId })) };
+        }
+        return getRun(gh, runId)
+            .then((run) => build(info, run))
+            .catch((err) => keptOr(info, err));
+    }
+
     async function load() {
         const next = new Map();
         if (results) {
@@ -1620,26 +1643,9 @@ export function createApp({
                     : null;
             passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? opened;
             for (const t of built) next.set(t.id, t);
-            const pick = !masterRun && candidates ? await offeredCandidate() : null;
-            const runId = masterRun ?? pick?.offered?.runId;
-            if (runId) {
-                step(`reading ${defaultBranch}'s CI run`);
-                const info = { id: "master", pr: null, title: defaultBranch, url: null, branch: null };
-                if (pick?.offered) {
-                    const { commit, queued } = { ...pick.offered, queued: pick.queued };
-                    info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${queued.length} queued)`;
-                    info.candidate = {
-                        commit,
-                        runId,
-                        queued: queued.map((c) => ({ commit: c.commit, runId: c.runId })),
-                    };
-                }
-                next.set(
-                    "master",
-                    await getRun(gh, runId)
-                        .then((run) => build(info, run))
-                        .catch((err) => keptOr(info, err)),
-                );
+            const master = await masterTarget();
+            if (master) {
+                next.set("master", master);
             }
         }
         let seen = pushes;
@@ -3417,12 +3423,12 @@ export function createApp({
         }
     }
 
-    const finishLabel = (t) =>
-        t.candidate
-            ? `the candidate ${t.candidate.commit.slice(0, 10)}`
-            : t.pr === null
-              ? "the master seed"
-              : `#${t.pr}`;
+    const finishLabel = (t) => {
+        if (t.candidate) {
+            return `the candidate ${t.candidate.commit.slice(0, 10)}`;
+        }
+        return t.pr === null ? "the master seed" : `#${t.pr}`;
+    };
     // What accept.mjs is told about the target: on a candidate, its commit too.
     const finishTarget = (t) => ({ pr: t.pr, branch: t.branch, ...(t.candidate && { candidate: t.candidate.commit }) });
 

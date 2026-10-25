@@ -1010,14 +1010,7 @@ async function commitAccepts({
     const base = isMaster ? first.commit : first.headSha;
     requireOneHead(accepts, first, target.pr, base);
     const candidate = isMaster ? (target.candidate ?? null) : null;
-    if (candidate && candidate !== base) {
-        throw new AcceptError(`the capture is of ${base.slice(0, 10)}, not of the candidate ${candidate.slice(0, 10)}`);
-    }
-    const branch = candidate
-        ? candidateBranch(candidate)
-        : isMaster
-          ? `visual/seed-${now.toISOString().slice(0, 10)}`
-          : target.branch;
+    const branch = acceptBranch(target, base, now);
     if (!branch || !(await gitOk(repo, ["check-ref-format", `refs/heads/${branch}`]))) {
         throw new AcceptError(`no usable branch for this target: ${branch}`);
     }
@@ -1088,6 +1081,29 @@ async function commitAccepts({
             console.error(`visual-review: could not remove the accept worktree ${tree}: ${err.message}`),
         );
     }
+}
+
+/**
+ * The branch an accept commit goes to: the pull request's, a candidate's `visual/approve-<sha>`, or a
+ * dated seed branch. Refuses a candidate whose capture is of another commit.
+ * @param {{ pr: number | null, branch: string | null, candidate?: string }} target as in finish
+ * @param {string} base the captured commit
+ * @param {Date} now the review time
+ * @returns {string | null} the branch
+ */
+function acceptBranch(target, base, now) {
+    if (target.pr !== null) {
+        return target.branch;
+    }
+    if (!target.candidate) {
+        return `visual/seed-${now.toISOString().slice(0, 10)}`;
+    }
+    if (target.candidate !== base) {
+        throw new AcceptError(
+            `the capture is of ${base.slice(0, 10)}, not of the candidate ${target.candidate.slice(0, 10)}`,
+        );
+    }
+    return candidateBranch(target.candidate);
 }
 
 /**
