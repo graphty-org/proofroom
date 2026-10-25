@@ -1719,7 +1719,7 @@ export function createApp({
             typeof c.waiting === "boolean" &&
             typeof c.at === "number";
         if (!Array.isArray(list)) {
-            throw new Error("the candidates command must print [{ commit, runId, waiting, at }]");
+            throw new TypeError("the candidates command must print [{ commit, runId, waiting, at }]");
         }
         const bad = list.filter((c) => !ok(c)).length;
         if (bad > 0) {
@@ -3453,14 +3453,7 @@ export function createApp({
                 console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
             }
             const r = j.result;
-            if (r.closeError) {
-                j.warnings.push(`the accept pull request of this rejected candidate is still open: ${r.closeError}`);
-            }
-            if (t.candidate && r.rejects > 0 && r.issue) {
-                // A rejected image means the candidate cannot promote: the next queued one is offered,
-                // and the rejects stay saved by image hash.
-                dropCandidate(t.candidate.commit);
-            }
+            candidateFinished(j, t, r);
             const status = r.statusError ? `; status not posted: ${r.statusError}` : "";
             console.log(
                 r.alreadyFinished
@@ -3486,6 +3479,23 @@ export function createApp({
             j.step = null;
             finishing = false;
             persist(j);
+        }
+    }
+
+    /**
+     * What a Finish of a candidate leaves behind: a candidate whose rejects were filed is dropped (the
+     * next queued one is offered, and the rejects stay saved by image hash), and an accept pull request
+     * it could not close is a warning.
+     * @param {object} j the job
+     * @param {object} t the target
+     * @param {object} r finish's result
+     */
+    function candidateFinished(j, t, r) {
+        if (r.closeError) {
+            j.warnings.push(`the accept pull request of this rejected candidate is still open: ${r.closeError}`);
+        }
+        if (t.candidate && r.rejects > 0 && r.issue) {
+            dropCandidate(t.candidate.commit);
         }
     }
 
