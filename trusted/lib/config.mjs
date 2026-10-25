@@ -23,6 +23,7 @@ const DEFAULTS = {
     fontconfig: null,
     updateCheck: null,
     usage: false,
+    ignoreBranches: [],
 };
 
 // Project ids name artifacts, jobs, directories and regular expressions, so they stay plain; and
@@ -35,7 +36,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, usage: boolean, projects: Record<string, { storybook: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -61,6 +62,14 @@ export function normalizeConfig(input) {
             fail("issueLabels must be an array of strings");
         }
         out.issueLabels = raw.issueLabels;
+    }
+    // Pull requests whose branch starts with one of these are never listed (e.g. a bot's updates
+    // that reach the default branch some other way and are reviewed there).
+    if (raw.ignoreBranches !== undefined) {
+        if (!Array.isArray(raw.ignoreBranches) || raw.ignoreBranches.some((b) => typeof b !== "string" || b === "")) {
+            fail("ignoreBranches must be an array of non-empty branch-name prefixes");
+        }
+        out.ignoreBranches = raw.ignoreBranches;
     }
     out.projects = projectsSetting(raw.projects, fail);
     return out;

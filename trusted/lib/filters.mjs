@@ -5,7 +5,8 @@
  * - **Approved before.** A capture byte-identical to an image the owner already approved for the
  *   same story and mode (a review record on the default branch or on an open pull request's
  *   branch) is accepted again, with the record that approved it named in the new record. The
- *   record counts only when it passes gate.mjs earlierApprovalProblem, and the owner's Finish
+ *   record counts only when it passes gate.mjs earlierApprovalProblem or the owner signed a
+ *   baselines tree that holds it (accept.mjs treeSignedRecords), and the owner's Finish
  *   sheet lists every such accept before the owner signs the baselines with it.
  * - **Known capture noise.** A story whose capture changed on two pull requests that touch none of
  *   its package's files, or that flips between the same two images, is flaky. It is labeled, never
@@ -21,12 +22,13 @@ import { earlierApprovalProblem } from "../gate.mjs";
  *
  * A record counts only where it cannot have been planted: before a passkey is registered, only on
  * the default branch (a pull request the owner finished and merged); once one is, anywhere, with
- * a valid approval of its own. And an approval counts only while it is still the newest decision on
+ * a valid approval of its own or inside a baselines tree the owner signed (`treeSigned`). And an approval counts only while it is still the newest decision on
  * that path where it lives: a later record that accepts another image for the path, or rejects one,
  * replaces it.
- * @param {{ ref: string, commit: string, path: string, record: any, main: boolean }[]} records
- *     review records: the tip they were read at (`ref`), the commit to name for them, their path,
- *     and whether `ref` is the default branch
+ * @param {{ ref: string, commit: string, path: string, record: any, main: boolean,
+ *     treeSigned?: boolean }[]} records review records: the tip they were read at (`ref`), the
+ *     commit to name for them, their path, whether `ref` is the default branch, and whether a
+ *     baselines tree the owner signed with a passkey holds the record
  * @param {object[] | null} keys the default branch's passkeys (null when none)
  * @returns {Map<string, { pr: number | null, commit: string, record: string, reviewedAt: string }>}
  *     by `<path> <hash>`; a default branch record wins over a pull request's, then the newest
@@ -53,7 +55,7 @@ export function approvalIndex(records, keys) {
                 (i) => typeof i.to === "string" && i.approvedBefore === undefined && newest.get(i.path) === r,
             );
             // One check per record: its own approval holds for every item.
-            if (direct.length > 0 && (keys || r.main) && holds(r.record, direct[0])) {
+            if (direct.length > 0 && (keys || r.main) && (r.treeSigned === true || holds(r.record, direct[0]))) {
                 direct.forEach((i) => keep(index, `${i.path} ${i.to}`, r));
             }
         }
