@@ -143,6 +143,7 @@ Every command has `--help`; `visual-review --help` lists them.
 | `issueLabels`    | `["bug"]`                 | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
 | `fontconfig`     | none (host fonts)         | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
 | `updateCheck`    | none                      | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                  |
+| `candidates`     | none                      | A shell command `serve --candidate next` runs to list the default branch's full runs (see "Candidates")             |
 | `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
 | `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                        |
 | `projects`       | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
@@ -257,7 +258,9 @@ token, or the whole URL `serve` printed, and it loads. The field hides what you 
   To open the page from another device (an iPad, say), serve HTTPS: set `HOST` to the machine's
   name and `HTTPS_CERT_PATH` and `HTTPS_KEY_PATH` to a certificate and key for it.
 - `serve` refuses to start without git-lfs: an accept would commit raw PNGs.
-- `--master-run <run id>` also lists the default branch at that run, for seeding.
+- `--candidate <run id>` (or `--master-run <run id>`) also lists the default branch at that run,
+  for seeding.
+- `--candidate next` lists the default branch's next candidate instead (see [Candidates](#candidates)).
 - `--results <dir>` serves local captures offline (a directory of `<project>/results.json`), for
   looking at a story before a pull request exists. It is listed as "Local preview" and is look
   only: no Accept, Reject or Exclude, and no Finish.
@@ -1006,6 +1009,23 @@ whose images a person already reviewed.
 If the default branch's capture could not be downloaded (its artifacts expired, or no run there has
 finished one), every story without a baseline is `new` on that pull request. Re-run its `visual` job
 once the default branch's run has finished.
+
+## Candidates
+
+A repository that promotes the default branch only once its screenshots are approved lists its full
+runs with the `candidates` command (configuration): JSON on stdout,
+`[{ "commit": "<sha>", "runId": 123, "verdict": "green-images", "promoted": false, "at": <ms> }]`.
+`serve --candidate next` runs it at every refresh and lists the oldest run whose `verdict` is
+`green-images` and that has not `promoted` as the default branch's target, named
+`<branch> candidate <sha> (N queued)`. It stays offered while newer candidates arrive; they queue
+behind it. Decisions are kept by image hash, so an image decided on one candidate arrives decided on
+the next.
+
+Finish on a candidate commits the accepts on the candidate's commit, pushes them to
+`visual/approve-<sha>` and opens a pull request to the default branch. The commit may change only
+the baselines and approvals directories: Finish refuses to push anything else. The candidate stays
+offered until the command reports it `promoted`. A Finish that rejects anything drops the candidate
+and offers the next one, with the rejected images still rejected.
 
 ## Iterating on a story before a pull request exists
 

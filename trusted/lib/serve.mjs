@@ -575,6 +575,12 @@ async function loadResults(dir, name) {
  * @param {string} options.origin the origin the page is served from
  * @param {number} [options.masterRun] the default branch's CI run to seed from (the target the
  *     page calls "master")
+ * @param {() => Promise<{ commit: string, runId: number, verdict: string, promoted: boolean, at: number }[]>} [options.candidates]
+ *     lists the default branch's full runs (the config's `candidates` command): the page offers the
+ *     oldest unpromoted `green-images` one as the target "master" and keeps offering it until it is
+ *     promoted or a Finish rejects something in it; newer ones queue behind it. Decisions are kept by
+ *     image hash, so an image decided on one candidate arrives decided on the next. `masterRun`, when
+ *     given, wins
  * @param {string} [options.results] a local directory of `<project>/results.json` instead of CI:
  *     a preview to look at, with no decisions and no Finish
  * @param {string} [options.startCommand] the shell command that starts this server, shown so the
@@ -602,6 +608,7 @@ export function createApp({
     token,
     origin,
     masterRun,
+    candidates = null,
     results,
     startCommand = null,
     warm,
@@ -1611,12 +1618,23 @@ export function createApp({
                     : null;
             passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? opened;
             for (const t of built) next.set(t.id, t);
-            if (masterRun) {
+            const pick = !masterRun && candidates ? await offeredCandidate() : null;
+            const runId = masterRun ?? pick?.offered?.runId;
+            if (runId) {
                 step(`reading ${defaultBranch}'s CI run`);
                 const info = { id: "master", pr: null, title: defaultBranch, url: null, branch: null };
+                if (pick?.offered) {
+                    const { commit, queued } = { ...pick.offered, queued: pick.queued };
+                    info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${queued.length} queued)`;
+                    info.candidate = {
+                        commit,
+                        runId,
+                        queued: queued.map((c) => ({ commit: c.commit, runId: c.runId })),
+                    };
+                }
                 next.set(
                     "master",
-                    await getRun(gh, masterRun)
+                    await getRun(gh, runId)
                         .then((run) => build(info, run))
                         .catch((err) => keptOr(info, err)),
                 );
@@ -1640,6 +1658,38 @@ export function createApp({
         targets = next;
         save();
         prune();
+    }
+
+    /** The candidates a Finish rejected something in, by commit: never offered again. */
+    const droppedFile = join(stateDir, "candidates-dropped.json");
+    let dropped = new Set();
+    try {
+        dropped = new Set(JSON.parse(readFileSync(droppedFile, "utf8")));
+    } catch {
+        // None dropped yet.
+    }
+    const dropCandidate = (commit) => {
+        dropped.add(commit);
+        writeJson(droppedFile, [...dropped]);
+    };
+    /** The last candidate list read, kept when the next read fails. */
+    let lastPick = { offered: null, queued: [] };
+    /**
+     * The candidate to offer: the oldest unpromoted green-images full run not dropped, and the
+     * newer ones queued behind it. Oldest first, so a newer run never moves the one under review.
+     * @returns {Promise<{ offered: object | null, queued: object[] }>} the pick
+     */
+    async function offeredCandidate() {
+        try {
+            const waiting = (await candidates())
+                .filter((c) => c.verdict === "green-images" && !c.promoted && !dropped.has(c.commit))
+                .sort((a, b) => a.at - b.at);
+            lastPick = { offered: waiting[0] ?? null, queued: waiting.slice(1) };
+        } catch (err) {
+            console.error(`visual-review: candidates not listed: ${err.message}`);
+            listWarnings.push(retryLater("could not list the candidates", err.message));
+        }
+        return lastPick;
     }
 
     const listFile = join(stateDir, "list.json");
@@ -1901,6 +1951,8 @@ export function createApp({
             runUrl: t.runUrl,
             commit: t.commit,
             headSha: t.headSha,
+            // On the default branch in candidate mode: the full run offered and the ones queued behind it.
+            candidate: t.candidate ?? null,
             mergeMasterFirst: t.mergeMasterFirst,
             // The commit a pending push's capture is of (withPending): decisions yes, Finish not yet.
             pendingPush: t.pendingPush ?? null,
@@ -2248,7 +2300,7 @@ export function createApp({
         try {
             const prepared = await prepareApproval({
                 repo,
-                target: { pr: t.pr, branch: t.branch },
+                target: finishTarget(t),
                 projects: work.captures,
                 decisions: work.list,
                 now,
@@ -3154,7 +3206,7 @@ export function createApp({
             runFinish(job, t, list, {
                 repo,
                 gh,
-                target: { pr: t.pr, branch: t.branch },
+                target: finishTarget(t),
                 projects: captures,
                 decisions: list,
                 undecided,
@@ -3304,6 +3356,11 @@ export function createApp({
                 console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
             }
             const r = j.result;
+            if (t.candidate && r.rejects > 0) {
+                // A rejected image means the candidate cannot promote: the next queued one is offered,
+                // and the rejects stay saved by image hash.
+                dropCandidate(t.candidate.commit);
+            }
             const status = r.statusError ? `; status not posted: ${r.statusError}` : "";
             console.log(
                 r.alreadyFinished
@@ -3332,7 +3389,14 @@ export function createApp({
         }
     }
 
-    const finishLabel = (t) => (t.pr === null ? "the master seed" : `#${t.pr}`);
+    const finishLabel = (t) =>
+        t.candidate
+            ? `the candidate ${t.candidate.commit.slice(0, 10)}`
+            : t.pr === null
+              ? "the master seed"
+              : `#${t.pr}`;
+    // What accept.mjs is told about the target: on a candidate, its commit too.
+    const finishTarget = (t) => ({ pr: t.pr, branch: t.branch, ...(t.candidate && { candidate: t.candidate.commit }) });
 
     const tokenOk = (given) => {
         const a = Buffer.from(String(given ?? ""));

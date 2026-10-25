@@ -54,7 +54,7 @@ prints its directory, or prints nothing when there is none. CI runs it before \`
 Compares every PNG in the two directories by name and prints one JSON line per file that is not
 unchanged, then a summary. Exits 1 when anything differs. For local use.`,
 
-    serve: `usage: PORT=<n> visual-review serve [--master-run <id>] [--results <dir>] [--previews <dir>]
+    serve: `usage: PORT=<n> visual-review serve [--candidate next|<id>] [--results <dir>] [--previews <dir>]
 
 Serves the review page on $PORT, bound to $HOST (default localhost). With $HTTPS_CERT_PATH and
 $HTTPS_KEY_PATH set it serves HTTPS; without them, plain HTTP, and then only on a loopback HOST.
@@ -62,7 +62,13 @@ Lists the open pull requests that have a run of the config's workflow and downlo
 captures with gh. Refuses to start without git-lfs, because an accept would commit raw PNGs.
 The URL to open, with its session token, is printed at every start.
 
-  --master-run <id>  also list the default branch at that workflow run, for seeding baselines
+  --candidate next   also list the default branch's oldest unpromoted green-images full run, as
+                     the config's \`candidates\` command lists them; it stays offered until it is
+                     promoted or a Finish rejects something in it, and newer ones queue behind it.
+                     Finish opens a pull request of visual/approve-<sha> touching only the
+                     baselines and approvals directories
+  --candidate <id>   also list the default branch at that workflow run, for seeding baselines
+  --master-run <id>  the same as --candidate <id>
   --results <dir>    serve a local directory of <project>/results.json instead, offline, as a
                      preview to look at: gh is never run, nothing can be decided, no Finish
   --previews <dir>   where local previews of pull requests are (<dir>/<pr>/<project>), as a
@@ -244,12 +250,15 @@ async function serve(args) {
         args,
         options: {
             "master-run": { type: "string" },
+            candidate: { type: "string" },
             results: { type: "string" },
             previews: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
-    const masterRun = values["master-run"] === undefined ? undefined : Number(values["master-run"]);
+    const next = values.candidate === "next";
+    const runArg = next ? values["master-run"] : (values.candidate ?? values["master-run"]);
+    const masterRun = runArg === undefined ? undefined : Number(runArg);
     const https = Boolean(HTTPS_CERT_PATH && HTTPS_KEY_PATH);
     if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun))) {
         console.error(HELP.serve);
@@ -263,8 +272,12 @@ async function serve(args) {
         return 2;
     }
     const { root, config } = await settings();
+    if (next && !config.candidates) {
+        console.error("visual-review serve: --candidate next needs the config's `candidates` command");
+        return 2;
+    }
     const { lfsProblem } = await import("./lib/accept.mjs");
-    const { ghRunner } = await import("./lib/github.mjs");
+    const { exec, ghRunner } = await import("./lib/github.mjs");
     const { createApp, sessionToken } = await import("./lib/serve.mjs");
     const lfs = await lfsProblem(root);
     if (lfs) {
@@ -295,6 +308,7 @@ async function serve(args) {
         token,
         origin,
         masterRun,
+        candidates: next ? async () => JSON.parse(await exec("sh", ["-c", config.candidates], { cwd: root })) : null,
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,

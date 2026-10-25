@@ -642,6 +642,114 @@ describe("serve: master", () => {
     });
 });
 
+describe("serve: candidates", () => {
+    // Two full runs of master: 2000 captured C (master), 2001 captured C2 (the feature commit), both
+    // of the same fixture, so their images hash the same.
+    const fullRuns = (r) => {
+        const gh = fakeGh({
+            runsById: { 2000: { id: 2000, head: r.master, attempt: 1 }, 2001: { id: 2001, head: r.head, attempt: 2 } },
+            jobs: { 2000: [job("compact-mantine")], 2001: [job("compact-mantine")] },
+            artifacts: { 2000: ["visual-compact-mantine-1"], 2001: ["visual-compact-mantine-2"] },
+            results: {
+                "visual-compact-mantine-1": { commit: r.master, headSha: null, pr: null, runId: 2000 },
+                "visual-compact-mantine-2": { commit: r.head, headSha: null, pr: null, runId: 2001, runAttempt: 2 },
+            },
+        });
+        // Master's rejects open an issue.
+        return async (args, input) =>
+            args[1] === "repos/{owner}/{repo}/issues"
+                ? JSON.stringify({ html_url: "https://gh/issues/7" })
+                : gh(args, input);
+    };
+    const record = (commit, runId, verdict, at, promoted = false) => ({ commit, runId, verdict, promoted, at });
+    const offered = async (s) => (await s.api("GET", "/api/prs")).body.targets.find((t) => t.id === "master");
+    const decisions = async (s) => (await s.api("GET", "/api/pr/master/compact-mantine")).body.decisions;
+    const decide = (s, file, decision, reason = null) =>
+        s.api("POST", "/api/decide", { id: "master", project: "compact-mantine", file, decision, reason });
+
+    /**
+     * A server whose candidate list is `box.list`, read again at every refresh.
+     * @param {(r: object) => object[]} make the first list, from the repository
+     * @param {object} [extra] more createApp options
+     * @returns {Promise<object>} the started app, with `list` to change
+     */
+    async function startWith(make, extra = {}) {
+        const box = { list: [] };
+        const r = makeRepo();
+        box.list = make(r);
+        const s = await start({ ...r, gh: fullRuns, candidates: async () => box.list, ...extra });
+        return Object.assign(s, { box });
+    }
+
+    it("offers the oldest unpromoted green-images run and queues the newer ones behind it", async () => {
+        const s = await startWith((r) => [
+            record(r.head, 2001, "green-images", 3000),
+            record("9".repeat(40), 1999, "green-clean", 2500),
+            record(r.master, 2000, "green-images", 2000),
+            record("8".repeat(40), 1998, "green-images", 1000, true),
+            record("7".repeat(40), 1997, "red", 500),
+        ]);
+        const t = await offered(s);
+        expect(t).toMatchObject({ runId: 2000, commit: s.master });
+        expect(t.candidate).toEqual({ commit: s.master, runId: 2000, queued: [{ commit: s.head, runId: 2001 }] });
+        expect(t.title).toBe(`master candidate ${s.master.slice(0, 10)} (1 queued)`);
+    });
+
+    it("keeps a candidate with a changed image waiting, through a newer run and an accept-only Finish", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, "green-images", 2000)]);
+        await offered(s);
+        s.box.list = [...s.box.list, record(s.head, 2001, "green-images", 3000)];
+        expect((await offered(s)).candidate.commit).toBe(s.master);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.error).toBeNull();
+        expect(ended.result.branch).toBe(`visual/approve-${s.master.slice(0, 12)}`);
+        const changed = git(s.remote, "diff", "--name-only", s.master, ended.result.branch).split("\n");
+        expect(changed.every((f) => /^(visual-baselines|visual-review-approvals)\//.test(f))).toBe(true);
+        expect(ended.result.pullRequest).toBe("https://gh/pull/650");
+        // Still offered until the store says it promoted.
+        expect((await offered(s)).candidate.commit).toBe(s.master);
+        s.box.list = [record(s.master, 2000, "approved", 4000, true), record(s.head, 2001, "green-images", 3000)];
+        expect((await offered(s)).candidate).toEqual({ commit: s.head, runId: 2001, queued: [] });
+    });
+
+    it("carries a decision over to the next candidate by image hash", async () => {
+        const s = await startWith((r) => [
+            record(r.master, 2000, "green-images", 2000),
+            record(r.head, 2001, "green-images", 3000),
+        ]);
+        await offered(s);
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        s.box.list = [record(s.master, 2000, "green-images", 2000, true), record(s.head, 2001, "green-images", 3000)];
+        expect((await offered(s)).runId).toBe(2001);
+        expect(await decisions(s)).toMatchObject({ "button--primary.dark.png": { decision: "accept" } });
+    });
+
+    it("drops a candidate a Finish rejected something in and offers the next, the reject still standing", async () => {
+        const s = await startWith((r) => [
+            record(r.master, 2000, "green-images", 2000),
+            record(r.head, 2001, "green-images", 3000),
+        ]);
+        await offered(s);
+        expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.error).toBeNull();
+        expect(ended.result.rejects).toBe(1);
+        const t = await offered(s);
+        expect(t.candidate.commit).toBe(s.head);
+        expect(await decisions(s)).toMatchObject({ "slider--sizes.png": { decision: "reject", reason: "clipped" } });
+    });
+
+    it("offers nothing while no candidate waits, and --master-run still wins", async () => {
+        const s = await startWith(() => [record("8".repeat(40), 1998, "green-clean", 1000)]);
+        expect(await offered(s)).toBeUndefined();
+        server.close();
+        await app.idle();
+        const pinned = await startWith((r) => [record(r.master, 2000, "green-images", 2000)], { masterRun: 2001 });
+        expect(await offered(pinned)).toMatchObject({ runId: 2001, candidate: null });
+    });
+});
+
 describe("serve: images", () => {
     it("serves a capture and a baseline whose hashes match results.json", async () => {
         const s = await start({ gh: onePr() });

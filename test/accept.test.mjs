@@ -275,6 +275,64 @@ describe("finish: accepts", () => {
     });
 });
 
+describe("finish: a candidate of master", () => {
+    const candidateSetup = () => {
+        const s = setup();
+        const master = { commit: s.master, headSha: null, pr: null };
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master);
+        return s;
+    };
+    const changed = (s, branch) => git(s.remote, "diff", "--name-only", s.master, branch).split("\n").filter(Boolean);
+
+    it("commits on the candidate, pushes visual/approve-<sha> and opens an accept-only pull request", async () => {
+        const s = candidateSetup();
+        const out = await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        expect(out.branch).toBe(branch);
+        expect(remoteLog(s, branch)[1]).toBe(s.master);
+        expect(changed(s, branch).length).toBeGreaterThan(0);
+        expect(
+            changed(s, branch).every(
+                (f) => f.startsWith("visual-baselines/") || f.startsWith("visual-review-approvals/"),
+            ),
+        ).toBe(true);
+        const create = s.calls.find((c) => c.args.join(" ").includes("/pulls"));
+        expect(JSON.parse(create.input)).toMatchObject({
+            title: `test(workspace): approve visual baselines at ${s.master.slice(0, 12)}`,
+            head: branch,
+            base: "master",
+        });
+        expect(JSON.parse(create.input).body).toContain(
+            "It changes only visual-baselines/ and visual-review-approvals/.",
+        );
+        expect(out.pullRequest).toBe("https://github.com/o/r/pull/9");
+    });
+
+    it("refuses a capture that is not of the candidate", async () => {
+        const s = candidateSetup();
+        await expect(
+            s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.head }),
+        ).rejects.toThrow(/not of the candidate/);
+        expect(s.calls).toHaveLength(0);
+    });
+
+    it("refuses to push an accept commit that changes anything else", async () => {
+        const s = candidateSetup();
+        // An approval commit holding a change outside the two directories.
+        git(s.repo, "checkout", "-q", "--detach", s.master);
+        writeFileSync(join(s.repo, "README.md"), "changed\n");
+        git(s.repo, "commit", "-q", "-am", "not a baseline");
+        const commit = git(s.repo, "rev-parse", "HEAD");
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await expect(
+            s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master }, 0, {
+                approval: { commit, branch, record: null },
+            }),
+        ).rejects.toThrow(/would change README\.md, outside visual-baselines\/ and visual-review-approvals\//);
+        expect(git(s.remote, "ls-remote", "--heads", ".", branch)).toBe("");
+    });
+});
+
 describe("finish: rejects on master", () => {
     it("opens one issue holding the rejects, with nothing accepted", async () => {
         const s = setup();
