@@ -648,7 +648,11 @@ describe("serve: candidates", () => {
     const fullRuns = (r) => {
         const gh = fakeGh({
             runsById: { 2000: { id: 2000, head: r.master, attempt: 1 }, 2001: { id: 2001, head: r.head, attempt: 2 } },
-            jobs: { 2000: [job("compact-mantine")], 2001: [job("compact-mantine")] },
+            // A full run calls ci.yml from its job "CI", so its jobs are "CI / visual (<project>)".
+            jobs: {
+                2000: [{ ...job("compact-mantine"), name: "CI / visual (compact-mantine)" }],
+                2001: [{ ...job("compact-mantine"), name: "CI / visual (compact-mantine)" }],
+            },
             artifacts: { 2000: ["visual-compact-mantine-1"], 2001: ["visual-compact-mantine-2"] },
             results: {
                 "visual-compact-mantine-1": { commit: r.master, headSha: null, pr: null, runId: 2000 },
@@ -714,6 +718,7 @@ describe("serve: candidates", () => {
         expect(t).toMatchObject({ runId: 2000, commit: s.master });
         expect(t.candidate).toEqual({ commit: s.master, runId: 2000, queued: [{ commit: s.head, runId: 2001 }] });
         expect(t.title).toBe(`master candidate ${s.master.slice(0, 10)} (1 queued)`);
+        expect(t.projects.find((p) => p.project === "compact-mantine").logUrl).toBe("https://gh/job/compact-mantine");
     });
 
     it("keeps a candidate with a changed image waiting, through a newer run and an accept-only Finish", async () => {
