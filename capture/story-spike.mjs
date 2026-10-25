@@ -9,7 +9,6 @@
  * command. The browser side is story-spike-setup.mjs.
  */
 
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -51,8 +50,15 @@ const measure = (frame) =>
  * @param {import("playwright").Frame} frame the tester iframe
  * @returns {Promise<void>} once they are drawn
  */
-const twoFrames = (frame) =>
-    frame.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))));
+const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
+
+/**
+ * In the page: waits for two frames to be drawn.
+ * @returns {Promise<void>} once they are drawn
+ */
+function twoFramesInPage() {
+    return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
 
 /**
  * A play function's real pointer stays where it last was and hovers whatever is under it;
@@ -142,7 +148,8 @@ export function storySpike({ root, project, out, mode, fontconfig }) {
     const results = {
         version: 1,
         project,
-        commit: execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+        // Provenance is not what parity compares; CI's run names its commit.
+        commit: process.env.GITHUB_SHA ?? "0".repeat(40),
         headSha: null,
         pr: null,
         runId: null,

@@ -62,7 +62,7 @@ export function parity(first, second) {
     const key = (item) => item.file;
     const a = new Map(first.items.map((item) => [key(item), item]));
     const b = new Map(second.items.map((item) => [key(item), item]));
-    const files = [...new Set([...a.keys(), ...b.keys()])].sort();
+    const files = [...new Set([...a.keys(), ...b.keys()])].sort((x, y) => (x < y ? -1 : 1));
     const differences = [];
     for (const file of files) {
         const problem = differs(a.get(file), b.get(file));

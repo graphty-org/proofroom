@@ -80,7 +80,8 @@ export function installStorySpike({ afterEach, beforeEach, vi, commands, waitFor
                 await Promise.all(found.map((el) => el[waitFor.method]()));
                 await new Promise((r) => requestAnimationFrame(() => r()));
             }
-            const chromatic = JSON.parse(JSON.stringify(story.parameters?.chromatic ?? {}));
+            // Through JSON, as capture.mjs reads it, so no function crosses to Node.
+            const chromatic = JSON.parse(JSON.stringify(story.parameters?.chromatic ?? {})); // NOSONAR(S7784): structuredClone throws on the functions this drops
             if (chromatic.delay > 0) {
                 // capture.mjs's fixed wait, repeated so the two shots are comparable.
                 await new Promise((r) => setTimeout(r, chromatic.delay));
