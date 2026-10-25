@@ -63,19 +63,23 @@ function runningClock() {
     const start = RealDate.parse(CLOCK_START);
     const t0 = RealDate.now();
     const now = () => start + (RealDate.now() - t0);
-    return class ClockDate extends RealDate {
+    class ClockDate extends RealDate {
+        /**
+         * As Date's own constructor, but with no arguments it is the clock's now.
+         * @param {...any} args as for Date
+         */
         constructor(...args) {
-            if (args.length === 0) {
-                super(now());
-            } else {
-                super(...args);
-            }
+            // One `any` stands for every Date overload, which TypeScript cannot pick from a rest array.
+            super(.../** @type {[any]} */ (args.length === 0 ? [now()] : args));
         }
 
         static now() {
             return now();
         }
-    };
+    }
+    // A class has no call signature (`Date()` without `new` throws), so to TypeScript it is no
+    // DateConstructor; it stands in for one only where a story constructs dates or asks the time.
+    return /** @type {DateConstructor} */ (/** @type {unknown} */ (ClockDate));
 }
 
 /**

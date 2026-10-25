@@ -88,6 +88,19 @@ describe("story tests' visual step", () => {
         expect(r.items.find((i) => i.id === "a--same").console).toEqual([]);
     });
 
+    it("never resizes the page, and stitches a story taller than one screenshot as capture.mjs does", async () => {
+        const out = tempDir("story-test-out-");
+        const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
+        // 5,000 CSS px is 10,000 device px, over one screenshot: six tiles, encoded here, not by Chromium.
+        const tile = png(50, 2400, 1800);
+        const ctx = context(Array.from({ length: 6 }, () => tile), { width: 1200, height: 5000 });
+        await v.commands.visualPlan(ctx, { id: "a--tall", chromatic: {} });
+        const first = await v.commands.visualShot(ctx, { id: "a--tall", mode: null, chromatic: {}, console: [] });
+        expect(first).toEqual({ again: true });
+        // A viewport taller than the GPU's largest texture leaves the tab compositing another way.
+        expect(ctx.viewports).toEqual([]);
+    });
+
     it("marks a partial unreported when a story test that ran never reached the visual step", async () => {
         const out = tempDir("story-test-out-");
         const root = repo({});

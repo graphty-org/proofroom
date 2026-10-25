@@ -11,6 +11,6 @@ export interface VisualStoryTest {
 }
 
 /** Production semantics for a story-test Vitest project, spread into its config. */
-export const PRODUCTION: { mode: "production"; define: Record<string, string> };
+export const PRODUCTION: { mode: "production"; define: Record<string, string>; appType: "mpa" };
 
 export function visualStoryTest(options: { project: string; out: string; root?: string }): VisualStoryTest;

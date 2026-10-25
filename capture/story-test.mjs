@@ -70,10 +70,16 @@ function twoFramesInPage() {
 }
 
 /**
- * In the page: waits until every image in the document has loaded and decoded, or failed.
+ * In the page: waits until every image in the document has loaded and decoded, or failed. A lazy
+ * image loads now: one outside the viewport would never load, and its decode() would never settle.
  * @returns {Promise<void>} once they have
  */
 function imagesInPage() {
+    for (const img of document.images) {
+        if (img.loading === "lazy") {
+            img.loading = "eager";
+        }
+    }
     return Promise.all([...document.images].map((img) => img.decode().catch(() => undefined))).then(() => undefined);
 }
 
@@ -290,9 +296,16 @@ const sameRun = (a, b) =>
 
 /**
  * Production semantics for a story-test Vitest project, as `build-storybook` builds what
- * capture.mjs shoots: spread into the project's config.
+ * capture.mjs shoots and capture.mjs's static server serves it: spread into the project's config.
+ * `appType: "mpa"` answers a path that is no file with a 404, as that server does, where Vite's
+ * default (`spa`) answers it with index.html and a 200, so a story that fetches a missing file
+ * reads HTML instead of being refused.
  */
-export const PRODUCTION = { mode: "production", define: { "process.env.NODE_ENV": JSON.stringify("production") } };
+export const PRODUCTION = {
+    mode: "production",
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    appType: "mpa",
+};
 
 /**
  * Everything one project's storybook Vitest project needs to shoot its stories.
