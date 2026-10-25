@@ -1512,6 +1512,10 @@ export function createApp({
      * @returns {Promise<object | null>} the target
      */
     async function masterTarget() {
+        // A Finish of the offered candidate is running: it stays offered until the Finish ends.
+        if (finishing && targets.get("master")?.candidate) {
+            return targets.get("master");
+        }
         const pick = !masterRun && candidates ? await offeredCandidate() : null;
         const runId = masterRun ?? pick?.offered?.runId;
         if (!runId) {
@@ -1722,23 +1726,34 @@ export function createApp({
     /** The last candidate list read, kept when the next read fails. */
     let lastList = [];
     /**
-     * Whether a candidate's accept commit (masterSubject's subject) is on the default branch as last
-     * fetched: its approval merged, so it is done whatever the list says.
+     * Whether a candidate's accept commit (exactly masterSubject's subject) is on the default branch
+     * as last fetched, with its review record still there: its approval merged, so it is done
+     * whatever the list says.
      * @param {string} commit the candidate
      * @returns {Promise<boolean>} whether it merged
      */
-    const approvalMerged = (commit) =>
-        gitIn([
-            "log",
-            "-1",
-            "--format=%H",
-            "--fixed-strings",
-            `--grep=${masterSubject(config.commitPrefix, commit)}`,
-            `refs/remotes/origin/${defaultBranch}`,
-        ]).then(
-            (out) => out.trim() !== "",
-            () => false,
+    const approvalMerged = async (commit) => {
+        const tip = `refs/remotes/origin/${defaultBranch}`;
+        const subject = masterSubject(config.commitPrefix, commit);
+        const log = await gitIn(["log", "--format=%x01%s%n%b", "--fixed-strings", `--grep=${subject}`, tip]).catch(
+            () => "",
         );
+        for (const message of log.split("\x01")) {
+            const [first, ...body] = message.split("\n");
+            const record = first === subject ? /^Record: (.+)$/m.exec(body.join("\n"))?.[1] : undefined;
+            // Its record still on the default branch: a revert of the accept pull request removes it.
+            const kept =
+                record &&
+                (await gitIn(["cat-file", "-e", `${tip}:${record}`]).then(
+                    () => true,
+                    () => false,
+                ));
+            if (kept) {
+                return true;
+            }
+        }
+        return false;
+    };
     /**
      * The candidate to offer: the oldest waiting full run not dropped and not approved on the
      * default branch, and the newer ones queued behind it. Oldest first, so a newer run never moves
@@ -2238,8 +2253,10 @@ export function createApp({
      *     digest: string }} the decisions and their digest
      */
     const finishList = (t, resign = false) => {
+        // A candidate's Finish builds its accept commit again from every decision on it, published or
+        // not, and replaces its branch: a second Finish never drops what the first one committed.
         const list = [...decisionsOf(t)]
-            .filter(([, v]) => Boolean(v.posted) === resign)
+            .filter(([, v]) => (t.candidate ? !resign : Boolean(v.posted) === resign))
             .sort(([a], [b]) => (a < b ? -1 : 1))
             .map(([k, v]) => {
                 const at = k.indexOf("/");
@@ -3432,7 +3449,7 @@ export function createApp({
                 console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
             }
             const r = j.result;
-            if (t.candidate && r.rejects > 0) {
+            if (t.candidate && r.rejects > 0 && r.issue) {
                 // A rejected image means the candidate cannot promote: the next queued one is offered,
                 // and the rejects stay saved by image hash.
                 dropCandidate(t.candidate.commit);

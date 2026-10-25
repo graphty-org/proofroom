@@ -656,10 +656,15 @@ describe("serve: candidates", () => {
             },
         });
         // Master's rejects open an issue.
-        return async (args, input) =>
-            args[1] === "repos/{owner}/{repo}/issues"
-                ? JSON.stringify({ html_url: "https://gh/issues/7" })
-                : gh(args, input);
+        return async (args, input) => {
+            if (args[1] !== "repos/{owner}/{repo}/issues") {
+                return gh(args, input);
+            }
+            if (r.failIssues) {
+                throw new Error("HTTP 502");
+            }
+            return JSON.stringify({ html_url: "https://gh/issues/7" });
+        };
     };
     const record = (commit, runId, waiting, at) => ({ commit, runId, waiting, at });
     const offered = async (s) => (await s.api("GET", "/api/prs")).body.targets.find((t) => t.id === "master");
@@ -717,6 +722,22 @@ describe("serve: candidates", () => {
         // The accept pull request merges: A reaches master, so the next candidate is offered.
         git(s.remote, "update-ref", "refs/heads/master", ended.result.commit);
         expect((await offered(s)).candidate).toEqual({ commit: s.head, runId: 2001, queued: [] });
+        // Its pull request reverted: the record leaves master, and the candidate waits again.
+        const path = /^Record: (.+)$/m.exec(
+            git(s.remote, "log", "--format=%B", `${s.master}..${ended.result.commit}`),
+        )[1];
+        git(s.repo, "fetch", "-q", "origin", "master");
+        git(s.repo, "checkout", "-q", "--detach", "FETCH_HEAD");
+        git(s.repo, "rm", "-q", path);
+        git(
+            s.repo,
+            "commit",
+            "-q",
+            "-m",
+            `Revert "test(workspace): approve visual baselines at ${s.master.slice(0, 12)}"`,
+        );
+        git(s.repo, "push", "-q", "origin", "HEAD:refs/heads/master");
+        expect((await offered(s)).candidate.commit).toBe(s.master);
     });
 
     it("carries a decision over to the next candidate by image hash", async () => {
@@ -762,6 +783,36 @@ describe("serve: candidates", () => {
         expect(ended.result).toMatchObject({ rejects: 1, commit: null, pullRequest: null });
         expect(git(s.remote, "branch", "--list", "visual/approve-*")).toBe("");
         expect(await offered(s)).toBeUndefined();
+    });
+
+    it("commits every decision on a second Finish of the same candidate", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
+        await offered(s);
+        await decide(s, "badge--default.light.png", "accept");
+        await finishJob(s, "master");
+        await decide(s, "button--primary.dark.png", "accept");
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.error).toBeNull();
+        const changed = git(s.remote, "diff", "--name-only", s.master, ended.result.branch);
+        expect(changed).toContain("visual-baselines/compact-mantine/badge--default.light.png");
+        expect(changed).toContain("visual-baselines/compact-mantine/button--primary.dark.png");
+        // Built again on the candidate: one accept commit (and its statement), not the first Finish's plus another.
+        const parents = git(s.remote, "log", "--reverse", "--format=%P %s", `${s.master}..${ended.result.branch}`);
+        expect(parents.split("\n")[0]).toBe(
+            `${s.master} test(workspace): approve visual baselines at ${s.master.slice(0, 12)}`,
+        );
+        expect(parents.split("\n").filter((l) => l.includes("approve visual baselines at"))).toHaveLength(1);
+    });
+
+    it("keeps a candidate whose rejects could not be filed, so Finish can send them again", async () => {
+        const s = await startWith((r) => {
+            r.failIssues = true;
+            return [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)];
+        });
+        await offered(s);
+        await decide(s, "slider--sizes.png", "reject", "clipped");
+        await finishJob(s, "master");
+        expect((await offered(s)).candidate.commit).toBe(s.master);
     });
 
     it("keeps the last good list when the command prints something else", async () => {

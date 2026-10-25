@@ -1217,13 +1217,14 @@ async function acceptParent(input, { base, branch, plan, fetch, exact = false })
     // they can.
     await fetch(branch);
     const [subject, parent] = (await git(repo, ["log", "-1", "--format=%s%n%P", ownRef(branch)])).split("\n");
-    if (subject === masterSubject(config.commitPrefix, target.candidate ?? null) && parent === base) {
-        return { seed: { commit: await git(repo, ["rev-parse", ownRef(branch)]), branch, record: null } };
-    }
     if (target.candidate && (await onlyFinishCommits(repo, base, ownRef(branch), config))) {
-        // An earlier Finish of this candidate (a signed one, say, whose pull request did not open):
-        // built again on the candidate, and pushAccepts replaces it.
+        // An earlier Finish of this candidate: its Finish sends every decision on it, so the accept
+        // commit is built again on the candidate and pushAccepts replaces the branch (its pull request,
+        // open or not, then holds this Finish's commit).
         return { parent: base };
+    }
+    if (subject === masterSubject(config.commitPrefix, null) && parent === base) {
+        return { seed: { commit: await git(repo, ["rev-parse", ownRef(branch)]), branch, record: null } };
     }
     throw new AcceptError(`${branch} already exists on origin: merge or delete it first`);
 }
