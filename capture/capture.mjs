@@ -87,7 +87,8 @@ const MAX_LINE = 2000;
  * @returns {string} the relative URL
  */
 export function storyUrl(id, globals, query = process.env.VISUAL_REVIEW_STORY_QUERY ?? "") {
-    const url = `iframe.html?id=${encodeURIComponent(id)}&viewMode=story&chromatic=true${query ? `&${query}` : ""}`;
+    const extra = query ? "&" + query : "";
+    const url = `iframe.html?id=${encodeURIComponent(id)}&viewMode=story&chromatic=true${extra}`;
     if (!globals) {
         return url;
     }
