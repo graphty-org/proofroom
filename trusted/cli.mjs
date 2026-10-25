@@ -242,6 +242,18 @@ async function createServer(app, tls) {
     return createHttps({ cert: readFileSync(tls.cert), key: readFileSync(tls.key) }, app);
 }
 
+/**
+ * serve's run option: `--candidate next` (the candidate mode), or a run id from `--candidate <id>` or
+ * its old name `--master-run <id>`.
+ * @param {{ candidate?: string, "master-run"?: string }} values the parsed options
+ * @returns {{ next: boolean, masterRun: number | undefined }} the mode and the run id, NaN when not one
+ */
+function runOption(values) {
+    const next = values.candidate === "next";
+    const run = next ? values["master-run"] : (values.candidate ?? values["master-run"]);
+    return { next, masterRun: run === undefined ? undefined : Number(run) };
+}
+
 async function serve(args) {
     if (args.includes("--branch")) {
         console.error("visual-review serve: --branch is gone: a --results preview is look only and has no Finish");
@@ -257,9 +269,7 @@ async function serve(args) {
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
-    const next = values.candidate === "next";
-    const runArg = next ? values["master-run"] : (values.candidate ?? values["master-run"]);
-    const masterRun = runArg === undefined ? undefined : Number(runArg);
+    const { next, masterRun } = runOption(values);
     const https = Boolean(HTTPS_CERT_PATH && HTTPS_KEY_PATH);
     if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun))) {
         console.error(HELP.serve);
