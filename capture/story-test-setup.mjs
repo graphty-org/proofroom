@@ -85,6 +85,14 @@ function runningClock() {
  */
 export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
     delete Object.getPrototypeOf(navigator).gpu;
+    // Playwright's page.clock (capture.mjs) also replaces `performance`, whose fake keeps no
+    // timeline: no navigation entry, no resource entries. A story that prints one draws it the same.
+    for (const method of ["getEntries", "getEntriesByType", "getEntriesByName"]) {
+        performance[method] = () => [];
+    }
+    // Storybook's iframe.html is <html lang="en">, and the language picks the font a generic family
+    // (monospace) resolves to; Vitest's tester page names none.
+    document.documentElement.lang = "en";
     const url = new URL(location.href);
     url.searchParams.set("chromatic", "true");
     history.replaceState(history.state, "", url);
