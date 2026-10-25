@@ -30,41 +30,117 @@ const copyIfThere = (from, to) =>
     });
 
 /**
+ * Why the partials' shards are not exactly shards 1..count, once each.
+ * @param {object[]} parts the parsed partial results
+ * @returns {string[]} one message per problem
+ */
+function shardProblems(parts) {
+    const counts = new Set(parts.map((p) => p.partial?.shard?.count));
+    const [count] = counts;
+    if (counts.size !== 1 || !Number.isInteger(count)) {
+        return [`the partials disagree on the number of shards (${[...counts].join(", ")})`];
+    }
+    const problems = [];
+    for (let i = 1; i <= count; i++) {
+        const n = parts.filter((p) => p.partial.shard.index === i).length;
+        if (n === 0) {
+            problems.push(`shard ${i} of ${count}: missing`);
+        } else if (n > 1) {
+            problems.push(`shard ${i} of ${count}: ${n} partials`);
+        }
+    }
+    return problems;
+}
+
+/**
+ * Why one partial cannot be part of the project's capture.
+ * @param {string} project the project
+ * @param {object} p the parsed partial, with `dir`
+ * @returns {string[]} one message per problem
+ */
+function partProblems(project, p) {
+    const problems = [];
+    if (p.project !== project) {
+        problems.push(`${p.dir}: a capture of ${p.project}, not ${project}`);
+    }
+    if (p.partial?.reported !== true) {
+        const missing = (p.partial?.missing ?? []).slice(0, 5).join(", ");
+        const why = missing ? `: no visual step for ${missing}` : "";
+        problems.push(`${p.dir}: incomplete${why}`);
+    }
+    return problems;
+}
+
+/**
  * Why a set of partials is not a whole capture of the project.
  * @param {string} project the project
  * @param {object[]} parts the parsed partial results, with `dir`
  * @returns {string[]} one message per problem
  */
 function completeness(project, parts) {
-    const problems = [];
-    const counts = new Set(parts.map((p) => p.partial?.shard?.count));
-    const indexes = parts.map((p) => p.partial?.shard?.index);
-    const [count] = counts;
-    if (counts.size !== 1 || !Number.isInteger(count)) {
-        problems.push(`the partials disagree on the number of shards (${[...counts].join(", ")})`);
-    } else {
-        for (let i = 1; i <= count; i++) {
-            const n = indexes.filter((x) => x === i).length;
-            if (n !== 1) {
-                problems.push(`shard ${i} of ${count}: ${n === 0 ? "missing" : `${n} partials`}`);
-            }
-        }
-    }
-    for (const p of parts) {
-        if (p.project !== project) {
-            problems.push(`${p.dir}: a capture of ${p.project}, not ${project}`);
-        }
-        if (p.partial?.reported !== true) {
-            const missing = p.partial?.missing?.length
-                ? `: no visual step for ${p.partial.missing.slice(0, 5).join(", ")}`
-                : "";
-            problems.push(`${p.dir}: incomplete${missing}`);
-        }
-    }
+    const problems = [...shardProblems(parts), ...parts.flatMap((p) => partProblems(project, p))];
     if (new Set(parts.map((p) => p.commit)).size > 1) {
         problems.push("the partials come from different commits");
     }
     return problems;
+}
+
+/**
+ * Every partial's items, each once, with their images copied into `out`.
+ * @param {object[]} parts the parsed partials, with `dir`
+ * @param {string} out the merged capture's directory
+ * @param {string[]} problems where a story found in two partials is reported
+ * @returns {Promise<object[]>} the items
+ */
+async function collectItems(parts, out, problems) {
+    const items = [];
+    const seen = new Map();
+    for (const p of parts) {
+        for (const item of p.items) {
+            if (seen.has(item.file)) {
+                problems.push(`${item.file} is in ${seen.get(item.file)} and ${p.dir}`);
+                continue;
+            }
+            seen.set(item.file, p.dir);
+            items.push(item);
+            for (const sub of ["", "second", "baselines"]) {
+                await copyIfThere(join(p.dir, sub, item.file), join(out, sub, item.file));
+            }
+        }
+    }
+    return items;
+}
+
+/**
+ * A `removed` item for every baseline no item drew or was compared with, as capture.mjs reports it.
+ * @param {object[]} items the merged items
+ * @param {string} baselines the project's baselines directory
+ * @param {string} out the merged capture's directory, which gets each removed baseline
+ * @returns {Promise<object[]>} the removed items
+ */
+async function removedItems(items, baselines, out) {
+    const named = new Set(items.flatMap((i) => [i.file, i.from && fileName(i.from, i.mode)]));
+    const removed = [];
+    for (const file of await pngsIn(baselines)) {
+        if (named.has(file) || !BASELINE_NAME.test(file)) {
+            continue;
+        }
+        const baseline = await readBaseline(join(baselines, file));
+        const [id, mode = null] = file.slice(0, -4).split(".");
+        await writeFile(join(out, "baselines", file), baseline);
+        const r = classify({ baseline, first: null, threshold: DEFAULT_THRESHOLD, includeAA: false });
+        removed.push({
+            id,
+            mode,
+            file,
+            ...r,
+            threshold: DEFAULT_THRESHOLD,
+            includeAA: false,
+            reason: null,
+            console: [],
+        });
+    }
+    return removed;
 }
 
 /**
@@ -83,53 +159,20 @@ export async function mergeResults({ project, baselines, out, dirs }) {
     for (const sub of ["second", "baselines"]) {
         await mkdir(join(out, sub), { recursive: true });
     }
-    const items = [];
-    const seen = new Map();
-    for (const p of parts) {
-        for (const item of p.items) {
-            if (seen.has(item.file)) {
-                problems.push(`${item.file} is in ${seen.get(item.file)} and ${p.dir}`);
-                continue;
-            }
-            seen.set(item.file, p.dir);
-            items.push(item);
-            for (const sub of ["", "second", "baselines"]) {
-                await copyIfThere(join(p.dir, sub, item.file), join(out, sub, item.file));
-            }
-        }
-    }
+    const items = await collectItems(parts, out, problems);
     if (problems.length === 0) {
-        const named = new Set(items.flatMap((i) => [i.file, i.from && fileName(i.from, i.mode)]));
-        for (const file of await pngsIn(baselines)) {
-            if (named.has(file) || !BASELINE_NAME.test(file)) {
-                continue;
-            }
-            const baseline = await readBaseline(join(baselines, file));
-            const [id, mode = null] = file.slice(0, -4).split(".");
-            await writeFile(join(out, "baselines", file), baseline);
-            const r = classify({ baseline, first: null, threshold: DEFAULT_THRESHOLD, includeAA: false });
-            items.push({
-                id,
-                mode,
-                file,
-                ...r,
-                threshold: DEFAULT_THRESHOLD,
-                includeAA: false,
-                reason: null,
-                console: [],
-            });
-        }
+        items.push(...(await removedItems(items, baselines, out)));
     }
     items.sort((a, b) => (a.file < b.file ? -1 : 1));
-    const [first] = parts;
-    const header = { ...first };
+    const header = { ...parts[0] };
     for (const key of ["dir", "partial"]) {
         delete header[key];
     }
+    const earliest = parts.map((p) => p.capturedAt).sort((a, b) => a.localeCompare(b))[0];
     const results = {
         ...header,
         project,
-        capturedAt: parts.map((p) => p.capturedAt).sort()[0] ?? new Date().toISOString(),
+        capturedAt: earliest ?? new Date().toISOString(),
         expected: items.length,
         complete: false,
         items,
