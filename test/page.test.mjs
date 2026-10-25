@@ -165,6 +165,11 @@ async function open(
 afterEach(async () => {
     confirmFinish = false;
     undecidedAnswer = "yes";
+    // A test's page.route handler may be between route.fetch() and res.json() for a request the page
+    // still has in flight (its list refresh): closing the page disposes that response, and the
+    // handler's res.json() then rejects outside any test. Remove every handler and wait for the
+    // running ones to finish while the page and the server are still up.
+    await page?.unrouteAll({ behavior: "wait" });
     await page?.close();
     // Until every request has been answered: a list refresh still running would write its state
     // into the repository after the test file removed it (tempDir).
