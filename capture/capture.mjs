@@ -223,7 +223,7 @@ export async function loadRenames(dir) {
  * @param {string} dir the directory
  * @returns {Promise<string[]>} their names, sorted; empty when the directory does not exist
  */
-async function pngsIn(dir) {
+export async function pngsIn(dir) {
     try {
         return (await readdir(dir)).filter((f) => f.endsWith(".png")).sort();
     } catch (e) {
@@ -909,7 +909,7 @@ export const EMPTY = {
     console: [],
 };
 
-const BASELINE_NAME = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?\.png$/;
+export const BASELINE_NAME = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?\.png$/;
 
 /**
  * Writes results.json atomically, so a reader never sees half a file.
@@ -917,7 +917,7 @@ const BASELINE_NAME = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?\.png$/;
  * @param {object} results the results
  * @returns {Promise<void>} once written
  */
-async function writeResults(out, results) {
+export async function writeResults(out, results) {
     const tmp = join(out, "results.json.tmp");
     await writeFile(tmp, `${JSON.stringify(results, null, 2)}\n`);
     await rename(tmp, join(out, "results.json"));

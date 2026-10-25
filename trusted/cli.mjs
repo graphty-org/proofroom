@@ -80,6 +80,13 @@ JSON line per difference (bytes that differ, a story only one side captured, a s
 failed to capture), then a summary. Exits 1 on any difference: different bytes from the same
 commit are a bug in one environment, so no threshold applies.`,
 
+    "merge-results": `usage: visual-review merge-results --project <id> --out <dir> [--baselines <dir>] <partial>...
+
+Combines one project's partial captures from its story tests (one directory per shard, written by
+@graphty/visual-review/vitest) into one capture directory that serve and gate read. It is complete
+only when every shard is there once and each reported every story test it ran; then every baseline
+no story drew is reported removed. Exits 1, writing it incomplete, otherwise.`,
+
     gate: null, // gate.mjs's own usage
 
     notify: `usage: visual-review notify [--command '<json argv>'] [--gap <minutes>]
@@ -128,6 +135,7 @@ const COMMANDS = {
     reference,
     compare,
     parity,
+    "merge-results": mergeResultsCommand,
     serve,
     gate,
     notify,
@@ -151,6 +159,7 @@ Commands:
   update           merge the default branch into a pull request, taking its baselines
   compare          compare two directories of PNGs (local use)
   parity           compare two captures of the same commit byte for byte
+  merge-results    combine the story tests' partial captures of one project
   usage            sum up the review page's usage events (when the config turns them on)
   install-browser  install the Chromium capture uses
 
@@ -498,6 +507,31 @@ async function parity(args) {
         JSON.stringify({ summary: { project: values.project, compared, same, different: differences.length } }),
     );
     return differences.length > 0 ? 1 : 0;
+}
+
+async function mergeResultsCommand(args) {
+    const { values, positionals } = parseArgs({
+        args,
+        options: { project: { type: "string" }, out: { type: "string" }, baselines: { type: "string" } },
+        allowPositionals: true,
+    });
+    if (!values.project || !values.out || positionals.length === 0) {
+        console.error(HELP["merge-results"]);
+        return 2;
+    }
+    const { root, config } = await settings();
+    const { mergeResults } = await import("../capture/merge-results.mjs");
+    const { results, problems } = await mergeResults({
+        project: values.project,
+        baselines: resolve(values.baselines ?? join(root, config.baselines, values.project)),
+        out: resolve(values.out),
+        dirs: positionals.map((p) => resolve(p)),
+    });
+    for (const problem of problems) {
+        console.error(`visual-review merge-results: ${problem}`);
+    }
+    console.log(JSON.stringify({ project: values.project, items: results.items.length, complete: results.complete }));
+    return problems.length > 0 ? 1 : 0;
 }
 
 async function gate(args) {

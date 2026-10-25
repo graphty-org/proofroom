@@ -1085,8 +1085,16 @@ import { installVisualStoryTest } from "@graphty/visual-review/vitest/setup";
 installVisualStoryTest({ afterEach, beforeEach, vi, commands });
 ```
 
-Each run writes its capture into `out`: a results.json that is never marked complete, plus the
-images of every changed, new and unstable story, laid out as `capture` lays them out.
+Each run writes a partial capture into `out`. Run the tests in shards if you like (`vitest run
+--shard=1/3`, each into its own directory), then combine the partials into the capture the review
+page and the gate read:
+
+```bash
+npx visual-review merge-results --project web --out captures/web tmp/stories/web-1 tmp/stories/web-2 tmp/stories/web-3
+```
+
+It is complete only when every shard is there once and each reported every story test it ran; a
+baseline no story drew is reported removed.
 A story test fails when its play fails, when the project's `waitFor` console rule matches, or when
 two renders of it draw different pictures (unstable); a changed or new picture passes and waits for
 review.
