@@ -106,7 +106,10 @@ const park = (page) => page.mouse.move(-1, -1);
 
 /**
  * The outer page's top left `size`, in slices of at most MAX_SHOT_HEIGHT device px stitched with
- * the same PNG filter as capture.mjs's screenshotWholePage, or as one shot when it fits.
+ * the same PNG filter as capture.mjs's screenshotWholePage, or as one shot when it fits. A slice
+ * below the viewport is scrolled into it and shot there. Not with a full-page shot, which reaches
+ * below the viewport: after one, the tab lays text out on whole pixels for the rest of its life (a
+ * 110.34 px line came out 110 px), and every later story file's text moved.
  * @param {import("playwright").Page} page the page
  * @param {{ width: number, height: number }} size in CSS px
  * @returns {Promise<Buffer>} the PNG
@@ -117,19 +120,27 @@ async function sliced(page, size) {
         return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
     }
     const out = new PNG({ width, height });
-    for (let top = 0; top < height; top += MAX_SHOT_HEIGHT) {
-        const rows = Math.min(MAX_SHOT_HEIGHT, height - top);
-        const clip = { x: 0, y: top / SCALE, width: size.width, height: rows / SCALE };
-        // `fullPage` lets the clip reach below the viewport (Playwright trims any other clip to it).
-        PNG.sync.read(await page.screenshot({ ...SHOT, fullPage: true, clip })).data.copy(out.data, top * width * 4);
+    try {
+        for (let top = 0; top < height; top += MAX_SHOT_HEIGHT) {
+            const rows = Math.min(MAX_SHOT_HEIGHT, height - top);
+            // The last slice cannot scroll its top to the viewport's when the page ends first.
+            const at = await page.evaluate((y) => {
+                globalThis.scrollTo(0, y);
+                return globalThis.scrollY;
+            }, top / SCALE);
+            const clip = { x: 0, y: top / SCALE - at, width: size.width, height: rows / SCALE };
+            PNG.sync.read(await page.screenshot({ ...SHOT, clip })).data.copy(out.data, top * width * 4);
+        }
+    } finally {
+        await page.evaluate(() => globalThis.scrollTo(0, 0));
     }
     return PNG.sync.write(out, { filterType: 4 });
 }
 
 /**
  * Sizes the box vitest scales the tester iframe in, which the iframe fills, and the page's own
- * document with it: the page's viewport stops at one slice (see pageSize), and a slice below it is
- * shot only where the page's document reaches.
+ * document with it: the page's viewport stops at one slice (see pageSize), and the page scrolls a
+ * slice below it into view only as far as its document reaches.
  * @param {import("playwright").Frame} frame the tester iframe
  * @param {{ width: number, height: number }} size in CSS px
  * @returns {Promise<void>} once it is set
@@ -158,8 +169,8 @@ const sizeFrame = async (frame, size) =>
  * slice. A viewport taller than the GPU's largest texture (16,384 device px: 8,192 CSS px at scale
  * 2) has Chromium composite that tab another way for the rest of its life, and every picture drawn
  * in it afterwards, every later story file's, came out a level or two off in its shadows and its
- * graph's edges, and graph canvases came out empty. A slice below the viewport is shot beyond it,
- * as capture.mjs's full-page shot is.
+ * graph's edges, and graph canvases came out empty. A slice below the viewport is scrolled into
+ * it (see sliced).
  * @param {{ width: number, height: number }} size the frame's size, in CSS px
  * @returns {{ width: number, height: number }} the page's viewport, in CSS px
  */
