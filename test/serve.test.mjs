@@ -658,7 +658,10 @@ describe("serve: candidates", () => {
         // Master's rejects open an issue.
         return async (args, input) => {
             if (args[1]?.startsWith("repos/{owner}/{repo}/pulls?state=open")) {
-                return JSON.stringify(r.box?.open ?? []);
+                if (r.box.open === null) {
+                    throw new Error("HTTP 403: rate limit");
+                }
+                return JSON.stringify(r.box.open);
             }
             if (args[2] === "PATCH") {
                 r.box.closed.push(args[3]);
@@ -824,6 +827,28 @@ describe("serve: candidates", () => {
         expect(ended.result).toMatchObject({ rejects: 1, closedPullRequest: "https://gh/pull/650" });
         expect(s.box.closed).toEqual(["repos/{owner}/{repo}/pulls/650"]);
         expect(await offered(s)).toBeUndefined();
+    });
+
+    it("keeps a rejected candidate while its accept pull request cannot be looked up", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
+        await offered(s);
+        s.box.open = null; // the listing fails
+        await decide(s, "slider--sizes.png", "reject", "clipped");
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.result.closeError).toMatch(/could not close the pull request of visual\/approve-/);
+        expect(ended.warnings.join("\n")).toMatch(/still open/);
+        expect((await offered(s)).candidate.commit).toBe(s.master);
+    });
+
+    it("accepts on a candidate a project that is not seeded from the default branch", async () => {
+        const p = FIXTURE_CONFIG.projects;
+        const config = {
+            ...FIXTURE_CONFIG,
+            projects: { ...p, "compact-mantine": { ...p["compact-mantine"], seedFromDefaultBranch: false } },
+        };
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)], { config });
+        await offered(s);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
     });
 
     it("keeps a candidate whose rejects could not be filed, so Finish can send them again", async () => {

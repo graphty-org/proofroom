@@ -501,7 +501,7 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
         );
     } catch (err) {
         // A candidate's branch is replaced on a later Finish, so its pull request may be open already.
-        const open = decided.target.candidate ? await openPullRequestOf(gh, branch) : null;
+        const open = decided.target.candidate ? await openPullRequestOf(gh, branch).catch(() => null) : null;
         if (open) {
             return open.html_url;
         }
@@ -516,18 +516,14 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
 }
 
 /**
- * The open pull request of a branch of this repository, or null (also when GitHub cannot say).
+ * The open pull request of a branch of this repository, or null; throws when GitHub cannot say.
  * @param {Function} gh the gh runner
  * @param {string} branch the branch
  * @returns {Promise<{ number: number, html_url: string } | null>} it
  */
 async function openPullRequestOf(gh, branch) {
-    try {
-        const list = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls?state=open&head={owner}:${branch}`]));
-        return list.find((p) => p.head?.ref === branch) ?? null;
-    } catch {
-        return null;
-    }
+    const list = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls?state=open&head={owner}:${branch}`]));
+    return list.find((p) => p.head?.ref === branch) ?? null;
 }
 
 /**
@@ -538,16 +534,18 @@ async function openPullRequestOf(gh, branch) {
  *     or why closing it failed
  */
 async function closeCandidatePullRequest(gh, target) {
-    const open = await openPullRequestOf(gh, candidateBranch(target.candidate));
-    if (!open) {
-        return {};
-    }
+    const branch = candidateBranch(target.candidate);
+    let open = null;
     try {
-        await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${open.number}`, "-f", "state=closed"]);
-        return { closedPullRequest: open.html_url };
+        open = await openPullRequestOf(gh, branch);
+        if (open) {
+            await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${open.number}`, "-f", "state=closed"]);
+        }
+        return open ? { closedPullRequest: open.html_url } : {};
     } catch (err) {
-        console.error(`visual-review: could not close ${open.html_url}: ${err.message}`);
-        return { closeError: `could not close ${open.html_url}: ${err.message}` };
+        const what = open?.html_url ?? `the pull request of ${branch}`;
+        console.error(`visual-review: could not close ${what}: ${err.message}`);
+        return { closeError: `could not close ${what}: ${err.message}` };
     }
 }
 

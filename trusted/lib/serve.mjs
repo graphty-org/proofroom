@@ -2218,7 +2218,8 @@ export function createApp({
         return t.local === true || (Boolean(r?.local) && !isPreviewOf(r, t.pr));
     };
     const acceptable = (t, name) =>
-        !isLocal(t, name) && (t.pr !== null || projects[name].seedFromDefaultBranch === true);
+        // seedFromDefaultBranch is about seeding: a candidate's changed images are accepted like a pull request's.
+        !isLocal(t, name) && (t.pr !== null || Boolean(t.candidate) || projects[name].seedFromDefaultBranch === true);
     const LOCAL = "is a local preview: nothing is decided on it; only CI captures of a pushed commit are";
 
     async function targetOf(id) {
@@ -2276,7 +2277,8 @@ export function createApp({
         // accepts stay saved by image hash for the next candidate, and no accept pull request opens.
         const rejects = list.filter((d) => d.decision === "reject");
         const sent = t.candidate && rejects.length > 0 ? rejects : list;
-        return { list: sent, digest: sha256(JSON.stringify(sent)) };
+        // A candidate's digest names it, so an approval prepared on one candidate never finishes another.
+        return { list: sent, digest: sha256(JSON.stringify(t.candidate ? [t.candidate.commit, sent] : sent)) };
     };
     const CHANGED_SINCE = "Decisions changed since this sheet opened: check the summary again.";
 
@@ -3494,7 +3496,8 @@ export function createApp({
         if (r.closeError) {
             j.warnings.push(`the accept pull request of this rejected candidate is still open: ${r.closeError}`);
         }
-        if (t.candidate && r.rejects > 0 && r.issue) {
+        // Not while its accept pull request may still be open: the next Finish tries to close it again.
+        if (t.candidate && r.rejects > 0 && r.issue && !r.closeError) {
             dropCandidate(t.candidate.commit);
         }
     }
