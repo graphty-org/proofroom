@@ -14,10 +14,12 @@ import { ROOT, tempDir } from "./helpers.mjs";
 /**
  * A solid PNG, as the page's screenshot would return it.
  * @param {number} shade the gray level of every pixel
+ * @param {number} [width] in px
+ * @param {number} [height] in px
  * @returns {Buffer} the PNG
  */
-export function png(shade) {
-    const image = new PNG({ width: 4, height: 4 });
+export function png(shade, width = 4, height = 4) {
+    const image = new PNG({ width, height });
     image.data.fill(shade);
     for (let i = 3; i < image.data.length; i += 4) {
         image.data[i] = 255;
@@ -53,7 +55,14 @@ export function repo(baselines) {
 export function context(shots, size = { width: 1200, height: 900 }) {
     const frameElement = { evaluate: async () => undefined, focus: async () => undefined };
     const frame = {
-        evaluate: async (fn) => (fn.toString().includes("scroll") ? size : undefined),
+        // scrollTo goes no further than the document's size allows; measuring reads scroll sizes.
+        evaluate: async (fn, arg) => {
+            const text = fn.toString();
+            if (text.includes("scrollTo")) {
+                return { x: Math.min(arg[0], size.width - 1200), y: Math.min(arg[1], size.height - 900) };
+            }
+            return text.includes("scroll") ? size : undefined;
+        },
         frameElement: async () => frameElement,
     };
     const viewports = [];
@@ -65,7 +74,22 @@ export function context(shots, size = { width: 1200, height: 900 }) {
             viewports.push(v);
         },
         screenshot: async (o) => (o.clip.width === 1 ? png(0) : shots.shift()),
-        context: () => ({ browser: () => ({ version: () => "1.0" }) }),
+        context: () => ({
+            browser: () => ({ version: () => "1.0" }),
+            // A page that shows an image and shoots it back unchanged, as Chromium does at 1:1.
+            newPage: async () => {
+                let shown = null;
+                return {
+                    setViewportSize: async () => undefined,
+                    setContent: async (html) => {
+                        shown = Buffer.from(/base64,([^"]+)/.exec(html)[1], "base64");
+                    },
+                    evaluate: async () => undefined,
+                    screenshot: async () => shown,
+                    close: async () => undefined,
+                };
+            },
+        }),
     };
     return { page, frame: async () => frame, viewports };
 }
@@ -81,7 +105,7 @@ export function context(shots, size = { width: 1200, height: 900 }) {
 const testModule = (project, moduleId, ids, broken) => ({
     project,
     moduleId,
-    state: () => (broken ? "failed" : "passed"),
+    state: () => (broken ? "failed" : ids.length > 0 ? "passed" : "skipped"),
     errors: () => (broken ? [{ message: "SyntaxError" }] : []),
     children: {
         allTests: () => ids.map((storyId) => ({ meta: () => ({ storyId }), result: () => ({ state: "passed" }) })),

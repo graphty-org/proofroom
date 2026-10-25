@@ -1114,11 +1114,11 @@ The story tests' server answers a path that is no file with a 404, as `capture`'
 (spread `PRODUCTION` into the project's config), so a story that fetches a missing file is refused in
 both.
 
-Known limit: a story taller or wider than the 1200 x 900 viewport is shot by growing the test's
-frame to its whole size, so whatever is laid out against the window's height (`vh` units, a layout
-centered in the window) and what loads when it comes into view follow the grown frame, where
-`capture`'s full-page shot keeps a 900 px viewport. Such a story draws a different picture from
-`capture`'s.
+A story taller or wider than the 1200 x 900 viewport is shot in viewport-sized tiles: the test's
+frame keeps the viewport's size (so `vh` units and a layout centered in the window draw as in
+`capture`'s full-page shot), its document is scrolled to each tile, elements with `position: fixed`
+are pinned where they are first, and the stitched picture is encoded by Chromium's own screenshot,
+as `capture`'s is.
 
 ## How captures and baselines move
 

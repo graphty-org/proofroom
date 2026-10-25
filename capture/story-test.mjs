@@ -40,7 +40,7 @@ import { unstableLine } from "./story-outcomes.mjs";
 
 const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
 
-/* global document, requestAnimationFrame -- read only inside the page */
+/* global document, getComputedStyle, requestAnimationFrame -- read only inside the page */
 
 /**
  * The size a full-page screenshot of the frame's document would have, as capture.mjs measures it.
@@ -72,9 +72,7 @@ function twoFramesInPage() {
 
 /**
  * In the page: waits until every image in the document has loaded and decoded, or failed. A lazy
- * image loads now: it waits to come into the top page's viewport, which stops at one slice (see
- * pageSize) where the grown frame goes on, so one further down would never load and its decode()
- * would never settle.
+ * image loads now: one outside the viewport would never load, and its decode() would never settle.
  * @returns {Promise<void>} once they have
  */
 function imagesInPage() {
@@ -87,16 +85,6 @@ function imagesInPage() {
 }
 
 /**
- * In the page: waits until every element the project's `waitFor` names says it is drawn (such as
- * graphty-element's `waitForStableFrame()`).
- * @param {{ selector: string, method: string }} waitFor the project's wait
- * @returns {Promise<void>} once they have
- */
-function settledInPage({ selector, method }) {
-    return Promise.all([...document.querySelectorAll(selector)].map((el) => el[method]())).then(() => undefined);
-}
-
-/**
  * A play function's real pointer stays where it last was and hovers whatever is under it;
  * capture.mjs's page never had a pointer. Moved off the page, it hovers nothing.
  * @param {import("playwright").Page} page the page
@@ -105,129 +93,138 @@ function settledInPage({ selector, method }) {
 const park = (page) => page.mouse.move(-1, -1);
 
 /**
- * The outer page's top left `size`, in slices of at most MAX_SHOT_HEIGHT device px stitched with
- * the same PNG filter as capture.mjs's screenshotWholePage, or as one shot when it fits. A slice
- * below the viewport is scrolled into it and shot there. Not with a full-page shot, which reaches
- * below the viewport: after one, the tab lays text out on whole pixels for the rest of its life (a
- * 110.34 px line came out 110 px), and every later story file's text moved.
- * @param {import("playwright").Page} page the page
- * @param {{ width: number, height: number }} size in CSS px
- * @returns {Promise<Buffer>} the PNG
+ * Scrolls the tester iframe's document, as near to (x, y) as it goes, and waits for what came
+ * into view (a lazy image) and two frames.
+ * @param {import("playwright").Frame} frame the tester iframe
+ * @param {number} x in CSS px
+ * @param {number} y in CSS px
+ * @returns {Promise<{ x: number, y: number }>} where it scrolled to
  */
-async function sliced(page, size) {
-    const [width, height] = [size.width * SCALE, size.height * SCALE];
-    if (height <= MAX_SHOT_HEIGHT) {
-        return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
-    }
-    const out = new PNG({ width, height });
-    try {
-        for (let top = 0; top < height; top += MAX_SHOT_HEIGHT) {
-            const rows = Math.min(MAX_SHOT_HEIGHT, height - top);
-            // The last slice cannot scroll its top to the viewport's when the page ends first.
-            const at = await page.evaluate((y) => {
-                globalThis.scrollTo(0, y);
-                return globalThis.scrollY;
-            }, top / SCALE);
-            const clip = { x: 0, y: top / SCALE - at, width: size.width, height: rows / SCALE };
-            PNG.sync.read(await page.screenshot({ ...SHOT, clip })).data.copy(out.data, top * width * 4);
-        }
-    } finally {
-        await page.evaluate(() => globalThis.scrollTo(0, 0));
-    }
-    return PNG.sync.write(out, { filterType: 4 });
+async function scrollFrame(frame, x, y) {
+    const at = await frame.evaluate(
+        ([left, top]) => {
+            globalThis.scrollTo(left, top);
+            return { x: globalThis.scrollX, y: globalThis.scrollY };
+        },
+        [x, y],
+    );
+    await frame.evaluate(imagesInPage);
+    await twoFrames(frame);
+    return at;
 }
 
 /**
- * Sizes the box vitest scales the tester iframe in, which the iframe fills, and the page's own
- * document with it: the page's viewport stops at one slice (see pageSize), and the page scrolls a
- * slice below it into view only as far as its document reaches.
- * @param {import("playwright").Frame} frame the tester iframe
+ * The stitched picture as Chromium's own screenshot encodes it, so its bytes are what
+ * capture.mjs's one full-page screenshot holds: shown 1:1 in a page of its own size and shot. A
+ * picture taller than one screenshot is encoded as capture.mjs stitches its slices.
+ * @param {import("playwright").Page} page vitest's page, whose context opens the new page
+ * @param {PNG} image the stitched picture, at SCALE device px per CSS px
  * @param {{ width: number, height: number }} size in CSS px
- * @returns {Promise<void>} once it is set
+ * @returns {Promise<Buffer>} the PNG
  */
-const sizeFrame = async (frame, size) =>
-    (await frame.frameElement()).evaluate(
-        (el, { s, grown }) => {
-            el.parentElement.style.width = `${s.width}px`;
-            el.parentElement.style.height = `${s.height}px`;
-            const root = el.ownerDocument.documentElement;
-            for (const e of [root, el.ownerDocument.body]) {
-                e.style.minWidth = grown ? `${s.width}px` : "";
-                e.style.minHeight = grown ? `${s.height}px` : "";
-            }
-            // vitest's page hides its overflow, which keeps its document the viewport's size. Shown
-            // only while grown: a page that can scroll is scrolled by a later play's click, and
-            // every shot after it is taken of the wrong place.
-            root.style.overflow = grown ? "visible" : "";
-            el.ownerDocument.defaultView.scrollTo(0, 0);
-        },
-        { s: size, grown: size.width > VIEWPORT.width || size.height > VIEWPORT.height },
-    );
+async function encodeAsChromium(page, image, size) {
+    const png = PNG.sync.write(image, { filterType: 4 });
+    if (image.height > MAX_SHOT_HEIGHT) {
+        return png;
+    }
+    const shown = await page.context().newPage();
+    try {
+        await shown.setViewportSize(size);
+        await shown.setContent(
+            `<style>html,body{margin:0}img{display:block;width:${size.width}px;height:${size.height}px}</style>` +
+                `<img src="data:image/png;base64,${png.toString("base64")}">`,
+        );
+        await shown.evaluate(imagesInPage);
+        return await shown.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+    } finally {
+        await shown.close();
+    }
+}
 
 /**
- * The page viewport a grown frame is shot in: as wide as the frame, and as tall but at most one
- * slice. A viewport taller than the GPU's largest texture (16,384 device px: 8,192 CSS px at scale
- * 2) has Chromium composite that tab another way for the rest of its life, and every picture drawn
- * in it afterwards, every later story file's, came out a level or two off in its shadows and its
- * graph's edges, and graph canvases came out empty. A slice below the viewport is scrolled into
- * it (see sliced).
- * @param {{ width: number, height: number }} size the frame's size, in CSS px
- * @returns {{ width: number, height: number }} the page's viewport, in CSS px
+ * In the page, at scroll (0, 0): pins every position: fixed element (in open shadow roots too)
+ * where it is, as position: absolute, so scrolled tiles draw it once, where a full-page shot draws
+ * it, instead of once per tile. Or, with `undo`, puts their own styles back.
+ * @param {boolean} undo whether to put the styles back
+ * @returns {void}
  */
-const pageSize = (size) => ({ width: size.width, height: Math.min(size.height, MAX_SHOT_HEIGHT / SCALE) });
+function pinFixedInPage(undo) {
+    const key = "__visualReviewPinned";
+    if (undo) {
+        for (const [el, css] of globalThis[key] ?? []) {
+            el.style.cssText = css;
+        }
+        delete globalThis[key];
+        return;
+    }
+    const all = [];
+    const walk = (root) => {
+        for (const el of root.querySelectorAll("*")) {
+            all.push(el);
+            if (el.shadowRoot) {
+                walk(el.shadowRoot);
+            }
+        }
+    };
+    walk(document);
+    const fixed = all.filter((el) => getComputedStyle(el).position === "fixed");
+    globalThis[key] = fixed.map((el) => [el, el.style.cssText]);
+    for (const el of fixed) {
+        const r = el.getBoundingClientRect();
+        const set = (name, value) => el.style.setProperty(name, value, "important");
+        set("position", "absolute");
+        set("box-sizing", "border-box");
+        set("width", `${r.width}px`);
+        set("height", `${r.height}px`);
+        set("margin", "0");
+        set("right", "auto");
+        set("bottom", "auto");
+        set("top", `${r.top}px`);
+        set("left", `${r.left}px`);
+        // The element's containing block is now its positioned ancestor, not the viewport.
+        const now = el.getBoundingClientRect();
+        set("top", `${2 * r.top - now.top}px`);
+        set("left", `${2 * r.left - now.left}px`);
+    }
+}
 
 /**
  * The tester iframe's whole document, as capture.mjs's screenshotWholePage shoots iframe.html:
  * a throwaway shot, two frames, measure, then the outer page clipped to the iframe, which sits at
- * the top left at scale 1. A story taller or wider than the viewport grows the iframe to its scroll
- * size first, and the page with it up to one slice (see pageSize), so `vh` sees the grown size,
- * where capture.mjs's full-page shot keeps 900 px: a known parity limit.
+ * the top left at scale 1 when the page's viewport is the iframe's size. A story taller or wider
+ * than the viewport is shot in viewport-sized tiles, scrolling the iframe's document to each and
+ * stitching them, so its layout keeps the 1200 x 900 viewport (its `vh` units too), as
+ * capture.mjs's full-page shot does; growing the frame instead made `vh` follow it.
  * @param {import("playwright").Page} page vitest's orchestrator page
  * @param {import("playwright").Frame} frame the tester iframe
- * @param {{ selector: string, method: string } | null} waitFor the project's wait, run again in the
- *     grown frame
  * @returns {Promise<Buffer>} the PNG
  */
-async function shootFrame(page, frame, waitFor) {
+async function shootFrame(page, frame) {
     await park(page);
     await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, width: 1, height: 1 } });
     await twoFrames(frame);
-    let size = await measure(frame);
-    const grow = size.width > VIEWPORT.width || size.height > VIEWPORT.height;
-    // A story whose layout follows the viewport (vh) grows again in the grown frame: measure until
-    // the frame holds all of it, a few times at most. The shot is of the size last given to the
-    // frame, which its document fills: a page laid out as `min-height: 100vh` plus more grows
-    // every time, and a size measured after the last try is no size the frame ever had.
-    let shot = size;
-    for (let i = 0; grow && i < 3; i++) {
-        shot = size;
-        await page.setViewportSize(pageSize(size));
-        await sizeFrame(frame, size);
-        // What the grown frame brought into view loads now (a lazy image): the shot waits for it,
-        // or it would catch some of it and differ from render to render.
-        await frame.evaluate(imagesInPage);
-        await twoFrames(frame);
-        // Growing the frame resized what follows the viewport, and a resized canvas is cleared and
-        // drawn again on a later frame: the project's wait, asked once the resize is seen (the
-        // frames above), says when it is drawn, or the shot catches it empty.
-        if (waitFor) {
-            await frame.evaluate(settledInPage, { selector: waitFor.selector, method: waitFor.method });
-            await twoFrames(frame);
-        }
-        const now = await measure(frame);
-        if (now.width <= size.width && now.height <= size.height) {
-            break;
-        }
-        size = { width: Math.max(now.width, size.width), height: Math.max(now.height, size.height) };
+    const size = await measure(frame);
+    const view = { x: 0, y: 0, ...VIEWPORT };
+    if (size.width <= VIEWPORT.width && size.height <= VIEWPORT.height) {
+        return page.screenshot({ ...SHOT, clip: { ...view, ...size } });
     }
+    const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+    await frame.evaluate(pinFixedInPage, false);
     try {
-        return await sliced(page, shot);
-    } finally {
-        if (grow) {
-            await sizeFrame(frame, VIEWPORT);
-            await page.setViewportSize(VIEWPORT);
+        for (let top = 0; top < size.height; top += VIEWPORT.height) {
+            for (let left = 0; left < size.width; left += VIEWPORT.width) {
+                const at = await scrollFrame(frame, left, top);
+                const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
+                const w = Math.min(VIEWPORT.width, size.width - left) * SCALE;
+                const h = Math.min(VIEWPORT.height, size.height - top) * SCALE;
+                PNG.bitblt(tile, out, (left - at.x) * SCALE, (top - at.y) * SCALE, w, h, left * SCALE, top * SCALE);
+            }
         }
+    } finally {
+        await scrollFrame(frame, 0, 0);
+        await frame.evaluate(pinFixedInPage, true);
     }
+    return encodeAsChromium(page, out, size);
 }
 
 /**
@@ -257,7 +254,9 @@ async function storyFiles(vitest, modules, isOurs, root) {
     const rel = (file) => relative(root, file).replaceAll("\\", "/");
     const globbed = await Promise.all(projects.map((p) => p.globTestFiles()));
     const files = globbed.flatMap((g) => g.testFiles).map(rel);
-    const loaded = (m) => ["passed", "failed"].includes(m.state()) && m.errors().length === 0;
+    // A story file whose stories are all docs (no story test at all) loaded too: vitest reports it skipped.
+    const empty = (m) => m.state() === "skipped" && [...m.children.allTests()].length === 0;
+    const loaded = (m) => (["passed", "failed"].includes(m.state()) || empty(m)) && m.errors().length === 0;
     const ran = modules.filter((m) => projects.includes(m.project) && loaded(m)).map((m) => rel(m.moduleId));
     const sort = (list) => [...new Set(list)].sort((a, b) => a.localeCompare(b));
     return { files: sort(files), ran: sort(ran) };
@@ -489,7 +488,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         async visualShot(ctx, { id, mode, chromatic, console }) {
             const file = fileName(id, mode);
             results.environment.chromium ??= ctx.page.context().browser()?.version() ?? null;
-            const png = await shootFrame(ctx.page, await ctx.frame(), entry.waitFor ?? null);
+            const png = await shootFrame(ctx.page, await ctx.frame());
             const held = pending.get(file);
             if (held) {
                 pending.delete(file);

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
 import { visualStoryTest } from "../capture/story-test.mjs";
@@ -9,6 +10,26 @@ import { tempDir } from "./helpers.mjs";
 import { context, png, read, report, repo } from "./story-test-fakes.mjs";
 
 describe("story tests' visual step", () => {
+    it("shoots a story taller than the viewport in scrolled tiles, keeping its layout at the viewport", async () => {
+        const root = repo({});
+        const out = tempDir("story-test-out-");
+        const v = visualStoryTest({ project: "graphty-element", out, root });
+        // 905 CSS px tall: the second tile is the document scrolled to its end (5 px), whose last
+        // 5 px (10 device rows) are the rows below the first tile.
+        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800)];
+        const ctx = context([...tiles, ...tiles], { width: 1200, height: 905 });
+        await v.commands.visualPlan(ctx, { id: "a--tall", chromatic: {} });
+        const first = await v.commands.visualShot(ctx, { id: "a--tall", mode: null, chromatic: {}, console: [] });
+        expect(first.again).toBe(true);
+        expect(await v.commands.visualShot(ctx, { id: "a--tall", mode: null, chromatic: {}, console: [] })).toEqual({
+            status: "new",
+        });
+        const shot = PNG.sync.read(readFileSync(join(out, "a--tall.png")));
+        expect([shot.width, shot.height]).toEqual([2400, 1810]);
+        const gray = (y) => shot.data[y * 2400 * 4];
+        expect([gray(0), gray(1799), gray(1800), gray(1809)]).toEqual([10, 10, 20, 20]);
+    });
+
     it("records unchanged, changed (after a second render), unstable and failed stories as capture.mjs does", async () => {
         const root = repo({ "a--same.png": png(10), "a--moves.png": png(10), "a--wobbles.png": png(10) });
         const out = tempDir("story-test-out-");
@@ -29,23 +50,26 @@ describe("story tests' visual step", () => {
         await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } });
 
         await report(v, root, {
-            files: ["a.stories.ts", "b.stories.ts", "c.stories.ts"],
+            files: ["a.stories.ts", "b.stories.ts", "c.stories.ts", "d.stories.ts"],
             ran: {
                 "a.stories.ts": ["a--same", "a--moves", "a--wobbles", "a--fresh", "a--broken", "a--off"],
                 "c.stories.ts": [],
+                // Docs only: no story test, which vitest reports as a skipped file.
+                "d.stories.ts": [],
             },
             broken: ["c.stories.ts"],
         });
         const r = read(out);
         // Never complete on its own: only merge-results makes a capture the gate takes.
         expect(r.complete).toBe(false);
-        // Every story file of the project, and only those this run loaded and ran (not the broken one).
+        // Every story file of the project, and only those this run loaded and ran (not the broken one;
+        // the docs-only one loaded).
         expect(r.partial).toEqual({
             shard: { index: 1, count: 1 },
             reported: true,
             missing: [],
-            files: ["a.stories.ts", "b.stories.ts", "c.stories.ts"],
-            ran: ["a.stories.ts"],
+            files: ["a.stories.ts", "b.stories.ts", "c.stories.ts", "d.stories.ts"],
+            ran: ["a.stories.ts", "d.stories.ts"],
         });
         expect(validateResults(r)).toEqual([]);
         expect(Object.fromEntries(r.items.map((i) => [i.id, i.status]))).toEqual({
@@ -64,18 +88,20 @@ describe("story tests' visual step", () => {
         expect(r.items.find((i) => i.id === "a--same").console).toEqual([]);
     });
 
-    it("never gives the page a viewport taller than one slice, and shoots a taller story in slices", async () => {
+    it("never resizes the page, and stitches a story taller than one screenshot as capture.mjs does", async () => {
         const out = tempDir("story-test-out-");
         const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
-        // 5,000 CSS px is 10,000 device px: two slices, the second beyond the viewport.
-        const ctx = context([png(50), png(50), png(50), png(50)], { width: 10, height: 5000 });
+        // 5,000 CSS px is 10,000 device px, over one screenshot: six tiles, encoded here, not by Chromium.
+        const tile = png(50, 2400, 1800);
+        const ctx = context(
+            Array.from({ length: 6 }, () => tile),
+            { width: 1200, height: 5000 },
+        );
         await v.commands.visualPlan(ctx, { id: "a--tall", chromatic: {} });
         const first = await v.commands.visualShot(ctx, { id: "a--tall", mode: null, chromatic: {}, console: [] });
         expect(first).toEqual({ again: true });
-        expect(ctx.viewports).toEqual([
-            { width: 10, height: 4096 },
-            { width: 1200, height: 900 },
-        ]);
+        // A viewport taller than the GPU's largest texture leaves the tab compositing another way.
+        expect(ctx.viewports).toEqual([]);
     });
 
     it("marks a partial unreported when a story test that ran never reached the visual step", async () => {
