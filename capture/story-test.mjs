@@ -13,7 +13,7 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { PNG } from "pngjs";
 
@@ -151,6 +151,27 @@ function storybookHead(cwd) {
     const pkg = createRequire(join(cwd, "package.json")).resolve("storybook/package.json");
     const html = readFileSync(join(pkg, "../assets/server/base-preview-head.html"), "utf8");
     return [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join("\n");
+}
+
+/**
+ * The story test files of the projects this harness shoots in, all of them (before sharding or any
+ * filter), and those this run loaded and ran: merge-results checks the shards ran every file once,
+ * as capture.mjs shoots every story of the built Storybook's index.
+ * @param {any} vitest the Vitest instance, from the reporter's onInit
+ * @param {any[]} modules the run's test modules
+ * @param {(project: any) => boolean} isOurs whether a Vitest project runs the visual step
+ * @param {string} root the repository root, which the paths are relative to
+ * @returns {Promise<{ files: string[], ran: string[] }>} repository-relative paths, sorted
+ */
+async function storyFiles(vitest, modules, isOurs, root) {
+    const projects = (vitest?.projects ?? []).filter(isOurs);
+    const rel = (file) => relative(root, file).replaceAll("\\", "/");
+    const globbed = await Promise.all(projects.map((p) => p.globTestFiles()));
+    const files = globbed.flatMap((g) => g.testFiles).map(rel);
+    const loaded = (m) => ["passed", "failed"].includes(m.state()) && m.errors().length === 0;
+    const ran = modules.filter((m) => projects.includes(m.project) && loaded(m)).map((m) => rel(m.moduleId));
+    const sort = (list) => [...new Set(list)].sort((a, b) => a.localeCompare(b));
+    return { files: sort(files), ran: sort(ran) };
 }
 
 /**
@@ -349,15 +370,19 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
     };
 
     let shard = { index: 1, count: 1 };
+    let vitest = null;
+    const isOurs = (p) => p.config?.browser?.commands?.visualShot === commands.visualShot;
     const reporter = {
-        onInit(vitest) {
-            shard = vitest.config.shard ?? shard;
+        onInit(v) {
+            vitest = v;
+            shard = v.config.shard ?? shard;
         },
         /**
          * Records the shard and whether every story test that ran went through the visual step.
          * @param {any[]} modules the run's test modules
+         * @returns {Promise<void>} once the partial is written
          */
-        onTestRunEnd(modules) {
+        async onTestRunEnd(modules) {
             const ran = new Set();
             for (const m of modules) {
                 for (const t of m.children.allTests()) {
@@ -369,7 +394,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
             }
             const missing = [...ran].filter((id) => !planned.has(id)).sort((a, b) => a.localeCompare(b));
             const reported = results.commit !== null && missing.length === 0 && pending.size === 0;
-            results.partial = { shard, reported, missing };
+            results.partial = { shard, reported, missing, ...(await storyFiles(vitest, modules, isOurs, root)) };
             results.items.sort((a, b) => (a.file < b.file ? -1 : 1));
             save();
         },

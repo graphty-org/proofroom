@@ -3,8 +3,9 @@
  * story-test.mjs) combined into the results.json, images and baselines a capture directory holds,
  * so `serve` and `gate` read it as they read capture.mjs's.
  *
- * The result is complete only when every shard 1..count is there once, each reported every story
- * test it ran, all come from one commit and no story is in two of them. Then every baseline no
+ * The result is complete only when every shard 1..count is there once, between them they ran every
+ * story file of the project once, each reported every story test it ran, all come from one commit
+ * and no story is in two of them. Then every baseline no
  * item names is reported `removed`, as capture.mjs reports it. Otherwise the merge is written with
  * `complete: false`, which the gate refuses, and the problems are returned.
  */
@@ -53,6 +54,33 @@ function shardProblems(parts) {
 }
 
 /**
+ * Why the partials did not, between them, run every story file of the project exactly once (a
+ * filtered run, a file that failed to load, a shard run twice).
+ * @param {object[]} parts the parsed partial results
+ * @returns {string[]} one message per problem, at most a few files named
+ */
+function fileProblems(parts) {
+    const files = parts[0]?.partial?.files;
+    if (!Array.isArray(files) || parts.some((p) => !Array.isArray(p.partial?.ran))) {
+        return ["a partial does not list the project's story files"];
+    }
+    if (parts.some((p) => JSON.stringify(p.partial.files) !== JSON.stringify(files))) {
+        return ["the partials list different story files"];
+    }
+    const runs = new Map(files.map((f) => [f, 0]));
+    for (const f of parts.flatMap((p) => p.partial.ran)) {
+        runs.set(f, (runs.get(f) ?? 0) + 1);
+    }
+    const unrun = [...runs].filter(([, n]) => n === 0).map(([f]) => f);
+    const twice = [...runs].filter(([, n]) => n > 1).map(([f]) => f);
+    const named = (list) => list.slice(0, 5).join(", ") + (list.length > 5 ? ` and ${list.length - 5} more` : "");
+    return [
+        ...(unrun.length > 0 ? [`${unrun.length} story files did not run or failed to load: ${named(unrun)}`] : []),
+        ...(twice.length > 0 ? [`story files ran in more than one partial: ${named(twice)}`] : []),
+    ];
+}
+
+/**
  * Why one partial cannot be part of the project's capture.
  * @param {string} project the project
  * @param {object} p the parsed partial, with `dir`
@@ -78,7 +106,11 @@ function partProblems(project, p) {
  * @returns {string[]} one message per problem
  */
 function completeness(project, parts) {
-    const problems = [...shardProblems(parts), ...parts.flatMap((p) => partProblems(project, p))];
+    const problems = [
+        ...shardProblems(parts),
+        ...fileProblems(parts),
+        ...parts.flatMap((p) => partProblems(project, p)),
+    ];
     if (new Set(parts.map((p) => p.commit)).size > 1) {
         problems.push("the partials come from different commits");
     }

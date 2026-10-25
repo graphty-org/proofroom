@@ -1093,8 +1093,9 @@ page and the gate read:
 npx visual-review merge-results --project web --out captures/web tmp/stories/web-1 tmp/stories/web-2 tmp/stories/web-3
 ```
 
-It is complete only when every shard is there once and each reported every story test it ran; a
-baseline no story drew is reported removed.
+It is complete only when every shard is there once, the shards between them ran every story file of
+the project (a run of some files, or a file that failed to load, leaves it incomplete) and each
+reported every story test it ran; a baseline no story drew is reported removed.
 A story test fails when its play fails, when the project's `waitFor` console rule matches, or when
 two renders of it draw different pictures (unstable); a changed or new picture passes and waits for
 review.

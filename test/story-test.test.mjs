@@ -6,7 +6,7 @@ import { visualStoryTest } from "../capture/story-test.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
 import { tempDir } from "./helpers.mjs";
-import { context, modules, png, read, repo } from "./story-test-fakes.mjs";
+import { context, png, read, report, repo } from "./story-test-fakes.mjs";
 
 describe("story tests' visual step", () => {
     it("records unchanged, changed (after a second render), unstable and failed stories as capture.mjs does", async () => {
@@ -28,12 +28,25 @@ describe("story tests' visual step", () => {
         await v.commands.visualFail(context([]), { id: "a--broken", modes: [null], reason: "play threw", console: [] });
         await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } });
 
-        v.reporter.onInit({ config: { shard: { index: 1, count: 1 } } });
-        v.reporter.onTestRunEnd(modules(["a--same", "a--moves", "a--wobbles", "a--fresh", "a--broken", "a--off"]));
+        await report(v, root, {
+            files: ["a.stories.ts", "b.stories.ts", "c.stories.ts"],
+            ran: {
+                "a.stories.ts": ["a--same", "a--moves", "a--wobbles", "a--fresh", "a--broken", "a--off"],
+                "c.stories.ts": [],
+            },
+            broken: ["c.stories.ts"],
+        });
         const r = read(out);
         // Never complete on its own: only merge-results makes a capture the gate takes.
         expect(r.complete).toBe(false);
-        expect(r.partial).toEqual({ shard: { index: 1, count: 1 }, reported: true, missing: [] });
+        // Every story file of the project, and only those this run loaded and ran (not the broken one).
+        expect(r.partial).toEqual({
+            shard: { index: 1, count: 1 },
+            reported: true,
+            missing: [],
+            files: ["a.stories.ts", "b.stories.ts", "c.stories.ts"],
+            ran: ["a.stories.ts"],
+        });
         expect(validateResults(r)).toEqual([]);
         expect(Object.fromEntries(r.items.map((i) => [i.id, i.status]))).toEqual({
             "a--broken": "failed",
@@ -53,8 +66,9 @@ describe("story tests' visual step", () => {
 
     it("marks a partial unreported when a story test that ran never reached the visual step", async () => {
         const out = tempDir("story-test-out-");
-        const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
-        v.reporter.onTestRunEnd(modules(["a--lost"]));
+        const root = repo({});
+        const v = visualStoryTest({ project: "graphty-element", out, root });
+        await report(v, root, { files: ["a.stories.ts"], ran: { "a.stories.ts": ["a--lost"] } });
         expect(read(out).partial).toMatchObject({ reported: false, missing: ["a--lost"] });
     });
 });

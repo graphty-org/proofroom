@@ -84,8 +84,8 @@ commit are a bug in one environment, so no threshold applies.`,
 
 Combines one project's partial captures from its story tests (one directory per shard, written by
 @graphty/visual-review/vitest) into one capture directory that serve and gate read. It is complete
-only when every shard is there once and each reported every story test it ran; then every baseline
-no story drew is reported removed. Exits 1, writing it incomplete, otherwise.`,
+only when every shard is there once, between them they ran every story file of the project, and
+each reported every story test it ran; then every baseline no story drew is reported removed. Exits 1, writing it incomplete, otherwise.`,
 
     gate: null, // gate.mjs's own usage
 

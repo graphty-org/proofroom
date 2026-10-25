@@ -65,16 +65,41 @@ export function context(shots) {
 }
 
 /**
- * The test modules a Vitest reporter gets at the end of a run.
- * @param {string[]} ids the story ids whose tests ran
- * @returns {object[]} one module
+ * One test module as a Vitest reporter gets it at the end of a run.
+ * @param {object} project the Vitest project it belongs to
+ * @param {string} moduleId its absolute path
+ * @param {string[]} ids the story ids whose tests ran in it
+ * @param {boolean} broken whether it failed to load (a collection error)
+ * @returns {object} the module
  */
-export const modules = (ids) => [
-    {
-        children: {
-            allTests: () => ids.map((storyId) => ({ meta: () => ({ storyId }), result: () => ({ state: "passed" }) })),
-        },
+const testModule = (project, moduleId, ids, broken) => ({
+    project,
+    moduleId,
+    state: () => (broken ? "failed" : "passed"),
+    errors: () => (broken ? [{ message: "SyntaxError" }] : []),
+    children: {
+        allTests: () => ids.map((storyId) => ({ meta: () => ({ storyId }), result: () => ({ state: "passed" }) })),
     },
-];
+});
+
+/**
+ * Runs the harness's reporter as Vitest would at the end of a run of its story project.
+ * @param {object} v what visualStoryTest returned
+ * @param {string} root the repository root
+ * @param {object} run the shard (`shard`), every story file of the project (`files`), the story
+ *     ids that ran per file (`ran`) and the files that failed to load (`broken`)
+ * @returns {Promise<void>} once the partial is written
+ */
+export async function report(v, root, run) {
+    const { shard = { index: 1, count: 1 }, files = [], ran = {}, broken = [] } = run;
+    const project = {
+        config: { browser: { commands: v.commands } },
+        globTestFiles: async () => ({ testFiles: files.map((f) => join(root, f)) }),
+    };
+    const other = { config: {}, globTestFiles: async () => ({ testFiles: [join(root, "other.test.ts")] }) };
+    v.reporter.onInit({ config: { shard }, projects: [project, other] });
+    const modules = Object.entries(ran).map(([f, ids]) => testModule(project, join(root, f), ids, broken.includes(f)));
+    await v.reporter.onTestRunEnd([...modules, testModule(other, join(root, "other.test.ts"), [], false)]);
+}
 
 export const read = (dir) => JSON.parse(readFileSync(join(dir, "results.json"), "utf8"));
