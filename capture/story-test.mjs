@@ -141,6 +141,54 @@ async function encodeAsChromium(page, image, size) {
 }
 
 /**
+ * In the page: gives every visible, opaque position: fixed element (in open shadow roots too) a
+ * compositing layer of its own, as iframe.html's document has when it is the page: there the
+ * root scroller is composited, and a fixed element over it is composited too (reason "overlap").
+ * The tester iframe's document scrolls nothing, so it paints them into its own layer, where a
+ * pop-out's box-shadow rasterizes up to 9 levels off and a rounded border's anti-aliasing moves.
+ * A translucent one is left alone (on a layer of its own its opacity is applied by the
+ * compositor, 1 level off, where the page paints it into the layer it shares), and so is one that
+ * sets its own will-change. Or, with `undo`, puts their own will-change back.
+ * ponytail: two fixed elements the page squashes into one layer still get one layer each here;
+ * where their shadows overlap they blend up to 9 levels apart.
+ * @param {boolean} undo whether to put the styles back
+ * @returns {void}
+ */
+function compositeFixedInPage(undo) {
+    const key = "__visualReviewComposited";
+    if (undo) {
+        for (const [el, value, priority] of globalThis[key] ?? []) {
+            el.style.setProperty("will-change", value, priority);
+        }
+        delete globalThis[key];
+        return;
+    }
+    const all = [];
+    const walk = (root) => {
+        for (const el of root.querySelectorAll("*")) {
+            all.push(el);
+            if (el.shadowRoot) {
+                walk(el.shadowRoot);
+            }
+        }
+    };
+    walk(document);
+    const fixed = all.filter((el) => {
+        const style = getComputedStyle(el);
+        const own = style.willChange !== "auto";
+        return style.position === "fixed" && style.opacity === "1" && !own && el.getBoundingClientRect().width > 0;
+    });
+    globalThis[key] = fixed.map((el) => [
+        el,
+        el.style.getPropertyValue("will-change"),
+        el.style.getPropertyPriority("will-change"),
+    ]);
+    for (const el of fixed) {
+        el.style.setProperty("will-change", "opacity", "important");
+    }
+}
+
+/**
  * In the page, at scroll (0, 0): pins every position: fixed element (in open shadow roots too)
  * where it is, as position: absolute, so scrolled tiles draw it once, where a full-page shot draws
  * it, instead of once per tile. Or, with `undo`, puts their own styles back.
@@ -205,7 +253,13 @@ async function shootFrame(page, frame) {
     const size = await measure(frame);
     const view = { x: 0, y: 0, ...VIEWPORT };
     if (size.width <= VIEWPORT.width && size.height <= VIEWPORT.height) {
-        return page.screenshot({ ...SHOT, clip: { ...view, ...size } });
+        await frame.evaluate(compositeFixedInPage, false);
+        try {
+            await twoFrames(frame);
+            return await page.screenshot({ ...SHOT, clip: { ...view, ...size } });
+        } finally {
+            await frame.evaluate(compositeFixedInPage, true);
+        }
     }
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
     await frame.evaluate(pinFixedInPage, false);
