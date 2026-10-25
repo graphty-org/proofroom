@@ -50,7 +50,7 @@ export function repo(baselines) {
  * @returns {object} the context
  */
 export function context(shots) {
-    const frameElement = { evaluate: async () => undefined };
+    const frameElement = { evaluate: async () => undefined, focus: async () => undefined };
     const frame = {
         evaluate: async (fn) => (fn.toString().includes("scroll") ? { width: 1200, height: 900 } : undefined),
         frameElement: async () => frameElement,

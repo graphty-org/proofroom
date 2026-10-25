@@ -1068,7 +1068,7 @@ export default defineConfig({
                         viewport: visual.viewport,
                         commands: visual.commands,
                     },
-                    setupFiles: [".storybook/visual.setup.ts", ".storybook/vitest.setup.ts"],
+                    setupFiles: [".storybook/vitest.setup.visual.ts", ".storybook/vitest.setup.ts"],
                 },
             },
         ],
@@ -1077,12 +1077,12 @@ export default defineConfig({
 ```
 
 ```ts
-// .storybook/visual.setup.ts
-import { afterEach, beforeEach, vi } from "vitest";
+// .storybook/vitest.setup.visual.ts
+import { afterEach, beforeEach } from "vitest";
 import { commands } from "vitest/browser";
 import { installVisualStoryTest } from "@graphty/visual-review/vitest/setup";
 
-installVisualStoryTest({ afterEach, beforeEach, vi, commands });
+installVisualStoryTest({ afterEach, beforeEach, commands });
 ```
 
 Each run writes a partial capture into `out`. Run the tests in shards if you like (`vitest run
@@ -1098,7 +1098,22 @@ the project (a run of some files, or a file that failed to load, leaves it incom
 reported every story test it ran; a baseline no story drew is reported removed.
 A story test fails when its play fails, when the project's `waitFor` console rule matches, or when
 two renders of it draw different pictures (unstable); a changed or new picture passes and waits for
-review.
+review. A second run of the same commit into the same directory (a retry of the failed story files)
+keeps the first run's items and replaces only the stories it shoots again, so a story that was
+unstable and then settled reads as one capture; a new run needs an empty directory.
+
+A story test renders each story several times in one page -- once for the test, again for each
+mode, and again when a shot differs -- where `capture` gives every render a fresh page. So a story
+must draw the same picture however often it is rendered: state its play changes (a store, a module
+variable, a registry keyed by it) is made anew for each render, in a loader, never once when the
+story file loads. Between renders the page's local and session storage are cleared, every IndexedDB
+store is emptied (its database kept, so a connection the page still holds never blocks it) and the
+clock starts again at 2026-01-01T12:00:00Z.
+
+Known limit: a story taller or wider than the 1200 x 900 viewport is shot by growing the test's
+frame to its whole size, so its `vh` units, and what loads when it comes into view, follow the grown
+frame, where `capture`'s full-page shot keeps a 900 px viewport. Such a story draws a different
+picture from `capture`'s.
 
 ## How captures and baselines move
 

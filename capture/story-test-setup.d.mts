@@ -3,6 +3,6 @@
 export function installVisualStoryTest(options: {
     afterEach: unknown;
     beforeEach: unknown;
-    vi: unknown;
+    vi?: unknown;
     commands: unknown;
 }): void;

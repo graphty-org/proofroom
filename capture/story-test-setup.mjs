@@ -18,24 +18,72 @@ const TYPES = { log: "log", info: "info", warn: "warning", error: "error", debug
 const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
 /**
- * Deletes one IndexedDB database.
+ * Empties one IndexedDB database: every object store cleared, the database kept. Deleting it
+ * instead waits for every connection to close, and a connection the page keeps open from the
+ * story before (an autosave store) would hold the delete, and every later open behind it, forever.
  * @param {string} name the database
- * @returns {Promise<void>} once it is deleted, or will be once its last connection closes
+ * @returns {Promise<void>} once its stores are empty
  */
-const deleteDatabase = (name) =>
+const clearDatabase = (name) =>
     new Promise((resolve, reject) => {
-        const request = indexedDB.deleteDatabase(name);
-        request.onsuccess = () => resolve();
+        const request = indexedDB.open(name);
         request.onerror = () => reject(request.error);
-        request.onblocked = () => resolve();
+        request.onsuccess = () => {
+            const db = request.result;
+            const stores = [...db.objectStoreNames];
+            if (stores.length === 0) {
+                db.close();
+                resolve();
+                return;
+            }
+            const tx = db.transaction(stores, "readwrite");
+            for (const store of stores) {
+                tx.objectStore(store).clear();
+            }
+            tx.oncomplete = () => {
+                db.close();
+                resolve();
+            };
+            tx.onerror = () => {
+                db.close();
+                reject(tx.error);
+            };
+        };
     });
+
+const RealDate = globalThis.Date;
+
+/**
+ * capture.mjs's clock, as Playwright's page.clock installs it: `new Date()` and `Date.now()` start
+ * at CLOCK_START and keep running. A Date subclass rather than Vitest's fake timers, which on
+ * uninstall delete a global Date a story has replaced meanwhile (graphty's fixWallClock).
+ * @returns {DateConstructor} the clock's Date
+ */
+function runningClock() {
+    const start = RealDate.parse(CLOCK_START);
+    const t0 = RealDate.now();
+    const now = () => start + (RealDate.now() - t0);
+    return class ClockDate extends RealDate {
+        constructor(...args) {
+            if (args.length === 0) {
+                super(now());
+            } else {
+                super(...args);
+            }
+        }
+
+        static now() {
+            return now();
+        }
+    };
+}
 
 /**
  * Installs the visual step in the tester page.
- * @param {{ afterEach: Function, beforeEach: Function, vi: any, commands: any }} options the setup
- *     file's Vitest hooks, `vi` and `commands` from `vitest/browser`
+ * @param {{ afterEach: Function, beforeEach: Function, vi?: any, commands: any }} options the setup
+ *     file's Vitest hooks and `commands` from `vitest/browser` (`vi` is accepted and not used)
  */
-export function installVisualStoryTest({ afterEach, beforeEach, vi, commands }) {
+export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
     delete Object.getPrototypeOf(navigator).gpu;
     const url = new URL(location.href);
     url.searchParams.set("chromatic", "true");
@@ -57,13 +105,15 @@ export function installVisualStoryTest({ afterEach, beforeEach, vi, commands }) 
         document.body.classList.remove("sb-main-padded", "sb-main-centered", "sb-main-fullscreen");
         document.body.classList.add("sb-show-main", `sb-main-${name}`);
     };
+    let clock = null;
     // capture.mjs gives every render a fresh browser context: nothing the story before stored.
     const fresh = async () => {
         await commands.visualPark();
         localStorage.clear();
         sessionStorage.clear();
-        await Promise.all((await indexedDB.databases()).map((db) => deleteDatabase(db.name)));
-        vi.setSystemTime(new Date(CLOCK_START));
+        await Promise.all((await indexedDB.databases()).map((db) => clearDatabase(db.name)));
+        clock = runningClock();
+        globalThis.Date = clock;
     };
     beforeEach(async () => {
         head ??= commands.visualHead().then((css) => {
@@ -71,15 +121,21 @@ export function installVisualStoryTest({ afterEach, beforeEach, vi, commands }) 
             style.textContent = css;
             document.head.append(style);
             // Storybook's own beforeEach runs before the story renders, so the body carries the
-            // story's layout class (as iframe.html's does) from the first frame.
+            // story's layout class (as iframe.html's does) from the first frame. The story mounts in
+            // a plain div here; iframe.html's is #storybook-root, which the centered layout's
+            // margin and padding rules select.
             const project = globalThis.globalProjectAnnotations;
             project.beforeEach = [
                 ...(project.beforeEach ?? []),
-                ({ parameters }) => layout(parameters.layout ?? "padded"),
+                ({ parameters, canvasElement }) => {
+                    layout(parameters.layout ?? "padded");
+                    if (canvasElement && !document.getElementById("storybook-root")) {
+                        canvasElement.id = "storybook-root";
+                    }
+                },
             ];
         });
         await head;
-        vi.useFakeTimers({ now: new Date(CLOCK_START), toFake: ["Date"], shouldAdvanceTime: true });
         await fresh();
         lines.length = 0;
     });
@@ -158,7 +214,10 @@ export function installVisualStoryTest({ afterEach, beforeEach, vi, commands }) 
                 }
             }
         } finally {
-            vi.useRealTimers();
+            // Only when no story put its own Date in meanwhile: the story's cleanup puts back its own.
+            if (globalThis.Date === clock) {
+                globalThis.Date = RealDate;
+            }
         }
         if (unstable.length > 0) {
             throw new Error(

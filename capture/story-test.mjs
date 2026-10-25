@@ -11,7 +11,7 @@
  * combines a project's partials into the capture the review page and the gate read.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 
@@ -70,6 +70,14 @@ function twoFramesInPage() {
 }
 
 /**
+ * In the page: waits until every image in the document has loaded and decoded, or failed.
+ * @returns {Promise<void>} once they have
+ */
+function imagesInPage() {
+    return Promise.all([...document.images].map((img) => img.decode().catch(() => undefined))).then(() => undefined);
+}
+
+/**
  * A play function's real pointer stays where it last was and hovers whatever is under it;
  * capture.mjs's page never had a pointer. Moved off the page, it hovers nothing.
  * @param {import("playwright").Page} page the page
@@ -124,12 +132,22 @@ async function shootFrame(page, frame) {
     await park(page);
     await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, width: 1, height: 1 } });
     await twoFrames(frame);
-    const size = await measure(frame);
+    let size = await measure(frame);
     const grow = size.width > VIEWPORT.width || size.height > VIEWPORT.height;
-    if (grow) {
+    // A story whose layout follows the viewport (vh) grows again in the grown frame: measure until
+    // the frame holds all of it, a few times at most.
+    for (let i = 0; grow && i < 3; i++) {
         await page.setViewportSize(size);
         await sizeFrame(frame, size);
+        // What the grown frame brought into view loads now (a lazy image): the shot waits for it,
+        // or it would catch some of it and differ from render to render.
+        await frame.evaluate(imagesInPage);
         await twoFrames(frame);
+        const now = await measure(frame);
+        if (now.width <= size.width && now.height <= size.height) {
+            break;
+        }
+        size = { width: Math.max(now.width, size.width), height: Math.max(now.height, size.height) };
     }
     try {
         return await sliced(page, size);
@@ -175,6 +193,39 @@ async function storyFiles(vitest, modules, isOurs, root) {
 }
 
 /**
+ * The partial an earlier run left in `out`, when it is one of this project.
+ * @param {string} out the run's directory
+ * @param {string} project the visual-review project
+ * @returns {any | null} its results.json, or null
+ */
+function earlierRun(out, project) {
+    const file = join(out, "results.json");
+    if (!existsSync(file)) {
+        return null;
+    }
+    try {
+        const r = JSON.parse(readFileSync(file, "utf8"));
+        return r.project === project && r.partial ? r : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Whether an earlier partial is from this same run (its retry): the same commit, CI run and
+ * attempt, and locally the same uncommitted changes. A new run of the same commit gets a new
+ * directory (CI's is fresh; a local run removes it first).
+ * @param {any} a the earlier results
+ * @param {any} b this run's results, after provenance
+ * @returns {boolean} whether they are one run
+ */
+const sameRun = (a, b) =>
+    a.commit === b.commit &&
+    a.runId === b.runId &&
+    a.runAttempt === b.runAttempt &&
+    (a.local?.diff ?? null) === (b.local?.diff ?? null);
+
+/**
  * Production semantics for a story-test Vitest project, as `build-storybook` builds what
  * capture.mjs shoots: spread into the project's config.
  */
@@ -212,12 +263,21 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         items: [],
     };
     let renames = new Map();
+    const before = earlierRun(out, project);
     const ready = Promise.all([
         provenance().then((p) => Object.assign(results, p)),
         hasBaselines(baselines).then((s) => (results.seeded = s)),
         loadRenames(baselines).then((r) => (renames = r)),
         fontconfig && pinnedFonts(fontconfig).then((f) => (results.environment.fonts = f)),
-    ]);
+    ]).then(() => {
+        // The retry of the failed story files (tools/test-quarantine.mjs) writes into the same
+        // directory: it keeps the first run's items and replaces only those it shoots again.
+        if (before && sameRun(before, results)) {
+            results.items = before.items;
+            results.expected = results.items.length;
+            results.retried = (before.retried ?? 0) + 1;
+        }
+    });
     const planned = new Set();
     const pending = new Map();
     const save = () => {
@@ -254,6 +314,9 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         }
         if (r.status === "unstable") {
             writeFileSync(join(out, "second", file), second);
+        } else {
+            // A first run's unstable shot of this story, now settled on the retry.
+            rmSync(join(out, "second", file), { force: true });
         }
         if (baseline && (r.status === "changed" || r.status === "unstable" || (from && r.baseline !== r.capture))) {
             writeFileSync(join(out, "baselines", file), baseline);
@@ -275,7 +338,18 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
 
     const commands = {
         visualHead: () => storybookHead(process.cwd()),
-        visualPark: (ctx) => park(ctx.page),
+        /**
+         * Moves the pointer off the page and gives the tester iframe the focus: iframe.html is its
+         * page's only document, so it has the focus a story's play gives an element, and the focus
+         * ring that shows it.
+         * @param {{ page: import("playwright").Page, frame: () => Promise<import("playwright").Frame> }} ctx
+         *     the command's context
+         * @returns {Promise<void>} once done
+         */
+        async visualPark(ctx) {
+            await park(ctx.page);
+            await (await (await ctx.frame()).frameElement()).focus();
+        },
         /**
          * What the browser side does for one story: its modes, the project's wait and the delay.
          * A story its settings exclude is recorded here and has no modes to shoot.
@@ -394,7 +468,14 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
             }
             const missing = [...ran].filter((id) => !planned.has(id)).sort((a, b) => a.localeCompare(b));
             const reported = results.commit !== null && missing.length === 0 && pending.size === 0;
-            results.partial = { shard, reported, missing, ...(await storyFiles(vitest, modules, isOurs, root)) };
+            const files = await storyFiles(vitest, modules, isOurs, root);
+            const kept = results.retried ? before?.partial : null;
+            if (kept) {
+                // A retry ran only the failed files: the first run's files ran too.
+                files.ran = [...new Set([...kept.ran, ...files.ran])].sort((a, b) => a.localeCompare(b));
+                missing.unshift(...kept.missing.filter((id) => !planned.has(id)));
+            }
+            results.partial = { shard, reported: reported && (!kept || kept.reported), missing, ...files };
             results.items.sort((a, b) => (a.file < b.file ? -1 : 1));
             save();
         },

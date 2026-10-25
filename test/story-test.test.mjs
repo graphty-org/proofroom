@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -70,5 +70,35 @@ describe("story tests' visual step", () => {
         const v = visualStoryTest({ project: "graphty-element", out, root });
         await report(v, root, { files: ["a.stories.ts"], ran: { "a.stories.ts": ["a--lost"] } });
         expect(read(out).partial).toMatchObject({ reported: false, missing: ["a--lost"] });
+    });
+    it("keeps the first run's items when the failed story files are run again into the same directory", async () => {
+        const root = repo({ "a--same.png": png(10), "b--wobbles.png": png(10) });
+        const out = tempDir("story-test-out-");
+        const shoot = async (v, id, shots) => {
+            const ctx = context(shots);
+            await v.commands.visualPlan(ctx, { id, chromatic: {} });
+            const first = await v.commands.visualShot(ctx, { id, mode: null, chromatic: {}, console: [] });
+            return first.again ? v.commands.visualShot(ctx, { id, mode: null, chromatic: {}, console: [] }) : first;
+        };
+        const files = ["a.stories.ts", "b.stories.ts"];
+        const first = visualStoryTest({ project: "graphty-element", out, root });
+        expect(await shoot(first, "a--same", [png(10)])).toEqual({ status: "unchanged" });
+        expect(await shoot(first, "b--wobbles", [png(200), png(100)])).toEqual({ status: "unstable" });
+        await report(first, root, { files, ran: { "a.stories.ts": ["a--same"], "b.stories.ts": ["b--wobbles"] } });
+        expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(true);
+
+        // The retry (tools/test-quarantine.mjs) runs only b.stories.ts, and this time it settles.
+        const retry = visualStoryTest({ project: "graphty-element", out, root });
+        expect(await shoot(retry, "b--wobbles", [png(10)])).toEqual({ status: "unchanged" });
+        await report(retry, root, { files, ran: { "b.stories.ts": ["b--wobbles"] } });
+
+        const r = read(out);
+        expect(r.retried).toBe(1);
+        expect(r.partial).toMatchObject({ reported: true, missing: [], ran: files });
+        expect(Object.fromEntries(r.items.map((i) => [i.id, i.status]))).toEqual({
+            "a--same": "unchanged",
+            "b--wobbles": "unchanged",
+        });
+        expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(false);
     });
 });
