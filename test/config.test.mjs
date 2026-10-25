@@ -43,7 +43,7 @@ describe("the monorepo's visual-review.config.json", () => {
             const dir = CONFIG.projects[name].storybook;
             expect(dir).toBe(storybook);
             expect(buildJob()).toMatch(
-                new RegExp(`uses: actions/upload-artifact@v\\d+\\s+with:\\s+name: ${artifact}\\s+path: ${dir}/`),
+                new RegExp(`uses: actions/upload-artifact@v7\\s+with:\\s+name: ${artifact}\\s+path: ${dir}/`),
             );
         }
     });
