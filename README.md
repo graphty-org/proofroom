@@ -1039,6 +1039,58 @@ failed to capture, and exits 1 if there is any. No threshold applies: from the s
 difference means one of the two environments draws differently (a missing font, a GPU path), and
 that is the thing to fix.
 
+## Taking the screenshots inside the story tests
+
+A Storybook project whose stories already run as Vitest tests (`@storybook/addon-vitest`) can take
+each story's screenshot at the end of its own test instead of rendering every story again from a
+built Storybook. The pictures, the comparison and the results are the same as `capture`'s, so
+`serve` and `gate` read them unchanged.
+
+```ts
+// vitest.config.ts: the storybook project
+import { PRODUCTION, visualStoryTest } from "@graphty/visual-review/vitest";
+
+const visual = visualStoryTest({ project: "web", out: "tmp/stories/web" });
+
+export default defineConfig({
+    test: {
+        reporters: ["default", visual.reporter],
+        projects: [
+            {
+                ...PRODUCTION, // what build-storybook builds: production mode and NODE_ENV
+                plugins: [storybookTest({ configDir: ".storybook" })],
+                test: {
+                    name: "storybook",
+                    browser: {
+                        enabled: true,
+                        provider: playwright(visual.providerOptions),
+                        instances: [{ browser: "chromium" }],
+                        viewport: visual.viewport,
+                        commands: visual.commands,
+                    },
+                    setupFiles: [".storybook/visual.setup.ts", ".storybook/vitest.setup.ts"],
+                },
+            },
+        ],
+    },
+});
+```
+
+```ts
+// .storybook/visual.setup.ts
+import { afterEach, beforeEach, vi } from "vitest";
+import { commands } from "vitest/browser";
+import { installVisualStoryTest } from "@graphty/visual-review/vitest/setup";
+
+installVisualStoryTest({ afterEach, beforeEach, vi, commands });
+```
+
+Each run writes its capture into `out`: a results.json that is never marked complete, plus the
+images of every changed, new and unstable story, laid out as `capture` lays them out.
+A story test fails when its play fails, when the project's `waitFor` console rule matches, or when
+two renders of it draw different pictures (unstable); a changed or new picture passes and waits for
+review.
+
 ## How captures and baselines move
 
 - **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale

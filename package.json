@@ -8,7 +8,15 @@
         "visual-review": "./trusted/cli.mjs"
     },
     "exports": {
-        "./package.json": "./package.json"
+        "./package.json": "./package.json",
+        "./vitest": {
+            "types": "./capture/story-test.d.mts",
+            "default": "./capture/story-test.mjs"
+        },
+        "./vitest/setup": {
+            "types": "./capture/story-test-setup.d.mts",
+            "default": "./capture/story-test-setup.mjs"
+        }
     },
     "files": [
         "trusted/",
