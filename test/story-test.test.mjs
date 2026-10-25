@@ -44,9 +44,15 @@ describe("story tests' visual step", () => {
                 return measured(fn, arg);
             }
             const body = { scrollLeft: 0, scrollTop: 0 };
+            const root = { scrollWidth: 1200, clientWidth: 1200, scrollHeight: 900, clientHeight: 900 };
             body.scrollTo = (x, y) => Object.assign(body, { scrollLeft: Math.max(0, x), scrollTop: Math.min(y, 163) });
             const saved = { scrollTo: globalThis.scrollTo, document: globalThis.document };
-            Object.assign(globalThis, { scrollTo: () => undefined, scrollX: 0, scrollY: 0, document: { body } });
+            Object.assign(globalThis, {
+                scrollTo: () => undefined,
+                scrollX: 0,
+                scrollY: 0,
+                document: { body, documentElement: root },
+            });
             try {
                 return fn(arg);
             } finally {
