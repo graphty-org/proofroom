@@ -1024,6 +1024,21 @@ after each change. Such an ad hoc capture is look only. To approve before CI has
 capture the pull request's merge tree as a local preview (`serve --previews` above), and accept it
 on the pull request; CI's capture stays the judge.
 
+## Checking that two machines draw the same pixels
+
+Two captures of the same commit should hold the same bytes, wherever they ran. To check, capture
+the same stories in both places and compare the two results:
+
+```bash
+npx visual-review parity --project web ci-capture/web local-capture/web
+```
+
+Each argument is a capture's `--out` directory (or its `results.json`). The command prints one
+line per story and mode whose image bytes differ, that only one side captured, or that one side
+failed to capture, and exits 1 if there is any. No threshold applies: from the same commit, any
+difference means one of the two environments draws differently (a missing font, a GPU path), and
+that is the thing to fix.
+
 ## How captures and baselines move
 
 - **What a capture is.** Each story and mode is opened in a 1200 x 900 viewport at device scale
