@@ -100,6 +100,7 @@ import {
     commitStatus,
     decisionProblem,
     finish,
+    closeCandidatePullRequest,
     isPreviewOf,
     masterSubject,
     newerOnMaster,
@@ -1679,14 +1680,32 @@ export function createApp({
     const candidatesFile = join(stateDir, "candidates.json");
     let dropped = new Set();
     let offeredBefore = null;
+    /** Dropped candidates whose accept pull request could not be closed yet: tried at every refresh. */
+    let toClose = new Set();
     try {
         const kept = JSON.parse(readFileSync(candidatesFile, "utf8"));
         dropped = new Set(kept.dropped);
         offeredBefore = kept.offered ?? null;
+        toClose = new Set(kept.toClose ?? []);
     } catch {
         // No candidate offered yet.
     }
-    const saveCandidates = () => writeJson(candidatesFile, { dropped: [...dropped], offered: offeredBefore });
+    const saveCandidates = () =>
+        writeJson(candidatesFile, { dropped: [...dropped], offered: offeredBefore, toClose: [...toClose] });
+    // Closes the accept pull requests a rejecting Finish could not close; a failure stays a warning.
+    const closeLeftOpen = async () => {
+        for (const commit of toClose) {
+            const { closeError } = await closeCandidatePullRequest(gh, { candidate: commit });
+            if (closeError) {
+                listWarnings.push(
+                    `the accept pull request of rejected candidate ${commit.slice(0, 10)} is still open: ${closeError}`,
+                );
+            } else {
+                toClose.delete(commit);
+                saveCandidates();
+            }
+        }
+    };
     const dropCandidate = (commit) => {
         dropped.add(commit);
         saveCandidates();
@@ -1765,6 +1784,7 @@ export function createApp({
      * @returns {Promise<{ offered: object | null, queued: object[] }>} the pick
      */
     async function offeredCandidate() {
+        await closeLeftOpen();
         try {
             lastList = checkedCandidates(await candidates());
         } catch (err) {
@@ -3487,19 +3507,21 @@ export function createApp({
     /**
      * What a Finish of a candidate leaves behind: a candidate whose rejects were filed is dropped (the
      * next queued one is offered, and the rejects stay saved by image hash), and an accept pull request
-     * it could not close is a warning.
+     * it could not close is a warning and is closed by a later refresh.
      * @param {object} j the job
      * @param {object} t the target
      * @param {object} r finish's result
      */
     function candidateFinished(j, t, r) {
+        if (!t.candidate || r.rejects === 0 || !r.issue) {
+            return;
+        }
         if (r.closeError) {
+            // Closed by a later refresh, never by filing the rejects again.
             j.warnings.push(`the accept pull request of this rejected candidate is still open: ${r.closeError}`);
+            toClose.add(t.candidate.commit);
         }
-        // Not while its accept pull request may still be open: the next Finish tries to close it again.
-        if (t.candidate && r.rejects > 0 && r.issue && !r.closeError) {
-            dropCandidate(t.candidate.commit);
-        }
+        dropCandidate(t.candidate.commit);
     }
 
     const finishLabel = (t) => {

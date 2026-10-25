@@ -533,7 +533,7 @@ async function openPullRequestOf(gh, branch) {
  * @returns {Promise<{ closedPullRequest?: string, closeError?: string }>} the pull request closed,
  *     or why closing it failed
  */
-async function closeCandidatePullRequest(gh, target) {
+export async function closeCandidatePullRequest(gh, target) {
     const branch = candidateBranch(target.candidate);
     let open = null;
     try {

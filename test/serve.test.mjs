@@ -829,7 +829,7 @@ describe("serve: candidates", () => {
         expect(await offered(s)).toBeUndefined();
     });
 
-    it("keeps a rejected candidate while its accept pull request cannot be looked up", async () => {
+    it("closes a rejected candidate's accept pull request on a later refresh when the Finish could not", async () => {
         const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
         await offered(s);
         s.box.open = null; // the listing fails
@@ -837,7 +837,14 @@ describe("serve: candidates", () => {
         const { job: ended } = await finishJob(s, "master");
         expect(ended.result.closeError).toMatch(/could not close the pull request of visual\/approve-/);
         expect(ended.warnings.join("\n")).toMatch(/still open/);
-        expect((await offered(s)).candidate.commit).toBe(s.master);
+        // Dropped all the same, with its rejects filed once.
+        expect((await offered(s)).candidate.commit).toBe(s.head);
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        s.box.open = [{ number: 651, html_url: "https://gh/pull/651", head: { ref: branch } }];
+        await offered(s);
+        expect(s.box.closed).toEqual(["repos/{owner}/{repo}/pulls/651"]);
+        await offered(s);
+        expect(s.box.closed).toHaveLength(1);
     });
 
     it("accepts on a candidate a project that is not seeded from the default branch", async () => {
