@@ -317,6 +317,42 @@ describe("finish: a candidate of master", () => {
         expect(s.calls).toHaveLength(0);
     });
 
+    it("replaces the branch an earlier Finish of the same candidate left, and reuses its open pull request", async () => {
+        const s = candidateSetup();
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        // A signed Finish's approval commit on top, then its pull request failed to open.
+        git(s.repo, "fetch", "-q", "origin", branch);
+        git(s.repo, "checkout", "-q", "--detach", "FETCH_HEAD");
+        mkdirSync(join(s.repo, "visual-review-approvals"), { recursive: true });
+        writeFileSync(join(s.repo, "visual-review-approvals/t.json"), "{}\n");
+        git(s.repo, "add", "-A");
+        git(s.repo, "commit", "-q", "-m", "test(workspace): approve the visual baselines of the seed");
+        git(s.repo, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+        const before = git(s.remote, "rev-parse", branch);
+        const open = [{ head: { ref: branch }, html_url: "https://github.com/o/r/pull/8" }];
+        const gh = async (args, input) => {
+            s.calls.push({ args, input });
+            if (args[1].endsWith("/pulls")) {
+                throw new Error("HTTP 422: A pull request already exists");
+            }
+            return JSON.stringify(args[1].includes("pulls?state=open") ? open : {});
+        };
+        const out = await s.run(
+            [accept("badge--default.light.png"), accept("button--primary.dark.png")],
+            {
+                pr: null,
+                branch: null,
+                candidate: s.master,
+            },
+            0,
+            { gh },
+        );
+        expect(out.pullRequest).toBe("https://github.com/o/r/pull/8");
+        expect(git(s.remote, "rev-parse", branch)).not.toBe(before);
+        expect(remoteLog(s, branch)[1]).toBe(s.master);
+    });
+
     it("refuses a capture that is not of the candidate", async () => {
         const s = candidateSetup();
         await expect(

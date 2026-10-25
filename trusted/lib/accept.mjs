@@ -493,6 +493,11 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
             true,
         );
     } catch (err) {
+        // A candidate's branch is replaced on a later Finish, so its pull request may be open already.
+        const open = decided.target.candidate ? await openPullRequestOf(gh, branch) : null;
+        if (open) {
+            return open;
+        }
         const e = new AcceptError(
             `${branch} was pushed as ${commit.slice(0, 10)}, but opening its pull request failed: ` +
                 `${err.message}. Press Finish again to open it.`,
@@ -500,6 +505,21 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
         e.committed = commit;
         e.pullRequestMissing = true;
         throw e;
+    }
+}
+
+/**
+ * The open pull request of a branch of this repository, or null (also when GitHub cannot say).
+ * @param {Function} gh the gh runner
+ * @param {string} branch the branch
+ * @returns {Promise<string | null>} its URL
+ */
+async function openPullRequestOf(gh, branch) {
+    try {
+        const list = JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls?state=open&per_page=100"]));
+        return list.find((p) => p.head?.ref === branch)?.html_url ?? null;
+    } catch {
+        return null;
     }
 }
 
@@ -1200,6 +1220,11 @@ async function acceptParent(input, { base, branch, plan, fetch, exact = false })
     if (subject === masterSubject(config.commitPrefix, target.candidate ?? null) && parent === base) {
         return { seed: { commit: await git(repo, ["rev-parse", ownRef(branch)]), branch, record: null } };
     }
+    if (target.candidate && (await onlyFinishCommits(repo, base, ownRef(branch), config))) {
+        // An earlier Finish of this candidate (a signed one, say, whose pull request did not open):
+        // built again on the candidate, and pushAccepts replaces it.
+        return { parent: base };
+    }
     throw new AcceptError(`${branch} already exists on origin: merge or delete it first`);
 }
 
@@ -1368,11 +1393,13 @@ async function pushAccepts({ progress, net }, { tree, writes, branch, only = nul
     await net("git lfs push", () => git(tree, ["lfs", "push", "origin", "HEAD"]));
     progress("pushing");
     const head = await git(tree, ["rev-parse", "HEAD"]);
+    const lease = only ? await replaceable(tree, branch, head, only) : null;
     await net("git push", async (attempt) => {
         // A push whose connection dropped may have landed: a later attempt checks before pushing.
         const tip = attempt > 1 ? await git(tree, ["ls-remote", "origin", `refs/heads/${branch}`]) : "";
         if (tip.split("\t")[0] !== head) {
-            await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]);
+            const force = lease ? [`--force-with-lease=refs/heads/${branch}:${lease}`] : [];
+            await git(tree, ["push", "-q", "--no-verify", ...force, "origin", `HEAD:refs/heads/${branch}`]);
         }
     }).catch((err) => {
         // git's own advice ("git pull") is wrong here: the capture no longer matches the branch.
@@ -1383,6 +1410,23 @@ async function pushAccepts({ progress, net }, { tree, writes, branch, only = nul
             : err;
     });
     return head;
+}
+
+/**
+ * The tip a candidate's push may replace: its branch as last fetched, when that holds nothing but
+ * an earlier Finish's commits on the candidate. Null when there is none to replace.
+ * @param {string} tree the accept worktree
+ * @param {string} branch the candidate's branch
+ * @param {string} head the commit about to be pushed
+ * @param {{ candidate: string, config: object }} only the candidate and the settings
+ * @returns {Promise<string | null>} the tip to lease
+ */
+async function replaceable(tree, branch, head, { candidate, config }) {
+    const tip = await git(tree, ["rev-parse", "--verify", "-q", ownRef(branch)]).catch(() => "");
+    if (tip === "" || tip === head || (await gitOk(tree, ["merge-base", "--is-ancestor", tip, head]))) {
+        return null;
+    }
+    return (await onlyFinishCommits(tree, candidate, tip, config)) ? tip : null;
 }
 
 /**

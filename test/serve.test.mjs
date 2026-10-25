@@ -751,6 +751,28 @@ describe("serve: candidates", () => {
         });
     });
 
+    it("sends a reject again on the next candidate, so it is dropped too and opens no accept pull request", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
+        await offered(s);
+        expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
+        await finishJob(s, "master");
+        expect((await offered(s)).candidate.commit).toBe(s.head);
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.result).toMatchObject({ rejects: 1, commit: null, pullRequest: null });
+        expect(git(s.remote, "branch", "--list", "visual/approve-*")).toBe("");
+        expect(await offered(s)).toBeUndefined();
+    });
+
+    it("keeps the last good list when the command prints something else", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
+        await offered(s);
+        s.box.list = { not: "a list" };
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets.find((t) => t.id === "master").candidate.commit).toBe(s.master);
+        expect(body.warning).toMatch(/could not list the candidates: the candidates command must print/);
+    });
+
     it("never shows a dropped candidate again when the next one's run cannot be read", async () => {
         const s = await startWith((r) => [
             record(r.master, 2000, true, 2000),

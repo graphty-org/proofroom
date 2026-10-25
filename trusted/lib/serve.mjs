@@ -1668,17 +1668,56 @@ export function createApp({
         prune();
     }
 
-    /** The candidates a Finish rejected something in, by commit: never offered again. */
-    const droppedFile = join(stateDir, "candidates-dropped.json");
+    /**
+     * The candidate mode's state: the candidates a Finish rejected something in, by commit (never
+     * offered again), and the one offered last.
+     */
+    const candidatesFile = join(stateDir, "candidates.json");
     let dropped = new Set();
+    let offeredBefore = null;
     try {
-        dropped = new Set(JSON.parse(readFileSync(droppedFile, "utf8")));
+        const kept = JSON.parse(readFileSync(candidatesFile, "utf8"));
+        dropped = new Set(kept.dropped);
+        offeredBefore = kept.offered ?? null;
     } catch {
-        // None dropped yet.
+        // No candidate offered yet.
     }
+    const saveCandidates = () => writeJson(candidatesFile, { dropped: [...dropped], offered: offeredBefore });
     const dropCandidate = (commit) => {
         dropped.add(commit);
-        writeJson(droppedFile, [...dropped]);
+        saveCandidates();
+    };
+    /**
+     * Starts a newly offered candidate: its decisions are the saved ones, by image hash, but none
+     * of them is published on it yet, so its Finish sends them all again (the rejects too, so a
+     * rejected image drops it as well).
+     * @param {string} commit the candidate
+     */
+    const offerCandidate = (commit) => {
+        update({ id: "master" }, (saved) => {
+            for (const d of Object.values(saved)) {
+                delete d.posted;
+            }
+        });
+        offeredBefore = commit;
+        saveCandidates();
+    };
+    /**
+     * Refuses a candidate list that is not the `candidates` command's shape.
+     * @param {unknown} list what the command printed, parsed
+     * @returns {object[]} the list
+     */
+    const checkedCandidates = (list) => {
+        const ok = (c) =>
+            typeof c?.commit === "string" &&
+            /^[0-9a-f]{40}$/.test(c.commit) &&
+            Number.isInteger(c.runId) &&
+            typeof c.waiting === "boolean" &&
+            typeof c.at === "number";
+        if (!Array.isArray(list) || !list.every(ok)) {
+            throw new Error("the candidates command must print [{ commit, runId, waiting, at }]");
+        }
+        return list;
     };
     /** The last candidate list read, kept when the next read fails. */
     let lastList = [];
@@ -1708,7 +1747,7 @@ export function createApp({
      */
     async function offeredCandidate() {
         try {
-            lastList = await candidates();
+            lastList = checkedCandidates(await candidates());
         } catch (err) {
             console.error(`visual-review: candidates not listed: ${err.message}`);
             listWarnings.push(retryLater("could not list the candidates", err.message));
@@ -1718,6 +1757,9 @@ export function createApp({
             if (!dropped.has(c.commit) && !(await approvalMerged(c.commit))) {
                 waiting.push(c);
             }
+        }
+        if (waiting[0] && waiting[0].commit !== offeredBefore) {
+            offerCandidate(waiting[0].commit);
         }
         return { offered: waiting[0] ?? null, queued: waiting.slice(1) };
     }
