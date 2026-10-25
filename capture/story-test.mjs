@@ -501,7 +501,9 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         async visualPark(ctx) {
             await park(ctx.page);
             const iframe = await (await ctx.frame()).frameElement();
-            await iframe.evaluate((el) => el.style.setProperty("will-change", "transform"));
+            await iframe.evaluate((el) =>
+                /** @type {HTMLElement} */ (el).style.setProperty("will-change", "transform"),
+            );
             await iframe.focus();
         },
         /**
