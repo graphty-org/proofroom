@@ -308,6 +308,15 @@ describe("finish: a candidate of master", () => {
         expect(out.pullRequest).toBe("https://github.com/o/r/pull/9");
     });
 
+    it("refuses accepts beside a reject: a candidate with a rejected image never promotes", async () => {
+        const s = candidateSetup();
+        const reject = { project: "compact-mantine", file: "slider--sizes.png", decision: "reject", reason: "tall" };
+        await expect(
+            s.run([accept("badge--default.light.png"), reject], { pr: null, branch: null, candidate: s.master }),
+        ).rejects.toThrow(/posts only its rejects/);
+        expect(s.calls).toHaveLength(0);
+    });
+
     it("refuses a capture that is not of the candidate", async () => {
         const s = candidateSetup();
         await expect(

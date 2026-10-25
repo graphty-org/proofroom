@@ -62,9 +62,10 @@ Lists the open pull requests that have a run of the config's workflow and downlo
 captures with gh. Refuses to start without git-lfs, because an accept would commit raw PNGs.
 The URL to open, with its session token, is printed at every start.
 
-  --candidate next   also list the default branch's oldest unpromoted green-images full run, as
-                     the config's \`candidates\` command lists them; it stays offered until it is
-                     promoted or a Finish rejects something in it, and newer ones queue behind it.
+  --candidate next   also list the default branch's oldest full run waiting for its screenshots'
+                     approval, as the config's \`candidates\` command lists them; it stays offered
+                     until it stops waiting, its accept commit reaches the default branch, or a
+                     Finish rejects something in it, and newer ones queue behind it.
                      Finish opens a pull request of visual/approve-<sha> touching only the
                      baselines and approvals directories
   --candidate <id>   also list the default branch at that workflow run, for seeding baselines

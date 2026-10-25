@@ -661,7 +661,7 @@ describe("serve: candidates", () => {
                 ? JSON.stringify({ html_url: "https://gh/issues/7" })
                 : gh(args, input);
     };
-    const record = (commit, runId, verdict, at, promoted = false) => ({ commit, runId, verdict, promoted, at });
+    const record = (commit, runId, waiting, at) => ({ commit, runId, waiting, at });
     const offered = async (s) => (await s.api("GET", "/api/prs")).body.targets.find((t) => t.id === "master");
     const decisions = async (s) => (await s.api("GET", "/api/pr/master/compact-mantine")).body.decisions;
     const decide = (s, file, decision, reason = null) =>
@@ -677,17 +677,22 @@ describe("serve: candidates", () => {
         const box = { list: [] };
         const r = makeRepo();
         box.list = make(r);
-        const s = await start({ ...r, gh: fullRuns, candidates: async () => box.list, ...extra });
+        const s = await start({
+            ...r,
+            gh: fullRuns,
+            candidates: async () => box.list ?? Promise.reject(new Error("store down")),
+            ...extra,
+        });
         return Object.assign(s, { box });
     }
 
-    it("offers the oldest unpromoted green-images run and queues the newer ones behind it", async () => {
+    it("offers the oldest waiting run and queues the newer ones behind it", async () => {
         const s = await startWith((r) => [
-            record(r.head, 2001, "green-images", 3000),
-            record("9".repeat(40), 1999, "green-clean", 2500),
-            record(r.master, 2000, "green-images", 2000),
-            record("8".repeat(40), 1998, "green-images", 1000, true),
-            record("7".repeat(40), 1997, "red", 500),
+            record(r.head, 2001, true, 3000),
+            record("9".repeat(40), 1999, false, 2500),
+            record(r.master, 2000, true, 2000),
+            record("8".repeat(40), 1998, false, 1000),
+            record("7".repeat(40), 1997, false, 500),
         ]);
         const t = await offered(s);
         expect(t).toMatchObject({ runId: 2000, commit: s.master });
@@ -696,9 +701,9 @@ describe("serve: candidates", () => {
     });
 
     it("keeps a candidate with a changed image waiting, through a newer run and an accept-only Finish", async () => {
-        const s = await startWith((r) => [record(r.master, 2000, "green-images", 2000)]);
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
         await offered(s);
-        s.box.list = [...s.box.list, record(s.head, 2001, "green-images", 3000)];
+        s.box.list = [...s.box.list, record(s.head, 2001, true, 3000)];
         expect((await offered(s)).candidate.commit).toBe(s.master);
         expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
         const { job: ended } = await finishJob(s, "master");
@@ -707,45 +712,66 @@ describe("serve: candidates", () => {
         const changed = git(s.remote, "diff", "--name-only", s.master, ended.result.branch).split("\n");
         expect(changed.every((f) => /^(visual-baselines|visual-review-approvals)\//.test(f))).toBe(true);
         expect(ended.result.pullRequest).toBe("https://gh/pull/650");
-        // Still offered until the store says it promoted.
+        // Still offered while its pull request is open, and the list still says it waits.
         expect((await offered(s)).candidate.commit).toBe(s.master);
-        s.box.list = [record(s.master, 2000, "approved", 4000, true), record(s.head, 2001, "green-images", 3000)];
+        // The accept pull request merges: A reaches master, so the next candidate is offered.
+        git(s.remote, "update-ref", "refs/heads/master", ended.result.commit);
         expect((await offered(s)).candidate).toEqual({ commit: s.head, runId: 2001, queued: [] });
     });
 
     it("carries a decision over to the next candidate by image hash", async () => {
-        const s = await startWith((r) => [
-            record(r.master, 2000, "green-images", 2000),
-            record(r.head, 2001, "green-images", 3000),
-        ]);
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
         await offered(s);
         expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
-        s.box.list = [record(s.master, 2000, "green-images", 2000, true), record(s.head, 2001, "green-images", 3000)];
+        s.box.list = [record(s.master, 2000, false, 2000), record(s.head, 2001, true, 3000)];
         expect((await offered(s)).runId).toBe(2001);
         expect(await decisions(s)).toMatchObject({ "button--primary.dark.png": { decision: "accept" } });
     });
 
     it("drops a candidate a Finish rejected something in and offers the next, the reject still standing", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
+        await offered(s);
+        expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.error).toBeNull();
+        // Only the rejects: no accept commit, no accept pull request for a candidate that cannot promote.
+        expect(ended.result).toMatchObject({
+            rejects: 1,
+            commit: null,
+            pullRequest: null,
+            issue: "https://gh/issues/7",
+        });
+        expect(git(s.remote, "branch", "--list", "visual/approve-*")).toBe("");
+        const t = await offered(s);
+        expect(t.candidate.commit).toBe(s.head);
+        expect(await decisions(s)).toMatchObject({
+            "slider--sizes.png": { decision: "reject", reason: "clipped" },
+            "button--primary.dark.png": { decision: "accept" },
+        });
+    });
+
+    it("never shows a dropped candidate again when the next one's run cannot be read", async () => {
         const s = await startWith((r) => [
-            record(r.master, 2000, "green-images", 2000),
-            record(r.head, 2001, "green-images", 3000),
+            record(r.master, 2000, true, 2000),
+            record("6".repeat(40), 2098, true, 3000),
         ]);
         await offered(s);
         expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
-        const { job: ended } = await finishJob(s, "master");
-        expect(ended.error).toBeNull();
-        expect(ended.result.rejects).toBe(1);
+        await finishJob(s, "master");
         const t = await offered(s);
-        expect(t.candidate.commit).toBe(s.head);
-        expect(await decisions(s)).toMatchObject({ "slider--sizes.png": { decision: "reject", reason: "clipped" } });
+        expect(t.candidate.commit).toBe("6".repeat(40));
+        expect(t.runId ?? null).toBeNull();
+        s.box.list = null; // the list fails too: the last one read is used, still without the dropped one
+        expect((await offered(s)).candidate.commit).toBe("6".repeat(40));
     });
 
     it("offers nothing while no candidate waits, and --master-run still wins", async () => {
-        const s = await startWith(() => [record("8".repeat(40), 1998, "green-clean", 1000)]);
+        const s = await startWith(() => [record("8".repeat(40), 1998, false, 1000)]);
         expect(await offered(s)).toBeUndefined();
         server.close();
         await app.idle();
-        const pinned = await startWith((r) => [record(r.master, 2000, "green-images", 2000)], { masterRun: 2001 });
+        const pinned = await startWith((r) => [record(r.master, 2000, true, 2000)], { masterRun: 2001 });
         expect(await offered(pinned)).toMatchObject({ runId: 2001, candidate: null });
     });
 });

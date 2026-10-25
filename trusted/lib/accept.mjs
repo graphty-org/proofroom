@@ -169,7 +169,7 @@ export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, l
  * @param {string | null} candidate the candidate's commit, or null for a seed
  * @returns {string} the subject
  */
-const masterSubject = (prefix, candidate) =>
+export const masterSubject = (prefix, candidate) =>
     candidate ? `${prefix}: approve visual baselines at ${candidate.slice(0, 12)}` : `${prefix}: seed visual baselines`;
 
 /**
@@ -181,13 +181,16 @@ export const candidateBranch = (candidate) => `visual/approve-${candidate.slice(
 
 /**
  * Refuses an accept commit for a candidate that changes anything outside the baselines and
- * approvals directories: such a pull request is merged on the owner's signature alone.
+ * approvals directories: such a pull request is merged on the owner's signature alone. No rename
+ * detection, so a file moved into one of them is listed under its old path too.
  * @param {string} tree the accept worktree, its HEAD the commit to push
  * @param {string} candidate the candidate's commit, the accept commit's base
  * @param {{ baselines: string, approvals: string }} config the settings
  */
 async function requireAcceptOnly(tree, candidate, { baselines, approvals }) {
-    const changed = (await git(tree, ["diff", "--name-only", candidate, "HEAD"])).split("\n").filter(Boolean);
+    const changed = (await git(tree, ["diff", "--name-only", "--no-renames", candidate, "HEAD"]))
+        .split("\n")
+        .filter(Boolean);
     const other = changed.filter((f) => !f.startsWith(`${baselines}/`) && !f.startsWith(`${approvals}/`));
     if (other.length > 0) {
         throw new AcceptError(
@@ -345,6 +348,10 @@ export async function finish({
         throw new AcceptError("nothing decided");
     }
     const isMaster = target.pr === null;
+    if (isMaster && target.candidate && rejects.length > 0 && accepts.length > 0) {
+        // A rejected image means the candidate never promotes: an accept pull request would be orphaned.
+        throw new AcceptError("a Finish that rejects an image of a candidate posts only its rejects");
+    }
     const notes = accepts.filter((a) => a.decision === "accept" && a.reason !== null);
     const decided = { target, first, accepts, rejects, notes, isMaster, progress, net, config };
 

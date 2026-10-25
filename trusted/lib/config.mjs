@@ -131,7 +131,7 @@ function commandSettings(raw, out, fail) {
         out.updateCheck = raw.updateCheck;
     }
     // The shell command `serve --candidate next` runs in the repository to list the default
-    // branch's full runs: JSON on stdout, `[{ commit, runId, verdict, promoted, at }]`. Null: none.
+    // branch's full runs: JSON on stdout, `[{ commit, runId, waiting, at }]`. Null: none.
     if (raw.candidates !== undefined && raw.candidates !== null) {
         if (typeof raw.candidates !== "string" || raw.candidates.trim() === "") {
             fail("candidates must be a shell command");

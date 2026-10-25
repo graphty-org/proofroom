@@ -1014,9 +1014,9 @@ once the default branch's run has finished.
 
 A repository that promotes the default branch only once its screenshots are approved lists its full
 runs with the `candidates` command (configuration): JSON on stdout,
-`[{ "commit": "<sha>", "runId": 123, "verdict": "green-images", "promoted": false, "at": <ms> }]`.
-`serve --candidate next` runs it at every refresh and lists the oldest run whose `verdict` is
-`green-images` and that has not `promoted` as the default branch's target, named
+`[{ "commit": "<sha>", "runId": 123, "waiting": true, "at": <ms> }]`, where `waiting` means the run
+waits for its screenshots' approval and `at` orders the runs. `serve --candidate next` runs it at
+every refresh and lists the oldest waiting run as the default branch's target, named
 `<branch> candidate <sha> (N queued)`. It stays offered while newer candidates arrive; they queue
 behind it. Decisions are kept by image hash, so an image decided on one candidate arrives decided on
 the next.
@@ -1024,8 +1024,9 @@ the next.
 Finish on a candidate commits the accepts on the candidate's commit, pushes them to
 `visual/approve-<sha>` and opens a pull request to the default branch. The commit may change only
 the baselines and approvals directories: Finish refuses to push anything else. The candidate stays
-offered until the command reports it `promoted`. A Finish that rejects anything drops the candidate
-and offers the next one, with the rejected images still rejected.
+offered until the command stops reporting it `waiting` or its accept commit reaches the default branch.
+A Finish that rejects anything posts only the rejects (one issue, as for a seed), drops the candidate
+and offers the next one, with the rejected images still rejected and the accepts still saved.
 
 ## Iterating on a story before a pull request exists
 

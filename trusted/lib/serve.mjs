@@ -101,6 +101,7 @@ import {
     decisionProblem,
     finish,
     isPreviewOf,
+    masterSubject,
     newerOnMaster,
     onlyFinishCommits,
     prepareApproval,
@@ -575,10 +576,11 @@ async function loadResults(dir, name) {
  * @param {string} options.origin the origin the page is served from
  * @param {number} [options.masterRun] the default branch's CI run to seed from (the target the
  *     page calls "master")
- * @param {() => Promise<{ commit: string, runId: number, verdict: string, promoted: boolean, at: number }[]>} [options.candidates]
- *     lists the default branch's full runs (the config's `candidates` command): the page offers the
- *     oldest unpromoted `green-images` one as the target "master" and keeps offering it until it is
- *     promoted or a Finish rejects something in it; newer ones queue behind it. Decisions are kept by
+ * @param {() => Promise<{ commit: string, runId: number, waiting: boolean, at: number }[]>} [options.candidates]
+ *     lists the default branch's full runs (the config's `candidates` command), `waiting` when one
+ *     waits for its screenshots' approval: the page offers the oldest waiting one as the target
+ *     "master" and keeps offering it until it stops waiting, its accept commit reaches the default
+ *     branch, or a Finish rejects something in it; newer ones queue behind it. Decisions are kept by
  *     image hash, so an image decided on one candidate arrives decided on the next. `masterRun`, when
  *     given, wins
  * @param {string} [options.results] a local directory of `<project>/results.json` instead of CI:
@@ -1467,7 +1469,7 @@ export function createApp({
     // A target that loaded before keeps what it showed when a later refresh of it fails.
     const keptOr = (info, err) => {
         const old = targets.get(info.id);
-        return old?.runId
+        return old?.runId && old.candidate?.commit === info.candidate?.commit
             ? { ...old, draft: info.draft, warnings: [retryLater("could not refresh", err.message)] }
             : blank(info, retryLater("failed to load", err.message));
     };
@@ -1539,7 +1541,7 @@ export function createApp({
             // This refresh's runs (runOf); a failed list keeps what the last one learned.
             let read = new Map();
             const prs = await openPullRequests(gh, config).catch((err) => {
-                if (!masterRun && kept.length === 0) {
+                if (!masterRun && !candidates && kept.length === 0) {
                     throw err;
                 }
                 console.error(`visual-review: pull requests not listed: ${err.message}`);
@@ -1673,23 +1675,45 @@ export function createApp({
         writeJson(droppedFile, [...dropped]);
     };
     /** The last candidate list read, kept when the next read fails. */
-    let lastPick = { offered: null, queued: [] };
+    let lastList = [];
     /**
-     * The candidate to offer: the oldest unpromoted green-images full run not dropped, and the
-     * newer ones queued behind it. Oldest first, so a newer run never moves the one under review.
+     * Whether a candidate's accept commit (masterSubject's subject) is on the default branch as last
+     * fetched: its approval merged, so it is done whatever the list says.
+     * @param {string} commit the candidate
+     * @returns {Promise<boolean>} whether it merged
+     */
+    const approvalMerged = (commit) =>
+        gitIn([
+            "log",
+            "-1",
+            "--format=%H",
+            "--fixed-strings",
+            `--grep=${masterSubject(config.commitPrefix, commit)}`,
+            `refs/remotes/origin/${defaultBranch}`,
+        ]).then(
+            (out) => out.trim() !== "",
+            () => false,
+        );
+    /**
+     * The candidate to offer: the oldest waiting full run not dropped and not approved on the
+     * default branch, and the newer ones queued behind it. Oldest first, so a newer run never moves
+     * the one under review.
      * @returns {Promise<{ offered: object | null, queued: object[] }>} the pick
      */
     async function offeredCandidate() {
         try {
-            const waiting = (await candidates())
-                .filter((c) => c.verdict === "green-images" && !c.promoted && !dropped.has(c.commit))
-                .sort((a, b) => a.at - b.at);
-            lastPick = { offered: waiting[0] ?? null, queued: waiting.slice(1) };
+            lastList = await candidates();
         } catch (err) {
             console.error(`visual-review: candidates not listed: ${err.message}`);
             listWarnings.push(retryLater("could not list the candidates", err.message));
         }
-        return lastPick;
+        const waiting = [];
+        for (const c of [...lastList].filter((x) => x.waiting).sort((a, b) => a.at - b.at)) {
+            if (!dropped.has(c.commit) && !(await approvalMerged(c.commit))) {
+                waiting.push(c);
+            }
+        }
+        return { offered: waiting[0] ?? null, queued: waiting.slice(1) };
     }
 
     const listFile = join(stateDir, "list.json");
@@ -2179,7 +2203,11 @@ export function createApp({
                     ...(v.approvedBefore && { approvedBefore: v.approvedBefore }),
                 };
             });
-        return { list, digest: sha256(JSON.stringify(list)) };
+        // A candidate with a rejected image cannot promote, so its Finish posts only the rejects: its
+        // accepts stay saved by image hash for the next candidate, and no accept pull request opens.
+        const rejects = list.filter((d) => d.decision === "reject");
+        const sent = t.candidate && rejects.length > 0 ? rejects : list;
+        return { list: sent, digest: sha256(JSON.stringify(sent)) };
     };
     const CHANGED_SINCE = "Decisions changed since this sheet opened: check the summary again.";
 
