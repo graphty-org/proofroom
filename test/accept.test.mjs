@@ -362,6 +362,23 @@ describe("finish: a candidate of master", () => {
         expect(git(s.remote, "rev-parse", branch)).toBe(out.commit);
     });
 
+    it("rebuilds a candidate's branch that its pull request's Update branch merged master into", async () => {
+        const s = candidateSetup();
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        git(s.repo, "checkout", "-q", "master");
+        writeFileSync(join(s.repo, "README.md"), "moved on\n");
+        git(s.repo, "commit", "-q", "-am", "master moves on");
+        git(s.repo, "push", "-q", "origin", "master");
+        git(s.repo, "fetch", "-q", "origin", branch);
+        git(s.repo, "checkout", "-q", "--detach", "FETCH_HEAD");
+        git(s.repo, "merge", "-q", "--no-edit", "master");
+        git(s.repo, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+        const out = await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        expect(git(s.remote, "rev-parse", branch)).toBe(out.commit);
+        expect(git(s.remote, "log", "--format=%P", "-1", `${branch}~0`).split(" ")).toHaveLength(1);
+    });
+
     it("refuses a capture that is not of the candidate", async () => {
         const s = candidateSetup();
         await expect(

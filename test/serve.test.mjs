@@ -837,6 +837,16 @@ describe("serve: candidates", () => {
         expect((await offered(s)).candidate.commit).toBe(s.master);
     });
 
+    it("leaves out a malformed row and offers the rest", async () => {
+        const s = await startWith((r) => [
+            { commit: "ABC", runId: 1, waiting: true, at: 1 },
+            record(r.master, 2000, true, 2000),
+        ]);
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets.find((t) => t.id === "master").candidate.commit).toBe(s.master);
+        expect(body.warning).toMatch(/1 malformed row, left out/);
+    });
+
     it("keeps the last good list when the command prints something else", async () => {
         const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
         await offered(s);

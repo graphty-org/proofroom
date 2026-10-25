@@ -673,7 +673,7 @@ export function createApp({
     try {
         const saved = JSON.parse(readFileSync(jobFile, "utf8"));
         if (saved?.running) {
-            const where = saved.branch ?? "the visual/seed-* branch";
+            const where = saved.branch ?? "the visual/seed-* or visual/approve-* branch";
             job = {
                 ...saved,
                 running: false,
@@ -1718,10 +1718,14 @@ export function createApp({
             Number.isInteger(c.runId) &&
             typeof c.waiting === "boolean" &&
             typeof c.at === "number";
-        if (!Array.isArray(list) || !list.every(ok)) {
+        if (!Array.isArray(list)) {
             throw new Error("the candidates command must print [{ commit, runId, waiting, at }]");
         }
-        return list;
+        const bad = list.filter((c) => !ok(c)).length;
+        if (bad > 0) {
+            listWarnings.push(`the candidates command listed ${bad} malformed ${bad === 1 ? "row" : "rows"}, left out`);
+        }
+        return list.filter(ok);
     };
     /** The last candidate list read, kept when the next read fails. */
     let lastList = [];
@@ -3449,6 +3453,9 @@ export function createApp({
                 console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
             }
             const r = j.result;
+            if (r.closeError) {
+                j.warnings.push(`the accept pull request of this rejected candidate is still open: ${r.closeError}`);
+            }
             if (t.candidate && r.rejects > 0 && r.issue) {
                 // A rejected image means the candidate cannot promote: the next queued one is offered,
                 // and the rejects stay saved by image hash.

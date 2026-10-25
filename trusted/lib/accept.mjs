@@ -523,7 +523,7 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
  */
 async function openPullRequestOf(gh, branch) {
     try {
-        const list = JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls?state=open&per_page=100"]));
+        const list = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls?state=open&head={owner}:${branch}`]));
         return list.find((p) => p.head?.ref === branch) ?? null;
     } catch {
         return null;
@@ -1247,7 +1247,7 @@ async function acceptParent(input, { base, branch, plan, fetch, exact = false })
     // they can.
     await fetch(branch);
     const [subject, parent] = (await git(repo, ["log", "-1", "--format=%s%n%P", ownRef(branch)])).split("\n");
-    if (target.candidate && (await onlyFinishCommits(repo, base, ownRef(branch), config))) {
+    if (target.candidate && (await candidateBranchOwned(repo, base, ownRef(branch), config))) {
         // An earlier Finish of this candidate: its Finish sends every decision on it, so the accept
         // commit is built again on the candidate and pushAccepts replaces the branch (its pull request,
         // open or not, then holds this Finish's commit).
@@ -1457,7 +1457,28 @@ async function replaceable(tree, branch, head, { candidate, config }) {
     if (tip === "" || tip === head || (await gitOk(tree, ["merge-base", "--is-ancestor", tip, head]))) {
         return null;
     }
-    return (await onlyFinishCommits(tree, candidate, tip, config)) ? tip : null;
+    return (await candidateBranchOwned(tree, candidate, tip, config)) ? tip : null;
+}
+
+/**
+ * Whether a candidate's branch holds nothing but Finish commits on the candidate and merges of the
+ * default branch (an "Update branch" on its pull request): then a Finish may rebuild and replace it.
+ * @param {string} repo the repository
+ * @param {string} candidate the candidate
+ * @param {string} tip the branch as fetched
+ * @param {{ baselines: string, approvals: string, defaultBranch: string }} config the settings
+ * @returns {Promise<boolean>} whether it does
+ */
+async function candidateBranchOwned(repo, candidate, tip, config) {
+    if (!(await gitOk(repo, ["merge-base", "--is-ancestor", candidate, tip]))) {
+        return false;
+    }
+    const range = [`${candidate}..${tip}`, `^${ownRef(config.defaultBranch)}`];
+    const files = await git(repo, ["log", "--no-merges", "--no-renames", "--format=", "--name-only", ...range]).catch(
+        () => null,
+    );
+    const inside = (f) => [config.baselines, config.approvals].some((d) => f.startsWith(`${d}/`));
+    return files !== null && files.split("\n").filter(Boolean).every(inside);
 }
 
 /**
