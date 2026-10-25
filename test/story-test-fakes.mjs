@@ -68,6 +68,8 @@ export function context(shots, size = { width: 1200, height: 900 }) {
     const viewports = [];
     const page = {
         mouse: { move: async () => undefined },
+        // The page's own scroll, for a slice below the viewport: it scrolls as far as asked.
+        evaluate: async (_fn, y) => y,
         setViewportSize: async (v) => {
             viewports.push(v);
         },
