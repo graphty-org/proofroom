@@ -64,6 +64,20 @@ describe("story tests' visual step", () => {
         expect(r.items.find((i) => i.id === "a--same").console).toEqual([]);
     });
 
+    it("never gives the page a viewport taller than one slice, and shoots a taller story in slices", async () => {
+        const out = tempDir("story-test-out-");
+        const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
+        // 5,000 CSS px is 10,000 device px: two slices, the second beyond the viewport.
+        const ctx = context([png(50), png(50), png(50), png(50)], { width: 10, height: 5000 });
+        await v.commands.visualPlan(ctx, { id: "a--tall", chromatic: {} });
+        const first = await v.commands.visualShot(ctx, { id: "a--tall", mode: null, chromatic: {}, console: [] });
+        expect(first).toEqual({ again: true });
+        expect(ctx.viewports).toEqual([
+            { width: 10, height: 4096 },
+            { width: 1200, height: 900 },
+        ]);
+    });
+
     it("marks a partial unreported when a story test that ran never reached the visual step", async () => {
         const out = tempDir("story-test-out-");
         const root = repo({});

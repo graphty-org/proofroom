@@ -47,21 +47,25 @@ export function repo(baselines) {
  * The command context a Vitest browser command gets, with a page whose every screenshot is the
  * next of `shots`.
  * @param {Buffer[]} shots the screenshots, in order
- * @returns {object} the context
+ * @param {{ width: number, height: number }} [size] the story's size, in CSS px, as the page measures it
+ * @returns {object} the context; its `viewports` lists every viewport the page was given
  */
-export function context(shots) {
+export function context(shots, size = { width: 1200, height: 900 }) {
     const frameElement = { evaluate: async () => undefined, focus: async () => undefined };
     const frame = {
-        evaluate: async (fn) => (fn.toString().includes("scroll") ? { width: 1200, height: 900 } : undefined),
+        evaluate: async (fn) => (fn.toString().includes("scroll") ? size : undefined),
         frameElement: async () => frameElement,
     };
+    const viewports = [];
     const page = {
         mouse: { move: async () => undefined },
-        setViewportSize: async () => undefined,
+        setViewportSize: async (v) => {
+            viewports.push(v);
+        },
         screenshot: async (o) => (o.clip.width === 1 ? png(0) : shots.shift()),
         context: () => ({ browser: () => ({ version: () => "1.0" }) }),
     };
-    return { page, frame: async () => frame };
+    return { page, frame: async () => frame, viewports };
 }
 
 /**
