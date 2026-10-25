@@ -318,7 +318,9 @@ function check(projects, decisions, pr) {
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, acceptNotes: number, state: string | null,
  *     status: string | null, statusError: string | null, commentError: string | null,
- *     alreadyFinished?: true, resigned?: true }>} what was pushed and posted (`alreadyFinished`: an earlier Finish
+ *     alreadyFinished?: true, resigned?: true, closedPullRequest?: string, closeError?: string }>} what
+ *     was pushed and posted (`closedPullRequest`: a rejected candidate's accept pull request, closed;
+ *     `alreadyFinished`: an earlier Finish
  *     already pushed these decisions as `commit`, and nothing was pushed or posted now; `resigned`:
  *     `commit` only signs the record of an earlier Finish, and nothing was posted; `issue`: master's rejects; `acceptNotes`: the accept notes published, in the comment or the
  *     seed pull request's description; `state` and `status`: the commit status's state and
@@ -382,7 +384,12 @@ export async function finish({
         : { issue: null, commentError: null };
     const { state, status, statusError } = await postFinishStatus(gh, decided, { commit, undecided, unloaded });
     const notesPosted = (comment && commentError === null) || (isMaster && pullRequest);
+    // A rejected image means the candidate never promotes: an accept pull request an earlier Finish
+    // of it opened is closed, so its baselines never reach the default branch.
+    const closed =
+        isMaster && target.candidate && rejects.length > 0 ? await closeCandidatePullRequest(gh, target) : {};
     return {
+        ...closed,
         commit,
         branch,
         pullRequest,
@@ -496,7 +503,7 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
         // A candidate's branch is replaced on a later Finish, so its pull request may be open already.
         const open = decided.target.candidate ? await openPullRequestOf(gh, branch) : null;
         if (open) {
-            return open;
+            return open.html_url;
         }
         const e = new AcceptError(
             `${branch} was pushed as ${commit.slice(0, 10)}, but opening its pull request failed: ` +
@@ -512,14 +519,35 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
  * The open pull request of a branch of this repository, or null (also when GitHub cannot say).
  * @param {Function} gh the gh runner
  * @param {string} branch the branch
- * @returns {Promise<string | null>} its URL
+ * @returns {Promise<{ number: number, html_url: string } | null>} it
  */
 async function openPullRequestOf(gh, branch) {
     try {
         const list = JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls?state=open&per_page=100"]));
-        return list.find((p) => p.head?.ref === branch)?.html_url ?? null;
+        return list.find((p) => p.head?.ref === branch) ?? null;
     } catch {
         return null;
+    }
+}
+
+/**
+ * Closes the open accept pull request of a candidate, if there is one.
+ * @param {Function} gh the gh runner
+ * @param {{ candidate?: string }} target the candidate
+ * @returns {Promise<{ closedPullRequest?: string, closeError?: string }>} the pull request closed,
+ *     or why closing it failed
+ */
+async function closeCandidatePullRequest(gh, target) {
+    const open = await openPullRequestOf(gh, candidateBranch(target.candidate));
+    if (!open) {
+        return {};
+    }
+    try {
+        await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${open.number}`, "-f", "state=closed"]);
+        return { closedPullRequest: open.html_url };
+    } catch (err) {
+        console.error(`visual-review: could not close ${open.html_url}: ${err.message}`);
+        return { closeError: `could not close ${open.html_url}: ${err.message}` };
     }
 }
 
@@ -1211,6 +1239,8 @@ async function acceptParent(input, { base, branch, plan, fetch, exact = false })
         return { parent };
     }
     if ((await net("git ls-remote", () => git(repo, ["ls-remote", "--heads", "origin", branch]))) === "") {
+        // Gone from origin: forget the copy fetched earlier, so pushAccepts leases nothing stale.
+        await git(repo, ["update-ref", "-d", ownRef(branch)]).catch(() => {});
         return { parent: base };
     }
     // ponytail: assumes the decisions did not change since that push; compare the trees if

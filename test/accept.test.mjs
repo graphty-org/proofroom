@@ -353,6 +353,15 @@ describe("finish: a candidate of master", () => {
         expect(remoteLog(s, branch)[1]).toBe(s.master);
     });
 
+    it("forgets a branch deleted from origin since an earlier Finish, and pushes again", async () => {
+        const s = candidateSetup();
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        git(s.remote, "branch", "-D", branch);
+        const out = await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        expect(git(s.remote, "rev-parse", branch)).toBe(out.commit);
+    });
+
     it("refuses a capture that is not of the candidate", async () => {
         const s = candidateSetup();
         await expect(

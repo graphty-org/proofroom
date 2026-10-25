@@ -657,6 +657,13 @@ describe("serve: candidates", () => {
         });
         // Master's rejects open an issue.
         return async (args, input) => {
+            if (args[1]?.startsWith("repos/{owner}/{repo}/pulls?state=open")) {
+                return JSON.stringify(r.box?.open ?? []);
+            }
+            if (args[2] === "PATCH") {
+                r.box.closed.push(args[3]);
+                return "{}";
+            }
             if (args[1] !== "repos/{owner}/{repo}/issues") {
                 return gh(args, input);
             }
@@ -679,8 +686,9 @@ describe("serve: candidates", () => {
      * @returns {Promise<object>} the started app, with `list` to change
      */
     async function startWith(make, extra = {}) {
-        const box = { list: [] };
+        const box = { list: [], open: [], closed: [] };
         const r = makeRepo();
+        r.box = box;
         box.list = make(r);
         const s = await start({
             ...r,
@@ -802,6 +810,20 @@ describe("serve: candidates", () => {
             `${s.master} test(workspace): approve visual baselines at ${s.master.slice(0, 12)}`,
         );
         expect(parents.split("\n").filter((l) => l.includes("approve visual baselines at"))).toHaveLength(1);
+    });
+
+    it("closes the accept pull request of an earlier Finish when a later Finish rejects an image", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
+        await offered(s);
+        await decide(s, "badge--default.light.png", "accept");
+        const first = (await finishJob(s, "master")).job;
+        expect(first.result.pullRequest).toBe("https://gh/pull/650");
+        s.box.open = [{ number: 650, html_url: "https://gh/pull/650", head: { ref: first.result.branch } }];
+        await decide(s, "slider--sizes.png", "reject", "clipped");
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.result).toMatchObject({ rejects: 1, closedPullRequest: "https://gh/pull/650" });
+        expect(s.box.closed).toEqual(["repos/{owner}/{repo}/pulls/650"]);
+        expect(await offered(s)).toBeUndefined();
     });
 
     it("keeps a candidate whose rejects could not be filed, so Finish can send them again", async () => {
