@@ -50,10 +50,17 @@ export function repo(baselines) {
  * next of `shots`.
  * @param {Buffer[]} shots the screenshots, in order
  * @param {{ width: number, height: number }} [size] the story's size, in CSS px, as the page measures it
- * @returns {object} the context; its `viewports` lists every viewport the page was given
+ * @returns {object} the context; its `viewports` lists every viewport the page was given, and its
+ *     `styles` the style properties set on the tester iframe
  */
 export function context(shots, size = { width: 1200, height: 900 }) {
-    const frameElement = { evaluate: async () => undefined, focus: async () => undefined };
+    // The tester iframe: runs what the harness evaluates on it, and records the style it is given.
+    const styles = {};
+    const frameElement = {
+        style: { setProperty: (name, value) => (styles[name] = value) },
+        evaluate: async (fn) => fn(frameElement),
+        focus: async () => undefined,
+    };
     const frame = {
         // scrollTo goes no further than the document's size allows; measuring reads scroll sizes.
         evaluate: async (fn, arg) => {
@@ -89,7 +96,7 @@ export function context(shots, size = { width: 1200, height: 900 }) {
             },
         }),
     };
-    return { page, frame: async () => frame, viewports };
+    return { page, frame: async () => frame, viewports, styles };
 }
 
 /**

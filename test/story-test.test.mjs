@@ -104,6 +104,13 @@ describe("story tests' visual step", () => {
         expect(ctx.viewports).toEqual([]);
     });
 
+    it("composites the tester iframe in a layer of its own before a story is shot", async () => {
+        const v = visualStoryTest({ project: "graphty-element", out: tempDir("story-test-out-"), root: repo({}) });
+        const ctx = context([]);
+        await v.commands.visualPark(ctx);
+        expect(ctx.styles).toEqual({ "will-change": "transform" });
+    });
+
     it("marks a partial unreported when a story test that ran never reached the visual step", async () => {
         const out = tempDir("story-test-out-");
         const root = repo({});
