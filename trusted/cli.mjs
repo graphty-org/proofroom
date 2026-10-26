@@ -97,7 +97,7 @@ file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the tool fa
   --include-aa            without --project: count anti-aliased pixels as changed
   --no-fail               exit 0 when a snapshot did not pass; 2 still when the tool failed`,
 
-    serve: `usage: PORT=<n> proofroom serve [--master-run <id>] [--results <dir>] [--previews <dir>]
+    serve: `usage: PORT=<n> proofroom serve [--master-run <id>] [--results <dir>] [--previews <dir>] [--ui next]
 
 Serves the review page on $PORT, bound to $HOST (default localhost). With $HTTPS_CERT_PATH and
 $HTTPS_KEY_PATH set it serves HTTPS; without them, plain HTTP, and then only on a loopback HOST.
@@ -112,7 +112,8 @@ The URL to open, with its session token, is printed at every start.
                      preview script writes them; default: the config's workDir/local in the main
                      checkout of this repository, so every worktree's server finds them. A complete
                      preview of a pull request's head is reviewed and finished like CI's capture
-                     until CI's lands; the gate still checks CI's capture against what you accept`,
+                     until CI's lands; the gate still checks CI's capture against what you accept
+  --ui next          serve the new review page at / (it is always at /next/)`,
 
     parity: `usage: proofroom parity --project <id> <first> <second>
 
@@ -404,12 +405,14 @@ async function serve(args) {
             "master-run": { type: "string" },
             results: { type: "string" },
             previews: { type: "string" },
+            ui: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
     const masterRun = values["master-run"] === undefined ? undefined : Number(values["master-run"]);
     const https = Boolean(HTTPS_CERT_PATH && HTTPS_KEY_PATH);
-    if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun))) {
+    const ui = values.ui ?? "review";
+    if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun)) || !["review", "next"].includes(ui)) {
         console.error(HELP.serve);
         return 2;
     }
@@ -456,6 +459,7 @@ async function serve(args) {
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,
+        ui: /** @type {"review" | "next"} */ (ui),
         // What the owner types to run this server from their own shell, so Finish signs with
         // their key rather than the environment of whoever started it (an agent, say).
         startCommand:
