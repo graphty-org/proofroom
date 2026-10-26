@@ -33,22 +33,32 @@ const SHAPE = ROW[0] / ROW[1];
 
 /**
  * A picture queue of one that runs each job in this process and records the jobs in the order
- * they start; `hold()` keeps the next ones from finishing until `release()`.
- * @returns {{ pool: import("../trusted/lib/thumbs.mjs").Pool, started: any[], hold: () => void,
- *     release: () => void }} the queue, and what it started
+ * they start, and how urgent each one asked for was; `hold()` keeps the next ones from finishing
+ * until `release()`.
+ * @returns {{ pool: import("../trusted/lib/thumbs.mjs").Pool, started: any[], asked: string[],
+ *     hold: () => void, release: () => void }} the queue, and what it started
  */
 function fakePool() {
     const started = [];
+    const asked = [];
     let gate = null;
     let open = () => {};
-    const pool = createPool(async (input) => {
+    const real = createPool(async (input) => {
         started.push(input);
         await gate;
         return pictures(input);
     }, 1);
+    const pool = {
+        ...real,
+        run: (load, when, tag) => {
+            asked.push(when);
+            return real.run(load, when, tag);
+        },
+    };
     return {
         pool,
         started,
+        asked,
         hold: () => {
             gate = new Promise((resolve) => (open = resolve));
         },
@@ -395,9 +405,38 @@ describe("serve: the picture queue", () => {
         expect(auto.status).toBe(200);
         expect(again.started.map((j) => basename(j.label))).toEqual(["button--primary.dark.png"]);
         expect(existsSync(join(s.tmp, "spots", "areas.jsonl"))).toBe(true);
-        expect(readFileSync(join(s.tmp, "spots", "areas.jsonl"), "utf8")).toContain(
-            `"key":"${capturedItems()[0].baseline}-${capturedItems()[0].capture}-0.063-0"`,
-        );
+        // The cut line was ended first, so the new line reads back: a third start makes nothing.
+        const third = fakePool();
+        const u = await start({
+            repo: s.repo,
+            remote: s.remote,
+            head: s.head,
+            gh: onePr(),
+            pictures: third.pool,
+            tmp: s.tmp,
+        });
+        await u.api("GET", "/api/prs");
+        const shown = await u.api("GET", "/api/spot/123/compact-mantine/auto/button--primary.dark.png");
+        expect(shown.status).toBe(200);
+        expect(shown.body.equals(auto.body)).toBe(true);
+        await u.app.idle();
+        expect(third.started).toHaveLength(0);
+    });
+
+    it("makes a pair asked for now while it waits in the advance queue once, not twice", async () => {
+        const fake = fakePool();
+        fake.hold();
+        const s = await start({ gh: onePr(), pictures: fake.pool });
+        await s.api("GET", "/api/prs");
+        await until(() => fake.started.length === 1);
+        // The slider's advance job is queued behind the button's, which is held.
+        const asked = s.api("GET", "/api/spot/123/compact-mantine/spot/slider--sizes.png");
+        await until(() => fake.asked.includes("now"));
+        fake.release();
+        expect((await asked).status).toBe(200);
+        await s.app.idle();
+        expect(fake.started.filter((j) => basename(j.label) === "slider--sizes.png")).toHaveLength(1);
+        expect(fake.started).toHaveLength(6);
     });
 
     it("answers no picture for an unknown kind or a snapshot with nothing to light", async () => {

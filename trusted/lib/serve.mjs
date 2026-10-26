@@ -2454,13 +2454,29 @@ export function createApp({
         }
         const id = Object.values(kept)[0];
         const was = making.get(id);
-        let done = was && (was.urgent || !urgent) ? was.done : null;
+        // A job already running, or one at least as urgent, is waited for, not made twice.
+        let done = was && (was.urgent || !urgent || was.started) ? was.done : null;
         if (!done) {
+            const entry = { urgent, started: false, done: null, overtaken: null };
+            // A waiting advance job overtaken by a tile's: when its turn comes, it answers with that one.
+            if (was) {
+                was.overtaken = entry;
+            }
+            const begin = async () => {
+                if (entry.overtaken) {
+                    throw Object.assign(new Error("overtaken"), { overtaken: entry.overtaken.done });
+                }
+                entry.started = true;
+                return load();
+            };
             done = (async () => {
                 let made;
                 try {
-                    made = await pictures.run(load, when, tag);
+                    made = await pictures.run(begin, when, tag);
                 } catch (err) {
+                    if (err.overtaken) {
+                        return err.overtaken;
+                    }
                     if (err.answer) {
                         return err.answer;
                     }
@@ -2486,7 +2502,8 @@ export function createApp({
                     making.delete(id);
                 }
             });
-            making.set(id, { urgent, done });
+            entry.done = done;
+            making.set(id, entry);
         }
         const made = await done;
         return Array.isArray(made) ? made : [200, made[want], "image/png"];
@@ -2538,7 +2555,8 @@ export function createApp({
     const areasFile = join(tmp, "spots", "areas.jsonl");
     const areas = new Map();
     try {
-        for (const line of readFileSync(areasFile, "utf8").split("\n")) {
+        const text = readFileSync(areasFile, "utf8");
+        for (const line of text.split("\n")) {
             try {
                 const { key, ...facts } = JSON.parse(line);
                 areas.set(key, facts);
@@ -2546,8 +2564,12 @@ export function createApp({
                 // An empty or cut line.
             }
         }
+        // A cut last line is ended, so the next line written is not joined to it.
+        if (text.length > 0 && !text.endsWith("\n")) {
+            appendFileSync(areasFile, "\n");
+        }
     } catch {
-        // None made yet.
+        // None made yet, or not writable: foundAreas warns.
     }
     const foundAreas = (key) => (facts) => {
         areas.set(key, facts);
