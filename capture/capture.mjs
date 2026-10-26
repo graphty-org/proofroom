@@ -572,18 +572,21 @@ async function encodeAsChromium(page, image, size) {
 
 /**
  * In the page, at scroll (0, 0): pins every position: fixed element (in open shadow roots too)
- * where it is, as position: absolute, so scrolled tiles draw it once, where a full-page shot draws
- * it, instead of once per tile. Or, with `undo`, puts their own styles back.
+ * where it is, as position: absolute, and makes every position: sticky one static, so scrolled
+ * tiles draw each once, where a full-page shot draws it, instead of once per tile. Or, with
+ * `undo`, puts their own styles back.
  * @param {boolean} undo whether to put the styles back
  * @returns {void}
  */
-function pinFixedInPage(undo) {
+export function pinFixedInPage(undo) {
     const key = "__visualReviewPinned";
+    const stickyKey = "__visualReviewUnstuck";
     if (undo) {
-        for (const [el, css] of globalThis[key] ?? []) {
+        for (const [el, css] of [...(globalThis[key] ?? []), ...(globalThis[stickyKey] ?? [])]) {
             el.style.cssText = css;
         }
         delete globalThis[key];
+        delete globalThis[stickyKey];
         return;
     }
     const all = [];
@@ -596,10 +599,17 @@ function pinFixedInPage(undo) {
         }
     };
     walk(document);
+    // A sticky element sticks to each scrolled tile's top; a full-page shot never scrolls, so it
+    // stays where the flow puts it at scroll (0, 0): position static draws it there, once.
+    const sticky = all.filter((el) => getComputedStyle(el).position === "sticky");
     const fixed = all.filter((el) => getComputedStyle(el).position === "fixed");
     const rects = fixed.map((el) => el.getBoundingClientRect());
     // Each one's own style, and where it sits in the document (the page is at scroll (0, 0)).
     globalThis[key] = fixed.map((el, i) => [el, el.style.cssText, rects[i].top, rects[i].left]);
+    globalThis[stickyKey] = sticky.map((el) => [el, el.style.cssText]);
+    for (const el of sticky) {
+        el.style.setProperty("position", "static", "important");
+    }
     for (const [i, el] of fixed.entries()) {
         const r = rects[i];
         const set = (name, value) => el.style.setProperty(name, value, "important");
