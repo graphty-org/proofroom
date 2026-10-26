@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mergeResults } from "../capture/merge-results.mjs";
-import { blockingOn, promotion, storyVerdict } from "../capture/story-outcomes.mjs";
+import { blockingOn, promotion, quarantineEntries, storyVerdict } from "../capture/story-outcomes.mjs";
 import { visualStoryTest } from "../capture/story-test.mjs";
 import { loadConfig } from "../trusted/lib/config.mjs";
 
@@ -64,24 +64,77 @@ describe("story outcomes", () => {
             test: { file: "a.stories.ts", name: "Stories > Wobbles" },
         });
 
-        const off = storyVerdict(results, { blocking: false });
-        expect(off.code).toBe(0);
-        expect(off.lines).toEqual([
+        // Settled on its retry: flaky, loud, and it passes with the switch on too, as a test that fails and
+        // then passes on its retry does in tools/test-quarantine.mjs.
+        const flakyLines = [
             "visual-review: [UNSTABLE] graphty-element: a--wobbles.png drew two different pictures on the same inputs",
-        ]);
+            "visual-review: [FLAKY] graphty-element: a--wobbles.png settled on its retry, so it does not fail the run",
+        ];
+        for (const blocking of [false, true]) {
+            const verdict = storyVerdict(results, { blocking });
+            expect(verdict.code).toBe(0);
+            expect(verdict.lines.slice(0, 2)).toEqual(flakyLines);
+        }
+    });
 
-        const on = storyVerdict(results, { blocking: true });
+    it("fails a blocking run for a story still unstable after its retry, unless an unexpired entry quarantines it", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const root = repo({ "a--wobbles.png": png(10) });
+        const out = tempDir("story-outcomes-");
+        const files = ["a.stories.ts"];
+        for (const shots of [
+            [png(200), png(100)],
+            [png(300), png(100)],
+        ]) {
+            const v = visualStoryTest({ project: "graphty-element", out, root });
+            expect(await shoot(v, root, "a--wobbles", shots)).toEqual({ status: "unstable" });
+            await report(v, root, { files, ran: { "a.stories.ts": ["a--wobbles"] } });
+        }
+        const results = read(out);
+        expect(results.items[0].status).toBe("unstable");
+
+        expect(storyVerdict(results, { blocking: false }).code).toBe(0);
+        const on = storyVerdict(results, { blocking: true, gh: true });
         expect(on.code).toBe(1);
-        expect(on.lines[1]).toContain("[NEW-FLAKY] graphty-element: a--wobbles.png");
+        expect(on.lines[1]).toBe(
+            "::error::[UNSTABLE] graphty-element: a--wobbles.png is still unstable after its retry and not quarantined",
+        );
 
         // On the quarantine list (the same { file, name } its JUnit report gives): loud, but it passes.
-        const quarantine = [{ file: "a.stories.ts", name: "Stories > Wobbles", family: "graphty-element-storybook" }];
-        const excused = storyVerdict(results, { blocking: true, quarantine, gh: true });
+        const entry = { file: "a.stories.ts", name: "Stories > Wobbles", family: "graphty-element-storybook" };
+        const listed = quarantineEntries({ quarantine: [{ ...entry, expires: "2999-01-01" }] });
+        const excused = storyVerdict(results, { blocking: true, quarantine: listed, gh: true });
         expect(excused.code).toBe(0);
         expect(excused.lines).toEqual([
             "::warning::[UNSTABLE] graphty-element: a--wobbles.png drew two different pictures on the same inputs",
             "::warning::[QUARANTINED] graphty-element: a--wobbles.png is quarantined, so it does not fail the run",
+            "::warning::[PROMOTION] graphty-element: 1 picture(s) wait for the owner's approval",
         ]);
+
+        // An expired entry no longer counts, as tools/test-quarantine.mjs drops it too.
+        const expired = quarantineEntries({ quarantine: [{ ...entry, expires: "2000-01-01" }] });
+        expect(expired).toEqual([]);
+        expect(storyVerdict(results, { blocking: true, quarantine: expired }).code).toBe(1);
+    });
+
+    it("reads only well-formed, unexpired quarantine entries and refuses a file of another shape", () => {
+        const ok = { file: "a.stories.ts", name: "Stories > A" };
+        expect(
+            quarantineEntries(
+                {
+                    quarantine: [
+                        ok,
+                        { ...ok, expires: "2026-10-26" },
+                        { ...ok, expires: "2026-10-25" },
+                        { file: "a.stories.ts" },
+                        null,
+                    ],
+                },
+                "2026-10-26",
+            ),
+        ).toEqual([ok, { ...ok, expires: "2026-10-26" }]);
+        expect(() => quarantineEntries([ok])).toThrow(/quarantine: \[/);
+        expect(() => quarantineEntries({ entries: [ok] })).toThrow(/quarantine: \[/);
     });
 
     it("fails a run for a planted broken story only with the switch on", async () => {
@@ -134,5 +187,15 @@ describe("story outcomes", () => {
             expect(verdict.lines.some((l) => l.includes("[PROMOTION]"))).toBe(blocking);
         }
         expect(promotion({ items: [{ status: "unchanged", file: "x.png" }] }, true).blocked).toBe(false);
+        expect(promotion({ items: [{ status: "excluded", file: "x.png" }] }, true).blocked).toBe(false);
+        // Every picture that is not exactly the approved one waits for the owner: a renamed story, one with no
+        // baseline yet, an unstable one and a broken one too.
+        for (const status of ["changed", "new", "removed", "moved", "unseeded", "unstable", "failed"]) {
+            expect(promotion({ items: [{ status, file: "x.png" }] }, true), status).toEqual({
+                blocking: true,
+                blocked: true,
+                files: ["x.png"],
+            });
+        }
     });
 });

@@ -87,11 +87,13 @@ Combines one project's partial captures from its story tests (one directory per 
 only when every shard is there once, between them they ran every story file of the project, and
 each reported every story test it ran; then every baseline no story drew is reported removed. Exits 1, writing it incomplete, otherwise.
 
-Prints [UNSTABLE] for every story whose two shots disagreed (before or after its retry) and [BROKEN]
-for every story that failed. With VISUAL_REVIEW_BLOCKING=1 it also exits 1 for a broken story or
-an unstable one not on the --quarantine list (a JSON file holding { quarantine: [{ file, name }] },
-the story tests' file and name), and sets promotion.blocked in results.json when a picture is
-changed, new or removed. Without it, those lines only report.`,
+Prints [UNSTABLE] for every story whose two shots disagreed (before or after its retry), [FLAKY]
+for one that settled on its retry, and [BROKEN] for every story that failed. With
+VISUAL_REVIEW_BLOCKING=1 it also exits 1 for a broken story or one still unstable after its retry
+that is not on the --quarantine list (a JSON file holding { quarantine: [{ file, name, expires? }] }:
+the story test's file and full name, and an optional ISO date after which the entry no longer
+counts), and sets promotion.blocked in results.json when any picture is not unchanged or excluded.
+Without it, those lines only report.`,
 
     gate: null, // gate.mjs's own usage
 
@@ -532,8 +534,18 @@ async function mergeResultsCommand(args) {
     }
     const { root, config } = await settings();
     const { mergeResults } = await import("../capture/merge-results.mjs");
-    const { blockingOn, storyVerdict } = await import("../capture/story-outcomes.mjs");
+    const { blockingOn, quarantineEntries, storyVerdict } = await import("../capture/story-outcomes.mjs");
     const blocking = blockingOn();
+    // Read before anything is written: a bad list stops the command with its reason.
+    let quarantine = [];
+    if (values.quarantine) {
+        try {
+            quarantine = quarantineEntries(JSON.parse(await readFile(resolve(values.quarantine), "utf8")));
+        } catch (e) {
+            console.error(`visual-review merge-results: --quarantine ${values.quarantine}: ${e.message}`);
+            return 1;
+        }
+    }
     const { results, problems } = await mergeResults({
         project: values.project,
         baselines: resolve(values.baselines ?? join(root, config.baselines, values.project)),
@@ -544,9 +556,6 @@ async function mergeResultsCommand(args) {
     for (const problem of problems) {
         console.error(`visual-review merge-results: ${problem}`);
     }
-    const quarantine = values.quarantine
-        ? (JSON.parse(await readFile(resolve(values.quarantine), "utf8")).quarantine ?? [])
-        : [];
     const verdict = storyVerdict(results, { blocking, quarantine, gh: process.env.GITHUB_ACTIONS === "true" });
     for (const line of verdict.lines) {
         console.log(line);
