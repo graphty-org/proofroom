@@ -11,7 +11,7 @@
 
 import { AssertionError } from "node:assert";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, open, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { threadId } from "node:worker_threads";
 
@@ -19,8 +19,8 @@ import { threadId } from "node:worker_threads";
 import { PNG } from "pngjs";
 
 import pixelmatch from "../vendor/pixelmatch.mjs";
-import { checkLine, fileName, judgeContext, judgeLine, loadSettings, storySettings } from "./compare-run.mjs";
-import { loadConfig, repoRoot } from "./config.mjs";
+import { checkLine, fileName, judgeLine, judgeSources, loadSettings, storySettings } from "./compare-run.mjs";
+import { CONFIG_FILE, loadConfig, repoRoot } from "./config.mjs";
 import { outcome, resultLine } from "./result-line.mjs";
 
 /** Chromatic's default `diffThreshold`, used when a story sets none. */
@@ -249,6 +249,61 @@ async function attemptsIn(out, key) {
     return state.attempts.get(key) ?? 0;
 }
 
+/** What compareSnapshot() read from disk, by baselines and reference directory, with its stamp. */
+const sources = new Map();
+/** The repository root of each working directory. */
+const roots = new Map();
+/** Each root's config, with its stamp. */
+const configs = new Map();
+
+/**
+ * When a file or directory last changed, so a cached read of it is redone only after a change.
+ * @param {string[]} paths the paths
+ * @returns {Promise<string>} their modification times; a missing path stamps as nothing
+ */
+const stampOf = async (paths) =>
+    (await Promise.all(paths.map((p) => stat(p, { bigint: true }).then((s) => s.mtimeNs, () => null)))).join(",");
+
+/**
+ * Reads once what a run of calls shares, and again only when it changed on disk: one call then
+ * costs what one item of compare costs, however many baselines and reference images there are.
+ * @template T
+ * @param {Map<string, { stamp: string, value: T }>} cache the cache
+ * @param {string} key what was read
+ * @param {string[]} paths the files it was read from
+ * @param {() => Promise<T> | T} read reads it
+ * @returns {Promise<T>} what was read
+ */
+async function cached(cache, key, paths, read) {
+    const stamp = await stampOf(paths);
+    const hit = cache.get(key);
+    if (hit?.stamp === stamp) {
+        return hit.value;
+    }
+    const value = await read();
+    cache.set(key, { stamp, value });
+    return value;
+}
+
+/**
+ * The baselines directory of a project of the config.
+ * @param {string} project the project
+ * @param {string | undefined} root the checkout, or undefined for the current one
+ * @returns {Promise<string>} its baselines directory
+ */
+async function projectBaselines(project, root) {
+    const cwd = process.cwd();
+    if (root === undefined && !roots.has(cwd)) {
+        roots.set(cwd, repoRoot(cwd));
+    }
+    const top = root ?? roots.get(cwd);
+    const config = await cached(configs, top, [join(top, CONFIG_FILE)], () => loadConfig(top));
+    if (!Object.hasOwn(config.projects, project)) {
+        throw new Error(`compareSnapshot: no project ${project} in the config`);
+    }
+    return join(top, config.baselines, project);
+}
+
 /**
  * Runs `work` after every earlier turn for the same directory has ended.
  * @template T
@@ -277,19 +332,25 @@ function inTurn(out, work) {
  * baseline it was compared with when it changed. `proofroom collect` turns those directories into
  * the capture the page and the gate read.
  * @param {{ project?: string, baselines?: string, root?: string, id: string, mode?: string | null,
- *     image?: Buffer | string | null, type?: "image" | "failed" | "excluded", reason?: string | null,
+ *     image?: Buffer | string | object | null, type?: "image" | "failed" | "excluded", reason?: string | null,
  *     byStory?: boolean, console?: string[], settings?: { threshold?: number, includeAA?: boolean },
  *     reference?: string | null, out?: string | null }} options `project` names a project of
  *     visual-review.config.json (in the git checkout `root`, default the current one), whose baselines
  *     and story settings files are read; `baselines` is a directory of baselines instead (the
  *     project then defaults to `images`); `image` is the PNG's bytes or path; without it (or with
- *     `type: "failed"`) the snapshot is reported as not shot, with `reason`; `settings` overrides the
- *     threshold and anti-aliasing switch the story's settings file gives; `reference` is the default
+ *     `type: "failed"`) the snapshot is reported as not shot, with `reason`; `settings` gives the
+ *     threshold and anti-aliasing switch where the story's settings file sets none (its
+ *     `disableSnapshot` always applies); `image` may also be openCapture()'s shot, whose fields are
+ *     then the options; `reference` is the default
  *     branch's capture, for "no baseline yet"
  * @returns {Promise<object | null>} the result line: a results.json item with `project`, `attempt`
  *     and `passed`; null for a story its own parameters exclude while it has a baseline
  */
 export async function compareSnapshot(options) {
+    if (isShot(options.image)) {
+        // openCapture()'s shoot() result passed as the image: { ...story, image: await cam.shoot(story) }.
+        return compareSnapshot({ ...options, ...options.image });
+    }
     const { id, mode = null, image = null, reference = null, console = [] } = options;
     const project = options.project ?? "images";
     let baselines = options.baselines;
@@ -297,22 +358,16 @@ export async function compareSnapshot(options) {
         if (!options.project) {
             throw new Error("compareSnapshot needs a project or a baselines directory");
         }
-        const root = options.root ?? repoRoot();
-        const config = loadConfig(root);
-        if (!Object.hasOwn(config.projects, project)) {
-            throw new Error(`compareSnapshot: no project ${project} in the config`);
-        }
-        baselines = join(root, config.baselines, project);
+        baselines = await projectBaselines(project, options.root);
     }
     const out = options.out ?? process.env.PROOFROOM_OUT ?? null;
-    const fromFile = storySettings({}, await loadSettings(baselines, id));
-    const settings = {
-        threshold: options.settings?.threshold ?? fromFile.threshold,
-        includeAA: options.settings?.includeAA ?? fromFile.includeAA,
-    };
+    // The story settings file is part of the approved baselines: every key it sets wins.
+    const asked = { diffThreshold: options.settings?.threshold, diffIncludeAntiAliasing: options.settings?.includeAA };
+    const fromFile = storySettings({ chromatic: asked }, await loadSettings(baselines, id));
+    const settings = { threshold: fromFile.threshold, includeAA: fromFile.includeAA };
     let type = options.type ?? (image === null ? "failed" : "image");
     let reason = options.reason ?? null;
-    if (type !== "excluded" && fromFile.disableSnapshot && options.settings === undefined) {
+    if (type !== "excluded" && fromFile.disableSnapshot) {
         [type, reason] = ["excluded", fromFile.reason];
     }
     const line = {
@@ -333,9 +388,26 @@ export async function compareSnapshot(options) {
     }
     // The story is the only one known, so a rename applies whenever its old id has the baseline.
     // The images in out are this function's own, so an earlier attempt's capture goes (prune).
-    const ctx = await judgeContext({ baselines, out, reference, prune: true, known: new Set([id]) });
+    // What every call reads the same (renames, reference images, which baselines exist) is cached.
+    const ctx = {
+        baselines,
+        captures: null,
+        out,
+        prune: true,
+        known: new Set([id]),
+        ...(await cached(sources, `${baselines}\0${reference}`, sourcePaths(baselines, reference), () =>
+            judgeSources({ baselines, reference }),
+        )),
+        named: new Set(),
+        newlyExcluded: new Set(),
+    };
     const item = await judgeLine(ctx, line);
     if (!item) {
+        if (out) {
+            // collect reports its baseline removed, and says why from this.
+            const marker = JSON.stringify({ project, file: line.file });
+            await appendFile(join(out, `excluded-${process.pid}-${threadId}.ndjson`), `${marker}\n`);
+        }
         return null;
     }
     const key = `${project}\0${line.file}`;
@@ -351,6 +423,25 @@ export async function compareSnapshot(options) {
         return result;
     });
 }
+
+/**
+ * Whether an `image` option is a shot (openCapture()'s shoot() result) rather than an image.
+ * @param {unknown} image the option
+ * @returns {image is Record<string, unknown>} true for a plain object
+ */
+const isShot = (image) => image !== null && typeof image === "object" && !(image instanceof Uint8Array);
+
+/**
+ * The files a judge context is read from, whose change makes compareSnapshot() read it again.
+ * @param {string} baselines the baselines directory
+ * @param {string | null} reference the reference capture's directory
+ * @returns {string[]} the paths
+ */
+const sourcePaths = (baselines, reference) => [
+    baselines,
+    join(baselines, "renames.json"),
+    ...(reference ? [join(reference, "results.json")] : []),
+];
 
 /**
  * Throws when a result line did not pass, as assertSnapshot() does.

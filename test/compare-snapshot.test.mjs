@@ -53,6 +53,10 @@ describe("compareSnapshot", () => {
         // The threshold: everything differs by 80 of 255 levels, under a threshold of 0.9.
         const loose = await compareSnapshot({ baselines, id: "a--one", image: png(90), settings: { threshold: 0.9 } });
         expect(loose.status).toBe("unchanged");
+        // The image can be openCapture()'s whole shot: { ...story, image: await cam.shoot(story) }.
+        const story = { type: "image", project: "images", id: "a--one", mode: null, file: "a--one.png", baselines };
+        const shot = { ...story, image: png(10), console: ["log: hi"] };
+        expect(await compareSnapshot({ ...story, image: shot })).toMatchObject({ status: "unchanged", passed: true });
     });
 
     it("appends one line per call to its own file in out, and keeps only the images the review needs", async () => {
@@ -108,6 +112,14 @@ describe("compareSnapshot", () => {
                 reason: "a clock",
                 passed: true,
             });
+            // The settings file is approved with the baselines: a test's own settings never beat it.
+            const tight = { threshold: 0, includeAA: true };
+            expect(await compareSnapshot({ project: "web", root, id: "a--off", image: png(90), settings: tight })).toMatchObject(
+                { status: "excluded", reason: "a clock" },
+            );
+            expect(await compareSnapshot({ project: "web", root, id: "a--one", image: png(90), settings: tight })).toMatchObject(
+                { status: "unchanged", threshold: 0.9 },
+            );
         } finally {
             delete process.env.PROOFROOM_OUT;
         }

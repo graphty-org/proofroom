@@ -123,7 +123,7 @@ JSON line per difference (bytes that differ, a story only one side captured, a s
 failed to capture), then a summary. Exits 1 on any difference: different bytes from the same
 commit are a bug in one environment, so no threshold applies.`,
 
-    collect: `usage: proofroom collect --project <id> --out <dir> [--baselines <dir>] [--junit <file>] <dir>...
+    collect: `usage: proofroom collect --project <id> --out <dir> [--baselines <dir>] [--junit <file>] [--whole] <dir>...
 
 Combines one project's result lines, written by compareSnapshot() or assertSnapshot() in your
 test runner or by proofroom/vitest (one directory per shard or runner), into one capture
@@ -131,8 +131,11 @@ directory that serve and gate read: results.json, the images to review and the J
 last attempt of each snapshot is its result, the earlier ones its attempts. It is complete only
 when no snapshot is in two directories and, for proofroom/vitest's directories, every shard is
 there once, between them they ran every story file of the project and each reported every story
-test it ran; then every baseline no snapshot drew is reported removed. Exits 1, writing it
-incomplete, otherwise. \`merge-results\` is another name for it, until 1.0.0.
+test it ran, and for openCapture()'s directories, every openCapture() was closed and every
+snapshot it listed has a result; then every baseline no snapshot drew is reported removed (not
+after openCapture() with a stories filter). A directory with neither cannot say its run finished:
+pass --whole once the runner has run every snapshot to the end. Exits 1, writing it incomplete,
+otherwise. \`merge-results\` is another name for it, until 1.0.0.
 
   --project <id>     a project of visual-review.config.json
   --out <dir>        where the capture goes
@@ -674,6 +677,7 @@ async function collectCommand(args) {
             out: { type: "string" },
             baselines: { type: "string" },
             junit: { type: "string" },
+            whole: { type: "boolean" },
         },
         allowPositionals: true,
     });
@@ -691,6 +695,7 @@ async function collectCommand(args) {
             out,
             dirs: positionals.map((p) => resolve(p)),
             junit: resolve(values.junit ?? join(out, "junit.xml")),
+            whole: values.whole === true,
         });
         for (const problem of problems) {
             console.error(`proofroom collect: ${problem}`);

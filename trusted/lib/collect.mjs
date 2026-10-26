@@ -10,13 +10,19 @@
  * the failed story files into the same directory adds one): which shard it was, the project's
  * story files and those it ran, and whether every story test that ran reached the visual step.
  *
+ * A directory openCapture() wrote to holds one `plan-<pid>-<thread>-<n>.json` per openCapture():
+ * the snapshots its stories() listed, whether it was limited to some stories, and whether close()
+ * ran. compareSnapshot() also writes `excluded-<pid>-<thread>.ndjson`, the snapshots their own
+ * parameters now exclude while they have a baseline.
+ *
  * The result is complete only when no snapshot is in two directories and, when the directories
  * have run files, every shard 1..count is there once, between them they ran every story file of
- * the project once, each reported every story test it ran and all come from one commit. Then
- * every baseline no item names is reported `removed`. Otherwise it is written with `complete:
- * false`, which the gate refuses, and the problems are returned. A directory without run files
- * (a runner other than the vitest adapter) cannot say that its run finished: collect it once the
- * runner has ended.
+ * the project once, each reported every story test it ran and all come from one commit; when they
+ * have plans, every plan was closed and every snapshot it listed has a result. A directory with
+ * neither cannot say that its run finished, so it is complete only with `whole` (the caller's word
+ * that the runner ran every snapshot to the end). Then every baseline no item names is reported
+ * `removed`, unless a plan was limited to some stories. Otherwise it is written with `complete:
+ * false`, which the gate refuses, and the problems are returned.
  */
 
 import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
@@ -30,6 +36,8 @@ import { validateResults } from "./results.mjs";
 
 const LINE_FILE = /^results-\d+-\d+\.ndjson$/;
 const RUN_FILE = /^run-\d+-\d+\.json$/;
+const PLAN_FILE = /^plan-\d+-\d+-\d+\.json$/;
+const EXCLUDED_FILE = /^excluded-\d+-\d+\.ndjson$/;
 /** What a run file says about its run, beside the capture header results.json takes from it. */
 const RUN_KEYS = ["project", "shard", "reported", "missing", "excluded", "files", "ran"];
 
@@ -55,9 +63,19 @@ const copyIfThere = (from, to) =>
 const named = async (dir, pattern) => (await readdir(dir)).filter((f) => pattern.test(f)).sort();
 
 /**
- * Reads one directory: its result lines and its run files.
+ * Reads the JSON files of a directory whose names match a pattern.
  * @param {string} dir the directory
- * @returns {Promise<{ dir: string, lines: object[], runs: object[] }>} what it holds
+ * @param {RegExp} pattern the names
+ * @returns {Promise<object[]>} each file's JSON
+ */
+const jsonFiles = async (dir, pattern) =>
+    Promise.all((await named(dir, pattern)).map(async (f) => JSON.parse(await readFile(join(dir, f), "utf8"))));
+
+/**
+ * Reads one directory: its result lines, run files, plans and excluded snapshots.
+ * @param {string} dir the directory
+ * @returns {Promise<{ dir: string, lines: object[], runs: object[], plans: object[],
+ *     excluded: { project: string, file: string }[] }>} what it holds
  */
 async function readDir(dir) {
     const lines = [];
@@ -68,11 +86,52 @@ async function readDir(dir) {
             throw new Error(`${join(dir, f)}: ${err.message}`);
         }
     }
-    const runs = [];
-    for (const f of await named(dir, RUN_FILE)) {
-        runs.push(JSON.parse(await readFile(join(dir, f), "utf8")));
+    const excluded = [];
+    for (const f of await named(dir, EXCLUDED_FILE)) {
+        const text = await readFile(join(dir, f), "utf8");
+        excluded.push(...text.split("\n").filter(Boolean).map((l) => JSON.parse(l)));
     }
-    return { dir, lines, runs };
+    return { dir, lines, runs: await jsonFiles(dir, RUN_FILE), plans: await jsonFiles(dir, PLAN_FILE), excluded };
+}
+
+/**
+ * Why directories without run files are not a whole run: an openCapture() plan not closed or with
+ * a snapshot that has no result, or a directory with no plan at all, unless the caller says the
+ * run was whole.
+ * @param {string} project the project
+ * @param {object[]} parts the directories
+ * @param {Set<string>} done the snapshots (file names) with a result or an excluded marker
+ * @param {boolean} whole whether the caller says every directory's run ran every snapshot
+ * @returns {{ problems: string[], limited: boolean }} the problems, and whether a plan was
+ *     limited to some stories (then no baseline is reported removed)
+ */
+function planProblems(project, parts, done, whole) {
+    const problems = [];
+    for (const { dir, plans } of parts) {
+        if (plans.length === 0 && !whole) {
+            problems.push(
+                `${dir}: nothing says its run finished (no run file from proofroom/vitest, no plan from ` +
+                    "openCapture()); collect it with --whole once the runner has run every snapshot",
+            );
+        }
+        for (const plan of plans) {
+            if (plan.project !== project) {
+                problems.push(`${dir}: a plan of ${plan.project}, not ${project}`);
+            } else if (plan.closed !== true) {
+                problems.push(`${dir}: openCapture() was not closed: its run did not finish`);
+            }
+        }
+    }
+    const plans = parts.flatMap((p) => p.plans).filter((p) => p.project === project);
+    const missing = [...new Set(plans.flatMap((p) => p.files ?? []))].filter((f) => !done.has(f)).sort();
+    if (missing.length > 0) {
+        const more = missing.length > 5 ? ` and ${missing.length - 5} more` : "";
+        problems.push(
+            `${missing.length} planned snapshots have no result (a filtered or stopped run): ` +
+                `${missing.slice(0, 5).join(", ")}${more}`,
+        );
+    }
+    return { problems, limited: plans.some((p) => p.only !== null && p.only !== undefined) };
 }
 
 /**
@@ -219,16 +278,21 @@ async function removedItems(items, baselines, out, excluded) {
 
 /**
  * Collects one project's result lines into a capture directory.
- * @param {{ project: string, baselines: string, out: string, dirs: string[], junit?: string | null }} options
- *     the project, its baselines directory, where the capture goes, the directories the runs
- *     wrote, and the JUnit file's path (default `<out>/junit.xml`, null for none)
+ * @param {{ project: string, baselines: string, out: string, dirs: string[], junit?: string | null,
+ *     whole?: boolean }} options the project, its baselines directory, where the capture goes, the
+ *     directories the runs wrote, the JUnit file's path (default `<out>/junit.xml`, null for none),
+ *     and `whole`: the caller's word that a directory with no run file and no plan holds a run
+ *     that ran every snapshot to the end
  * @returns {Promise<{ results: object, problems: string[] }>} the results and why they are not
  *     complete (empty when they are)
  */
-export async function collect({ project, baselines, out, dirs, junit = join(out, "junit.xml") }) {
+export async function collect({ project, baselines, out, dirs, junit = join(out, "junit.xml"), whole = false }) {
     const parts = await Promise.all(dirs.map(readDir));
     const { problems, header } = runProblems(project, parts);
-    const excluded = new Set(parts.flatMap((p) => p.runs.flatMap((r) => r.excluded ?? [])));
+    const excluded = new Set([
+        ...parts.flatMap((p) => p.runs.flatMap((r) => r.excluded ?? [])),
+        ...parts.flatMap((p) => p.excluded.filter((e) => e.project === project).map((e) => e.file)),
+    ]);
     await mkdir(join(out, "baselines"), { recursive: true });
     const lines = [];
     const where = new Map();
@@ -248,13 +312,20 @@ export async function collect({ project, baselines, out, dirs, junit = join(out,
             lines.push(line);
         }
     }
+    let limited = false;
+    if (header === null) {
+        const plan = planProblems(project, parts, new Set([...where.keys(), ...excluded]), whole);
+        problems.push(...plan.problems);
+        limited = plan.limited;
+    }
     const items = itemsFromLines(lines).get(project) ?? [];
     for (const item of items) {
         for (const sub of ["", "baselines"]) {
             await copyIfThere(join(where.get(item.file), sub, item.file), join(out, sub, item.file));
         }
     }
-    if (problems.length === 0) {
+    // A run limited to some stories cannot say which baselines no story draws any more (as compare).
+    if (problems.length === 0 && !limited) {
         items.push(...(await removedItems(items, baselines, out, excluded)));
     }
     items.sort((a, b) => (a.file < b.file ? -1 : 1));

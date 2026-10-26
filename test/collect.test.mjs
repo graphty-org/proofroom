@@ -128,7 +128,15 @@ describe("collect", () => {
         git(repoDir, "init", "-q");
         git(repoDir, "commit", "-q", "--allow-empty", "-m", "start");
         const into = join(tempDir("vr-collected-"), "app");
-        const run = await cli(["collect", "--project", "app", "--baselines", baselines, "--out", into, out], repoDir);
+        const args = ["--project", "app", "--baselines", baselines, "--out", into, out];
+        // Nothing in the directory says the runner finished: it may have stopped early or been filtered.
+        const unsure = await cli(["collect", ...args], repoDir);
+        expect(unsure.status).toBe(1);
+        expect(unsure.stderr).toMatch(/nothing says its run finished.*--whole/);
+        expect(read(into).complete).toBe(false);
+        expect(read(into).items.map((i) => i.status)).not.toContain("removed");
+
+        const run = await cli(["collect", ...args, "--whole"], repoDir);
         expect(run.stderr).toBe("");
         expect(run.status).toBe(0);
         const results = read(into);
@@ -141,10 +149,60 @@ describe("collect", () => {
         expect(readFileSync(join(into, "junit.xml"), "utf8")).toMatch(/<testcase name="flip"[^>]*>\s*<flakyFailure/);
         // The old name still runs it, until 1.0.0.
         const old = await cli(
-            ["merge-results", "--project", "app", "--baselines", baselines, "--out", into, out],
+            ["merge-results", ...args, "--whole"],
             repoDir,
         );
         expect(old.status).toBe(0);
         expect(JSON.parse(old.stdout)).toEqual({ project: "app", items: 3, complete: true });
+    });
+
+    it("checks an openCapture() plan: a planned snapshot with no result is refused, a filter reports nothing removed", async () => {
+        const baselines = tempDir("vr-bl-");
+        writeFileSync(join(baselines, "same.png"), png(10));
+        writeFileSync(join(baselines, "gone.png"), png(10));
+        const out = tempDir("vr-runs-");
+        await compareSnapshot({ project: "app", baselines, id: "same", image: png(10), out });
+        const plan = (p) => writeFileSync(join(out, "plan-1-0-1.json"), JSON.stringify({ project: "app", ...p }));
+        const statuses = (r) => r.results.items.map((i) => [i.file, i.status]);
+
+        plan({ only: null, files: ["same.png", "never.png"], closed: true });
+        const stopped = await collect({ project: "app", baselines, out: tempDir("m-"), dirs: [out] });
+        expect(stopped.problems).toEqual(["1 planned snapshots have no result (a filtered or stopped run): never.png"]);
+        expect(stopped.results.complete).toBe(false);
+        expect(statuses(stopped)).toEqual([["same.png", "unchanged"]]);
+
+        plan({ only: null, files: ["same.png"], closed: true });
+        const whole = await collect({ project: "app", baselines, out: tempDir("m-"), dirs: [out] });
+        expect(whole.problems).toEqual([]);
+        expect(statuses(whole)).toEqual([
+            ["gone.png", "removed"],
+            ["same.png", "unchanged"],
+        ]);
+
+        plan({ only: ["same"], files: ["same.png"], closed: true });
+        const some = await collect({ project: "app", baselines, out: tempDir("m-"), dirs: [out] });
+        expect(some.problems).toEqual([]);
+        expect(statuses(some)).toEqual([["same.png", "unchanged"]]);
+    });
+
+    it("says why a baseline is removed when compareSnapshot() saw its story's own parameters exclude it", async () => {
+        const baselines = tempDir("vr-bl-");
+        writeFileSync(join(baselines, "off.png"), png(10));
+        const out = tempDir("vr-runs-");
+        const line = await compareSnapshot({
+            project: "app",
+            baselines,
+            id: "off",
+            type: "excluded",
+            byStory: true,
+            reason: "disableSnapshot in the story's parameters",
+            out,
+        });
+        expect(line).toBeNull();
+        const { results, problems } = await collect({ project: "app", baselines, out: tempDir("m-"), dirs: [out], whole: true });
+        expect(problems).toEqual([]);
+        expect(results.items).toEqual([
+            expect.objectContaining({ file: "off.png", status: "removed", reason: "the story's parameters now set disableSnapshot" }),
+        ]);
     });
 });

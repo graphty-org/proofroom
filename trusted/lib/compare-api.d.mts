@@ -12,14 +12,14 @@ export interface SnapshotOptions {
     id: string;
     /** The mode, or null (default). */
     mode?: string | null;
-    /** The PNG's bytes or its path; null when the snapshot could not be shot. */
-    image?: Uint8Array | string | null;
+    /** The PNG's bytes or its path; null when the snapshot could not be shot; or openCapture()'s shot, whose fields are the options. */
+    image?: Uint8Array | string | null | Partial<SnapshotOptions>;
     type?: "image" | "failed" | "excluded";
     /** Why the snapshot could not be shot, or why it is excluded. */
     reason?: string | null;
     byStory?: boolean;
     console?: string[];
-    /** Overrides the story settings file's threshold (0..1) and anti-aliasing switch. */
+    /** The threshold (0..1) and anti-aliasing switch, where the story settings file sets none. */
     settings?: { threshold?: number; includeAA?: boolean };
     /** The default branch's capture, for "no baseline yet". */
     reference?: string | null;

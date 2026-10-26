@@ -15,6 +15,8 @@ export function openCapture(options: {
     storybook?: string;
     baselines?: string;
     stories?: string[] | null;
+    /** Where compareSnapshot() writes (default: $PROOFROOM_OUT): the plan collect checks goes there. */
+    out?: string | null;
 }): { stories(): Promise<Story[]>; shoot(story: Story): Promise<Story>; close(): Promise<void> };
 
 export function capture(options: Record<string, unknown>): AsyncGenerator<Record<string, unknown>>;

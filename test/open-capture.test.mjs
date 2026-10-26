@@ -32,12 +32,13 @@ describe("openCapture", () => {
     it("lists the stories and shoots each once; assertSnapshot judges each shot", async () => {
         const { repo, baselines } = demoRepo(counter.url);
         writeFileSync(join(baselines, "demo--gone.png"), Buffer.from("not read"));
+        const out = tempDir("vr-open-out-");
         const cam = openCapture({
             project: "demo",
             root: repo,
             stories: ["demo--plain", "demo--broken", "demo--always-excluded"],
+            out,
         });
-        const out = tempDir("vr-open-out-");
         const verdicts = {};
         try {
             const stories = await cam.stories();
@@ -55,6 +56,10 @@ describe("openCapture", () => {
                     verdicts[story.id] = `${err.actual.status}: ${err.message}`;
                 }
             }
+            // Until close(), the run may still be going.
+            const early = await collect({ project: "demo", baselines, out: tempDir("vr-c-"), dirs: [out] });
+            expect(early.problems).toEqual([`${out}: openCapture() was not closed: its run did not finish`]);
+            expect(early.results.complete).toBe(false);
         } finally {
             await cam.close();
         }
@@ -66,14 +71,14 @@ describe("openCapture", () => {
         // One shot per story, and none of the excluded one.
         expect(Object.fromEntries(counter.loads)).toEqual({ "demo--broken": 1, "demo--plain": 1 });
 
-        // A stories filter leaves out the rest, so a run of it is collected only as the filter's,
-        // and every other baseline reads removed: here, the one no story draws.
+        // A stories filter leaves out the rest, so no baseline is reported removed: the one no
+        // story draws may belong to a story the filter left out.
         const { results, problems } = await collect({ project: "demo", baselines, out: tempDir("vr-c-"), dirs: [out] });
         expect(problems).toEqual([]);
+        expect(results.complete).toBe(true);
         expect(results.items.map((i) => [i.file, i.status])).toEqual([
             ["demo--always-excluded.png", "excluded"],
             ["demo--broken.png", "failed"],
-            ["demo--gone.png", "removed"],
             ["demo--plain.png", "new"],
         ]);
     });

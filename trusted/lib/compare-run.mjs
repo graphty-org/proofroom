@@ -429,12 +429,25 @@ export async function judgeContext({
         out,
         prune,
         known,
-        renames: await loadRenames(baselines),
-        refs: await loadReference(reference),
-        existing: new Set(await pngsIn(baselines)),
+        ...(await judgeSources({ baselines, reference })),
         // Baselines a line named (its own, or the old id's it was compared with): not removed.
         named: new Set(),
         newlyExcluded: new Set(),
+    };
+}
+
+/**
+ * What a judge context reads from disk: the project's renames, the reference images and which
+ * baselines exist.
+ * @param {{ baselines: string, reference?: string | null }} options the baselines directory and the
+ *     reference capture's directory
+ * @returns {Promise<{ renames: Map<string, string>, refs: object, existing: Set<string> }>} what it read
+ */
+export async function judgeSources({ baselines, reference = null }) {
+    return {
+        renames: await loadRenames(baselines),
+        refs: await loadReference(reference),
+        existing: new Set(await pngsIn(baselines)),
     };
 }
 

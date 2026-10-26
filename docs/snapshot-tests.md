@@ -38,7 +38,7 @@ with `NODE_OPTIONS=--experimental-vm-modules`, since proofroom is an ES module).
 | `id`        | the snapshot's id; its baseline is `<id>.png`                                                                                                      |
 | `mode`      | a mode name: the baseline is `<id>.<mode>.png` (default: none)                                                                                     |
 | `image`     | the PNG, as bytes or a path; without one the snapshot is reported as not shot, with `reason`                                                       |
-| `settings`  | `{ threshold, includeAA }`: how far a pixel may differ (0 to 1, default 0.063) and whether anti-aliased pixels count, over the story settings file |
+| `settings`  | `{ threshold, includeAA }`: how far a pixel may differ (0 to 1, default 0.063) and whether anti-aliased pixels count, where the story settings file sets none |
 | `reference` | the default branch's capture (from `proofroom reference`): a snapshot with no baseline that looks as it does there is "no baseline yet", not "new" |
 | `out`       | where the result lines and images go; default `$PROOFROOM_OUT`; without either, nothing is written                                                 |
 
@@ -56,7 +56,7 @@ machine) into one capture:
 
 ```sh
 PROOFROOM_OUT=tmp/visual npx vitest run
-npx proofroom collect --project app --out captures/app tmp/visual
+npx proofroom collect --project app --out captures/app --whole tmp/visual
 ```
 
 `collect` takes the last attempt of each snapshot as its result and the earlier ones as its
@@ -65,9 +65,15 @@ npx proofroom collect --project app --out captures/app tmp/visual
 directories, then reports every baseline no snapshot drew as removed. `serve` and `gate` read the
 result as they read `run`'s.
 
-Run `collect` only once the runner has finished: from result lines alone it cannot tell a run that
-stopped early, and every snapshot that did not run would read as removed. `merge-results` is
+From result lines alone `collect` cannot tell a whole run from one that stopped early or ran only
+some tests (`-t`, a filtered file), and in such a run every snapshot that did not run would read
+as removed. So it writes the capture incomplete, which `gate` refuses, unless you pass `--whole`:
+your word that the runner finished and ran every snapshot. Runs through `openCapture()` (below)
+and the Vitest adapter need no `--whole`: they leave a record `collect` checks. `merge-results` is
 another name for `collect`, until 1.0.0.
+
+A setting in a story's settings file (`<id>.json` beside its baseline) is part of the approved
+baselines, so it always wins over `settings`, and its `disableSnapshot` always applies.
 
 ## Retries
 
@@ -90,7 +96,7 @@ const cam = openCapture({ project: "web" });
 afterAll(() => cam.close());
 
 for (const story of await cam.stories()) {
-    test(story.file, async () => assertSnapshot(await cam.shoot(story)));
+    test(story.file, async () => assertSnapshot({ ...story, image: await cam.shoot(story) }));
 }
 ```
 
@@ -100,8 +106,16 @@ settings, baselines }`, where `type` is `image` (to shoot) or `excluded` (with `
   a story that could not be shot has `image: null` and `type: "failed"` with its `reason`, and
   `assertSnapshot()` fails its test; an excluded story comes back as it is and passes as skipped.
 - `close()` closes the browser.
+- `assertSnapshot()` takes the shot as `image` (as above) or as its options
+  (`assertSnapshot(await cam.shoot(story))`).
 
-`openCapture({ project, root, storybook, baselines, stories })` takes the config's Storybook and
+With `PROOFROOM_OUT` set (or `out` passed to `openCapture()`), `stories()` writes there the list of
+snapshots it gave you, and `close()` marks it finished. `collect` then refuses the directory while a
+listed snapshot has no result (a run stopped early, or `-t` ran only some tests) or `close()` never
+ran. With a `stories` filter, it reports no baseline removed: those of the stories the filter left
+out are not judged.
+
+`openCapture({ project, root, storybook, baselines, stories, out })` takes the config's Storybook and
 baselines unless `storybook` or `baselines` override them; `stories` keeps only the story ids that
 start with one of its prefixes.
 

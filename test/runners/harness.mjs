@@ -68,7 +68,8 @@ export async function runFixture(runner, args, { flip = false, env = {} } = {}) 
  */
 export async function collected({ out, baselines }) {
     const into = tempDir("vr-runner-collected-");
-    const { results } = await collect({ project: "app", baselines, out: into, dirs: [out] });
+    // The runner has ended and was not filtered: the caller's word that its run was whole.
+    const { results } = await collect({ project: "app", baselines, out: into, dirs: [out], whole: true });
     return {
         items: Object.fromEntries(results.items.map((i) => [i.id, i])),
         junit: readFileSync(join(into, "junit.xml"), "utf8"),

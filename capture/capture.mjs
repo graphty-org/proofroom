@@ -28,6 +28,7 @@ import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } fr
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, normalize, relative, sep } from "node:path";
+import { threadId } from "node:worker_threads";
 
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
@@ -488,21 +489,36 @@ async function shootSnapshot(browser, { common, url, delay }, waitFor) {
     };
 }
 
+/** openCapture() calls in this thread, which name their plan files. */
+let plans = 0;
+
 /**
  * Opens one project's built Storybook for a caller that drives the order itself, such as a test
  * runner that makes each snapshot a test case: `stories()` lists the snapshots, `shoot(story)`
  * shoots one, once, in a fresh browser context as capture() does, and `close()` closes the
  * browser. Hand what `shoot()` returns to `assertSnapshot()` from `proofroom/compare`.
+ *
+ * With `out`, the first `stories()` writes there a plan of the snapshots it listed and `close()`
+ * marks it closed, so `collect` can tell a whole run from one that stopped early or was filtered.
  * @param {{ project: string, root?: string, storybook?: string, baselines?: string,
- *     stories?: string[] | null }} options the project of visual-review.config.json in the git
- *     checkout `root` (default the current one); `storybook` and `baselines` override the config's;
- *     `stories` keeps only the story ids starting with one of these prefixes
+ *     stories?: string[] | null, out?: string | null }} options the project of
+ *     visual-review.config.json in the git checkout `root` (default the current one); `storybook`
+ *     and `baselines` override the config's; `stories` keeps only the story ids starting with one
+ *     of these prefixes; `out` is the directory compareSnapshot() writes to (default
+ *     `$PROOFROOM_OUT`)
  * @returns {{ stories: () => Promise<object[]>, shoot: (story: object) => Promise<object>,
  *     close: () => Promise<void> }} each story is a capture line without an image, with its
  *     `baselines` directory: `type` is `image` (to shoot) or `excluded`; `shoot()` returns it with `image` (the PNG, or null with
  *     `reason` when the story could not be shot) and `console`, or an excluded story unchanged
  */
-export function openCapture({ project, root = repoRoot(), storybook, baselines, stories = null }) {
+export function openCapture({
+    project,
+    root = repoRoot(),
+    storybook,
+    baselines,
+    stories = null,
+    out = process.env.PROOFROOM_OUT ?? null,
+}) {
     const config = loadConfig(root);
     const entry = config.projects[project];
     if (!entry) {
@@ -511,6 +527,13 @@ export function openCapture({ project, root = repoRoot(), storybook, baselines, 
     const dir = baselines ?? join(root, config.baselines, project);
     const fontconfig = config.fontconfig ? join(root, config.fontconfig) : null;
     const planned = new Map();
+    // A file of its own per openCapture(), read by collect.
+    const planFile = out && join(out, `plan-${process.pid}-${threadId}-${++plans}.json`);
+    let plan = null;
+    const writePlan = async () => {
+        await mkdir(out, { recursive: true });
+        await writeFile(planFile, JSON.stringify(plan));
+    };
     let opened = null;
     const open = () =>
         (opened ??= (async () => {
@@ -536,11 +559,16 @@ export function openCapture({ project, root = repoRoot(), storybook, baselines, 
     return {
         async stories() {
             const { snapshots } = await open();
-            return snapshots.map((snapshot) => {
+            const listed = snapshots.map((snapshot) => {
                 planned.set(snapshot.common.file, snapshot);
                 // Its baselines go with it, so assertSnapshot() judges it where capture read its settings.
                 return { ...(snapshot.excluded ?? { type: "image", ...snapshot.common }), baselines: dir };
             });
+            if (planFile && !plan) {
+                plan = { project, only: stories, files: listed.map((s) => s.file), closed: false };
+                await writePlan();
+            }
+            return listed;
         },
         async shoot(story) {
             if (story.type === "excluded") {
@@ -555,6 +583,10 @@ export function openCapture({ project, root = repoRoot(), storybook, baselines, 
             return { ...line, baselines: dir, image: bytes };
         },
         async close() {
+            if (plan) {
+                plan.closed = true;
+                await writePlan();
+            }
             if (!opened) {
                 return;
             }
