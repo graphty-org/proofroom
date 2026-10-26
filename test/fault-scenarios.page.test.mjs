@@ -157,20 +157,15 @@ function runWithoutButtonChange(w, head) {
 }
 
 describe("review page: stale caches", () => {
-    // Images are cached by their hash too, so the newer run's image is fetched.
+    // Images are addressed by their hash, so the newer run's image is the one shown.
     it("The page shows an earlier run's cached images while decisions are recorded against the server's current run", async () => {
         const r = makeRepo();
         const w = world(r);
         await open(r, w);
         await review();
         await openStory(2);
-        await page.locator('#stage img[alt^="new image of"]').waitFor();
-        const fetched = [];
-        page.on(
-            "request",
-            (req) =>
-                req.url().includes(`/api/img/`) && req.url().includes(`/capture/${BUTTON}`) && fetched.push(req.url()),
-        );
+        const shownImage = () => page.locator('#stage img[alt^="new image of"]').getAttribute("src");
+        await expect.poll(shownImage).toBe(`/api/blob/${CM_ITEMS.find((i) => i.file === BUTTON).capture}`);
         // Another tab (or the iPad) refreshes the list: the server moves to run 1001.
         runWithoutButtonChange(w, r.head);
         await s.api("GET", "/api/prs");
@@ -178,8 +173,8 @@ describe("review page: stale caches", () => {
         await page.locator(".card").first().waitFor();
         await review();
         await openStory(2);
-        await page.locator('#stage img[alt^="new image of"]').waitFor();
-        expect(fetched.length).toBeGreaterThan(0);
+        // Run 1001's capture of the button is its baseline's bytes.
+        await expect.poll(shownImage).toBe(`/api/blob/${BUTTON_BASELINE_HASH}`);
     });
 
     // Diffs are cached by target, project and both images' hashes.
@@ -208,7 +203,7 @@ describe("review page: stale caches", () => {
         await open(r, world(r));
         let aborted = false;
         // The baseline: only the story loads it (the grid's tile shows the capture).
-        await page.route(`**/baseline/${BUTTON}`, (route) => {
+        await page.route(`**/api/blob/${BUTTON_BASELINE_HASH}`, (route) => {
             if (aborted) {
                 return route.continue();
             }
@@ -225,7 +220,8 @@ describe("review page: stale caches", () => {
         await expect.poll(() => page.locator('#stage img[alt^="baseline of"]').count()).toBe(1);
     });
 
-    // Only the most recently used images and diffs are kept; older object URLs are revoked.
+    // Images are the browser's to keep (plain addresses, served immutable), and only the most
+    // recently used diffs are kept: the page holds no object URL for an image.
     it("Page memory grows without bound over a review session until the tab is killed", async () => {
         const r = makeRepo();
         const w = world(r);
@@ -278,14 +274,8 @@ describe("review page: stale caches", () => {
                 );
             }, n);
         }
-        // At most the 50 images kept, plus the grid's thumbnails (one per tile it loaded), plus the
-        // tab's icon with the count of pull requests waiting (one, replaced in place).
-        const thumbs = await page.evaluate(
-            () =>
-                globalThis.performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/thumb/"))
-                    .length,
-        );
-        expect(await page.evaluate(() => globalThis.liveUrls())).toBeLessThanOrEqual(50 + thumbs + 1);
+        // Only the tab's icon with the count of pull requests waiting (one, replaced in place).
+        expect(await page.evaluate(() => globalThis.liveUrls())).toBeLessThanOrEqual(1);
     });
 });
 
@@ -410,10 +400,15 @@ describe("review page: rendering and routing", () => {
         // Item 3's images are held until the page has gone back to item 2.
         let release;
         const held = new Promise((resolve) => (release = resolve));
-        await page.route("**/api/img/**/slider--sizes.png", async (route) => {
-            await held;
-            return route.continue().catch(() => {});
-        });
+        const slider = CM_ITEMS.find((i) => i.file === "slider--sizes.png");
+        const sliderImages = [slider.baseline, slider.capture].map((h) => `/api/blob/${h}`);
+        await page.route(
+            (url) => sliderImages.includes(url.pathname),
+            async (route) => {
+                await held;
+                return route.continue().catch(() => {});
+            },
+        );
         await review();
         // With Focus on (O), showing item 2 works out item 3's diff ahead, for its focus point: the
         // diff a late render of item 3 waits on is computed while item 2 shows.
