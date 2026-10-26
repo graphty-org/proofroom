@@ -40,7 +40,7 @@ export const unstableLine = (project, item) =>
 
 /**
  * The promotion flag: the pictures that are not exactly the approved baselines.
- * @param {{ items: object[] }} results the results
+ * @param {{ items: object[], complete?: boolean }} results the results
  * @param {boolean} blocking whether the blocking path is on
  * @returns {{ blocking: boolean, blocked: boolean, files: string[] }} `blocked` only when blocking
  */
