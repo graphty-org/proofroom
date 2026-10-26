@@ -51,6 +51,20 @@ const clearDatabase = (name) =>
         };
     });
 
+/**
+ * A story test's file and name as its JUnit report names it (suites and test joined by " > "), so
+ * the quarantine list's entries can be matched to its items.
+ * @param {any} task the test's Vitest task
+ * @returns {{ file: string, name: string } | undefined} the test, or undefined without a file
+ */
+const testOf = (task) => {
+    const names = [];
+    for (let t = task; t && t !== task.file; t = t.suite) {
+        names.unshift(t.name);
+    }
+    return task?.file?.filepath ? { file: task.file.filepath, name: names.join(" > ") } : undefined;
+};
+
 const RealDate = globalThis.Date;
 
 /**
@@ -200,7 +214,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         }
         // Through JSON, as capture.mjs reads it, so no function crosses to Node.
         const chromatic = JSON.parse(JSON.stringify(story.parameters?.chromatic ?? {})); // NOSONAR(S7784): structuredClone throws on the functions this drops
-        const plan = await commands.visualPlan({ id: story.id, chromatic });
+        const plan = await commands.visualPlan({ id: story.id, chromatic, test: testOf(context.task) });
         const fail = (modes, reason) =>
             commands.visualFail({ id: story.id, modes, reason, chromatic, console: lines.splice(0) });
         const unstable = [];

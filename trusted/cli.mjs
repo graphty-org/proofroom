@@ -87,12 +87,20 @@ JSON line per difference (bytes that differ, a story only one side captured, a s
 failed to capture), then a summary. Exits 1 on any difference: different bytes from the same
 commit are a bug in one environment, so no threshold applies.`,
 
-    "merge-results": `usage: visual-review merge-results --project <id> --out <dir> [--baselines <dir>] <partial>...
+    "merge-results": `usage: visual-review merge-results --project <id> --out <dir> [--baselines <dir>] [--quarantine <file>] <partial>...
 
 Combines one project's partial captures from its story tests (one directory per shard, written by
 @graphty/visual-review/vitest) into one capture directory that serve and gate read. It is complete
 only when every shard is there once, between them they ran every story file of the project, and
-each reported every story test it ran; then every baseline no story drew is reported removed. Exits 1, writing it incomplete, otherwise.`,
+each reported every story test it ran; then every baseline no story drew is reported removed. Exits 1, writing it incomplete, otherwise.
+
+Prints [UNSTABLE] for every story whose two shots disagreed (before or after its retry), [FLAKY]
+for one that settled on its retry, and [BROKEN] for every story that failed. With
+VISUAL_REVIEW_BLOCKING=1 it also exits 1 for a broken story or one still unstable after its retry
+that is not on the --quarantine list (a JSON file holding { quarantine: [{ file, name, expires? }] }:
+the story test's file and full name, and an optional ISO date after which the entry no longer
+counts), and sets promotion.blocked in results.json when any picture is not unchanged or excluded.
+Without it, those lines only report.`,
 
     gate: null, // gate.mjs's own usage
 
@@ -537,7 +545,12 @@ async function parity(args) {
 async function mergeResultsCommand(args) {
     const { values, positionals } = parseArgs({
         args,
-        options: { project: { type: "string" }, out: { type: "string" }, baselines: { type: "string" } },
+        options: {
+            project: { type: "string" },
+            out: { type: "string" },
+            baselines: { type: "string" },
+            quarantine: { type: "string" },
+        },
         allowPositionals: true,
     });
     if (!values.project || !values.out || positionals.length === 0) {
@@ -546,17 +559,47 @@ async function mergeResultsCommand(args) {
     }
     const { root, config } = await settings();
     const { mergeResults } = await import("../capture/merge-results.mjs");
+    const { blockingOn, quarantineEntries, storyVerdict } = await import("../capture/story-outcomes.mjs");
+    const blocking = blockingOn();
+    // Read before anything is written: a bad list stops the command with its reason.
+    let quarantine = [];
+    if (values.quarantine) {
+        try {
+            // a list the run step never wrote (it stopped first) is an empty one; a malformed one is refused
+            const text = await readFile(resolve(values.quarantine), "utf8").catch((e) => {
+                if (e.code === "ENOENT") return '{ "quarantine": [] }';
+                throw e;
+            });
+            quarantine = quarantineEntries(JSON.parse(text));
+        } catch (e) {
+            console.error(`visual-review merge-results: --quarantine ${values.quarantine}: ${e.message}`);
+            return 1;
+        }
+    }
     const { results, problems } = await mergeResults({
         project: values.project,
         baselines: resolve(values.baselines ?? join(root, config.baselines, values.project)),
         out: resolve(values.out),
         dirs: positionals.map((p) => resolve(p)),
+        blocking,
     });
     for (const problem of problems) {
         console.error(`visual-review merge-results: ${problem}`);
     }
-    console.log(JSON.stringify({ project: values.project, items: results.items.length, complete: results.complete }));
-    return problems.length > 0 ? 1 : 0;
+    const verdict = storyVerdict(results, { blocking, quarantine, gh: process.env.GITHUB_ACTIONS === "true" });
+    for (const line of verdict.lines) {
+        console.log(line);
+    }
+    console.log(
+        JSON.stringify({
+            project: values.project,
+            items: results.items.length,
+            complete: results.complete,
+            blocking,
+            promotionBlocked: verdict.promotion.blocked,
+        }),
+    );
+    return problems.length > 0 || verdict.code !== 0 ? 1 : 0;
 }
 
 async function gate(args) {

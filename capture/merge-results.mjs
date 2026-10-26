@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { classify, DEFAULT_THRESHOLD, readBaseline } from "../trusted/lib/compare.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 import { BASELINE_NAME, fileName, pngsIn, writeResults } from "./capture.mjs";
+import { promotion } from "./story-outcomes.mjs";
 
 /**
  * Copies a file when it exists.
@@ -177,12 +178,13 @@ async function removedItems(items, baselines, out) {
 
 /**
  * Merges partial story-test results of one project.
- * @param {{ project: string, baselines: string, out: string, dirs: string[] }} options the
- *     project, its baselines directory, where the merged capture goes, and the partials
+ * @param {{ project: string, baselines: string, out: string, dirs: string[], blocking?: boolean }} options the
+ *     project, its baselines directory, where the merged capture goes, the partials, and whether a
+ *     changed picture blocks promotion (`promotion.blocked`, story-outcomes.mjs)
  * @returns {Promise<{ results: object, problems: string[] }>} the merged results and why it is
  *     not complete (empty when it is)
  */
-export async function mergeResults({ project, baselines, out, dirs }) {
+export async function mergeResults({ project, baselines, out, dirs, blocking = false }) {
     const parts = [];
     for (const dir of dirs) {
         parts.push({ ...JSON.parse(await readFile(join(dir, "results.json"), "utf8")), dir });
@@ -211,6 +213,7 @@ export async function mergeResults({ project, baselines, out, dirs }) {
     };
     problems.push(...validateResults({ ...results, complete: true }).slice(0, 20));
     results.complete = problems.length === 0;
+    results.promotion = promotion(results, blocking);
     await writeResults(out, results);
     return { results, problems };
 }
