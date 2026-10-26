@@ -364,6 +364,23 @@ describe("serve: the pull request poll", () => {
         ]);
         expect(t).toMatchObject({ behind: null, stale: 0, lookOnly: false, newerRun: null, downloading: false });
     });
+
+    it("reports a capture job the poll has none of as queued while the jobs call says it is queued", async () => {
+        const s = await start({
+            gh: (r) =>
+                fakeGh({
+                    prs: [{ number: 123, head: r.head, branch: "feature" }],
+                    runs: { [r.head]: { id: 1000, head: r.head } },
+                    jobs: {
+                        1000: [job("compact-mantine"), { ...job("graphty-element", null), status: "queued" }],
+                    },
+                    artifacts: { 1000: ["visual-compact-mantine-1"] },
+                    results: { "visual-compact-mantine-1": { commit: r.head, headSha: r.head } },
+                }),
+        });
+        const t = (await s.api("GET", "/api/prs")).body.targets.find((x) => x.id === "123");
+        expect(t.projects.find((p) => p.project === "graphty-element").ci).toEqual({ status: "queued", conclusion: null });
+    });
 });
 
 describe("serve: the list's rows", () => {
@@ -459,6 +476,31 @@ describe("serve: a run a page has open", () => {
             files: ["many--story-0.light.png"],
         });
         expect(undo.body.files).toEqual(["many--story-0.light.png"]);
+    });
+
+    it("refuses a single Undo on a pinned run of a decision taken on the newer run's other image", async () => {
+        const gh = twoRuns();
+        const s = await start({ gh });
+        await s.api("GET", "/api/prs");
+        await s.api("GET", "/api/pr/123/compact-mantine?run=1000-1");
+        const file = "many--story-0.light.png";
+        const old = { id: "123", project: "compact-mantine", file, run: "1000-1" };
+        expect((await s.api("POST", "/api/decide", { ...old, decision: "accept" })).status).toBe(200);
+        gh.next();
+        await s.api("GET", "/api/prs");
+        await s.api("GET", "/api/pr/123/compact-mantine?run=1001-1");
+        const now = { ...old, run: "1001-1" };
+        const reject = await s.api("POST", "/api/decide", { ...now, decision: "reject", reason: "moved" });
+        expect(reject.status).toBe(200);
+        // The page on run 1000 still shows its accept; its Undo must not delete run 1001's reject.
+        const undo = await s.api("POST", "/api/decide", { ...old, decision: null });
+        expect(undo.status).toBe(409);
+        expect(undo.body.error).toMatch(/reload the page/);
+        const page = await s.api("GET", "/api/pr/123/compact-mantine?run=1001-1");
+        expect(page.body.decisions[file]).toMatchObject({ decision: "reject", reason: "moved" });
+        // Undo on the run that shows it still works, and a second Undo there does nothing.
+        expect((await s.api("POST", "/api/decide", { ...now, decision: null })).status).toBe(200);
+        expect((await s.api("POST", "/api/decide", { ...now, decision: null })).status).toBe(200);
     });
 
     it("lets go of a run no page has open: its downloads go, and asking for it says so", async () => {

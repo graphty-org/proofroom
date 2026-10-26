@@ -1189,13 +1189,13 @@ export function createApp({
         const g = run.status === "completed" ? kept(run) : gh;
         const jobs = await visualJobs(g, run, run.attempt, names);
         // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
-        // gave none there (a CI app the filter misses), the jobs call this build makes anyway,
-        // whose job is still running while it has no conclusion.
+        // gave none there (a CI app the filter misses), the jobs call this build makes anyway:
+        // the job's status, or, where the answer has none, running while it has no conclusion.
         const ciOf = (name) =>
             info.visual?.[name] ??
             (jobs[name]
                 ? {
-                      status: jobs[name].conclusion ? "completed" : "in_progress",
+                      status: jobs[name].status ?? (jobs[name].conclusion ? "completed" : "in_progress"),
                       conclusion: jobs[name].conclusion ?? null,
                   }
                 : null);
@@ -3176,8 +3176,16 @@ export function createApp({
                 return [403, { error: `${body.project} ${LOCAL}` }];
             }
             if (body.decision === null) {
-                if (finished(decisionsOf(t).get(key))) {
+                const d = decisionsOf(t).get(key);
+                if (finished(d)) {
                     return [409, { error: `${body.file}: ${FINISHED}` }];
+                }
+                // Only the decision this run shows: one saved for another image (a newer run's, in
+                // the decisions file every run of the target shares) is not this page's to undo.
+                if (!d || d.approvedBefore) {
+                    return readState(t)[key]
+                        ? [409, { error: `${body.file}: ${CHANGED}` }]
+                        : [200, { ok: true, unpublished: unpublishedOf(t) }];
                 }
                 update(t, (saved) => {
                     delete saved[key];

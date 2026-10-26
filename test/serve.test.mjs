@@ -378,6 +378,7 @@ describe("serve: pull requests", () => {
         const s = await start({ ...r, gh: onePr() });
         const { body } = await s.api("GET", "/api/prs");
         expect(body.targets[0].mergeMasterFirst).toBe(true);
+        expect(body.targets[0].behind).toBe("master");
     });
 
     it("lists, when a project opens, the baselines master changed since its capture", async () => {
@@ -392,6 +393,8 @@ describe("serve: pull requests", () => {
             "compact-mantine": ["button--primary.dark.png", "other.png"],
             "graphty-element": [],
         });
+        // The list's row counts them as newer baselines on master.
+        expect((await s.api("GET", "/api/prs")).body.targets[0]).toMatchObject({ behind: "master", stale: 2 });
     });
 
     it("lists nothing as newer when the branch has master's baselines", async () => {
@@ -1085,6 +1088,7 @@ describe("serve: local results", () => {
         expect(body.targets).toHaveLength(1);
         expect(body.targets[0]).toMatchObject({ id: "local", local: true, pr: null, branch: null });
         expect(body.targets[0].title).toMatch(/^local preview of /);
+        expect(body.targets[0].lookOnly).toBe(true);
         expect((await s.api("GET", "/api/img/local/compact-mantine/capture/button--primary.dark.png")).status).toBe(
             200,
         );
@@ -1145,6 +1149,8 @@ describe("serve: local previews of a pull request", () => {
         expect(cm).toMatchObject({ preview: true, acceptable: true, reviewable: 6, problem: null });
         expect(ge).toMatchObject({ preview: false, problem: `waiting for CI on ${r.head.slice(0, 10)}` });
         expect(t.headSha).toBe(r.head);
+        // A preview of the head is decidable, so the row is not look only.
+        expect(t.lookOnly).toBe(false);
 
         // A capture without the preview's provenance (an ad hoc `capture --stories`) stays look only.
         const adhoc = join(r.dir, "adhoc");

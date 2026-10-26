@@ -280,7 +280,7 @@ export const getRun = async (gh, id) => toRun(await api(gh, `repos/{owner}/{repo
  * @param {{ id: number }} run the run
  * @param {number} attempt the attempt
  * @param {string[]} projects project ids
- * @returns {Promise<Record<string, { conclusion: string | null, url: string } | undefined>>} by project
+ * @returns {Promise<Record<string, { status?: string, conclusion: string | null, url: string } | undefined>>} by project
  */
 export async function visualJobs(gh, run, attempt, projects) {
     const { jobs } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100`);
@@ -289,7 +289,7 @@ export async function visualJobs(gh, run, attempt, projects) {
         projects.map((p) => {
             // The exact name: "visual (graphty-element)" also contains "graphty".
             const job = visual.find((j) => j.name === `visual (${p})`);
-            return [p, job && { conclusion: job.conclusion, url: job.html_url }];
+            return [p, job && { ...(job.status && { status: job.status }), conclusion: job.conclusion, url: job.html_url }];
         }),
     );
 }
