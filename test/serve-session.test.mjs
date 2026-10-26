@@ -1,0 +1,242 @@
+/**
+ * Content-addressed images and pictures, and the session cookie: an image is served by its hash
+ * and a picture by both images' hashes, the settings and its kind, both immutable, found through
+ * a Map filled as each capture loads (never a directory read); the page's token, posted once,
+ * becomes an HttpOnly, SameSite=Strict cookie named per server, which every route accepts beside
+ * the `x-review-token` header, and any request naming another origin is refused.
+ */
+
+import { readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { sha256 } from "../trusted/lib/compare.mjs";
+import { createApp } from "../trusted/lib/serve.mjs";
+import { FIXTURE, FIXTURE_CONFIG, makeRepo, onePr } from "./helpers.mjs";
+
+// Every directory read, by any code in this process.
+const dirReads = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:fs", async (importOriginal) => {
+    const fs = /** @type {typeof import("node:fs")} */ (await importOriginal());
+    const counted =
+        (f) =>
+        (...args) => {
+            dirReads.count++;
+            return f(...args);
+        };
+    const own = {
+        readdirSync: counted(fs.readdirSync),
+        readdir: counted(fs.readdir),
+        opendirSync: counted(fs.opendirSync),
+        opendir: counted(fs.opendir),
+    };
+    return { ...fs, ...own, default: { ...fs, ...own } };
+});
+vi.mock("node:fs/promises", async (importOriginal) => {
+    const fs = /** @type {typeof import("node:fs/promises")} */ (await importOriginal());
+    const counted =
+        (f) =>
+        (...args) => {
+            dirReads.count++;
+            return f(...args);
+        };
+    const own = { readdir: counted(fs.readdir), opendir: counted(fs.opendir) };
+    return { ...fs, ...own, default: { ...fs, ...own } };
+});
+
+const TOKEN = "s".repeat(43);
+const ITEMS = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
+const item = (file) => ITEMS.find((i) => i.file === file);
+const BUTTON = item("button--primary.dark.png");
+const picName = (i, kind) =>
+    `${i.baseline ?? "none"}-${i.capture ?? "none"}-${i.threshold}-${i.includeAA ? 1 : 0}-${kind}`;
+const IMMUTABLE = "private, max-age=31536000, immutable";
+
+const servers = [];
+afterEach(async () => {
+    for (const { server, app } of servers.splice(0)) {
+        await new Promise((resolve) => server.close(() => resolve()));
+        await app.idle();
+    }
+});
+
+/**
+ * Starts the app on a random port of 127.0.0.1, over the fixture as pull request #123.
+ * @param {object} [options] passed to createApp
+ * @returns {Promise<object>} `get(path, headers)`, `post(path, body, headers)`, the origin, the
+ *     app and its tmp directory
+ */
+async function start(options = {}) {
+    const r = makeRepo();
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const origin = options.origin ?? `http://127.0.0.1:${server.address().port}`;
+    const at = `http://127.0.0.1:${server.address().port}`;
+    const tmp = join(r.repo, "tmp/visual-review");
+    const app = createApp({
+        repo: r.repo,
+        tmp,
+        config: FIXTURE_CONFIG,
+        token: TOKEN,
+        origin,
+        gh: onePr()(r),
+        ...options,
+    });
+    server.on("request", app);
+    servers.push({ server, app });
+    const get = (path, headers = {}) => fetch(`${at}${path}`, { headers });
+    const post = (path, body, headers = {}) =>
+        fetch(`${at}${path}`, {
+            method: "POST",
+            headers: { origin, "content-type": "application/json", ...headers },
+            body: JSON.stringify(body),
+        });
+    // The capture loads, as the page's list does.
+    const token = { "x-review-token": options.token ?? TOKEN };
+    expect((await get("/api/prs", token)).status).toBe(200);
+    expect((await get("/api/pr/123/compact-mantine", token)).status).toBe(200);
+    return { get, post, origin, app, tmp };
+}
+
+/**
+ * The cookie POST /api/session sets, as a request's `cookie` header carries it.
+ * @param {Response} res its answer
+ * @returns {string} `name=value`
+ */
+const cookieOf = (res) => res.headers.get("set-cookie").split(";")[0];
+
+describe("serve: images and pictures by their content", () => {
+    it("serves an image by its hash, immutable, and JSON never cached", async () => {
+        const s = await start();
+        const res = await s.get(`/api/blob/${BUTTON.capture}`, { "x-review-token": TOKEN });
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toBe("image/png");
+        expect(res.headers.get("cache-control")).toBe(IMMUTABLE);
+        expect(sha256(Buffer.from(await res.arrayBuffer()))).toBe(BUTTON.capture);
+        // A baseline, from the capture's baselines folder; and an image of an item with one side.
+        expect((await s.get(`/api/blob/${BUTTON.baseline}`, { "x-review-token": TOKEN })).status).toBe(200);
+        const removed = item("card--legacy.png");
+        expect((await s.get(`/api/blob/${removed.baseline}`, { "x-review-token": TOKEN })).status).toBe(200);
+        const json = await s.get("/api/pr/123/compact-mantine", { "x-review-token": TOKEN });
+        expect(json.headers.get("cache-control")).toBe("no-store");
+        // A hash no capture names, and its answer is not kept either.
+        const none = await s.get(`/api/blob/${"0".repeat(64)}`, { "x-review-token": TOKEN });
+        expect(none.status).toBe(404);
+        expect(none.headers.get("cache-control")).toBe("no-store");
+    });
+
+    it("refuses an image whose bytes do not match its hash, and never as immutable", async () => {
+        const s = await start();
+        writeFileSync(join(s.tmp, "1000-1/compact-mantine", BUTTON.file), "tampered");
+        const res = await s.get(`/api/blob/${BUTTON.capture}`, { "x-review-token": TOKEN });
+        expect(res.status).toBe(409);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+    });
+
+    it("serves every kind of a changed pair's picture by its name, immutable", async () => {
+        const s = await start();
+        for (const kind of ["plain", "spot", "zoom", "both", "row-plain", "row-spot", "auto"]) {
+            const res = await s.get(`/api/pic/${picName(BUTTON, kind)}`, { "x-review-token": TOKEN });
+            expect([kind, res.status, res.headers.get("cache-control")]).toEqual([kind, 200, IMMUTABLE]);
+            expect(res.headers.get("content-type")).toBe("image/png");
+        }
+        // An item with one image has only its plain picture.
+        const added = item("badge--default.light.png");
+        expect((await s.get(`/api/pic/${picName(added, "plain")}`, { "x-review-token": TOKEN })).status).toBe(200);
+        expect((await s.get(`/api/pic/${picName(added, "spot")}`, { "x-review-token": TOKEN })).status).toBe(404);
+        // Other settings than the item's, an unknown kind, or a malformed name: no such picture.
+        for (const name of [
+            picName({ ...BUTTON, threshold: 0.5 }, "spot"),
+            picName(BUTTON, "huge"),
+            `${BUTTON.capture}-spot`,
+            "..-..-0-0-plain",
+        ]) {
+            const res = await s.get(`/api/pic/${encodeURIComponent(name)}`, { "x-review-token": TOKEN });
+            expect([name, res.status, res.headers.get("cache-control")]).toEqual([name, 404, "no-store"]);
+        }
+    });
+
+    it("finds an image's file without reading a directory", async () => {
+        const s = await start();
+        await s.app.idle();
+        // The spy sees the server's directory reads: loading the capture made some.
+        expect(dirReads.count).toBeGreaterThan(0);
+        dirReads.count = 0;
+        expect((await s.get(`/api/blob/${BUTTON.capture}`, { "x-review-token": TOKEN })).status).toBe(200);
+        expect((await s.get(`/api/blob/${BUTTON.baseline}`, { "x-review-token": TOKEN })).status).toBe(200);
+        expect(dirReads.count).toBe(0);
+    });
+});
+
+describe("serve: the session cookie", () => {
+    it("sets an HttpOnly, SameSite=Strict cookie named per server for the right token only", async () => {
+        const s = await start({ serverId: "a1b2" });
+        expect((await s.post("/api/session", { token: "x".repeat(43) })).status).toBe(401);
+        expect((await s.post("/api/session", {})).status).toBe(401);
+        expect((await s.post("/api/session", { token: TOKEN }, { origin: "http://127.0.0.1:1" })).status).toBe(403);
+        const res = await s.post("/api/session", { token: TOKEN });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ had: false });
+        const cookie = res.headers.get("set-cookie");
+        expect(cookie).toMatch(/^vr_session_a1b2=[\w-]+; Path=\/; HttpOnly; SameSite=Strict$/);
+        // The cookie is not the token.
+        expect(cookie).not.toContain(TOKEN);
+        // Sent again with it: the page already had a good one.
+        const again = await s.post("/api/session", { token: TOKEN }, { cookie: cookieOf(res) });
+        expect(await again.json()).toEqual({ had: true });
+    });
+
+    it("marks the cookie Secure when the page is served over HTTPS", async () => {
+        const s = await start({ origin: "https://review.example:9443" });
+        const res = await s.post("/api/session", { token: TOKEN });
+        expect(res.headers.get("set-cookie")).toMatch(/; Secure$/);
+    });
+
+    it("accepts the cookie or the header on every route, and neither without one", async () => {
+        const s = await start();
+        const cookie = cookieOf(await s.post("/api/session", { token: TOKEN }));
+        for (const path of [
+            "/api/prs?cached=1",
+            `/api/blob/${BUTTON.capture}`,
+            `/api/pic/${picName(BUTTON, "plain")}`,
+        ]) {
+            expect([path, (await s.get(path)).status]).toEqual([path, 401]);
+            expect([path, (await s.get(path, { cookie })).status]).toEqual([path, 200]);
+            expect([path, (await s.get(path, { "x-review-token": TOKEN })).status]).toEqual([path, 200]);
+            expect([path, (await s.get(path, { cookie: "vr_session_other=abc" })).status]).toEqual([path, 401]);
+        }
+        const decision = { id: "123", project: "compact-mantine", file: BUTTON.file, decision: "accept" };
+        expect((await s.post("/api/decide", decision, { cookie })).status).toBe(200);
+    });
+
+    it("refuses whatever names another origin or another site, the cookie or the header with it", async () => {
+        const s = await start();
+        const cookie = cookieOf(await s.post("/api/session", { token: TOKEN }));
+        const other = { origin: "http://127.0.0.1:1" };
+        const decision = { id: "123", project: "compact-mantine", file: BUTTON.file, decision: "accept" };
+        expect((await s.post("/api/decide", decision, { cookie, ...other })).status).toBe(403);
+        for (const path of ["/api/prs?cached=1", `/api/blob/${BUTTON.capture}`]) {
+            expect((await s.get(path, { cookie, ...other })).status).toBe(403);
+            expect((await s.get(path, { "x-review-token": TOKEN, ...other })).status).toBe(403);
+            // A plain <img> on another port of this host names no origin, but says it is another site's.
+            expect((await s.get(path, { cookie, "sec-fetch-site": "same-site" })).status).toBe(403);
+            expect((await s.get(path, { cookie, "sec-fetch-site": "same-origin" })).status).toBe(200);
+            expect((await s.get(path, { cookie, origin: s.origin })).status).toBe(200);
+        }
+    });
+
+    it("ends the cookie with the token, and keeps another server's cookie apart", async () => {
+        const s = await start({ serverId: "same" });
+        const cookie = cookieOf(await s.post("/api/session", { token: TOKEN }));
+        // The same server id with a new token: the old cookie's value no longer matches.
+        const rotated = await start({ serverId: "same", token: "n".repeat(43) });
+        expect((await rotated.get("/api/prs?cached=1", { cookie })).status).toBe(401);
+        // Another server: its own cookie name, so this one's is not its.
+        const other = await start();
+        expect(other.app.serverId).toMatch(/^[0-9a-f]{16}$/);
+        expect(other.app.serverId).not.toBe(s.app.serverId);
+        expect((await other.get("/api/prs?cached=1", { cookie })).status).toBe(401);
+    });
+});

@@ -337,6 +337,7 @@ async function serve(args) {
     const server = await createServer(app, https && { cert: HTTPS_CERT_PATH, key: HTTPS_KEY_PATH });
     await new Promise((done) => server.listen({ port: Number(PORT), host: HOST }, () => done(null)));
     console.log(`proofroom: open ${origin}/#token=${token}`);
+    console.log(`proofroom: server ${app.serverId}: the page's session cookie is vr_session_${app.serverId}`);
     // Keep running until the process is stopped.
     await new Promise(() => {});
     return 0;
