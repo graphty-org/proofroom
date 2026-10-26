@@ -157,6 +157,17 @@ const STATIC = {
     "/icon.svg": ["../page/icon.svg", "image/svg+xml"],
     "/icon.png": ["../page/icon.png", "image/png"],
 };
+// The new page's folder, served at /next/: any file in it whose name is plain (no path), by its
+// extension's type.
+const NEXT_DIR = "../page/next";
+const NEXT_FILE = /^[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png)$/;
+const NEXT_TYPES = {
+    html: "text/html; charset=utf-8",
+    js: "text/javascript; charset=utf-8",
+    css: "text/css; charset=utf-8",
+    svg: "image/svg+xml",
+    png: "image/png",
+};
 const HEADERS = {
     "content-security-policy":
         "default-src 'self'; img-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -633,6 +644,8 @@ async function loadResults(dir, name) {
  * @param {import("./thumbs.mjs").Pool} [options.pictures] the queue the pictures are made in (a
  *     test's fake records the order they start in)
  * @param {string} [options.serverId] what names this server's session cookie; random per start
+ * @param {"review" | "next"} [options.ui] the page served at /: today's ("review", the default) or the
+ *     new one ("next"), which is served at /next/ either way
  * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string }}
  *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
  *     tile is being made in the background, and `serverId`
@@ -653,6 +666,7 @@ export function createApp({
     retryDelays,
     pictures = pool,
     serverId = randomBytes(8).toString("hex"),
+    ui = "review",
 }) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
@@ -3830,9 +3844,21 @@ export function createApp({
         setInterval(() => refresh().catch(failed("background")), POLL).unref();
     }
 
-    // The page's own files: GET only, and only those it names.
+    // The page's own files: GET only, and only those it names, and the files of the new page's
+    // folder at /next/. With `ui` "next", the new page is also the page at /.
     async function sendStatic(req, res, pathname) {
-        const entry = req.method === "GET" && Object.hasOwn(STATIC, pathname) ? STATIC[pathname] : null;
+        if (req.method === "GET" && pathname === "/next") {
+            return send(res, 301, "", "text/plain; charset=utf-8", { location: "/next/" });
+        }
+        const page = ui === "next" && pathname === "/" ? "/next/" : pathname;
+        const name = page === "/next/" ? "index.html" : page.startsWith("/next/") ? page.slice(6) : null;
+        if (req.method === "GET" && name !== null && NEXT_FILE.test(name)) {
+            const body = await readFile(join(HERE, NEXT_DIR, name)).catch(() => null);
+            if (body) {
+                return send(res, 200, body, NEXT_TYPES[name.split(".").pop()]);
+            }
+        }
+        const entry = req.method === "GET" && Object.hasOwn(STATIC, page) ? STATIC[page] : null;
         return entry
             ? send(res, 200, await readFile(join(HERE, entry[0])), entry[1])
             : send(res, 404, { error: "not found" });
