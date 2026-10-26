@@ -2017,5 +2017,7 @@ function seedBody(results, accepts, rejects, notes, config, candidate) {
             ...rejects.map((r) => `- \`${r.project}/${r.item.file}\`: ${JSON.stringify(oneLine(r.reason))}`),
         );
     }
+    // No candidate or seed has an issue of its own; a repository's pull request checks want a line saying so.
+    lines.push("", "No issue");
     return lines.join("\n");
 }
