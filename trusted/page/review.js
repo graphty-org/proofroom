@@ -152,6 +152,12 @@ const viewer = createStage({
         }
     },
     appeared: (item, at) => logUsage("drawn", { file: item.file, ms: Math.round(at - usageLog.itemAt) }),
+    boxCount: (text) => {
+        const count = document.getElementById("box-count");
+        if (count) {
+            count.textContent = text;
+        }
+    },
 });
 
 // How often each control and key is pressed, in this browser only (nothing is sent anywhere):

@@ -87,8 +87,8 @@ function cached(map, key, limit, make) {
 
 /**
  * Counted work, for tests: `worker`, the diffs started in the worker, and `done`, those it
- * answered; `waited`, the times the stage needed a diff it had not asked for before (a cold open:
- * one each). The page's own thread never runs a diff.
+ * answered; `waited`, the diffs the item on the stage had to wait for, because they were not asked
+ * for ahead or the worker had not answered yet (one each). The page's own thread never runs a diff.
  */
 export const diffCounts = { worker: 0, done: 0, waited: 0 };
 
@@ -167,6 +167,7 @@ export async function diffImages(a, b, { threshold, includeAA }) {
  * @param {() => void} host.retry draws the snapshot again, after a failed load
  * @param {(item: object) => void} host.drawn told when a snapshot's images are on the stage
  * @param {(item: object, at: number) => void} host.appeared told when they have been painted
+ * @param {(text: string) => void} host.boxCount shows which changed area Next change is on, or that there is none
  * @returns {object} the stage's controls
  */
 export function createStage(host) {
@@ -174,6 +175,9 @@ export function createStage(host) {
     // The least recently used diffs are dropped past keptDiffs(), so a long session stays small.
     // Images and pictures are the browser's to keep: their addresses name their content.
     const diffs = new Map();
+    const settled = new WeakSet(); // the diffs the worker has answered
+    const counted = new WeakSet(); // the diffs counted in diffCounts.waited
+    const dropped = new Set(); // keys prefetch no longer wants, dropped once their diff is answered
     const focusBoxes = new Map();
     let stageRender = 0; // the newest render: an older one finishing late writes nothing
     let lastStageAt = 0; // when the last render began
@@ -534,11 +538,11 @@ export function createStage(host) {
             return;
         }
         shownBoxes = diff.boxes;
-        const count = document.getElementById("box-count");
-        count.textContent =
+        host.boxCount(
             diff.boxes.length === 0
                 ? "No changed area at this threshold"
-                : `${Math.min(view.box, diff.boxes.length - 1) + 1} of ${diff.boxes.length}`;
+                : `${Math.min(view.box, diff.boxes.length - 1) + 1} of ${diff.boxes.length}`,
+        );
         showBox(stage, diff.boxes, false, !keep);
     }
 
@@ -563,7 +567,7 @@ export function createStage(host) {
             }
             // The next item's focus point, so after Accept it opens already framed.
             if (opt().focus && after[0]) {
-                focusBox(after[0]).catch(() => {});
+                focusBox(after[0], true).catch(() => {});
             }
         }
         afterPaint(() => {
@@ -671,7 +675,7 @@ export function createStage(host) {
     // Where the reviewer should look first: the largest changed area of a changed item, or the
     // content of an item with one image (new, no baseline yet, removed). None for a failed or
     // unstable item.
-    async function focusBox(item) {
+    async function focusBox(item, ahead = false) {
         if (host.onlyExclude(item)) {
             return null;
         }
@@ -679,7 +683,7 @@ export function createStage(host) {
         if (!focusBoxes.has(key)) {
             let box;
             if (item.baseline && item.capture) {
-                box = (await diffOf(item)).boxes[0] ?? null;
+                box = (await diffOf(item, !ahead)).boxes[0] ?? null;
             } else {
                 const kind = item.capture ? "capture" : "baseline";
                 box = contentBox(await host.load(host.imageUrl(item[kind]), `${kind} of ${item.file}`));
@@ -722,12 +726,12 @@ export function createStage(host) {
         if (!item?.baseline || !item?.capture) {
             return "Next change needs two images.";
         }
-        const { boxes } = await diffOf(item);
+        const { boxes } = await stageDiff(item);
         if (boxes.length === 0) {
             return "No changed area at this threshold.";
         }
         view.box = (view.box + 1) % boxes.length;
-        document.getElementById("box-count").textContent = `${view.box + 1} of ${boxes.length}`;
+        host.boxCount(`${view.box + 1} of ${boxes.length}`);
         showBox(stage, boxes, true);
         return null;
     }
@@ -735,35 +739,58 @@ export function createStage(host) {
     // ------------------------------------------------------------ the changed pixels
 
     // The changed pixels of an item, padded top-left to the larger size, grown by GROW pixels, and
-    // the boxes around each separate grown region. Computed once per pair of images, in the worker.
-    function diffOf(item) {
-        return cached(diffs, pairKey(item), keptDiffs(), async () => {
+    // the boxes around each separate grown region. Computed once per pair of images, in the worker;
+    // a diff still being worked out is shared, never asked for twice. `onScreen`: the item on the
+    // stage needs it now, so waiting for it is counted.
+    function diffOf(item, onScreen = false) {
+        const key = pairKey(item);
+        dropped.delete(key); // wanted again
+        const had = diffs.get(key);
+        // Diffs prefetch dropped while the worker still had them do not count against the limit.
+        const value = cached(diffs, key, keptDiffs() + dropped.size, async () => {
             const [a, b] = await Promise.all([
                 host.load(host.imageUrl(item.baseline), `baseline of ${item.file}`),
                 host.load(host.imageUrl(item.capture), `capture of ${item.file}`),
             ]);
             return diffImages(a, b, item);
         });
-    }
-
-    // The diff the stage draws now: counted when it was not asked for ahead.
-    function stageDiff(item) {
-        if (!diffs.has(pairKey(item))) {
+        if (value !== had) {
+            value.then(
+                () => {
+                    settled.add(value);
+                    if (dropped.delete(key) && diffs.get(key) === value) {
+                        diffs.delete(key);
+                    }
+                },
+                () => dropped.delete(key),
+            );
+        }
+        if (onScreen && !settled.has(value) && !counted.has(value)) {
+            counted.add(value);
             diffCounts.waited++;
         }
-        return diffOf(item);
+        return value;
     }
 
+    // The diff the stage draws now.
+    const stageDiff = (item) => diffOf(item, true);
+
     // The diffs of the snapshots the keys can go to next, worked out now: the one on screen and
-    // they are what is kept, so moving on draws without waiting for a diff.
+    // they are what is kept, so moving on draws without waiting for a diff. One the worker is still
+    // working out is kept until it is answered, so going back to it does not ask for it again.
     function prefetch(item) {
         const { items, index } = host.pass();
         const targets = targetsOf(items, index, host.undecided, host.groupOf);
         const wanted = (diffable(item) ? [item, ...targets] : targets).slice(0, keptDiffs());
         const keys = new Set(wanted.map(pairKey));
-        for (const k of [...diffs.keys()]) {
-            if (!keys.has(k)) {
+        for (const [k, value] of [...diffs]) {
+            if (keys.has(k)) {
+                continue;
+            }
+            if (settled.has(value)) {
                 diffs.delete(k);
+            } else {
+                dropped.add(k);
             }
         }
         for (const i of wanted) {

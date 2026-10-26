@@ -23,13 +23,16 @@ const settingsOf = (file) => {
     const { threshold, includeAA } = CM_ITEMS.find((i) => i.file === file);
     return { threshold, includeAA };
 };
-// Four real pairs of the fixture: three baselines with their captures, and one capture with its
-// second shot.
+// Four real pairs of the fixture, with their changed pixels: three baselines with their captures
+// (as results.json records them), and one capture with its second shot.
+// tooltip--hover's two shots differ (it is unstable); results.json does not record by how much.
+const SECOND_SHOT_CHANGED = 1392;
+const changedOf = (file) => CM_ITEMS.find((i) => i.file === file).changedPixels;
 const PAIRS = [
-    ["baselines/button--primary.dark.png", "button--primary.dark.png"],
-    ["baselines/slider--sizes.png", "slider--sizes.png"],
-    ["baselines/tooltip--hover.png", "tooltip--hover.png"],
-    ["tooltip--hover.png", "second/tooltip--hover.png"],
+    ["baselines/button--primary.dark.png", "button--primary.dark.png", changedOf("button--primary.dark.png")],
+    ["baselines/slider--sizes.png", "slider--sizes.png", changedOf("slider--sizes.png")],
+    ["baselines/tooltip--hover.png", "tooltip--hover.png", changedOf("tooltip--hover.png")],
+    ["tooltip--hover.png", "second/tooltip--hover.png", SECOND_SHOT_CHANGED],
 ];
 
 let browser;
@@ -121,7 +124,7 @@ describe("the diff worker", () => {
         );
         await page.goto(`${s.origin}/next/`);
         await expose(["/viewer/stage.js", "/pixelmatch.mjs", "/spot.js"]);
-        for (const [a, b] of PAIRS) {
+        for (const [a, b, changed] of PAIRS) {
             const got = await page.evaluate(
                 async ([first, second, settings]) => {
                     const { modules } = globalThis;
@@ -171,9 +174,7 @@ describe("the diff worker", () => {
             expect(got.pixels, b).toBe(true);
             expect(got.boxes[0], b).toEqual(got.boxes[1]);
             expect(got.inWorker, b).toBe(1);
-            if (!a.includes("tooltip")) {
-                expect(got.changed, b).toBeGreaterThan(0);
-            }
+            expect(got.changed, b).toBe(changed);
         }
     });
 });
@@ -209,6 +210,66 @@ describe("prefetch", () => {
         await page.keyboard.press("h");
         await page.locator("#stage .diffmark").first().waitFor();
         expect((await counts()).waited).toBe(before.waited);
+    });
+
+    it("with Focus on, counts a cold open once and draws the next snapshot after K with no new diff", async () => {
+        await serve();
+        // One browser profile for two visits, so the second keeps the first one's options.
+        const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
+        const visit = async () => {
+            page = await context.newPage();
+            page.setDefaultTimeout(0);
+            await page.goto(`${s.origin}/#token=${TOKEN}`);
+            await expose(["/viewer/stage.js"]);
+            await page.getByRole("button", { name: "Review", exact: true }).first().click();
+            await page.locator(".component").first().waitFor();
+            await page.locator("#find").fill("2");
+            await page.keyboard.press("Enter");
+            await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#2");
+        };
+        try {
+            await visit();
+            // Focus on (O), kept for the next visit: there #2 opens cold with it on.
+            await page.keyboard.press("o");
+            await expect
+                .poll(() => page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:options")).focus))
+                .toBe(true);
+            await page.close();
+            await visit();
+            const counts = () => page.evaluate(() => ({ ...globalThis.modules["/viewer/stage.js"].diffCounts }));
+            await expect.poll(() => page.locator("#box-count").textContent()).toBe("1 of 1");
+            expect((await counts()).waited).toBe(1);
+            await page.waitForFunction(() => {
+                const { diffCounts } = globalThis.modules["/viewer/stage.js"];
+                return diffCounts.done === diffCounts.worker && diffCounts.worker >= 2;
+            });
+            await page.keyboard.press("k");
+            await expect.poll(() => page.locator("#stage").getAttribute("data-file")).toBe("slider--sizes.png");
+            await expect.poll(() => page.locator("#box-count").textContent()).toMatch(/^1 of \d+$/);
+            expect((await counts()).waited).toBe(1);
+        } finally {
+            await context.close();
+            page = null;
+        }
+    });
+
+    it("shows the error when the worker cannot start, and starts it again for the next diff", async () => {
+        await serve();
+        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+        page.setDefaultTimeout(0);
+        await page.route("**/viewer/diff-worker.js", (route) => route.fulfill({ status: 500, body: "" }));
+        await page.goto(`${s.origin}/#token=${TOKEN}`);
+        await page.getByRole("button", { name: "Review", exact: true }).first().click();
+        await page.locator(".component").first().waitFor();
+        await page.locator("#find").fill("2");
+        await page.keyboard.press("Enter");
+        await page.keyboard.press("h");
+        const failed = page.locator("#stage .failed");
+        await expect.poll(() => failed.first().textContent()).toContain("the changed pixels could not be worked out");
+        await page.unroute("**/viewer/diff-worker.js");
+        await failed.first().getByRole("button", { name: "Retry" }).click();
+        await page.locator("#stage .diffmark").first().waitFor();
+        expect(await failed.count()).toBe(0);
     });
 
     it("leaves no diff code on the page's thread: only the worker imports pixelmatch", () => {
