@@ -55,6 +55,9 @@ the last attempt is the snapshot's result, and the earlier ones are kept with it
 snapshot flaky; a flaky-test tool reading the JUnit file can. Keep N low: a real change fails every
 attempt, and each attempt costs one more shot.
 
+To have your own test runner report and retry each snapshot instead, see
+[Each snapshot as a test in your runner](../README.md#each-snapshot-as-a-test-in-your-runner).
+
 ## `capture`
 
 ```sh

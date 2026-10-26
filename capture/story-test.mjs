@@ -1,41 +1,28 @@
 /**
  * Stories as tests, the Node side: a Storybook project's Vitest story tests take each story's
- * screenshot at the end of its test and compare it with the baseline, with capture.mjs's settings
- * and compare.mjs's code, and write the same results.json capture.mjs writes. Published as
- * `proofroom/vitest`; the browser side is story-test-setup.mjs
- * (`proofroom/vitest/setup`).
+ * screenshot at the end of its test, with capture.mjs's settings, and judge it with
+ * compareSnapshot() (proofroom/compare), one snapshot at a time. Published as `proofroom/vitest`;
+ * the browser side is story-test-setup.mjs (`proofroom/vitest/setup`).
  *
- * Every run writes a partial result into its own directory (one per shard): a results.json that
- * is never `complete` (so the gate never takes it for a whole capture) and whose `partial` says
- * which shard it is and whether every story test that ran reached the visual step. `merge-results`
- * combines a project's partials into the capture the review page and the gate read.
+ * Every run writes its result lines and a run file into its own directory (one per shard);
+ * `proofroom collect` combines a project's directories into the capture the review page and the
+ * gate read.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 
 import { PNG } from "pngjs";
 
-import { classify, compareImages, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
+import { assertPassed, compareSnapshot } from "../trusted/lib/compare.mjs";
+import { fileName, loadSettings, provenance, storySettings, toolVersion } from "../trusted/lib/compare-run.mjs";
 import { loadConfig, repoRoot } from "../trusted/lib/config.mjs";
-import {
-    CHROMIUM_ARGS,
-    CLOCK_START,
-    clip,
-    EMPTY,
-    fileName,
-    hasBaselines,
-    loadRenames,
-    loadSettings,
-    MAX_SHOT_HEIGHT,
-    pinnedFonts,
-    provenance,
-    SCALE,
-    storySettings,
-    toolVersion,
-    VIEWPORT,
-} from "./capture.mjs";
+import { MAX_ATTEMPTS } from "../trusted/lib/results.mjs";
+import { CHROMIUM_ARGS, CLOCK_START, MAX_SHOT_HEIGHT, pinnedFonts, SCALE, VIEWPORT } from "./capture.mjs";
+
+/** Test runs this process wrote a run file for, which name the run files. */
+let runs = 0;
 
 const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
 
@@ -240,7 +227,7 @@ function storybookHead(cwd) {
 
 /**
  * The story test files of the projects this harness shoots in, all of them (before sharding or any
- * filter), and those this run loaded and ran: merge-results checks the shards ran every file once,
+ * filter), and those this run loaded and ran: collect checks the shards ran every file once,
  * as capture.mjs shoots every story of the built Storybook's index.
  * @param {any} vitest the Vitest instance, from the reporter's onInit
  * @param {any[]} modules the run's test modules
@@ -262,39 +249,6 @@ async function storyFiles(vitest, modules, isOurs, root) {
 }
 
 /**
- * The partial an earlier run left in `out`, when it is one of this project.
- * @param {string} out the run's directory
- * @param {string} project the proofroom project
- * @returns {any | null} its results.json, or null
- */
-function earlierRun(out, project) {
-    const file = join(out, "results.json");
-    if (!existsSync(file)) {
-        return null;
-    }
-    try {
-        const r = JSON.parse(readFileSync(file, "utf8"));
-        return r.project === project && r.partial ? r : null;
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Whether an earlier partial is from this same run (its retry): the same commit, CI run and
- * attempt, and locally the same uncommitted changes. A new run of the same commit gets a new
- * directory (CI's is fresh; a local run removes it first).
- * @param {any} a the earlier results
- * @param {any} b this run's results, after provenance
- * @returns {boolean} whether they are one run
- */
-const sameRun = (a, b) =>
-    a.commit === b.commit &&
-    a.runId === b.runId &&
-    a.runAttempt === b.runAttempt &&
-    (a.local?.diff ?? null) === (b.local?.diff ?? null);
-
-/**
  * Production semantics for a story-test Vitest project, as `build-storybook` builds what
  * capture.mjs shoots and capture.mjs's static server serves it: spread into the project's config.
  * `appType: "mpa"` answers a path that is no file with a 404, as that server does, where Vite's
@@ -308,37 +262,32 @@ export const PRODUCTION = {
 };
 
 /**
- * Judges a story from up to two shots, as this adapter has until each story is shot once per
- * attempt: a first shot that differs and a second that matches is `unchanged` (or `moved`) and
- * flaky; two shots that differ from the baseline and from each other are `unstable`.
- * @param {{ baseline: Buffer | null, first: Buffer, second: Buffer | null, threshold: number,
- *     includeAA: boolean, moved: boolean }} input the baseline and the shots
- * @returns {Omit<ReturnType<typeof classify>, "status" | "flaky"> & { status: string, flaky: boolean }} the
- *     item's comparison fields
- */
-function judgeTwo({ baseline, first, second, threshold, includeAA, moved }) {
-    const options = { threshold, includeAA, moved };
-    const one = classify({ baseline, first, ...options });
-    if (second === null || one.status === "unchanged" || one.status === "moved") {
-        return one;
-    }
-    const two = classify({ baseline, first: second, ...options });
-    if (two.status === "unchanged" || two.status === "moved") {
-        return { ...two, flaky: true };
-    }
-    const agree = compareImages(first, second, { threshold, includeAA }).status === "unchanged";
-    return agree ? one : { ...one, status: "unstable" };
-}
-
-/**
  * Everything one project's storybook Vitest project needs to shoot its stories.
- * @param {{ project: string, out: string, root?: string }} options the proofroom project, the
- *     directory this run's partial result goes to, and the repository root
+ *
+ * Each story's shot is judged at once by compareSnapshot() (proofroom/compare), which appends its
+ * result line to `<out>/results-<pid>-<thread>.ndjson` and keeps the images the review page needs.
+ * At the end of the run the reporter writes `<out>/run-<pid>-<n>.json`: which shard ran, the project's
+ * story files and those it ran, and whether every story test that ran reached the visual step.
+ * `proofroom collect` turns the shards' directories into the capture the page and the gate read. A
+ * rerun of the failed story files into the same directory adds its own lines and run file; a
+ * snapshot it shoots again is simply its next attempt.
+ * @param {{ project: string, out: string, root?: string, fail?: "differences" | "errors",
+ *     retries?: number }} options the proofroom project, the directory this run's results go to,
+ *     the repository root; `fail` is when a story test fails: `"differences"` (default) when a
+ *     snapshot did not pass, `"errors"` only when the story could not be shot or the tool failed;
+ *     `retries` (default 0) shoots a snapshot that did not pass again inside the same story test,
+ *     up to that many times, each shot one attempt
  * @returns {{ viewport: object, providerOptions: object, commands: object, reporter: object }} for
  *     the Vitest project's `browser.viewport`, `playwright(...)`, `browser.commands` and the root
  *     config's `reporters`
  */
-export function visualStoryTest({ project, out, root = repoRoot() }) {
+export function visualStoryTest({ project, out, root = repoRoot(), fail = "differences", retries = 0 }) {
+    if (!["differences", "errors"].includes(fail)) {
+        throw new Error(`proofroom: fail must be "differences" or "errors", not ${JSON.stringify(fail)}`);
+    }
+    if (!(Number.isInteger(retries) && retries >= 0 && retries <= MAX_ATTEMPTS)) {
+        throw new Error(`proofroom: retries must be an integer from 0 to ${MAX_ATTEMPTS}`);
+    }
     const config = loadConfig(root);
     const entry = config.projects[project];
     if (!entry) {
@@ -346,94 +295,35 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
     }
     const baselines = join(root, config.baselines, project);
     const fontconfig = config.fontconfig ? join(root, config.fontconfig) : null;
-    for (const dir of ["second", "baselines"]) {
-        mkdirSync(join(out, dir), { recursive: true });
-    }
-    const results = {
-        version: 1,
+    mkdirSync(join(out, "baselines"), { recursive: true });
+    const header = {
         project,
         commit: null,
-        complete: false,
-        expected: 0,
         capturedAt: new Date().toISOString(),
         clock: { start: CLOCK_START, running: true },
         scale: SCALE,
         environment: { harness: "story-test", mode: "production", fonts: null, tool: toolVersion() },
-        items: [],
     };
-    let renames = new Map();
-    const before = earlierRun(out, project);
     const ready = Promise.all([
-        provenance().then((p) => Object.assign(results, p)),
-        hasBaselines(baselines).then((s) => (results.seeded = s)),
-        loadRenames(baselines).then((r) => (renames = r)),
-        fontconfig && pinnedFonts(fontconfig).then((f) => (results.environment.fonts = f)),
-    ]).then(() => {
-        // The retry of the failed story files (tools/test-quarantine.mjs) writes into the same
-        // directory: it keeps the first run's items and replaces only those it shoots again.
-        if (before && sameRun(before, results)) {
-            results.items = before.items;
-            results.expected = results.items.length;
-            results.retried = (before.retried ?? 0) + 1;
-        }
-    });
+        provenance().then((p) => Object.assign(header, p)),
+        fontconfig && pinnedFonts(fontconfig).then((f) => (header.environment.fonts = f)),
+    ]);
     const planned = new Set();
-    const pending = new Map();
-    const save = () => {
-        writeFileSync(join(out, "results.json.tmp"), `${JSON.stringify(results, null, 2)}\n`);
-        renameSync(join(out, "results.json.tmp"), join(out, "results.json"));
-    };
-    const record = (item) => {
-        results.items = results.items.filter((i) => i.file !== item.file);
-        results.items.push(item);
-        results.expected = results.items.length;
-        save();
-    };
+    // Snapshots their own parameters now exclude while they have a baseline: collect says why they are removed.
+    const excluded = new Set();
+    // Shots of each snapshot in the story test running now, for `retries`.
+    const shots = new Map();
     const settings = async (id, chromatic) => storySettings({ chromatic }, await loadSettings(baselines, id));
-
-    /**
-     * The baseline a story and mode is compared with: its own, or, renamed in renames.json while
-     * it has none of its own, the old id's.
-     * @param {string} id the story id
-     * @param {string | null} mode the mode
-     * @returns {Promise<{ baseline: Buffer | null, from: string | null }>} the bytes and the old id
-     */
-    const baselineOf = async (id, mode) => {
-        const own = await readBaseline(join(baselines, fileName(id, mode)));
-        const old = renames.get(id);
-        const theirs = !own && old ? await readBaseline(join(baselines, fileName(old, mode))) : null;
-        return theirs ? { baseline: theirs, from: old } : { baseline: own, from: null };
-    };
-
-    const finish = async (job, first, second, console) => {
-        const { id, mode, file, baseline, from, s } = job;
-        const r = judgeTwo({ baseline, first, second, threshold: s.threshold, includeAA: s.includeAA, moved: !!from });
-        if (["changed", "moved", "new", "unstable"].includes(r.status)) {
-            writeFileSync(join(out, file), r.flaky ? second : first);
-        }
-        if (r.status === "unstable") {
-            writeFileSync(join(out, "second", file), second);
-        } else {
-            // A first run's unstable shot of this story, now settled on the retry.
-            rmSync(join(out, "second", file), { force: true });
-        }
-        if (baseline && (r.status === "changed" || r.status === "unstable" || (from && r.baseline !== r.capture))) {
-            writeFileSync(join(out, "baselines", file), baseline);
-        }
-        const lines = r.status === "unchanged" || r.status === "moved" ? [] : clip(console);
-        record({
+    const judge = (id, mode, s, more) =>
+        compareSnapshot({
+            project,
+            baselines,
             id,
             mode,
-            file,
-            ...(from && { from }),
-            ...r,
-            threshold: s.threshold,
-            includeAA: s.includeAA,
-            reason: null,
-            console: lines,
+            settings: { threshold: s.threshold, includeAA: s.includeAA },
+            out,
+            ...more,
         });
-        return r.status;
-    };
 
     const commands = {
         visualHead: () => storybookHead(process.cwd()),
@@ -460,58 +350,49 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
             await ready;
             planned.add(id);
             const s = await settings(id, chromatic);
+            for (const { name } of s.modes) {
+                shots.delete(fileName(id, name));
+            }
             if (!s.disableSnapshot) {
                 return { modes: s.modes, waitFor: entry.waitFor ?? null, delay: s.delay };
             }
             for (const { name } of s.modes) {
-                const file = fileName(id, name);
-                // Excluded by its own parameters while it has a baseline: merge-results reports it removed.
-                if (!(s.excludedByStory && (await readBaseline(join(baselines, file))))) {
-                    record({
-                        id,
-                        mode: name,
-                        file,
-                        threshold: s.threshold,
-                        includeAA: s.includeAA,
-                        ...EMPTY,
-                        status: "excluded",
-                        reason: s.reason,
-                    });
+                // Excluded by its own parameters while it has a baseline: collect reports it removed.
+                if (!(await judge(id, name, s, { type: "excluded", reason: s.reason, byStory: s.excludedByStory }))) {
+                    excluded.add(fileName(id, name));
                 }
             }
             return { modes: [], waitFor: null, delay: 0 };
         },
         /**
-         * Shoots the mounted story in one mode. A first shot that differs from the baseline (or has
-         * none) asks for a second render (`again`), as capture.mjs captures twice.
+         * Shoots the mounted story in one mode and judges the shot. A snapshot that did not pass
+         * asks for another render (`again`) while the story test has retries left; the last shot's
+         * failure, with `fail: "differences"`, comes back as `failure`, the message of
+         * assertSnapshot()'s error, which the browser side throws once every mode is shot.
          * @param {{ page: import("playwright").Page, frame: () => Promise<import("playwright").Frame> }} ctx
          *     the command's context: vitest's page and the tester iframe
          * @param {{ id: string, mode: string | null, chromatic: object, console: string[] }} shot the
          *     story, its mode, its parameters.chromatic and the console lines since its render
-         * @returns {Promise<{ status?: string, again?: boolean }>} the item's status, or a request
-         *     for a second render
+         * @returns {Promise<{ status: string, attempt: number, again: boolean, failure: string | null }>}
+         *     the snapshot's status and attempt, whether to shoot it again, and why its test fails
          */
         async visualShot(ctx, { id, mode, chromatic, console }) {
             const file = fileName(id, mode);
-            results.environment.chromium ??= ctx.page.context().browser()?.version() ?? null;
-            const png = await shootFrame(ctx.page, await ctx.frame());
-            const held = pending.get(file);
-            if (held) {
-                pending.delete(file);
-                return { status: await finish(held.job, held.first, png, [...held.console, ...console]) };
+            header.environment.chromium ??= ctx.page.context().browser()?.version() ?? null;
+            const image = await shootFrame(ctx.page, await ctx.frame());
+            const tries = (shots.get(file) ?? 0) + 1;
+            shots.set(file, tries);
+            const line = await judge(id, mode, await settings(id, chromatic), { image, console });
+            const again = !line.passed && tries <= retries;
+            let failure = null;
+            if (!again && fail === "differences") {
+                try {
+                    assertPassed(line);
+                } catch (err) {
+                    failure = err.message;
+                }
             }
-            const job = { id, mode, file, ...(await baselineOf(id, mode)), s: await settings(id, chromatic) };
-            const r = classify({
-                baseline: job.baseline,
-                first: png,
-                threshold: job.s.threshold,
-                includeAA: job.s.includeAA,
-            });
-            if (r.status === "changed" || r.status === "new") {
-                pending.set(file, { job, first: png, console });
-                return { again: true };
-            }
-            return { status: await finish(job, png, null, console) };
+            return { status: line.status, attempt: line.attempt, again, failure };
         },
         /**
          * Records a story and its modes as failed: a failed play, a render error, a console rule.
@@ -521,23 +402,9 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
          * @returns {Promise<void>} once recorded
          */
         async visualFail(_ctx, { id, modes, reason, chromatic = {}, console }) {
+            const s = await settings(id, chromatic);
             for (const mode of modes) {
-                const file = fileName(id, mode);
-                pending.delete(file);
-                const { baseline } = await baselineOf(id, mode);
-                const s = await settings(id, chromatic);
-                record({
-                    id,
-                    mode,
-                    file,
-                    threshold: s.threshold,
-                    includeAA: s.includeAA,
-                    ...EMPTY,
-                    baseline: baseline && sha256(baseline),
-                    status: "failed",
-                    reason: reason.slice(0, 2000) || "failed",
-                    console: clip(console),
-                });
+                await judge(id, mode, s, { type: "failed", reason: reason.slice(0, 2000) || "failed", console });
             }
         },
     };
@@ -551,11 +418,13 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
             shard = v.config.shard ?? shard;
         },
         /**
-         * Records the shard and whether every story test that ran went through the visual step.
+         * Writes this run's run file: the shard, its story files, and whether every story test
+         * that ran went through the visual step.
          * @param {any[]} modules the run's test modules
-         * @returns {Promise<void>} once the partial is written
+         * @returns {Promise<void>} once the run file is written
          */
         async onTestRunEnd(modules) {
+            await ready;
             const ran = new Set();
             for (const m of modules) {
                 for (const t of m.children.allTests()) {
@@ -566,17 +435,21 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
                 }
             }
             const missing = [...ran].filter((id) => !planned.has(id)).sort((a, b) => a.localeCompare(b));
-            const reported = results.commit !== null && missing.length === 0 && pending.size === 0;
             const files = await storyFiles(vitest, modules, isOurs, root);
-            const kept = results.retried ? before?.partial : null;
-            if (kept) {
-                // A retry ran only the failed files: the first run's files ran too.
-                files.ran = [...new Set([...kept.ran, ...files.ran])].sort((a, b) => a.localeCompare(b));
-                missing.unshift(...kept.missing.filter((id) => !planned.has(id)));
-            }
-            results.partial = { shard, reported: reported && (!kept || kept.reported), missing, ...files };
-            results.items.sort((a, b) => (a.file < b.file ? -1 : 1));
-            save();
+            const run = {
+                ...header,
+                shard,
+                reported: header.commit !== null && missing.length === 0,
+                missing,
+                excluded: [...excluded].sort((a, b) => a.localeCompare(b)),
+                ...files,
+            };
+            // A file of its own per test run, so a rerun into the same directory (watch mode) keeps the earlier run's.
+            const runFile = join(out, `run-${process.pid}-${++runs}.json`);
+            writeFileSync(`${runFile}.tmp`, `${JSON.stringify(run, null, 2)}\n`);
+            renameSync(`${runFile}.tmp`, runFile);
+            planned.clear();
+            excluded.clear();
         },
     };
 
