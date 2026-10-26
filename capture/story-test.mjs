@@ -227,10 +227,15 @@ async function shootFrame(page, frame) {
         return page.screenshot({ ...SHOT, clip: { ...view, ...size } });
     }
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
-    await frame.evaluate(pinFixedInPage, false);
     try {
-        for (let top = 0; top < size.height; top += VIEWPORT.height) {
-            for (let left = 0; left < size.width; left += VIEWPORT.width) {
+        // Inside the try, so a failure still puts every style back (an undo of nothing does nothing).
+        await frame.evaluate(pinFixedInPage, false);
+        // Each tile copies only what it holds from where the frame actually scrolled to, and the next
+        // tile starts where it ended: a frame that scrolls short of the measured size (its scrollable
+        // height is less than the full-page size) must not have its clip read past the screenshot.
+        // ponytail: rows the frame never scrolls to stay transparent, so they show up as a diff.
+        for (let top = 0, h = 1; top < size.height && h > 0; top += h) {
+            for (let left = 0, w = 1; left < size.width && w > 0; left += w) {
                 // No further than the measured size's end: a body that overflows past the document
                 // (All Components, by 16 px) must not scroll the rows a full-page shot cuts off.
                 const at = await scrollFrame(
@@ -239,9 +244,12 @@ async function shootFrame(page, frame) {
                     Math.max(0, Math.min(top, size.height - VIEWPORT.height)),
                 );
                 const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
-                const w = Math.min(VIEWPORT.width, size.width - left) * SCALE;
-                const h = Math.min(VIEWPORT.height, size.height - top) * SCALE;
-                PNG.bitblt(tile, out, (left - at.x) * SCALE, (top - at.y) * SCALE, w, h, left * SCALE, top * SCALE);
+                const [x, y] = [left - at.x, top - at.y];
+                w = Math.min(VIEWPORT.width - x, size.width - left);
+                h = Math.min(VIEWPORT.height - y, size.height - top);
+                if (w > 0 && h > 0) {
+                    PNG.bitblt(tile, out, x * SCALE, y * SCALE, w * SCALE, h * SCALE, left * SCALE, top * SCALE);
+                }
             }
         }
     } finally {
