@@ -23,7 +23,7 @@
                     <input
                         type="search"
                         id="chg-find"
-                        data-act="chgfind"
+                        data-act="find"
                         data-key="/"
                         data-zone="changes-head"
                         data-find="Find a change: number, title, branch, author"
@@ -40,7 +40,8 @@
             <section id="snaps" class="pane" aria-label="Snapshots">
                 <div id="rail-s"></div>
                 <div class="pane-head" id="snaps-head"></div>
-                <div class="list" id="snap-list" tabindex="0" aria-label="Snapshots"></div>
+                <div class="banner" id="snap-banner" role="status" hidden></div>
+                <div class="list" id="snap-list" tabindex="0" role="listbox" aria-label="Snapshots"></div>
             </section>
             <main class="viewer" id="viewer" tabindex="-1" aria-label="Viewer"></main>
         </div>

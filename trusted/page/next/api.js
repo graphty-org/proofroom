@@ -163,14 +163,24 @@ export function logUsage(type, data = {}) {
 
 /**
  * Logs the controls on screen, by action id, not seen before in this session, so the report can
- * name those never pressed.
- * @param {string[]} ids the action ids on screen
+ * name those never pressed. Each id not yet seen is looked up once, on its first control shown:
+ * a list of 3,000 rows is not laid out to find its 3,000 row controls.
+ * @param {Iterable<HTMLElement>} nodes the controls drawn, each with its id in `data-act`
  */
-export function logControls(ids) {
-    const fresh = ids.filter((id) => !usage.seen.has(id));
-    if (fresh.length > 0 && usage.on !== false) {
-        fresh.forEach((id) => usage.seen.add(id));
-        logUsage("controls", { c: [...new Set(fresh)] });
+export function logControls(nodes) {
+    if (usage.on === false) {
+        return;
+    }
+    const fresh = [];
+    for (const n of nodes) {
+        const id = n.dataset.act;
+        if (!usage.seen.has(id) && n.getClientRects().length > 0) {
+            usage.seen.add(id);
+            fresh.push(id);
+        }
+    }
+    if (fresh.length > 0) {
+        logUsage("controls", { c: fresh });
     }
 }
 
