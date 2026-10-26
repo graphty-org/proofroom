@@ -6,7 +6,7 @@
  * It repeats capture.mjs's page set-up -- no WebGPU, `chromatic=true`, a fresh store, the fixed
  * running clock -- and, after each story's play function, its waits, then asks the Node commands
  * of story-test.mjs for the shot of every mode. A first shot that differs from the baseline is
- * rendered and shot again, as capture.mjs does. A failed play, a render error, the project's
+ * rendered and shot again (in an afterEach hook of its own), as capture.mjs does. A failed play, a render error, the project's
  * console rule and an unstable story (two shots that disagree) fail the test.
  */
 
@@ -203,22 +203,60 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         }
     };
 
-    const shootMode = async (story, chromatic, plan, mode, i) => {
-        if (!rendered(story, mode, i)) {
-            await render(story, mode);
+    const shot = async (story, chromatic, mode) =>
+        commands.visualShot({ id: story.id, mode: mode.name, chromatic, console: lines.splice(0) });
+
+    // The modes whose first shot differed from the baseline, for the confirming hook below. A
+    // story's settle can take most of a hook's time (a gallery that lays out every tile), so the
+    // second render, which capture.mjs makes for a changed picture, runs in a hook of its own
+    // instead of doubling the first one's cost (#3740).
+    let confirm = null;
+
+    const restoreDate = () => {
+        // Only when no story put its own Date in meanwhile: the story's cleanup puts back its own.
+        if (globalThis.Date === clock) {
+            globalThis.Date = RealDate;
         }
-        await settle(plan);
-        const shot = { id: story.id, mode: mode.name, chromatic };
-        let r = await commands.visualShot({ ...shot, console: lines.splice(0) });
-        if (r.again) {
-            await render(story, mode);
-            await settle(plan);
-            r = await commands.visualShot({ ...shot, console: lines.splice(0) });
-        }
-        return r.status;
     };
 
+    // Registered first so that it runs after the shooting hook: Vitest runs afterEach hooks in
+    // reverse order (sequence.hooks "stack", the default).
+    afterEach(async () => {
+        const job = confirm;
+        confirm = null;
+        if (!job || job.modes.length === 0) {
+            return;
+        }
+        const { story, chromatic, plan, fail } = job;
+        const unstable = [];
+        try {
+            for (const [i, mode] of job.modes.entries()) {
+                try {
+                    await render(story, mode);
+                    await settle(plan);
+                    if ((await shot(story, chromatic, mode)).status === "unstable") {
+                        unstable.push(mode.name ?? story.id);
+                    }
+                } catch (e) {
+                    await fail(
+                        job.modes.slice(i).map((m) => m.name),
+                        String(e?.message ?? e),
+                    );
+                    throw e;
+                }
+            }
+        } finally {
+            restoreDate();
+        }
+        if (unstable.length > 0) {
+            throw new Error(
+                `visual-review: ${story.id} is unstable (two renders drew different pictures): ${unstable.join(", ")}`,
+            );
+        }
+    });
+
     afterEach(async (context) => {
+        confirm = null;
         const story = context.story;
         if (!story) {
             return;
@@ -228,7 +266,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         const plan = await commands.visualPlan({ id: story.id, chromatic, test: testOf(context.task) });
         const fail = (modes, reason) =>
             commands.visualFail({ id: story.id, modes, reason, chromatic, console: lines.splice(0) });
-        const unstable = [];
+        const again = [];
         try {
             if (context.task.result?.state === "fail") {
                 await fail(
@@ -246,8 +284,12 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
             }
             for (const [i, mode] of plan.modes.entries()) {
                 try {
-                    if ((await shootMode(story, chromatic, plan, mode, i)) === "unstable") {
-                        unstable.push(mode.name ?? story.id);
+                    if (!rendered(story, mode, i)) {
+                        await render(story, mode);
+                    }
+                    await settle(plan);
+                    if ((await shot(story, chromatic, mode)).again) {
+                        again.push(mode);
                     }
                 } catch (e) {
                     await fail(
@@ -257,16 +299,11 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
                     throw e;
                 }
             }
+            confirm = { story, chromatic, plan, fail, modes: again };
         } finally {
-            // Only when no story put its own Date in meanwhile: the story's cleanup puts back its own.
-            if (globalThis.Date === clock) {
-                globalThis.Date = RealDate;
+            if (!confirm) {
+                restoreDate();
             }
-        }
-        if (unstable.length > 0) {
-            throw new Error(
-                `visual-review: ${story.id} is unstable (two renders drew different pictures): ${unstable.join(", ")}`,
-            );
         }
     });
 }
