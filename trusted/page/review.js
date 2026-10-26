@@ -10,8 +10,8 @@
  */
 
 import { approve, prepareRegistration, registerPasskey } from "/passkey.js";
-import pixelmatch from "/pixelmatch.mjs";
-import { cropOf, dimmed, grow, regions } from "./spot.js";
+import { cropOf } from "./spot.js";
+import { afterPaint, createStage, el, GUARD_MS, spinner } from "./viewer/stage.js";
 
 // The session token, from the address, or kept in this browser from an earlier visit: the
 // notifier's link carries no token (it goes through a push service), and still opens here. A
@@ -64,15 +64,9 @@ const STATUS_FILTERS = {
 };
 // Errors first (their own list), then what changed, then moved, new, unstable and removed stories.
 const RANK = { failed: 0, changed: 1, moved: 2, new: 3, unstable: 4, removed: 5, unseeded: 6 };
-const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
 // "fit" (the default) shows the whole of both images in their panes, at one scale, never above real
 // size; 1 is real size: one CSS pixel per CSS pixel the story was drawn at, scrolling when larger.
 const ZOOMS = ["fit", 1, 2, 4, 8];
-const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
-// A press this soon after its item's images were drawn is the tail of a press meant for the item
-// before, not a decision on an image the reader saw. Measured from the press's own time
-// (event.timeStamp), so a page that runs the press late does not lengthen it.
-const GUARD_MS = 250;
 const SLOW_MS = 300; // a wait longer than this says what it waits for
 // The grid's decision filters, and how a decision reads on a tile.
 const DECISIONS = { accept: "Accepted", reject: "Rejected", exclude: "Excluded" };
@@ -101,7 +95,6 @@ const state = {
     lastFile: null, // the item last opened, highlighted when the grid comes back
     view: "side", // side | flash | highlight | spotlight
     zoom: "fit",
-    box: 0, // which changed area Next change is on
     showBox: saved.showBox ?? true, // outline the changed area (B)
     baselinePane: saved.baselinePane ?? true, // show the baseline beside the new image (P)
     focus: saved.focus ?? false, // open each item centered on where to look (O)
@@ -127,29 +120,39 @@ let nav = 0; // bumped by each screen change that waits on the server: a superse
 const drafts = new Map();
 // The last messages, in full, for the key overlay.
 const messages = [];
-// The least recently used diffs are dropped past this, so a long session stays small: a diff holds
-// about 13 bytes per image pixel. Images and pictures are the browser's to keep: their addresses
-// name their content, and the server sends them immutable.
-const diffs = new Map();
-const DIFFS_KEPT = 4;
-// Each item's focus point, as the box [x, y, width, height] in image pixels to center on: a few
-// numbers each, kept for the items of a long session.
-const focusBoxes = new Map();
-const FOCUS_KEPT = 2000;
-let stageRender = 0; // the newest renderStage: an older one finishing late writes nothing
-let lastStageAt = 0; // when the last renderStage began
-let lastStageFile = null; // and for which item
-let lastShown = null; // the last item whose images were shown (never reset by a move)
-const SKIM_MS = 120;
-let stageShown = null; // the file whose images are on the stage: Accept waits for it
-let appearedAt = 0; // when the item on screen was drawn, or its images were: Infinity until then
 let pressedOn = null; // the item the last first click of a decision button was on
 let saving = null; // the decision on its way to the server
-let flashTimer = null;
-let factor = 1; // CSS pixels per image pixel of the pictures on the stage
-let shownBoxes = []; // the changed areas of the item on the stage
-let stageKey = null; // "file|zoom" of what is on the stage, to keep its scroll across view changes
 let optionsOpen = false; // the story's Options menu stays open across redraws of the same item
+
+// The story screen's stage (viewer/stage.js), drawn from the page's settings and pass.
+const viewer = createStage({
+    settings: () => ({
+        zoom: state.zoom,
+        scale: scale(),
+        focus: state.focus,
+        showBox: state.showBox,
+        baselinePane: state.baselinePane,
+        blink: state.blink,
+        spotFlash: state.spotFlash,
+        motion: state.motion,
+    }),
+    load: (url, what) => loaded(url, what),
+    imageUrl: (hash) => blobUrl(hash),
+    itemName: (item) => itemName(item),
+    onlyExclude: (item) => onlyExclude(item),
+    pass: () => ({ items: passItems(), index: state.index }),
+    undecided: (item) => !decisionOf(item),
+    groupOf: (item) => componentOf(item.id),
+    retry: () => showStory(),
+    drawn: () => {
+        const accept = document.getElementById("accept");
+        if (accept?.classList.contains("loading")) {
+            accept.classList.remove("loading");
+            accept.querySelector(".spinner")?.remove();
+        }
+    },
+    appeared: (item, at) => logUsage("drawn", { file: item.file, ms: Math.round(at - usageLog.itemAt) }),
+});
 
 // How often each control and key is pressed, in this browser only (nothing is sent anywhere):
 // the Keys overlay lists the most used, so the bars can be laid out from real use.
@@ -341,32 +344,9 @@ document.addEventListener("pointerdown", (e) => {
         }
     }
 });
-// At fit, the stage refits when the window (or an iPad's orientation) changes its size.
-const refit = new ResizeObserver(() => {
-    const stage = document.getElementById("stage");
-    if (state.screen === "story" && state.zoom === "fit" && stage?.querySelector(".sheet")) {
-        fit(stage);
-        showBox(stage, shownBoxes, false, false);
-    }
-});
-
 // ---------------------------------------------------------------- helpers
 
-function el(tag, attrs = {}, ...children) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(attrs)) {
-        if (key.startsWith("on")) {
-            node.addEventListener(key.slice(2), value);
-        } else if (value !== false && value !== null && value !== undefined) {
-            node.setAttribute(key, value === true ? "" : value);
-        }
-    }
-    node.append(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
-    return node;
-}
-
 const kbd = (key) => el("kbd", { "aria-hidden": "true" }, key);
-const spinner = () => el("span", { class: "spinner", "aria-hidden": "true" });
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 // Like replaceChildren, but a null child (a section that does not apply) is left out.
@@ -907,30 +887,6 @@ async function api(path, body) {
     return json;
 }
 
-// The promise `make` returns for `key`, kept in `map` with the least recently used dropped past
-// `limit` (and handed to `drop`). A promise that fails is dropped at once, so the next use retries.
-function cached(map, key, limit, make, drop = () => {}) {
-    let value = map.get(key);
-    if (value === undefined) {
-        value = make();
-        value.catch(() => {
-            if (map.get(key) === value) {
-                map.delete(key);
-            }
-        });
-    }
-    map.delete(key);
-    map.set(key, value);
-    for (const [k, old] of map) {
-        if (map.size <= limit) {
-            break;
-        }
-        map.delete(k);
-        drop(old);
-    }
-    return value;
-}
-
 // An image's address, by its hash: the server answers it once, and the browser keeps it.
 const blobUrl = (hash) => `/api/blob/${hash}`;
 // An item's picture of one kind (plain, spot, zoom, both, row-plain, row-spot or auto), named by
@@ -1099,8 +1055,7 @@ function loadPass() {
 }
 
 function stopFlash() {
-    clearInterval(flashTimer);
-    flashTimer = null;
+    viewer.stop();
 }
 
 // Local storage can be missing or refuse (a private window, blocked site data): the page then uses
@@ -1139,7 +1094,7 @@ function saveOptions(extra = {}) {
 function toggleOption(key) {
     state[key] = !state[key];
     if (key === "focus") {
-        stageKey = null; // reframe the item on screen, not keep its scroll
+        viewer.key = null; // reframe the item on screen, not keep its scroll
     }
     state.motion = true;
     saveOptions();
@@ -2388,8 +2343,8 @@ function spotTile(item) {
 
 let spotUrls = [];
 async function spotThumb(item, lit, zoom) {
-    const diff = await diffOf(item);
-    let source = lit ? spotlight(diff) : null;
+    const diff = await viewer.diffOf(item);
+    let source = lit ? viewer.spotlight(diff) : null;
     if (!source) {
         source = new OffscreenCanvas(diff.w, diff.h);
         source.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(diff.b), diff.w, diff.h), 0, 0);
@@ -2430,7 +2385,7 @@ function startPass(filter) {
 function enterStory() {
     savePass();
     state.ended = false;
-    state.box = 0;
+    viewer.box = 0;
     if (reduceMotion()) {
         state.motion = false;
     }
@@ -3367,12 +3322,12 @@ function showStory() {
         usageLog.itemIndex = state.index;
     }
     if (item.file !== state.lastFile) {
-        stageShown = null;
-        appearedAt = Infinity;
+        viewer.shownFile = null;
+        viewer.appearedAt = Infinity;
         afterPaint(() => {
             // Its images, when they came first, set their own time.
-            if (state.lastFile === item.file && stageShown === null) {
-                appearedAt = performance.now();
+            if (state.lastFile === item.file && viewer.shownFile === null) {
+                viewer.appearedAt = performance.now();
             }
         });
         optionsOpen = false;
@@ -3404,7 +3359,7 @@ function showStory() {
     // Keep the panes' scroll when only the view changes (F, H, S, Space) on the same item and zoom.
     const oldFrame = document.querySelector("#stage .sheet")?.parentElement;
     const keep =
-        !state.ended && oldFrame && stageKey === `${item.file}|${state.zoom}`
+        !state.ended && oldFrame && viewer.key === `${item.file}|${state.zoom}`
             ? [oldFrame.scrollLeft, oldFrame.scrollTop]
             : null;
     render(
@@ -3418,7 +3373,7 @@ function showStory() {
         ),
     );
     if (!state.ended) {
-        renderStage(item, view, keep);
+        viewer.render(document.getElementById("stage"), item, view, keep);
     }
     // Focus goes back where it was: on the same bar button if one had it.
     if (focusId && document.getElementById(focusId)) {
@@ -3444,7 +3399,7 @@ function describedBy(ok) {
 function decisionBar(item, items, d) {
     const can = available(item, d);
     const left = items.filter((i) => !decisionOf(i)).length;
-    const waitingImages = can.accept && stageShown !== item.file;
+    const waitingImages = can.accept && viewer.shownFile !== item.file;
     const button = (id, name, key, ok, extra = {}, ...prefix) =>
         el(
             "button",
@@ -3683,537 +3638,14 @@ function viewBar(item, view, note) {
         ),
     );
 }
-
-// Sizes every picture on the stage at one scale, so equal-size images line up pixel for pixel in
-// their panes. At "fit" the largest of them fits its pane both ways (never above real size, one CSS
-// pixel per CSS pixel the story was drawn at); zoomed, it is real size times the zoom and the
-// panes scroll. Each pane's sheet is as large as the largest picture, so both scroll alike.
-function fit(stage) {
-    const pics = [...stage.querySelectorAll(".sheet > img, .sheet > canvas")];
-    if (pics.length === 0) {
-        return;
-    }
-    const natural = (p) => [p.naturalWidth ?? p.width, p.naturalHeight ?? p.height];
-    let [w, h] = [1, 1];
-    for (const p of pics) {
-        const [x, y] = natural(p);
-        [w, h] = [Math.max(w, x), Math.max(h, y)];
-    }
-    const frame = stage.querySelector(".frame");
-    factor =
-        state.zoom === "fit"
-            ? Math.min(1 / scale(), frame.clientWidth / w, frame.clientHeight / h)
-            : state.zoom / scale();
-    for (const p of pics) {
-        const [x, y] = natural(p);
-        p.style.width = `${x * factor}px`;
-        p.style.height = `${y * factor}px`;
-        p.classList.toggle("crisp", factor * scale() >= CRISP_FROM);
-    }
-    for (const sheet of stage.querySelectorAll(".sheet")) {
-        sheet.style.width = `${w * factor}px`;
-        sheet.style.height = `${h * factor}px`;
-    }
-}
-
-const pane = (text, content, empty = false) =>
-    el(
-        "figure",
-        {},
-        el("div", { class: "label" }, text),
-        el("div", { class: empty ? "frame empty" : "frame" }, content),
-    );
-const paneWait = (what) => el("p", { class: "wait" }, spinner(), `Loading ${what}...`);
-const paneError = (message) =>
-    el(
-        "p",
-        { class: "failed error" },
-        message || "the images could not be loaded",
-        " ",
-        el("button", { type: "button", onclick: () => showStory() }, "Retry"),
-    );
-
-// Two panes: the baseline on the left and the new image (or the view's picture) on the right,
-// both drawn at once with what they are waiting for, so nothing moves when the images arrive. A
-// missing image leaves its pane empty, the same size, so the other one never moves. With the
-// Baseline pane off (P) only one pane is drawn, as wide as the two: the right one, or the
-// baseline when there is no capture (a removed story).
-// Which single pane to draw when the baseline is hidden: the capture (or a failed item's error),
-// else the baseline of a removed story. Null draws both.
-function onlyPane(item) {
-    if (state.baselinePane) {
-        return null;
-    }
-    return item.capture || item.status === "failed" ? "right" : "left";
-}
-
-async function renderStage(item, view, keep) {
-    const seq = ++stageRender;
-    const stage = document.getElementById("stage");
-    const only = onlyPane(item);
-    const panes = (l, r) => ({ right: [r], left: [l] })[only] ?? [l, r];
-    const labels = stageLabels(item, view);
-    const { left, right } = waitingPanes(item, labels);
-    if (!keep) {
-        stage.replaceChildren(...panes(left, right));
-    }
-    if (await skimmed(item, seq)) {
-        return;
-    }
-    const s = { item, view, keep, seq, stage, only, panes, labels, left, right };
-    let drawn;
-    try {
-        drawn = view === "side" ? await drawSide(s) : await drawCompared(s);
-    } catch (err) {
-        stageFailed(s, err);
-        return;
-    }
-    if (!drawn) {
-        return;
-    }
-    shown(stage, item);
-    const frames = [...stage.querySelectorAll(".frame")];
-    scrollTogether(frames);
-    fit(stage);
-    refit.disconnect();
-    refit.observe(stage);
-    stageKey = `${item.file}|${state.zoom}`;
-    if (keep) {
-        for (const f of frames) {
-            [f.scrollLeft, f.scrollTop] = keep;
-        }
-    }
-    await showChangedAreas(s, drawn.diff);
-}
-
-// Each pane's label for this view, on its wait as on its pictures: a view whose pictures are
-// still being made never shows another view's label first.
-function stageLabels(item, view) {
-    const baseName = item.from ? `Baseline of ${item.from}` : "Baseline";
-    const marked = view === "highlight";
-    const flashing = view === "flash" || (view === "spotlight" && state.spotFlash);
-    const leftLabel = marked ? `${baseName}, changed pixels in red` : baseName;
-    let rightLabel = "New";
-    if (flashing) {
-        rightLabel = `${view === "flash" ? "Flash" : "Spotlight"}: baseline${state.motion ? "" : " (stopped: press F)"}`;
-    } else if (marked) {
-        rightLabel = "New, changed pixels in red";
-    } else if (view === "spotlight") {
-        rightLabel = "Spotlight: the new image, dimmed except around each change";
-    }
-    return { marked, flashing, leftLabel, rightLabel };
-}
-
-// The two panes as they wait for their pictures. A failed capture's artifact holds no copy of its
-// baseline, so none is fetched.
-function waitingPanes(item, { leftLabel, rightLabel }) {
-    let left = pane("No baseline", null, true);
-    if (item.status === "failed") {
-        left = pane("Baseline not shown: the capture failed", null, true);
-    } else if (item.baseline) {
-        left = pane(leftLabel, paneWait("baseline"));
-    }
-    const right = item.capture ? pane(rightLabel, paneWait("new image")) : noCapturePane(item);
-    return { left, right };
-}
-
-// The right pane of an item with no capture: a failed one shows why.
-function noCapturePane(item) {
-    if (item.status !== "failed") {
-        return pane("No capture", null, true);
-    }
-    return pane(
-        "No capture: it failed",
-        item.console.length > 0
-            ? el("pre", { class: "console" }, `${item.reason ?? ""}\n\n${item.console.join("\n")}`)
-            : el("p", { class: "failed" }, item.reason ?? "capture failed"),
-        true,
-    );
-}
-
-// Skimming (K held): the item before was left before its images even showed, so this one waits
-// SKIM_MS before fetching; passed in that time, it fetches nothing, and the item stopped on is
-// not queued behind every item skipped. True when the stage moved on meanwhile.
-async function skimmed(item, seq) {
-    const now = performance.now();
-    const skimming = now - lastStageAt < SKIM_MS && lastShown !== lastStageFile;
-    lastStageAt = now;
-    lastStageFile = item.file;
-    if (!skimming) {
-        return false;
-    }
-    await sleep(SKIM_MS);
-    return seq !== stageRender;
-}
-
-// One of the item's two images, loaded, with its alt text.
-async function stageImage(item, kind) {
-    const what = kind === "capture" ? "new image" : "baseline";
-    const img = await loaded(blobUrl(item[kind]), `${what} of ${item.file}`);
-    img.alt = `${what} of ${itemName(item)}`;
-    return img;
-}
-
-// Side by side: each image as soon as it arrives; the changed areas fill in afterwards. Null when
-// the stage moved on meanwhile.
-async function drawSide(s) {
-    const { item, keep, seq, stage, only, panes, left, right } = s;
-    const failed = item.status === "failed";
-    await Promise.all([
-        item.baseline && !failed && only !== "right" && fillPane(s, "baseline", left),
-        item.capture && fillPane(s, "capture", right),
-    ]);
-    if (seq !== stageRender) {
-        return null;
-    }
-    if (keep) {
-        stage.replaceChildren(...panes(left, right));
-    }
-    return { diff: null };
-}
-
-// Puts one image in its pane, or the error that kept it out.
-async function fillPane({ item, keep, seq, stage }, kind, figure) {
-    const frame = figure.querySelector(".frame");
-    try {
-        const img = await stageImage(item, kind);
-        // With Focus on, an image is put in its pane only once its focus point is known,
-        // so it appears framed, never at the top left and then jumping. shown() works it
-        // out for the next item ahead, so after a decision this rarely waits.
-        const at = state.focus && !keep ? await focusBox(item).catch(() => null) : null;
-        if (seq === stageRender) {
-            frame.replaceChildren(el("div", { class: "sheet" }, img));
-            fit(stage);
-            if (at) {
-                center(stage, at);
-            }
-        }
-    } catch (err) {
-        if (seq === stageRender) {
-            frame.replaceChildren(paneError(err.message));
-        }
-        throw err;
-    }
-}
-
-// The views that compare the two images (highlight, flash, spotlight): both panes drawn at once
-// from the item's diff. Null when the stage moved on meanwhile.
-async function drawCompared({ item, view, seq, stage, panes, labels }) {
-    const { marked, flashing, leftLabel, rightLabel } = labels;
-    const diff = await diffOf(item);
-    const leftPics = [await stageImage(item, "baseline"), ...(marked ? [overlay(diff)] : [])];
-    let rightPics;
-    if (flashing) {
-        // The two images one after the other in the same place: themselves, or both spotlighted.
-        rightPics =
-            view === "flash"
-                ? [await stageImage(item, "baseline"), await stageImage(item, "capture")]
-                : [spotlight(diff, diff.a), spotlight(diff, diff.b)];
-    } else if (marked) {
-        rightPics = [await stageImage(item, "capture"), overlay(diff)];
-    } else {
-        rightPics = [spotlight(diff)];
-    }
-    if (seq !== stageRender) {
-        return null;
-    }
-    const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics));
-    const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics));
-    stage.replaceChildren(...panes(l, r));
-    if (flashing) {
-        startFlash(r, rightPics, view);
-    }
-    if (marked && state.blink && state.motion) {
-        startBlink(stage);
-    }
-    return { diff };
-}
-
-// Flash and flashing Spotlight: the two pictures take turns in the right pane.
-function startFlash(r, [base, next], view) {
-    next.style.visibility = "hidden";
-    r.classList.add("flashing");
-    if (!state.motion) {
-        return;
-    }
-    const name = view === "flash" ? "Flash" : "Spotlight";
-    const tag = r.querySelector(".label");
-    let showingNew = false;
-    flashTimer = setInterval(() => {
-        showingNew = !showingNew;
-        base.style.visibility = showingNew ? "hidden" : "visible";
-        next.style.visibility = showingNew ? "visible" : "hidden";
-        tag.textContent = showingNew ? `${name}: new` : `${name}: baseline`;
-    }, FLASH_MS);
-}
-
-// Both panes' overlays on and off together, at Flash's pace.
-function startBlink(stage) {
-    const marks = [...stage.querySelectorAll(".diffmark")];
-    let on = true;
-    flashTimer = setInterval(() => {
-        on = !on;
-        for (const m of marks) {
-            m.style.visibility = on ? "visible" : "hidden";
-        }
-    }, FLASH_MS);
-}
-
-// An image or the diff failed to load: the compared views show the error in both panes; side by
-// side already shows it in its pane, and a kept stage gets its panes back.
-function stageFailed({ view, keep, seq, stage, panes, labels, left, right }, err) {
-    if (seq !== stageRender) {
-        return;
-    }
-    if (view !== "side") {
-        stage.replaceChildren(
-            ...panes(pane(labels.leftLabel, paneError(err.message)), pane(labels.rightLabel, paneError(err.message))),
-        );
-    } else if (keep) {
-        stage.replaceChildren(...panes(left, right));
-    }
-}
-
-// Zoomed, scrolling one pane scrolls the other to the same place.
-function scrollTogether(frames) {
-    for (const f of frames) {
-        f.addEventListener("scroll", () => {
-            for (const o of frames) {
-                if (o !== f && (o.scrollLeft !== f.scrollLeft || o.scrollTop !== f.scrollTop)) {
-                    o.scrollLeft = f.scrollLeft;
-                    o.scrollTop = f.scrollTop;
-                }
-            }
-        });
-    }
-}
-
-// With both images, outlines the changed areas and counts them; with one, frames its focus point
-// when Focus is on.
-async function showChangedAreas({ item, keep, seq, stage }, drawnDiff) {
-    if (!(item.baseline && item.capture)) {
-        shownBoxes = [];
-        if (state.focus && !keep) {
-            const at = await focusBox(item).catch(() => null);
-            if (at && seq === stageRender) {
-                center(stage, at);
-            }
-        }
-        return;
-    }
-    let diff = drawnDiff;
-    try {
-        diff ??= await diffOf(item);
-    } catch {
-        return;
-    }
-    if (seq !== stageRender) {
-        return;
-    }
-    shownBoxes = diff.boxes;
-    const count = document.getElementById("box-count");
-    count.textContent =
-        diff.boxes.length === 0
-            ? "No changed area at this threshold"
-            : `${Math.min(state.box, diff.boxes.length - 1) + 1} of ${diff.boxes.length}`;
-    showBox(stage, diff.boxes, false, !keep);
-}
-
-// Runs `then` once what the page holds now has been drawn: a frame's callbacks run before it is
-// drawn, so the second frame's run after the first was.
-const afterPaint = (then) => requestAnimationFrame(() => requestAnimationFrame(then));
-
-// The item's images are in the stage: Accept applies once they have been drawn, the next two
-// items load in the background, and a quarter second after the drawing the stage says it is
-// ready (a decision before then is taken for the tail of a press meant for the item before).
-function shown(stage, item) {
-    const first = stageShown !== item.file;
-    stageShown = item.file;
-    lastShown = item.file;
-    const accept = document.getElementById("accept");
-    if (accept?.classList.contains("loading")) {
-        accept.classList.remove("loading");
-        accept.querySelector(".spinner")?.remove();
-    }
-    if (first) {
-        appearedAt = Infinity;
-        const after = passItems().slice(state.index + 1, state.index + 3);
-        for (const next of after) {
-            for (const kind of ["baseline", "capture"]) {
-                if (next[kind]) {
-                    loaded(blobUrl(next[kind]), next.file).catch(() => {});
-                }
-            }
-        }
-        // The next item's focus point, so after Accept it opens already framed.
-        if (state.focus && after[0]) {
-            focusBox(after[0]).catch(() => {});
-        }
-    }
-    afterPaint(() => {
-        if (!stage.isConnected || stageShown !== item.file) {
-            return;
-        }
-        if (appearedAt === Infinity) {
-            appearedAt = performance.now();
-            logUsage("drawn", { file: item.file, ms: Math.round(appearedAt - usageLog.itemAt) });
-        }
-        setTimeout(
-            () => {
-                if (stage.isConnected && stageShown === item.file) {
-                    stage.dataset.ready = "";
-                }
-            },
-            Math.max(0, GUARD_MS - (performance.now() - appearedAt)),
-        );
-    });
-}
-
-// Replaces a sheet's outline of the changed area (sheet pixels), or removes it when outlines are off.
-function markBox(sheet, [left, top, right, bottom]) {
-    sheet.querySelector(".boxmark")?.remove();
-    if (state.showBox) {
-        const mark = el("div", { class: "boxmark" });
-        Object.assign(mark.style, {
-            left: `${left}px`,
-            top: `${top}px`,
-            width: `${right - left}px`,
-            height: `${bottom - top}px`,
-        });
-        sheet.append(mark);
-    }
-}
-
-// Outlines the current changed area in every pane, and scrolls it into view. A pane opens at the
-// top left of its image (`reset`); on opening (`jump` false) it scrolls only when the area is
-// smaller than the pane and out of sight. Next change (`jump` true) always brings the area into
-// view, its top left first when it is larger than the pane.
-function showBox(stage, boxes, jump, reset = true) {
-    if (boxes.length === 0) {
-        return;
-    }
-    state.box = Math.min(state.box, boxes.length - 1);
-    const [x, y, w, h] = boxes[state.box];
-    const PAD = 16;
-    for (const frame of stage.querySelectorAll(".frame")) {
-        const sheet = frame.querySelector(".sheet");
-        if (!sheet) {
-            continue;
-        }
-        const [sw, sh] = [sheet.offsetWidth, sheet.offsetHeight];
-        // The outline is drawn inside the image, so an area at an edge keeps all four sides.
-        const [left, top] = [Math.max(0, x * factor - 2), Math.max(0, y * factor - 2)];
-        const [right, bottom] = [Math.min(sw, (x + w) * factor + 2), Math.min(sh, (y + h) * factor + 2)];
-        markBox(sheet, [left, top, right, bottom]);
-        if (!jump && !reset) {
-            continue;
-        }
-        if (state.focus) {
-            centerFrame(frame, sheet, [x, y, w, h]);
-            continue;
-        }
-        if (!jump) {
-            frame.scrollLeft = 0;
-            frame.scrollTop = 0;
-        }
-        const fits = right - left <= frame.clientWidth && bottom - top <= frame.clientHeight;
-        if (!jump && !fits) {
-            continue;
-        }
-        const reveal = (start, end, scroll, view) => {
-            if (end - start > view || start < scroll) {
-                return Math.max(0, start - PAD);
-            }
-            return end > scroll + view ? end - view + PAD : scroll;
-        };
-        const [ox, oy] = [sheet.offsetLeft, sheet.offsetTop];
-        frame.scrollLeft = reveal(ox + left, ox + right, frame.scrollLeft, frame.clientWidth);
-        frame.scrollTop = reveal(oy + top, oy + bottom, frame.scrollTop, frame.clientHeight);
-    }
-}
-
-// Scrolls a pane so the middle of a box (image pixels) is in the middle of the pane, as near as
-// the image's edges allow. At Fit nothing scrolls.
-function centerFrame(frame, sheet, [x, y, w, h]) {
-    frame.scrollLeft = sheet.offsetLeft + (x + w / 2) * factor - frame.clientWidth / 2;
-    frame.scrollTop = sheet.offsetTop + (y + h / 2) * factor - frame.clientHeight / 2;
-}
-
-function center(stage, box) {
-    for (const frame of stage.querySelectorAll(".frame")) {
-        const sheet = frame.querySelector(".sheet");
-        if (sheet) {
-            centerFrame(frame, sheet, box);
-        }
-    }
-}
-
-const focusKey = (item) => `${state.target.id}/${state.project}/${item.file}/${item.baseline}/${item.capture}`;
-
-// Where the reviewer should look first: the largest changed area of a changed item, or the
-// content of an item with one image (new, no baseline yet, removed). None for a failed or
-// unstable item.
-async function focusBox(item) {
-    if (onlyExclude(item)) {
-        return null;
-    }
-    const key = focusKey(item);
-    if (!focusBoxes.has(key)) {
-        let box;
-        if (item.baseline && item.capture) {
-            box = (await diffOf(item)).boxes[0] ?? null;
-        } else {
-            const kind = item.capture ? "capture" : "baseline";
-            box = contentBox(await loaded(blobUrl(item[kind]), `${kind} of ${item.file}`));
-        }
-        focusBoxes.set(key, box);
-        if (focusBoxes.size > FOCUS_KEPT) {
-            focusBoxes.delete(focusBoxes.keys().next().value);
-        }
-    }
-    return focusBoxes.get(key);
-}
-
-// The box around every pixel that differs from the image's top-left pixel (the story's
-// background), or the whole image when nothing does.
-function contentBox(img) {
-    const [w, h] = [img.naturalWidth, img.naturalHeight];
-    const ctx = new OffscreenCanvas(w, h).getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const px = ctx.getImageData(0, 0, w, h).data;
-    const TOLERANCE = 16; // per channel: compression noise and anti-aliased edges of the background
-    let [x0, y0, x1, y1] = [w, h, -1, -1];
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4;
-            for (let c = 0; c < 4; c++) {
-                if (Math.abs(px[i + c] - px[c]) > TOLERANCE) {
-                    x0 = Math.min(x0, x);
-                    x1 = Math.max(x1, x);
-                    y0 = Math.min(y0, y);
-                    y1 = Math.max(y1, y);
-                    break;
-                }
-            }
-        }
-    }
-    return x1 < 0 ? [0, 0, w, h] : [x0, y0, x1 - x0 + 1, y1 - y0 + 1];
-}
-
+// Next change [N]: the item's next changed area.
 async function nextBox() {
-    const item = current();
-    if (!item?.baseline || !item?.capture || state.ended) {
-        say("Next change needs two images.");
-        return;
+    const said = state.ended
+        ? "Next change needs two images."
+        : await viewer.nextBox(document.getElementById("stage"), current());
+    if (said) {
+        say(said);
     }
-    const { boxes } = await diffOf(item);
-    if (boxes.length === 0) {
-        say("No changed area at this threshold.");
-        return;
-    }
-    state.box = (state.box + 1) % boxes.length;
-    document.getElementById("box-count").textContent = `${state.box + 1} of ${boxes.length}`;
-    showBox(document.getElementById("stage"), boxes, true);
 }
 
 // ---------------------------------------------------------------- the end of a pass
@@ -4363,60 +3795,6 @@ function showEnd(message) {
     say(message);
 }
 
-// ---------------------------------------------------------------- the changed pixels
-
-// The changed pixels of an item, padded top-left to the larger size, grown by GROW pixels, and the
-// boxes around each separate grown region. Computed once per item and pair of images.
-async function diffOf(item) {
-    const { file, baseline, capture, threshold, includeAA } = item;
-    const key = `${state.target.id}/${state.project}/${file}/${baseline}/${capture}/${threshold}/${includeAA}`;
-    return cached(diffs, key, DIFFS_KEPT, async () => {
-        const [a, b] = await Promise.all([
-            loaded(blobUrl(item.baseline), `baseline of ${item.file}`),
-            loaded(blobUrl(item.capture), `capture of ${item.file}`),
-        ]);
-        const w = Math.max(a.naturalWidth, b.naturalWidth);
-        const h = Math.max(a.naturalHeight, b.naturalHeight);
-        const pixels = (img) => {
-            const ctx = new OffscreenCanvas(w, h).getContext("2d");
-            ctx.drawImage(img, 0, 0);
-            return ctx.getImageData(0, 0, w, h).data;
-        };
-        const [pa, pb] = [pixels(a), pixels(b)];
-        const mask = new Uint8ClampedArray(w * h * 4);
-        pixelmatch(pa, pb, mask, w, h, {
-            threshold: item.threshold,
-            includeAA: item.includeAA,
-            diffMask: true,
-        });
-        const grown = grow(mask, w, h);
-        return { w, h, a: pa, b: pb, mask, grown, boxes: regions(grown, w, h) };
-    });
-}
-
-// The changed pixels alone, in solid red, transparent everywhere else: laid over an image in the
-// same grid cell, so it lines up with the image at every zoom.
-function overlay(diff) {
-    const canvas = el("canvas", { width: String(diff.w), height: String(diff.h), class: "diffmark" });
-    const ctx = canvas.getContext("2d");
-    const out = ctx.createImageData(diff.w, diff.h);
-    for (let i = 0; i < diff.w * diff.h; i++) {
-        if (diff.mask[i * 4 + 3] !== 0) {
-            out.data[i * 4] = 255;
-            out.data[i * 4 + 3] = 255;
-        }
-    }
-    ctx.putImageData(out, 0, 0);
-    return canvas;
-}
-
-// An image (the new one unless given) with everything dimmed except the changed pixels grown by GROW pixels.
-function spotlight(diff, px = diff.b) {
-    const canvas = el("canvas", { width: String(diff.w), height: String(diff.h) });
-    canvas.getContext("2d").putImageData(new ImageData(dimmed(px, diff.grown), diff.w, diff.h), 0, 0);
-    return canvas;
-}
-
 // ---------------------------------------------------------------- moving and deciding
 
 function toGrid() {
@@ -4451,7 +3829,7 @@ function move(step) {
         return;
     }
     state.index = at;
-    state.box = 0;
+    viewer.box = 0;
     if (reduceMotion()) {
         state.motion = false;
     }
@@ -4513,10 +3891,10 @@ function refusal(decision, item, press) {
 // Why a press came too soon to count: Accept before its images loaded, or any press on an image
 // that only just appeared. Null when it can count.
 function tooSoon(decision, item, press) {
-    if (decision === "accept" && stageShown !== item.file) {
+    if (decision === "accept" && viewer.shownFile !== item.file) {
         return "Loading images: Accept waits for them.";
     }
-    if ((press?.timeStamp ?? performance.now()) - appearedAt < GUARD_MS) {
+    if ((press?.timeStamp ?? performance.now()) - viewer.appearedAt < GUARD_MS) {
         return "Ignored: this image appeared less than a quarter second ago.";
     }
     return null;
@@ -4645,7 +4023,7 @@ async function decide(decision, press = null) {
         return;
     }
     state.index++;
-    state.box = 0;
+    viewer.box = 0;
     if (reduceMotion()) {
         state.motion = false;
     }
@@ -5898,7 +5276,7 @@ async function route() {
         }
         // Flash, Blink and Spotlight flash open stopped from a link: a press starts them.
         state.motion = false;
-        state.box = 0;
+        viewer.box = 0;
         say("");
         showStory();
     } finally {
