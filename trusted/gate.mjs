@@ -514,8 +514,9 @@ function treeProblems({ base, head, cwd, baselines, approvals, keys }) {
 
 /**
  * Which approvals the gate reads: the base config's `approvalFormat` when it sets one; otherwise
- * "change" once the base's approvals directory holds a change statement (a folder per change), and
- * "tree" before that, so a repository coming from @graphty/visual-review keeps its tree statements.
+ * "tree" when the base's approvals directory holds tree statements (top-level JSON files) and no
+ * folder, so a repository coming from @graphty/visual-review keeps them, and "change" for any
+ * other repository, a new one included.
  * @param {{ approvals: string, approvalFormat?: "tree" | "change" }} config the base's config
  * @param {string} base the base
  * @param {string} cwd the repository
@@ -525,8 +526,13 @@ export function approvalMode(config, base, cwd) {
     if (config.approvalFormat) {
         return config.approvalFormat;
     }
-    const dirs = gitOut(cwd, ["ls-tree", "-d", "--name-only", base, "--", `${config.approvals}/`]).toString("utf8");
-    return dirs.trim() === "" ? "tree" : "change";
+    const types = gitOut(cwd, ["ls-tree", base, "--", `${config.approvals}/`])
+        .toString("utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => [line.split(" ")[1], line.slice(line.indexOf("\t") + 1)]);
+    const trees = types.some(([type, path]) => type === "blob" && path.endsWith(".json"));
+    return trees && !types.some(([type]) => type === "tree") ? "tree" : "change";
 }
 
 /**

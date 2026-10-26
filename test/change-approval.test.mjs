@@ -114,6 +114,12 @@ describe("the change statement", () => {
         ["previous not a hash", { previous: "x" }, "previous must be null"],
         ["entries not an array", { entries: {} }, "entries must be an array"],
         ["an approval that is not an object", { approval: "x" }, "approval must be an object"],
+        ["an unknown field in approval", { approval: { ...sign(EXAMPLE).approval, note: "x" } }, 'approval: unknown field "note"'],
+        [
+            "an approval with no signature",
+            { approval: { ...sign(EXAMPLE).approval, signature: undefined } },
+            "approval.signature must be base64url",
+        ],
     ])("refuses %s", (_, change, problem) => {
         const s = { ...EXAMPLE, ...change };
         expect(statementProblem(s)).toContain(problem);

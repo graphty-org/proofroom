@@ -128,8 +128,9 @@ On the merge result against the base:
       started from another open change's branch therefore Finishes its own decisions on that
       change's files until it lands.
     - A statement of this change must have a `capturedHead` that is in the change's history and not
-      on the base. One whose path ever existed in the default branch's history fails: a landed
-      statement never counts again, whether kept under its name or copied under another.
+      on the base. One whose signed content (everything but `approval`) matches a statement that
+      ever existed in the default branch's history fails: a landed statement never counts again,
+      whether kept under its name, copied under another, or signed again.
 6. **Order**: a change's statements form one chain through `previous`. Newer means later in the
    chain, never a later `approvedAt`. A `previous` that names no statement of the change fails, and
    so do two statements that both end the chain ("two Finishes of this change were made at once;
@@ -174,8 +175,8 @@ at `<approvals>/<tree>.json`. They still verify, in **tree mode** only:
 - In **change mode** a version 1 statement is refused.
 
 The mode is the base config's `approvalFormat` (`"change"` or `"tree"`). Without one, the gate is
-in change mode once the default branch's approvals directory holds a change statement, and in tree
-mode before that. Version 1 statements name no repository, so tree mode trusts any repository that
+in tree mode when the default branch's approvals directory holds tree statements and no change
+statements, and in change mode otherwise, a new repository included. Version 1 statements name no repository, so tree mode trusts any repository that
 trusts the same key; it exists for moving over.
 
 ## Where the gate's trust comes from

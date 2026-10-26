@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { approvalMode, approvalProblems, repositoryOf, treeAt } from "../trusted/gate.mjs";
-import { PASSKEYS_FILE } from "../trusted/lib/approval.mjs";
+import { PASSKEYS_FILE, verifyApproval } from "../trusted/lib/approval.mjs";
 import { statementPath } from "../trusted/lib/change-approval.mjs";
 import { CONFIG_FILE } from "../trusted/lib/config.mjs";
 import { CONFIG, FIXTURE, git, tempDir } from "./helpers.mjs";
@@ -55,6 +55,24 @@ function acceptCard(r, image = "new image", more = {}) {
  * @param {{ repo: string }} r the repository
  * @param {string} [next] the next branch's name
  */
+/**
+ * The other valid ECDSA signature of the same message: (r, n - s) for a DER signature (r, s).
+ * @param {string} der the signature, base64url DER
+ * @returns {string} the other one, base64url DER
+ */
+function otherSignature(der) {
+    const n = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+    const b = Buffer.from(der, "base64url");
+    const rLen = b[3];
+    const r = b.subarray(4, 4 + rLen);
+    const s = BigInt(`0x${b.subarray(6 + rLen, 6 + rLen + b[5 + rLen]).toString("hex")}`);
+    let hex = (n - s).toString(16);
+    hex = hex.length % 2 ? `0${hex}` : hex;
+    const t = Buffer.from(Number.parseInt(hex.slice(0, 2), 16) & 0x80 ? `00${hex}` : hex, "hex");
+    const body = Buffer.concat([Buffer.from([2, r.length]), r, Buffer.from([2, t.length]), t]);
+    return Buffer.concat([Buffer.from([0x30, body.length]), body]).toString("base64url");
+}
+
 function land(r, next = "pr") {
     git(r.repo, "checkout", "-q", "master");
     git(r.repo, "merge", "-q", "--no-ff", "-m", "land", "pr");
@@ -192,6 +210,38 @@ describe("change statements in the gate", () => {
         commit(r, { [copy]: landed.statement });
         expect(check(r)).toContain(
             `${copy}: its content belongs at ${landed.file}: a statement is never moved or copied`,
+        );
+    });
+
+    it("refuses a squash-landed statement replayed with other approval bytes, however it is re-signed", () => {
+        const r = changeRepo();
+        const y = readFileSync(join(r.repo, CARD_FILE));
+        const landed = acceptCard(r);
+        // Squash-landed, so its capturedHead is not on master; then master goes back to Y.
+        git(r.repo, "checkout", "-q", "master");
+        git(r.repo, "merge", "-q", "--squash", "pr");
+        git(r.repo, "commit", "-q", "-m", "land, squashed");
+        commit(r, { [CARD_FILE]: y }, "revert the card to Y");
+        // The same change merges master and sets Z again.
+        git(r.repo, "checkout", "-q", "pr");
+        git(r.repo, "merge", "-q", "--no-edit", "master");
+        expect(check(r)).toEqual([NOT_REVIEWED]);
+        // The alternate signature verifies, and gives the copy another id and place.
+        const approval = { ...landed.statement.approval, signature: otherSignature(landed.statement.approval.signature) };
+        const highS = { ...landed.statement, approval };
+        expect(verifyApproval(highS, [KEY.entry])).toBe(null);
+        const highFile = statementPath(APPROVALS, highS);
+        expect(highFile).not.toBe(landed.file);
+        // A field added inside approval also gives another id; the shape check refuses it.
+        const noted = { ...landed.statement, approval: { ...landed.statement.approval, note: "x" } };
+        const notedFile = statementPath(APPROVALS, noted);
+        commit(r, { [highFile]: highS, [notedFile]: noted });
+        expect(check(r).sort()).toEqual(
+            [
+                NOT_REVIEWED,
+                `${highFile}: it is already in the default branch's history, and a landed statement never counts again`,
+                `${notedFile}: not a change statement (approval: unknown field "note")`,
+            ].sort(),
         );
     });
 
@@ -376,11 +426,17 @@ describe("tree statements beside change statements", () => {
         ]);
     });
 
-    it("picks the mode from the base: approvalFormat when set, else change once a change statement landed", () => {
+    it("picks the mode from the base: approvalFormat when set, else tree only for tree statements and no change statement", () => {
         const r = treeRepo();
-        expect(approvalMode(CONFIG, "master", r.repo)).toBe("tree");
-        expect(approvalMode({ ...CONFIG, approvalFormat: "change" }, "master", r.repo)).toBe("change");
-        acceptCard(r);
+        // No tree statement: a new repository gets change statements.
+        expect(approvalMode(CONFIG, "master", r.repo)).toBe("change");
+        expect(approvalMode({ ...CONFIG, approvalFormat: "tree" }, "master", r.repo)).toBe("tree");
+        commit(r, { [CARD_FILE]: "new image" });
+        const t = treeStatement(r);
+        commit(r, { [t.file]: t.statement });
+        expect(approvalMode(CONFIG, "pr", r.repo)).toBe("tree");
+        expect(approvalMode({ ...CONFIG, approvalFormat: "change" }, "pr", r.repo)).toBe("change");
+        finish(r, statementOf(r, [entry(r, CARD)]));
         expect(approvalMode(CONFIG, "pr", r.repo)).toBe("change");
         expect(approvalMode({ ...CONFIG, approvalFormat: "tree" }, "pr", r.repo)).toBe("tree");
     });

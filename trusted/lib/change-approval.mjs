@@ -12,7 +12,7 @@
  *
  * The gate's part (changeApprovals) runs a fixed number of git commands whatever the size of the
  * change: one diff of the baselines and approvals directories, one log of the approvals directory's
- * history, one batch read of the blobs it needs, and three per statement of this change to place
+ * history, one batch read of the blobs it needs (the statements in that history among them), and three per statement of this change to place
  * its captured commit. No image is read: a baseline PNG is a Git LFS pointer naming its SHA-256.
  * Standard library only, so the gate runs from a checkout without an install.
  */
@@ -20,7 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
-import { canonical, verifyApproval } from "./approval.mjs";
+import { canonical, recordHash, verifyApproval } from "./approval.mjs";
 
 export const STATEMENT_VERSION = 2;
 export const STATEMENT_TYPE = "change-approval";
@@ -37,6 +37,8 @@ const FIELDS = new Set([
     "entries",
     "approval",
 ]);
+const APPROVAL_FIELDS = ["credentialId", "authenticatorData", "clientDataJSON", "signature"];
+const B64U = /^[A-Za-z0-9_-]+$/;
 const ENTRY_FIELDS = new Set(["path", "from", "to", "decision", "reason", "movedTo", "movedFrom"]);
 const DECISIONS = new Set(["accept", "exclude", "reject"]);
 const HASH = /^[0-9a-f]{64}$/;
@@ -140,10 +142,19 @@ export function statementProblem(s) {
         }
         seen.add(e.path);
     }
-    if (s.approval !== undefined && (typeof s.approval !== "object" || s.approval === null)) {
+    return s.approval === undefined ? null : approvalShapeProblem(s.approval);
+}
+
+function approvalShapeProblem(a) {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) {
         return "approval must be an object";
     }
-    return null;
+    const extra = Object.keys(a).find((k) => !APPROVAL_FIELDS.includes(k));
+    if (extra !== undefined) {
+        return `approval: unknown field ${JSON.stringify(extra)}`;
+    }
+    const bad = APPROVAL_FIELDS.find((k) => typeof a[k] !== "string" || !B64U.test(a[k]));
+    return bad === undefined ? null : `approval.${bad} must be base64url`;
 }
 
 function previousProblem(previous) {
@@ -307,11 +318,13 @@ export function changeApprovals({ base, head, baselines, approvals, keys, reposi
     const added = files.filter((f) => f.status === "A" && under(approvals, f));
     const statementFiles = added.filter((f) => f.path.slice(approvals.length + 1).includes("/"));
     out.treeFiles = added.filter((f) => !statementFiles.includes(f)).map((f) => f.path);
-    const landed = statementFiles.length === 0 ? new Set() : historyOf(git, base, approvals);
+    const history = statementFiles.length === 0 ? [] : historyOf(git, base, approvals);
     const blobs = readBlobs(git, [
         ...altered.flatMap((f) => [f.from, f.to]).filter(Boolean),
         ...statementFiles.map((f) => f.to),
+        ...history,
     ]);
+    const landed = new Set(history.map((id) => signedHash(blobs.get(id))).filter(Boolean));
     const mine = [];
     for (const f of statementFiles) {
         const checked = checkStatement(f.path, blobs.get(f.to), {
@@ -341,24 +354,53 @@ export function changeApprovals({ base, head, baselines, approvals, keys, reposi
 }
 
 /**
- * Every path that ever existed under the approvals directory in a commit of the base's history.
+ * Every blob a commit of the base's history ever wrote to a change statement's place (a file in a
+ * folder under the approvals directory), from one `git log --raw`.
  * @param {(args: string[], input?: string) => Buffer} git the runner
  * @param {string} base the base
  * @param {string} approvals the approvals directory
- * @returns {Set<string>} the paths
+ * @returns {string[]} the blob ids
  */
 function historyOf(git, base, approvals) {
-    const text = git(["log", "--format=", "--name-only", "--no-renames", "-z", base, "--", `${approvals}/`]).toString(
-        "utf8",
-    );
-    return new Set(text.split(/[\0\n]/).filter(Boolean));
+    const parts = git(["log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", base, "--", `${approvals}/`])
+        .toString("utf8")
+        .split("\0");
+    const ids = new Set();
+    for (let i = 0; i + 1 < parts.length; i++) {
+        const meta = parts[i].replace(/^\n+/, "");
+        if (!meta.startsWith(":")) {
+            continue;
+        }
+        const id = meta.split(" ")[3];
+        const path = parts[++i];
+        if (!/^0+$/.test(id) && path.slice(approvals.length + 1).includes("/")) {
+            ids.add(id);
+        }
+    }
+    return [...ids];
+}
+
+/**
+ * The hash a statement's passkey signs (its canonical JSON without `approval`), which no change to
+ * `approval` alters; null when the blob is not a JSON object.
+ * @param {Buffer | undefined} bytes the blob
+ * @returns {string | null} the hex hash
+ */
+function signedHash(bytes) {
+    try {
+        const doc = JSON.parse(bytes.toString("utf8"));
+        return typeof doc === "object" && doc !== null && !Array.isArray(doc) ? recordHash(doc).toString("hex") : null;
+    } catch {
+        return null;
+    }
 }
 
 /**
  * One statement file's checks.
  * @param {string} file its path
  * @param {Buffer | undefined} bytes its contents
- * @param {object} at as changeApprovals' input, plus `landed`, the approvals directory's history
+ * @param {object} at as changeApprovals' input, plus `landed`, the signed hashes (signedHash) of
+ *     every statement in the base's history
  * @returns {{ problem?: string, other?: true, statement?: any, id?: string }} why it fails; or
  *     that it names another change; or the statement and its id
  */
@@ -378,7 +420,9 @@ function checkStatement(file, bytes, at) {
     if (where !== file) {
         return { problem: `its content belongs at ${where}: a statement is never moved or copied` };
     }
-    if (landed.has(file)) {
+    // By what the passkey signed, not by file name: a copy with other `approval` bytes (an
+    // alternate ECDSA signature) has another id and place but is the same landed review.
+    if (landed.has(signedHash(bytes))) {
         return { problem: "it is already in the default branch's history, and a landed statement never counts again" };
     }
     const unsigned = keys ? verifyApproval(statement, keys) : null;
