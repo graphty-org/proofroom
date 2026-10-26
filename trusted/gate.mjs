@@ -33,8 +33,8 @@
  * statement: a file under `<approvals>/<change>/` (the config's `approvals`, outside the baselines
  * directory) that this change adds, naming this repository, the baselines directory, this change
  * and a commit of this change's own history, whose newest decision for each altered file accepts
- * exactly the base's hash to the head's (change-approval.mjs). In tree mode (`approvalFormat`, or
- * a base whose approvals hold no change statement yet) a version 1 tree statement passes too: a
+ * exactly the base's hash to the head's (change-approval.mjs). In tree mode (the default, or
+ * `approvalFormat` "tree") a version 1 tree statement passes too: a
  * file `<approvals>/<tree>.json`, added by this change, whose statement names a commit X that is
  * an ancestor of the head, the tree of the baselines directory at X, and that tree equal to the
  * head's (treeApprovalProblem). One already on the base never counts, so an earlier approved tree
@@ -513,26 +513,13 @@ function treeProblems({ base, head, cwd, baselines, approvals, keys }) {
 }
 
 /**
- * Which approvals the gate reads: the base config's `approvalFormat` when it sets one; otherwise
- * "tree" when the base's approvals directory holds tree statements (top-level JSON files) and no
- * folder, so a repository coming from @graphty/visual-review keeps them, and "change" for any
- * other repository, a new one included.
- * @param {{ approvals: string, approvalFormat?: "tree" | "change" }} config the base's config
- * @param {string} base the base
- * @param {string} cwd the repository
+ * Which approvals the gate reads: the base config's `approvalFormat`, else "tree", where tree
+ * statements and change statements both count, so the tree statements Finish writes keep passing.
+ * @param {{ approvalFormat?: "tree" | "change" }} config the base's config
  * @returns {"tree" | "change"} the mode
  */
-export function approvalMode(config, base, cwd) {
-    if (config.approvalFormat) {
-        return config.approvalFormat;
-    }
-    const types = gitOut(cwd, ["ls-tree", base, "--", `${config.approvals}/`])
-        .toString("utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => [line.split(" ")[1], line.slice(line.indexOf("\t") + 1)]);
-    const trees = types.some(([type, path]) => type === "blob" && path.endsWith(".json"));
-    return trees && !types.some(([type]) => type === "tree") ? "tree" : "change";
+export function approvalMode(config) {
+    return config.approvalFormat ?? "tree";
 }
 
 /**
@@ -721,7 +708,7 @@ function approvalLines({ base, diffBase, head, root, config, headConfig, changes
     }
     const lines = problems.map((line) => `::error::passkey approval -- ${line}`);
     const { baselines, approvals } = config;
-    const mode = approvalMode(config, base, root);
+    const mode = approvalMode(config);
     const repository = repositoryOf(config);
     const found = approvalProblems({
         base: diffBase,

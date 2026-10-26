@@ -263,6 +263,22 @@ describe("change statements in the gate", () => {
         );
     });
 
+    it("refuses a statement added and deleted on a branch the base merged", () => {
+        const r = changeRepo();
+        git(r.repo, "checkout", "-q", "-b", "side", "master");
+        const gone = acceptCard(r);
+        commit(r, { [gone.file]: null }, "drop it");
+        git(r.repo, "checkout", "-q", "master");
+        commit(r, { "src.txt": "other" });
+        git(r.repo, "merge", "-q", "--no-ff", "-m", "merge side", "side");
+        git(r.repo, "branch", "-q", "-D", "pr");
+        git(r.repo, "checkout", "-q", "-b", "pr");
+        commit(r, { [gone.file]: gone.statement });
+        expect(check(r)).toContain(
+            `${gone.file}: it is already in the default branch's history, and a landed statement never counts again`,
+        );
+    });
+
     it("does not revive an abandoned branch's statements under a branch name used again", () => {
         const r = changeRepo();
         const changes = ["branch:feat/x"];
@@ -429,19 +445,10 @@ describe("tree statements beside change statements", () => {
         ]);
     });
 
-    it("picks the mode from the base: approvalFormat when set, else tree only for tree statements and no change statement", () => {
-        const r = treeRepo();
-        // No tree statement: a new repository gets change statements.
-        expect(approvalMode(CONFIG, "master", r.repo)).toBe("change");
-        expect(approvalMode({ ...CONFIG, approvalFormat: "tree" }, "master", r.repo)).toBe("tree");
-        commit(r, { [CARD_FILE]: "new image" });
-        const t = treeStatement(r);
-        commit(r, { [t.file]: t.statement });
-        expect(approvalMode(CONFIG, "pr", r.repo)).toBe("tree");
-        expect(approvalMode({ ...CONFIG, approvalFormat: "change" }, "pr", r.repo)).toBe("change");
-        finish(r, statementOf(r, [entry(r, CARD)]));
-        expect(approvalMode(CONFIG, "pr", r.repo)).toBe("change");
-        expect(approvalMode({ ...CONFIG, approvalFormat: "tree" }, "pr", r.repo)).toBe("tree");
+    it("reads the mode from the base's approvalFormat, tree mode without one", () => {
+        expect(approvalMode(CONFIG)).toBe("tree");
+        expect(approvalMode({ ...CONFIG, approvalFormat: "tree" })).toBe("tree");
+        expect(approvalMode({ ...CONFIG, approvalFormat: "change" })).toBe("change");
     });
 });
 

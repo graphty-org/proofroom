@@ -355,14 +355,15 @@ export function changeApprovals({ base, head, baselines, approvals, keys, reposi
 
 /**
  * Every blob a commit of the base's history ever wrote to a change statement's place (a file in a
- * folder under the approvals directory), from one `git log --raw`.
+ * folder under the approvals directory), from one `git log --raw`; `--full-history` keeps a
+ * statement added and deleted on a merged branch.
  * @param {(args: string[], input?: string) => Buffer} git the runner
  * @param {string} base the base
  * @param {string} approvals the approvals directory
  * @returns {string[]} the blob ids
  */
 function historyOf(git, base, approvals) {
-    const parts = git(["log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", base, "--", `${approvals}/`])
+    const parts = git(["log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", "--full-history", base, "--", `${approvals}/`])
         .toString("utf8")
         .split("\0");
     const ids = new Set();

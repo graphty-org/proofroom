@@ -175,8 +175,7 @@ at `<approvals>/<tree>.json`. They still verify, in **tree mode** only:
 - In **change mode** a version 1 statement is refused.
 
 The mode is the base config's `approvalFormat` (`"change"` or `"tree"`). Without one, the gate is
-in tree mode when the default branch's approvals directory holds tree statements and no change
-statements, and in change mode otherwise, a new repository included. Version 1 statements name no repository, so tree mode trusts any repository that
+in tree mode. Version 1 statements name no repository, so tree mode trusts any repository that
 trusts the same key; it exists for moving over.
 
 ## Where the gate's trust comes from

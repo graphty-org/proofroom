@@ -63,19 +63,6 @@ function artifacts(map) {
     return dir;
 }
 
-/**
- * Sets `approvalFormat: "tree"` in master's config, as a repository moving from the old
- * visual-review package does, so the gate reads tree statements; leaves master checked out.
- * @param {{ repo: string }} r the repository
- */
-function treeFormat(r) {
-    git(r.repo, "checkout", "-q", "master");
-    const file = join(r.repo, "visual-review.config.json");
-    const config = JSON.parse(readFileSync(file, "utf8"));
-    writeFileSync(file, `${JSON.stringify({ ...config, approvalFormat: "tree" }, null, 4)}\n`);
-    git(r.repo, "commit", "-q", "-am", "tree statements");
-}
-
 describe("newestResults", () => {
     it("keeps only each project's highest attempt", () => {
         const dir = artifacts({
@@ -278,9 +265,7 @@ describe("gate command", () => {
 
     it("fails on an unaccepted change and on a baseline committed without the owner's approval", () => {
         const r = makeRepo();
-        treeFormat(r);
         git(r.repo, "checkout", "-q", "feature");
-        git(r.repo, "merge", "-q", "--no-edit", "master");
         writeFileSync(join(r.repo, "visual-baselines/compact-mantine/card--legacy.png"), "copied capture");
         git(r.repo, "commit", "-q", "-am", "copy a capture into the baselines");
         const out = run(r.repo, artifacts({ "visual-compact-mantine-1": results(["changed"]) }));
@@ -453,7 +438,6 @@ describe("signed tree approvals", () => {
      */
     function repoWith(passkeys) {
         const r = makeRepo();
-        treeFormat(r);
         if (passkeys !== undefined) {
             mkdirSync(join(r.repo, "visual-review"), { recursive: true });
             writeFileSync(join(r.repo, PASSKEYS_FILE), passkeys);
