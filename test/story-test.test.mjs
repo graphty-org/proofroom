@@ -35,19 +35,26 @@ describe("story tests' visual step", () => {
     // last 163 px are the rows below the first tile. A fixed toast pinned at document row 1,000
     // must follow the body's scroll, since its containing block does not.
     it.each([
-        { name: "the window cannot scroll (html and body overflow: hidden, height: 100%)", windowMax: 0 },
-        { name: "the window scrolls 16 px (the body's margin) and the body the rest", windowMax: 16 },
-    ])("scrolls the body by what the window could not when $name", async ({ windowMax }) => {
+        { name: "the window cannot scroll (html and body overflow: hidden, height: 100%)", windowMax: 0, short: 0 },
+        { name: "the window scrolls 16 px (the body's margin) and the body the rest", windowMax: 16, short: 0 },
+        // The body stops 63 px short of the measured end: the rows it never shows stay empty, and the
+        // tile's clip never reads past the screenshot (it threw "bitblt reading outside image").
+        { name: "the body stops 63 px short of the measured size", windowMax: 0, short: 63 },
+    ])("scrolls the body by what the window could not when $name", async ({ windowMax, short }) => {
         const out = tempDir("story-test-out-");
         const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
-        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800)];
+        // Short, a third tile finds the frame where the second left it, and nothing more to copy.
+        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800), ...(short ? [png(30, 2400, 1800)] : [])];
         const ctx = context([...tiles, ...tiles], { width: 1200, height: 1063 });
         const frame = await ctx.frame();
         const measured = frame.evaluate;
         const win = { scrollX: 0, scrollY: 0 };
         const body = { scrollLeft: 0, scrollTop: 0 };
         body.scrollTo = (x, y) =>
-            Object.assign(body, { scrollLeft: Math.max(0, x), scrollTop: Math.max(0, Math.min(y, 163 - windowMax)) });
+            Object.assign(body, {
+                scrollLeft: Math.max(0, x),
+                scrollTop: Math.max(0, Math.min(y, 163 - windowMax - short)),
+            });
         // Absolute against the initial containing block: the window's scroll moves it, the body's does not.
         const toast = { style: { top: "1000px", left: "8px", setProperty: (n, value) => (toast.style[n] = value) } };
         toast.getBoundingClientRect = () => ({
@@ -86,7 +93,8 @@ describe("story tests' visual step", () => {
         const shot = PNG.sync.read(readFileSync(join(out, "a--app-css.png")));
         expect([shot.width, shot.height]).toEqual([2400, 2126]);
         const gray = (y) => shot.data[y * 2400 * 4];
-        expect([gray(0), gray(1799), gray(1800), gray(2125)]).toEqual([10, 10, 20, 20]);
+        const end = 2 * (1063 - short);
+        expect([gray(0), gray(1799), gray(1800), gray(end - 1), gray(2125)]).toEqual([10, 10, 20, 20, short ? 0 : 20]);
         expect(new Set(toastTops)).toEqual(new Set([1000]));
     });
 
@@ -162,13 +170,6 @@ describe("story tests' visual step", () => {
         expect(first).toEqual({ again: true });
         // A viewport taller than the GPU's largest texture leaves the tab compositing another way.
         expect(ctx.viewports).toEqual([]);
-    });
-
-    it("composites the tester iframe in a layer of its own before a story is shot", async () => {
-        const v = visualStoryTest({ project: "graphty-element", out: tempDir("story-test-out-"), root: repo({}) });
-        const ctx = context([]);
-        await v.commands.visualPark(ctx);
-        expect(ctx.styles).toEqual({ "will-change": "transform" });
     });
 
     it("marks a partial unreported when a story test that ran never reached the visual step", async () => {

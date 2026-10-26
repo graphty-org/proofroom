@@ -67,6 +67,7 @@ describe("normalizeConfig", () => {
             issueLabels: ["bug"],
             fontconfig: null,
             updateCheck: null,
+            candidates: null,
             usage: false,
             ignoreBranches: [],
             projects: {
@@ -98,6 +99,7 @@ describe("normalizeConfig", () => {
         [{ fontconfig: "../fonts.conf", projects: { a: { storybook: "s" } } }, /fontconfig must be/],
         [{ fontconfig: 1, projects: { a: { storybook: "s" } } }, /fontconfig must be/],
         [{ updateCheck: " ", projects: { a: { storybook: "s" } } }, /updateCheck must be/],
+        [{ candidates: " ", projects: { a: { storybook: "s" } } }, /candidates must be a shell command/],
         [{}, /projects must name/],
         [{ projects: {} }, /projects must name/],
         [{ projects: { "a b": { storybook: "s" } } }, /project id/],
