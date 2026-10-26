@@ -8,16 +8,19 @@ flaky-test tools understand, and result lines, one JSON line per snapshot.
 
 A snapshot passes exactly when its capture is the approved baseline (status `unchanged`).
 
-| Status | In JUnit | `passed` |
-|---|---|---|
-| `unchanged` | passed | `true` |
-| `changed` | `<failure type="changed">`, with the number of pixels that differ | `false` |
-| `moved` (a renamed story whose image is unchanged) | `<failure type="moved">`, "moved from" and the old story id: the rename still needs an Accept | `false` |
-| `new` | `<failure type="new">` | `false` |
-| `unseeded` (no baseline yet) | `<failure type="unseeded">` | `false` |
-| `removed` (a baseline no story drew) | `<failure type="removed">` | `false` |
-| `failed` (the story could not be shot) | `<error type="failed">`, with its reason as the message and its console as the text | `false` |
-| `excluded` | `<skipped>`, with the reason | `true` (not a failure) |
+A result line's `passed` is `true` when the snapshot did not fail, so an excluded snapshot, which
+JUnit reports as skipped, is `true` there too.
+
+| Status                                             | In JUnit                                                                                      | `passed`               |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------- |
+| `unchanged`                                        | passed                                                                                        | `true`                 |
+| `changed`                                          | `<failure type="changed">`, with the number of pixels that differ                             | `false`                |
+| `moved` (a renamed story whose image is unchanged) | `<failure type="moved">`, "moved from" and the old story id: the rename still needs an Accept | `false`                |
+| `new`                                              | `<failure type="new">`                                                                        | `false`                |
+| `unseeded` (no baseline yet)                       | `<failure type="unseeded">`                                                                   | `false`                |
+| `removed` (a baseline no story drew)               | `<failure type="removed">`                                                                    | `false`                |
+| `failed` (the story could not be shot)             | `<error type="failed">`, with its reason as the message and its console as the text           | `false`                |
+| `excluded`                                         | `<skipped>`, with the reason                                                                  | `true` (not a failure) |
 
 Captures made by older versions can hold `unstable` items; they are failures of type `unstable`.
 
@@ -51,10 +54,30 @@ more:
 
 - `project`: the project the snapshot belongs to.
 - `attempt`: 1 for the snapshot's first shot in the run, 2 for the next, and so on.
-- `passed`: the rule above, `true` or `false`.
+- `passed`: `true` when the snapshot did not fail: it passed, or it was excluded (skipped). Read
+  `status` to tell the two apart.
 
 ```json
-{"id":"button--primary","mode":"dark","file":"button--primary.dark.png","status":"changed","flaky":false,"baseline":"<sha256>","capture":"<sha256>","size":[1200,900],"baselineSize":[1200,900],"changedPixels":412,"bbox":[10,20,90,44],"threshold":0.063,"includeAA":false,"reason":null,"console":[],"project":"app","attempt":1,"passed":false}
+{
+    "id": "button--primary",
+    "mode": "dark",
+    "file": "button--primary.dark.png",
+    "status": "changed",
+    "flaky": false,
+    "baseline": "<sha256>",
+    "capture": "<sha256>",
+    "size": [1200, 900],
+    "baselineSize": [1200, 900],
+    "changedPixels": 412,
+    "bbox": [10, 20, 90, 44],
+    "threshold": 0.063,
+    "includeAA": false,
+    "reason": null,
+    "console": [],
+    "project": "app",
+    "attempt": 1,
+    "passed": false
+}
 ```
 
 The last attempt of each snapshot is its result; earlier lines for the same snapshot are its
@@ -67,7 +90,8 @@ Besides the fields every capture has, an item can carry:
 - `areas`: the changed areas, each `[x, y, width, height]` in image pixels, largest first.
 - `pictures`: the pictures made for the item, as `{ "<kind>": "<file>.webp" }`, beside the images.
 - `attempts`: the earlier attempts of the run, oldest first, each `{ status, capture, changedPixels,
-  reason, console }` (and `from` for a renamed story).
+reason, console }` (and `from` for a renamed story).
 
 and the file can name the browser that drew the images, `renderer: { name, version }`. All of them
-are optional: a reader must work without them. `flaky` is always written, and always `false`.
+are optional: a reader must work without them. `flaky` is always written; it is `true` only when
+the capture shot a story twice and the second shot matched the baseline.

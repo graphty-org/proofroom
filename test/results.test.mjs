@@ -179,6 +179,9 @@ describe("validateResults reads the fields compare and run add", () => {
             "items[0].attempts[0].capture must be a sha256 or null",
         ]);
         expect(at({ attempts: [null] })).toEqual(["items[0].attempts[0] must be an object"]);
+        expect(at({ attempts: [{ ...attempts[0], status: "moved" }] })).toEqual([
+            "items[0].attempts[0].from is required for a moved attempt",
+        ]);
         expect(at({ flaky: "no" })).toEqual(["items[0].flaky must be a boolean"]);
         expect(validateResults(results({ renderer: { name: "chromium" } }))).toEqual([
             "renderer must be { name, version }",

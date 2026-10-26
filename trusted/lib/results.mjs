@@ -22,7 +22,7 @@ const MAX_CONSOLE = 100;
 /** The most changed areas, picture kinds and earlier attempts one item may name. */
 const MAX_AREAS = 1000;
 const MAX_PICTURES = 20;
-const MAX_ATTEMPTS = 20;
+export const MAX_ATTEMPTS = 20;
 
 const SHA1 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -90,7 +90,8 @@ export function itemProblems(item, at) {
         `${at}.from must be a Storybook story id or null`,
     );
     check(item.status !== "moved" || typeof item.from === "string", `${at}.from is required for a moved item`);
-    // Still written, always false, so an older gate (which requires it) reads the file; optional to read.
+    // Still written, so an older gate (which requires it) reads the file; optional to read. True only
+    // when the second of two shots matched the baseline.
     check(item.flaky === undefined || typeof item.flaky === "boolean", `${at}.flaky must be a boolean`);
     for (const key of ["baseline", "capture"]) {
         const v = item[key];
@@ -164,6 +165,7 @@ function attemptProblems(a, at) {
         a.from === undefined || a.from === null || validId(a.from),
         `${at}.from must be a Storybook story id or null`,
     );
+    check(a.status !== "moved" || typeof a.from === "string", `${at}.from is required for a moved attempt`);
     check(a.changedPixels === null || isInt(a.changedPixels), `${at}.changedPixels must be a count or null`);
     check(a.reason === null || isStr(a.reason), `${at}.reason must be a string or null`);
     check(isConsole(a.console), `${at}.console must be at most ${MAX_CONSOLE} strings`);

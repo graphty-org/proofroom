@@ -1545,6 +1545,8 @@ describe("review page: a pull request", () => {
         await page.reload();
         await page.locator(".component").first().waitFor();
         await expect.poll(tally).toBe("0 of 7 decided -- 7 left, 2 rejected, waiting for a fix");
+        // A request still in the handler when the next test reloads must not fail the run.
+        await page.unrouteAll({ behavior: "ignoreErrors" });
     });
 
     it("before a Finish that leaves images undecided, says so and goes to the first of them (issue 3235)", async () => {

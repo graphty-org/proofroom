@@ -386,6 +386,16 @@ describe("junitFromLines", () => {
         expect(doc.children.map((s) => s.attrs.name)).toEqual(["app", "web"]);
         expect(doc.attrs).toMatchObject({ tests: "2", failures: "1" });
     });
+
+    it("refuses a snapshot whose attempts repeat, skip a number or are too many", () => {
+        const at = (attempt) =>
+            resultLine(item("story--a", "changed", { changedPixels: 1 }), { project: "app", attempt });
+        expect(() => junitFromLines([at(1), at(1)])).toThrow("app/story--a.png has attempts 1, 1; they must be 1 to 2");
+        expect(() => junitFromLines([at(1), at(3)])).toThrow("app/story--a.png has attempts 1, 3");
+        const many = Array.from({ length: 22 }, (_, i) => at(i + 1));
+        expect(() => junitFromLines(many)).toThrow("app/story--a.png has 22 attempts; at most 21 are allowed");
+        expect(() => junitFromLines(many.slice(0, 21))).not.toThrow();
+    });
 });
 
 describe("proofroom junit", () => {

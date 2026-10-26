@@ -7,7 +7,7 @@
  * other report of a snapshot's result read it from there.
  */
 
-import { itemProblems } from "./results.mjs";
+import { itemProblems, MAX_ATTEMPTS } from "./results.mjs";
 
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -140,6 +140,17 @@ export function itemsFromLines(lines) {
     const projects = new Map();
     for (const tries of bySnapshot.values()) {
         tries.sort((a, b) => a.attempt - b.attempt);
+        const where = `${tries[0].project}/${tries[0].file}`;
+        if (tries.length > MAX_ATTEMPTS + 1) {
+            throw new Error(`${where} has ${tries.length} attempts; at most ${MAX_ATTEMPTS + 1} are allowed`);
+        }
+        tries.forEach((t, i) => {
+            if (t.attempt !== i + 1) {
+                throw new Error(
+                    `${where} has attempts ${tries.map((x) => x.attempt).join(", ")}; they must be 1 to ${tries.length}`,
+                );
+            }
+        });
         const { project, ...item } = tries.at(-1);
         delete item.attempt;
         delete item.passed;
