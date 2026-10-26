@@ -24,6 +24,8 @@ included, so the token never travels in a request header and a plain `<img>` can
   the token, or the whole URL `serve` printed.
 - A server restarted with the same token names its cookie anew, so the page signs in again by
   itself from the token it remembers; you see nothing.
+- It lasts a week, and the page renews it each time it opens, so the cookies of servers since
+  restarted expire on their own.
 
 ## Scripts
 

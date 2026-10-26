@@ -6,7 +6,7 @@
  * the `x-review-token` header, and any request naming another origin is refused.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { FIXTURE, FIXTURE_CONFIG, makeRepo, onePr } from "./helpers.mjs";
+import { FIXTURE, FIXTURE_CONFIG, job, makeRepo, onePr } from "./helpers.mjs";
 
 // Every directory read, by any code in this process.
 const dirReads = vi.hoisted(() => ({ count: 0 }));
@@ -64,11 +64,12 @@ afterEach(async () => {
 
 /**
  * Starts the app on a random port of 127.0.0.1, over the fixture as pull request #123.
- * @param {object} [options] passed to createApp
+ * @param {object} [options] passed to createApp, but `ghOf`
+ * @param {(r: object) => Function} [options.ghOf] makes the gh runner for the repository
  * @returns {Promise<object>} `get(path, headers)`, `post(path, body, headers)`, the origin, the
  *     app and its tmp directory
  */
-async function start(options = {}) {
+async function start({ ghOf = onePr(), ...options } = {}) {
     const r = makeRepo();
     const server = createServer();
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -81,7 +82,7 @@ async function start(options = {}) {
         config: FIXTURE_CONFIG,
         token: TOKEN,
         origin,
-        gh: onePr()(r),
+        gh: ghOf(r),
         ...options,
     });
     server.on("request", app);
@@ -168,6 +169,54 @@ describe("serve: images and pictures by their content", () => {
         expect((await s.get(`/api/blob/${BUTTON.baseline}`, { "x-review-token": TOKEN })).status).toBe(200);
         expect(dirReads.count).toBe(0);
     });
+
+    it("keeps serving an image two pull requests share after either closes and its download is pruned", async () => {
+        const other = "4".repeat(40);
+        const pushed = "5".repeat(40);
+        // Whichever loaded last, closing each in turn closes the one the image was found under once.
+        for (const closed of [123, 124]) {
+            const prs = [];
+            const runs = {};
+            const ghOf = (r) => {
+                prs.push(
+                    { number: 123, head: r.head, branch: "feature" },
+                    { number: 124, head: other, branch: "other" },
+                );
+                Object.assign(runs, { [r.head]: { id: 1000, head: r.head }, [other]: { id: 1001, head: other } });
+                const fake = onePr({
+                    prs,
+                    runs,
+                    jobs: { 1000: [job("compact-mantine")], 1001: [job("compact-mantine")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1"], 1001: ["visual-compact-mantine-1"] },
+                    results: { "visual-compact-mantine-1": { commit: r.head, headSha: r.head } },
+                })(r);
+                // A run GitHub cannot answer for: its pull request keeps the capture it showed.
+                return async (args, input) => {
+                    if (args[1]?.endsWith("actions/runs/1002")) {
+                        throw new Error("HTTP 502");
+                    }
+                    return fake(args, input);
+                };
+            };
+            const s = await start({ ghOf });
+            const token = { "x-review-token": TOKEN };
+            expect((await s.get("/api/pr/124/compact-mantine", token)).status).toBe(200);
+            expect((await s.get(`/api/blob/${BUTTON.capture}`, token)).status).toBe(200);
+            // One closes; the other is pushed to, and its new run cannot be read yet, so it keeps
+            // its capture without loading it again. The refresh prunes the closed one's download.
+            const kept = prs.find((p) => p.number !== closed);
+            prs.splice(prs.indexOf(prs.find((p) => p.number === closed)), 1);
+            kept.head = pushed;
+            runs[pushed] = { id: 1002, head: pushed };
+            expect((await s.get("/api/prs", token)).status).toBe(200);
+            const gone = closed === 123 ? "1000-1" : "1001-1";
+            expect([closed, existsSync(join(s.tmp, gone))]).toEqual([closed, false]);
+            const blob = await s.get(`/api/blob/${BUTTON.capture}`, token);
+            expect([closed, blob.status]).toEqual([closed, 200]);
+            const pic = await s.get(`/api/pic/${picName(BUTTON, "auto")}`, token);
+            expect([closed, pic.status]).toEqual([closed, 200]);
+        }
+    });
 });
 
 describe("serve: the session cookie", () => {
@@ -180,7 +229,7 @@ describe("serve: the session cookie", () => {
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ had: false });
         const cookie = res.headers.get("set-cookie");
-        expect(cookie).toMatch(/^vr_session_a1b2=[\w-]+; Path=\/; HttpOnly; SameSite=Strict$/);
+        expect(cookie).toMatch(/^vr_session_a1b2=[\w-]+; Path=\/; Max-Age=604800; HttpOnly; SameSite=Strict$/);
         // The cookie is not the token.
         expect(cookie).not.toContain(TOKEN);
         // Sent again with it: the page already had a good one.

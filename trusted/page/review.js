@@ -836,9 +836,16 @@ function useToken(e, field) {
 // token, else to `{ had }`: whether the page already held a good cookie (a server restarted since
 // names its cookie anew). One request per token at a time.
 let signing = null;
+// What the page knows of its cookie: the token an answer last showed it good for (until a 401 or
+// a tap to retry a tile says it may not be), and when, in the order requests were sent (`asked`),
+// a sign-in last replaced it. An image that fails while the cookie is known good, and that was not
+// asked for before the cookie was replaced, failed for another reason: it does not sign in again.
+let asked = 0;
+const cookie = { goodFor: null, changedAt: 0 };
 function signIn() {
     if (signing?.token !== token) {
         const sent = token;
+        const at = ++asked;
         const done = fetch("/api/session", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -850,7 +857,12 @@ function signIn() {
             if (!res.ok) {
                 throw new Error(`signing in: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
             }
-            return res.json();
+            const answer = await res.json();
+            if (!answer.had) {
+                cookie.changedAt = at;
+            }
+            cookie.goodFor = sent;
+            return answer;
         });
         signing = { token: sent, done };
         done.finally(() => {
@@ -865,12 +877,15 @@ function signIn() {
 async function api(path, body) {
     const sent = token;
     await signing?.done.catch(() => {});
-    const send = () =>
-        fetch(path, {
+    const send = async () => {
+        const res = await fetch(path, {
             method: body ? "POST" : "GET",
             headers: body ? { "content-type": "application/json" } : {},
             body: body ? JSON.stringify(body) : undefined,
         });
+        cookie.goodFor = res.status === 401 ? null : sent;
+        return res;
+    };
     let res = await send();
     // No cookie, or one of a server since restarted: signed in again, the request is sent again.
     if (res.status === 401 && sent && sent === token && (await signIn())) {
@@ -924,9 +939,11 @@ const picUrl = (item, kind) =>
     `/api/pic/${item.baseline ?? "none"}-${item.capture ?? "none"}-${item.threshold}-${item.includeAA ? 1 : 0}-${kind}`;
 
 // An image, loaded. One that fails is tried once more if the page had no good session cookie (a
-// server restarted since): signed in again first. A refused token asks for it.
+// server restarted since): signed in again first, unless the cookie is known good. A refused
+// token asks for it.
 function loaded(url, what, again = true) {
     const sent = token;
+    const at = ++asked;
     return new Promise((resolve, reject) => {
         const img = new Image();
         img.decoding = "async";
@@ -934,7 +951,9 @@ function loaded(url, what, again = true) {
         img.onerror = () => reject(new Error(`${what}: the image could not be shown`));
         img.src = url;
     }).catch(async (err) => {
-        const signed = again && sent && sent === token ? await signIn().catch(() => ({ had: true })) : { had: true };
+        const shownGood = cookie.goodFor === sent && cookie.changedAt < at;
+        const signed =
+            again && sent && sent === token && !shownGood ? await signIn().catch(() => ({ had: true })) : { had: true };
         if (signed === null) {
             if (sent === token) {
                 askToken(REFUSED);
@@ -2299,13 +2318,14 @@ const nearScreen = new IntersectionObserver(
 function pumpThumbs() {
     while (thumbsLoading < 6 && thumbQueue.length > 0) {
         const img = thumbQueue.shift();
-        if (!img.isConnected) {
+        const { file } = img.dataset;
+        // A tile whose item a newer list no longer has is about to go: it takes no slot.
+        const item = img.isConnected ? state.data?.items.find((i) => i.file === file) : undefined;
+        if (!item) {
             continue;
         }
         thumbsLoading++;
-        const { file } = img.dataset;
         const wait = img.previousElementSibling;
-        const item = state.data.items.find((i) => i.file === file);
         const spot =
             (state.gridSpot || state.gridZoom) && item.baseline && item.capture && item.baseline !== item.capture;
         const show = (url, lit) => {
@@ -2432,6 +2452,8 @@ function tile(item) {
             onclick: (e) => {
                 // A failed thumbnail is fetched again; otherwise the tile opens its item.
                 if (img && e.currentTarget.dataset.failed !== undefined) {
+                    // A server restarted since may have ended the cookie: the retry checks it.
+                    cookie.goodFor = null;
                     thumbQueue.push(img);
                     img.previousElementSibling.textContent = "Loading...";
                     pumpThumbs();

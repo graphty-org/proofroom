@@ -56,6 +56,38 @@ function png(n, mark) {
 }
 
 /**
+ * Gives `w`'s compact-mantine capture `count` changed snapshots, four to a component.
+ * @param {object} w the fake GitHub
+ * @param {number} count how many
+ */
+function snapshots(w, count) {
+    const dir = tempDir("vr-pictures-");
+    const items = [];
+    const files = {};
+    for (let n = 0; n < count; n++) {
+        const id = `c${Math.floor(n / 4)}--s${n}`;
+        const file = `${id}.png`;
+        const [a, b] = [png(n % 32, false), png(n % 32, true)];
+        writeFileSync(join(dir, `a${n}.png`), a);
+        writeFileSync(join(dir, `b${n}.png`), b);
+        // Each snapshot its own settings, so no two share a picture's name.
+        items.push({
+            ...BUTTON,
+            id,
+            mode: null,
+            file,
+            baseline: sha256(a),
+            capture: sha256(b),
+            threshold: n / 10000,
+        });
+        files[file] = join(dir, `b${n}.png`);
+        files[`baselines/${file}`] = join(dir, `a${n}.png`);
+    }
+    w.data.results["visual-compact-mantine-1"] = { items, expected: items.length };
+    w.data.files["visual-compact-mantine-1"] = files;
+}
+
+/**
  * Serves `w` as pull request #123, counting what the server answers under /api/pic and /api/blob,
  * and opens the page on its targets screen.
  * @param {object} r the repository
@@ -156,46 +188,46 @@ describe("review page: pictures and images by their content", () => {
         expect(pictures()).toEqual(first);
     });
 
-    it("asks only for the pictures on or near the screen of a list of 300 snapshots", async () => {
+    it.each([300, 3000])(
+        "asks only for the pictures on or near the screen of a list of %i snapshots",
+        async (count) => {
+            const r = makeRepo();
+            const w = world(r);
+            snapshots(w, count);
+            await open(r, w, { width: 1000, height: 800 });
+            await review();
+            await page.locator("#group-similar").click();
+            await expect.poll(() => page.locator("#group-similar").getAttribute("aria-pressed")).toBe("false");
+            const { onScreen } = await shownOnScreen();
+            // The tiles on the screen, and the few the page started on as they came near: each asked
+            // for once, in at most 0.6 MB, and nowhere near all of them.
+            expect(onScreen).toBeGreaterThan(0);
+            expect(pictures().length).toBeGreaterThanOrEqual(onScreen);
+            expect(pictures().length).toBeLessThan(30);
+            expect(new Set(pictures().map((p) => p.path)).size).toBe(pictures().length);
+            expect(pictures().reduce((sum, p) => sum + p.bytes, 0)).toBeLessThanOrEqual(600_000);
+            expect(images()).toEqual([]);
+        },
+    );
+
+    it("signs in again for no failed picture while the cookie is known good, but on a tap to retry", async () => {
         const r = makeRepo();
         const w = world(r);
-        const dir = tempDir("vr-pictures-");
-        const items = [];
-        const files = {};
-        for (let n = 0; n < 300; n++) {
-            const id = `c${Math.floor(n / 4)}--s${n}`;
-            const file = `${id}.png`;
-            const [a, b] = [png(n % 32, false), png(n % 32, true)];
-            writeFileSync(join(dir, `a${n}.png`), a);
-            writeFileSync(join(dir, `b${n}.png`), b);
-            // Each snapshot its own settings, so no two share a picture's name.
-            items.push({
-                ...BUTTON,
-                id,
-                mode: null,
-                file,
-                baseline: sha256(a),
-                capture: sha256(b),
-                threshold: n / 1000,
-            });
-            files[file] = join(dir, `b${n}.png`);
-            files[`baselines/${file}`] = join(dir, `a${n}.png`);
-        }
-        w.data.results["visual-compact-mantine-1"] = { items, expected: items.length };
-        w.data.files["visual-compact-mantine-1"] = files;
-        await open(r, w, { width: 1000, height: 800 });
+        snapshots(w, 60);
+        await open(r, w, { width: 1000, height: 2400 });
+        const posts = [];
+        page.on("request", (req) => req.url().endsWith("/api/session") && posts.push(req.method()));
+        await page.route("**/api/pic/**", (route) => route.fulfill({ status: 404, body: "{}" }));
         await review();
         await page.locator("#group-similar").click();
         await expect.poll(() => page.locator("#group-similar").getAttribute("aria-pressed")).toBe("false");
-        const { onScreen } = await shownOnScreen();
-        // The tiles on the screen, and the few the page started on as they came near: each asked
-        // for once, in at most 0.6 MB, and nowhere near all 300.
-        expect(onScreen).toBeGreaterThan(0);
-        expect(pictures().length).toBeGreaterThanOrEqual(onScreen);
-        expect(pictures().length).toBeLessThan(30);
-        expect(new Set(pictures().map((p) => p.path)).size).toBe(pictures().length);
-        expect(pictures().reduce((sum, p) => sum + p.bytes, 0)).toBeLessThanOrEqual(600_000);
-        expect(images()).toEqual([]);
+        // Every tile asked for has failed: many more than load at once.
+        await page.waitForFunction(() => globalThis.document.querySelectorAll(".tile[data-failed]").length > 12);
+        // The list's own requests showed the cookie good, so no failed tile signs in again.
+        expect(posts).toEqual([]);
+        // A tap to retry checks it once, as after a server restart.
+        await page.locator(".tile[data-failed]").first().click();
+        await expect.poll(() => posts).toEqual(["POST"]);
     });
 
     it("sends at most 0.1 MB of pictures for a list of a few snapshots, and each image of an item once", async () => {

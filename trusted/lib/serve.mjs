@@ -98,7 +98,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -1913,6 +1913,7 @@ export function createApp({
             const run = /^(\d+)-\d+$/.exec(d)?.[1];
             if (run && !runs.has(Number(run))) {
                 rmSync(join(tmp, d), { recursive: true, force: true });
+                forgetImages(join(tmp, d));
             }
         }
     }
@@ -2708,10 +2709,35 @@ export function createApp({
     /**
      * Every image a loaded capture's results.json names, by its hash, and every item's pictures, by
      * pairKey with `none` for a missing side: filled as each capture loads, so the image and
-     * picture routes find a file in a Map, never by reading a directory.
+     * picture routes find a file in a Map, never by reading a directory. Each key keeps every
+     * capture directory that names it, so two targets showing the same image both keep it when
+     * one's download is pruned.
      */
     const blobs = new Map();
     const pictured = new Map();
+    const remember = (map, key, dir, value) => {
+        const by = map.get(key) ?? new Map();
+        by.delete(dir);
+        by.set(dir, value);
+        map.set(key, by);
+    };
+    // The newest capture that names the key.
+    const recall = (map, key) => [...(map.get(key)?.values() ?? [])].pop();
+    // Forgets every capture directory under `root`, as prune() removes it.
+    function forgetImages(root) {
+        for (const map of [blobs, pictured]) {
+            for (const [key, by] of map) {
+                for (const dir of by.keys()) {
+                    if (dir === root || dir.startsWith(`${root}${sep}`)) {
+                        by.delete(dir);
+                    }
+                }
+                if (by.size === 0) {
+                    map.delete(key);
+                }
+            }
+        }
+    }
     function indexImages(dir, r) {
         for (const item of r.items) {
             // A failed item has no image in the artifact.
@@ -2721,10 +2747,10 @@ export function createApp({
             const [a, b] = ["baseline", "capture"].map((k) => (item[k] ? whereOf(dir, item, k) : null));
             for (const w of [a, b]) {
                 if (w) {
-                    blobs.set(w.hash, w);
+                    remember(blobs, w.hash, dir, w);
                 }
             }
-            pictured.set(pairKey(item.baseline ?? "none", item.capture ?? "none", item), { a, b, item });
+            remember(pictured, pairKey(item.baseline ?? "none", item.capture ?? "none", item), dir, { a, b, item });
         }
     }
 
@@ -2736,7 +2762,7 @@ export function createApp({
      */
     async function pictureNamed(name) {
         const [, key, kind] = PICTURE_NAME.exec(name) ?? [];
-        const found = key && PICTURE_KINDS.includes(kind) ? pictured.get(key) : undefined;
+        const found = key && PICTURE_KINDS.includes(kind) ? recall(pictured, key) : undefined;
         if (!found) {
             return [404, { error: "no such picture" }];
         }
@@ -2925,7 +2951,7 @@ export function createApp({
         },
         // An image results.json names, by its hash; and a picture, by its content-addressed name.
         "GET /api/blob": async ([hash]) => {
-            const where = blobs.get(hash);
+            const where = recall(blobs, hash);
             const answer = where ? await readImage(where) : [404, { error: "no such image" }];
             return answer[0] === 200 ? [...answer, IMMUTABLE] : answer;
         },
@@ -3546,7 +3572,8 @@ export function createApp({
             .find((c) => c.startsWith(`${COOKIE}=`));
         return given !== undefined && token.length > 0 && tokenOk(given.slice(COOKIE.length + 1), cookieValue);
     };
-    const setCookie = `${COOKIE}=${cookieValue}; Path=/; HttpOnly; SameSite=Strict${
+    // A week, so the cookies of earlier starts (each its own name) expire; the page signs in on load.
+    const setCookie = `${COOKIE}=${cookieValue}; Path=/; Max-Age=604800; HttpOnly; SameSite=Strict${
         origin.startsWith("https:") ? "; Secure" : ""
     }`;
 
