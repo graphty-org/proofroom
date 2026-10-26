@@ -13,6 +13,8 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
+import { MAX_ATTEMPTS } from "./lib/results.mjs";
+
 const HELP = {
     init: `usage: proofroom init [--force]
 
@@ -59,8 +61,8 @@ JUnit file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the t
   --reference <dir>       the default branch's capture (from \`reference\`): a story with no
                           baseline that looks as it does there is "unseeded", not "new"
   --stories <prefix,...>  only the story ids starting with a prefix, for a quick local preview
-  --retries <n>           shoot a snapshot that did not pass again, up to n times (default 0);
-                          each shot is one attempt, and the last one is the snapshot's result
+  --retries <n>           shoot a snapshot that did not pass again, up to n times (default 0,
+                          at most 20); each shot is one attempt, and the last one is the result
   --junit <file>          the JUnit file (default: <dir>/junit.xml)
   --no-fail               exit 0 when a snapshot did not pass; 2 still when the tool failed`,
 
@@ -75,7 +77,8 @@ prints its directory, or prints nothing when there is none. CI runs it before \`
 Judges captured images against the baselines, one snapshot at a time, and prints each snapshot's
 result line on standard output as it is judged, appending it to <out>/results.ndjson. With
 --project, the images are a capture's (<dir>/capture.ndjson names them); without it, every PNG in
-<dir>, made by any tool, is matched to the baseline of the same file name. Once the whole capture
+<dir>, made by any tool, is matched to the baseline of the same file name; run it inside a git
+checkout, since results.json records the commit. Once the whole capture
 is judged it reports every baseline nothing drew as removed and writes results.json and the JUnit
 file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the tool failed.
 
@@ -313,7 +316,7 @@ async function run(args) {
     });
     const retries = Number(values.retries ?? 0);
     const options = await shootOptions(values, HELP.run);
-    if (!options || !(Number.isInteger(retries) && retries >= 0)) {
+    if (!options || !(Number.isInteger(retries) && retries >= 0 && retries <= MAX_ATTEMPTS)) {
         if (options) {
             console.error(HELP.run);
         }

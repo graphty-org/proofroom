@@ -37,6 +37,10 @@ names the default branch's newest capture (from `proofroom reference`), so a sto
 that looks as it does there is "no baseline yet" rather than "new"; `--stories <prefix,...>` shoots
 only the story ids starting with a prefix, for a quick look (then no baseline is reported removed).
 
+`run` keeps only the images that need review, so `compare` on its directory reports every other
+snapshot `failed`, with the missing image as the reason. To judge a capture again later, run
+`capture` and `compare` instead.
+
 ### Retries
 
 ```sh
@@ -45,7 +49,7 @@ proofroom run --project web --out .visual-review/web --retries 1
 
 Every snapshot is shot once. Without retries, a story that draws differently from one render to
 the next (an animation that was not stopped, a font that arrived late) shows as changed. With
-`--retries N`, a snapshot that did not pass is shot again, up to N times. Each shot is one attempt:
+`--retries N` (at most 20), a snapshot that did not pass is shot again, up to N times. Each shot is one attempt:
 the last attempt is the snapshot's result, and the earlier ones are kept with it (`attempts` in
 `results.json`, `<flakyFailure>` or `<rerunFailure>` in the JUnit file). proofroom never calls a
 snapshot flaky; a flaky-test tool reading the JUnit file can. Keep N low: a real change fails every

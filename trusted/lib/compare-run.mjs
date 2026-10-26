@@ -295,7 +295,9 @@ export async function* imageLines({ project, captures, threshold, includeAA, log
     yield {
         type: "start",
         project,
-        ...(await provenance()),
+        ...(await provenance().catch((err) => {
+            throw new Error(`run compare inside a git checkout: results.json records its commit (${err.message})`);
+        })),
         capturedAt: new Date().toISOString(),
         clock: {},
         environment: { tool: toolVersion() },
@@ -462,7 +464,28 @@ export async function compareRun({
             );
             return;
         }
-        const bytes = line.bytes ?? (await readFile(join(captures, file)));
+        const bytes =
+            line.bytes ??
+            (await readFile(join(captures, file)).catch((e) => {
+                if (e.code === "ENOENT") {
+                    return null;
+                }
+                throw e;
+            }));
+        if (bytes === null) {
+            await report(
+                {
+                    ...withFrom,
+                    ...EMPTY,
+                    baseline: baseline && sha256(baseline),
+                    status: "failed",
+                    reason: `the capture has no image ${file}: run removes the images of snapshots that need no review`,
+                    console: [],
+                },
+                line,
+            );
+            return;
+        }
         const r = classify({
             baseline,
             first: bytes,

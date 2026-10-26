@@ -34,6 +34,7 @@ import { PNG } from "pngjs";
 
 import { DEFAULT_THRESHOLD, pngSize, sha256 } from "../trusted/lib/compare.mjs";
 import { CAPTURE_LINES, clip, compareRun, fileName, provenance, toolVersion } from "../trusted/lib/compare-run.mjs";
+import { MAX_ATTEMPTS } from "../trusted/lib/results.mjs";
 
 // Moved to compare-run.mjs, where compare reads them without loading Playwright; still exported
 // here for the modules and callers that import them from capture.
@@ -687,6 +688,9 @@ export function capture({
  * @returns {ReturnType<typeof compareRun>} what compareRun returns
  */
 export function run({ reference = null, retries = 0, junit, print, ...options }) {
+    if (!(Number.isInteger(retries) && retries >= 0 && retries <= MAX_ATTEMPTS)) {
+        throw new Error(`retries must be an integer from 0 to ${MAX_ATTEMPTS}`);
+    }
     const shots = capture(options);
     return compareRun({
         project: options.project,

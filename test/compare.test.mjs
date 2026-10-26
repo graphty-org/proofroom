@@ -558,5 +558,35 @@ describe("compare and run on a Storybook", () => {
         const broken = await go("--no-fail");
         expect(broken.status).toBe(2);
         expect(broken.stderr).toMatch(/proofroom run: .*demo--plain.png: baseline is an LFS pointer; run git lfs pull/);
+        // results.json holds at most 20 earlier attempts, so more retries are refused up front.
+        const tooMany = await go("--retries", "21");
+        expect(tooMany.status).toBe(2);
+        expect(tooMany.stderr).toMatch(/usage: proofroom run/);
+    });
+
+    it("compare on run's directory reports a snapshot whose image run removed as failed", async () => {
+        const sb = storybook(counter.url);
+        const baselines = tempDir("vr-bl-");
+        const options = { project: "demo", storybook: sb, baselines, workers: 2, ...quiet };
+        const stories = ["demo--plain", "demo--small"];
+        const seedOut = tempDir("vr-out-");
+        await captureAll({ ...options, out: seedOut, stories });
+        copyFileSync(join(seedOut, "demo--plain.png"), join(baselines, "demo--plain.png"));
+        const out = tempDir("vr-out-");
+        await runCapture({ ...options, out, stories });
+        const { results } = await compareRun({
+            project: "demo",
+            baselines,
+            captures: out,
+            out: tempDir("vr-again-"),
+            lines: captureLines(out),
+            ...quiet,
+        });
+        const statuses = Object.fromEntries(results.items.map((i) => [i.file, [i.status, i.reason]]));
+        expect(statuses["demo--small.png"][0]).toBe("new");
+        expect(statuses["demo--plain.png"]).toEqual([
+            "failed",
+            "the capture has no image demo--plain.png: run removes the images of snapshots that need no review",
+        ]);
     });
 });
