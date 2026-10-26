@@ -21,8 +21,8 @@ import { loadConfig, repoRoot } from "../trusted/lib/config.mjs";
 import { MAX_ATTEMPTS } from "../trusted/lib/results.mjs";
 import { CHROMIUM_ARGS, CLOCK_START, MAX_SHOT_HEIGHT, pinnedFonts, SCALE, VIEWPORT } from "./capture.mjs";
 
-/** Adapters made in this process, which name their run files. */
-let adapters = 0;
+/** Test runs this process wrote a run file for, which name the run files. */
+let runs = 0;
 
 const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
 
@@ -308,8 +308,6 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
         provenance().then((p) => Object.assign(header, p)),
         fontconfig && pinnedFonts(fontconfig).then((f) => (header.environment.fonts = f)),
     ]);
-    // A file of its own per adapter, so a rerun into the same directory keeps the first run's.
-    const runFile = join(out, `run-${process.pid}-${++adapters}.json`);
     const planned = new Set();
     // Snapshots their own parameters now exclude while they have a baseline: collect says why they are removed.
     const excluded = new Set();
@@ -446,8 +444,12 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
                 excluded: [...excluded].sort((a, b) => a.localeCompare(b)),
                 ...files,
             };
+            // A file of its own per test run, so a rerun into the same directory (watch mode) keeps the earlier run's.
+            const runFile = join(out, `run-${process.pid}-${++runs}.json`);
             writeFileSync(`${runFile}.tmp`, `${JSON.stringify(run, null, 2)}\n`);
             renameSync(`${runFile}.tmp`, runFile);
+            planned.clear();
+            excluded.clear();
         },
     };
 

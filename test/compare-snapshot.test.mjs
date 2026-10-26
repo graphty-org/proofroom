@@ -4,7 +4,7 @@
  */
 
 import { AssertionError } from "node:assert";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -90,6 +90,27 @@ describe("compareSnapshot", () => {
         expect(readdirSync(out).filter((f) => f.endsWith(".png"))).toEqual([]);
     });
 
+    it("counts from the start again when out is emptied for a new run in the same process", async () => {
+        const baselines = baselinesWith({ "a--one.png": png(10), "a--two.png": png(10) });
+        const out = tempDir("vr-snap-reuse-");
+        await compareSnapshot({ baselines, id: "a--one", image: png(10), out });
+        await compareSnapshot({ baselines, id: "a--one", image: png(10), out });
+        await compareSnapshot({ baselines, id: "a--two", image: png(10), out });
+        rmSync(out, { recursive: true });
+        mkdirSync(out);
+        const again = [];
+        for (const id of ["a--one", "a--two", "a--one"]) {
+            again.push(await compareSnapshot({ baselines, id, image: png(10), out }));
+        }
+        expect(again.map((l) => [l.file, l.attempt])).toEqual([
+            ["a--one.png", 1],
+            ["a--two.png", 1],
+            ["a--one.png", 2],
+        ]);
+        const [file] = readdirSync(out).filter((f) => f.endsWith(".ndjson"));
+        expect(parseResultLines(readFileSync(join(out, file), "utf8"))).toHaveLength(3);
+    });
+
     it("reads a project's baselines and settings files from the config, and PROOFROOM_OUT", async () => {
         const root = tempDir("vr-snap-repo-");
         git(root, "init", "-q");
@@ -134,7 +155,11 @@ describe("compareSnapshot", () => {
             "a--lfs.png": `version https://git-lfs.github.com/spec/v1\noid sha256:${"a".repeat(64)}\nsize 9\n`,
         });
         await expect(compareSnapshot({ baselines, id: "a--lfs", image: png(1) })).rejects.toThrow(/LFS pointer/);
-        await expect(compareSnapshot({ baselines, id: "../up", image: png(1) })).rejects.toThrow(/not a capture line/);
+        // The id is checked before any file it names is read: up.json outside the baselines is not JSON.
+        const inner = join(baselines, "inner");
+        mkdirSync(inner);
+        writeFileSync(join(baselines, "up.json"), "not json");
+        await expect(compareSnapshot({ baselines: inner, id: "../up", image: png(1) })).rejects.toThrow(/not a capture line/);
         await expect(compareSnapshot({ id: "a--one", image: png(1) })).rejects.toThrow(/project or a baselines/);
         // No image: the snapshot could not be shot, which is a result, not a throw.
         expect(await compareSnapshot({ baselines, id: "a--none", reason: "render timed out" })).toMatchObject({

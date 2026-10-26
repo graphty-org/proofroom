@@ -211,7 +211,7 @@ const LINE_FILE = /^results-\d+-\d+\.ndjson$/;
 
 /** Attempts counted without an output directory, by baselines directory, project and file. */
 const counted = new Map();
-/** Per output directory: how far each result-line file was read, and the attempts in it. */
+/** Per output directory, per result-line file: how far it was read, which file it was, its attempts. */
 const readSoFar = new Map();
 /** One count-and-append at a time per output directory, so two calls never take one attempt. */
 const turns = new Map();
@@ -219,34 +219,44 @@ const turns = new Map();
 /**
  * How many attempts of a snapshot the output directory already holds, from every process's
  * result-line file (a runner that retries in a new worker process counts on). Each file is read
- * only past where the last call stopped.
+ * only past where the last call stopped; a file that is gone, shorter or another file (the
+ * directory was emptied for a new run) is counted again from its start.
  * @param {string} out the output directory
  * @param {string} key `<project>\0<file>`
  * @returns {Promise<number>} the attempts so far
  */
 async function attemptsIn(out, key) {
-    const state = readSoFar.get(out) ?? { offsets: new Map(), attempts: new Map() };
-    readSoFar.set(out, state);
-    for (const name of (await readdir(out)).filter((f) => LINE_FILE.test(f))) {
+    const files = readSoFar.get(out) ?? new Map();
+    readSoFar.set(out, files);
+    const names = (await readdir(out)).filter((f) => LINE_FILE.test(f));
+    for (const name of files.keys()) {
+        if (!names.includes(name)) files.delete(name);
+    }
+    let total = 0;
+    for (const name of names) {
         const handle = await open(join(out, name), "r");
         try {
-            const from = state.offsets.get(name) ?? 0;
-            const { size } = await handle.stat();
-            const { buffer } = await handle.read({ buffer: Buffer.alloc(size - from), position: from });
+            const { size, ino, birthtimeMs } = await handle.stat();
+            const was = files.get(name);
+            const same = was && was.ino === ino && was.birthtimeMs === birthtimeMs && size >= was.offset;
+            const state = same ? was : { offset: 0, ino, birthtimeMs, attempts: new Map() };
+            files.set(name, state);
+            const { buffer } = await handle.read({ buffer: Buffer.alloc(size - state.offset), position: state.offset });
             const text = buffer.toString("utf8");
             // Only whole lines: another process may be writing the last one.
             const whole = text.slice(0, text.lastIndexOf("\n") + 1);
-            state.offsets.set(name, from + Buffer.byteLength(whole));
+            state.offset += Buffer.byteLength(whole);
             for (const raw of whole.split("\n").filter(Boolean)) {
                 const line = JSON.parse(raw);
                 const k = `${line.project}\0${line.file}`;
                 state.attempts.set(k, (state.attempts.get(k) ?? 0) + 1);
             }
+            total += state.attempts.get(key) ?? 0;
         } finally {
             await handle.close();
         }
     }
-    return state.attempts.get(key) ?? 0;
+    return total;
 }
 
 /** What compareSnapshot() read from disk, by baselines and reference directory, with its stamp. */
@@ -262,7 +272,16 @@ const configs = new Map();
  * @returns {Promise<string>} their modification times; a missing path stamps as nothing
  */
 const stampOf = async (paths) =>
-    (await Promise.all(paths.map((p) => stat(p, { bigint: true }).then((s) => s.mtimeNs, () => null)))).join(",");
+    (
+        await Promise.all(
+            paths.map((p) =>
+                stat(p, { bigint: true }).then(
+                    (s) => s.mtimeNs,
+                    () => null,
+                ),
+            ),
+        )
+    ).join(",");
 
 /**
  * Reads once what a run of calls shares, and again only when it changed on disk: one call then
@@ -361,6 +380,12 @@ export async function compareSnapshot(options) {
         baselines = await projectBaselines(project, options.root);
     }
     const out = options.out ?? process.env.PROOFROOM_OUT ?? null;
+    const file = typeof id === "string" ? fileName(id, mode) : null;
+    // The id names files under the baselines: check it before reading any of them.
+    checkLine(
+        { type: "failed", project, id, mode, file, settings: { threshold: 0, includeAA: false }, console },
+        project,
+    );
     // The story settings file is part of the approved baselines: every key it sets wins.
     const asked = { diffThreshold: options.settings?.threshold, diffIncludeAntiAliasing: options.settings?.includeAA };
     const fromFile = storySettings({ chromatic: asked }, await loadSettings(baselines, id));
@@ -375,7 +400,7 @@ export async function compareSnapshot(options) {
         project,
         id,
         mode,
-        file: typeof id === "string" ? fileName(id, mode) : null,
+        file,
         settings,
         console,
         reason: type === "failed" ? (reason ?? "the snapshot has no image") : reason,

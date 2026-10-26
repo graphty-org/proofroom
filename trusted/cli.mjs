@@ -140,7 +140,9 @@ otherwise. \`merge-results\` is another name for it, until 1.0.0.
   --project <id>     a project of visual-review.config.json
   --out <dir>        where the capture goes
   --baselines <dir>  the baselines (default: <baselines>/<id> from the config)
-  --junit <file>     the JUnit file (default: <out>/junit.xml)`,
+  --junit <file>     the JUnit file (default: <out>/junit.xml)
+  --whole            the runner ran every snapshot to the end (for a directory with no run file or
+                     openCapture() list)`,
 
     junit: `usage: proofroom junit --results <dir> --out <file>
 

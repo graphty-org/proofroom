@@ -249,4 +249,19 @@ describe("story tests' visual step", () => {
             "b--flip": ["unchanged", 1],
         });
     });
+
+    it("writes a run file per test run, so a rerun by the same adapter (watch mode) keeps the earlier one", async () => {
+        const root = repo({ "a--same.png": png(10), "b--lost.png": png(10) });
+        const out = tempDir("story-test-out-");
+        const files = ["a.stories.ts", "b.stories.ts"];
+        const v = visualStoryTest({ project: PROJECT, out, root });
+        await storyTest(v, "a--same", [png(10)]);
+        await report(v, root, { files, ran: { "a.stories.ts": ["a--same"] } });
+        // The rerun's story test never reached the visual step: its own run says so.
+        await report(v, root, { files, ran: { "b.stories.ts": ["b--lost"] } });
+        const runs = runsIn(out).map((r) => [r.reported, r.missing]);
+        expect(runs).toHaveLength(2);
+        expect(runs).toEqual(expect.arrayContaining([[false, ["b--lost"]]]));
+        expect(runs.filter(([, missing]) => missing.length === 0)).toHaveLength(1);
+    });
 });
