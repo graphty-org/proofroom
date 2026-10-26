@@ -101,6 +101,7 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { gzipSync } from "node:zlib";
 
 import { contentHash } from "../gate.mjs";
 
@@ -168,6 +169,21 @@ const NEXT_TYPES = {
     svg: "image/svg+xml",
     png: "image/png",
 };
+// A JSON answer at least this long goes gzipped to a client that accepts it; below it, the header
+// costs about what gzip saves. Images are compressed already and are never gzipped again.
+const GZIP_FROM = 1024;
+/**
+ * Whether a request's Accept-Encoding takes gzip: listed, and not with `q=0`.
+ * @param {string | string[] | undefined} header the header
+ * @returns {boolean} whether it does
+ */
+const acceptsGzip = (header) =>
+    String(header ?? "")
+        .split(",")
+        .some((part) => {
+            const [name, ...params] = part.split(";").map((x) => x.trim().toLowerCase());
+            return name === "gzip" && !params.some((x) => /^q=0(?:\.0*)?$/.test(x));
+        });
 const HEADERS = {
     "content-security-policy":
         "default-src 'self'; img-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -2899,7 +2915,7 @@ export function createApp({
         if (!t) {
             return gone(id, run);
         }
-        const item = p?.results.items.find((i) => i.file === file);
+        const item = itemIn(p?.results, file);
         // A failed item has no image in the artifact: capture keeps no copy of its baseline.
         const hash = item && item.status !== "failed" && { capture: item.capture, baseline: item.baseline }[kind];
         if (!hash) {
@@ -2907,6 +2923,36 @@ export function createApp({
         }
         return { ...whereOf(p.dir, item, kind), item };
     }
+
+    /**
+     * Each capture set's Look alike groups, with what they were computed from: they depend on the
+     * images, the known noise and the images approved before, never on the decisions, so they are
+     * computed once per load (and again only when a refresh replaces the noise or the approvals),
+     * not once per list request.
+     * @type {WeakMap<object, { t: object, files: string[] | null, noise: Map<string, object>,
+     *     approved: Map<string, object>, grouped: ReturnType<typeof clusters> }>}
+     */
+    const lookAlikes = new WeakMap();
+    /**
+     * A project's Look alike groups. They leave out what has a group of its own: known noise and
+     * approved before.
+     * @param {object} t the target
+     * @param {string} name the project
+     * @param {object} results its results.json
+     * @param {object[]} shown its items as the list shows them, `noise` marked
+     * @returns {ReturnType<typeof clusters>} the groups
+     */
+    const lookAlike = (t, name, results, shown) => {
+        const kept = lookAlikes.get(results);
+        if (kept?.t === t && kept.files === t.changedFiles && kept.noise === noise && kept.approved === approved) {
+            return kept.grouped;
+        }
+        const grouped = clusters(
+            shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !approvedBefore(t, name, i)),
+        );
+        lookAlikes.set(results, { t, files: t.changedFiles, noise, approved, grouped });
+        return grouped;
+    };
 
     /**
      * Where an item's image is in its capture's directory.
@@ -3196,7 +3242,7 @@ export function createApp({
             if (!t) {
                 return gone(String(body.id), body.run);
             }
-            const item = p?.results.items.find((i) => i.file === body.file);
+            const item = itemIn(p?.results, body.file);
             if (!item) {
                 return [404, { error: "no such item" }];
             }
