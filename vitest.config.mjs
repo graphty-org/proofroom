@@ -1,10 +1,9 @@
 import { defineConfig } from "vitest/config";
-import { ciReporters } from "../vitest.ci-junit.mjs";
-import { workerShare } from "../tools/test-slots.mjs";
 
 export default defineConfig({
     test: {
-        reporters: ["default", ...ciReporters()],
+        // In CI, JUnit results beside the console output, for the run's test report.
+        reporters: process.env.CI ? ["default", ["junit", { outputFile: "test-results/junit.xml" }]] : ["default"],
         environment: "node",
         include: ["test/**/*.test.mjs"],
         // The suite's own limit, as the other packages' browser suites have: a hang detector, not a
@@ -21,9 +20,7 @@ export default defineConfig({
         // helpers.mjs) go when it finishes.
         setupFiles: ["test/isolate-git.setup.mjs", "test/no-network.setup.mjs"],
         // The repository every test's makeRepo copies.
-        globalSetup: ["test/repo-template.setup.mjs", "../tools/test-slots.mjs"],
-        // At most this run's share of the cores (tools/test-slots.mjs).
-        maxWorkers: workerShare(),
+        globalSetup: ["test/repo-template.setup.mjs"],
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "json", "lcov", "html"],

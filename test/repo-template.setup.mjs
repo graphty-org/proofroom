@@ -4,7 +4,7 @@
 
 import { rmSync } from "node:fs";
 
-import { isolateGit } from "../../tools/isolated-git-env.mjs";
+import { isolateGit } from "./isolated-git-env.mjs";
 import { buildConflicted, buildRepo } from "./helpers.mjs";
 
 /**

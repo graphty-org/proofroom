@@ -77,7 +77,7 @@ describe("parity", () => {
     });
 });
 
-describe("visual-review parity", () => {
+describe("proofroom parity", () => {
     const cli = new URL("../trusted/cli.mjs", import.meta.url).pathname;
     const run = (...args) => spawnSync(process.execPath, [cli, "parity", ...args], { encoding: "utf8" });
 

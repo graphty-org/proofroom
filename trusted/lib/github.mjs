@@ -97,7 +97,7 @@ export async function retryOnNetwork(run, { label, delays = RETRY_DELAYS, on = T
         } catch (err) {
             const retry = i < delays.length && on.test(err.message);
             const next = retry ? `; retrying in ${delays[i] / 1000} s` : "";
-            console.error(`visual-review: ${label} failed${next}: ${err.message}`);
+            console.error(`proofroom: ${label} failed${next}: ${err.message}`);
             if (!retry) {
                 throw err;
             }
@@ -306,7 +306,7 @@ function download(gh, runId, name, dir) {
         } catch (err) {
             // Damaged on this disk (CI uploads only results.json it wrote): download it again.
             console.error(
-                `visual-review: ${join(dir, "results.json")} is unreadable, downloading again: ${err.message}`,
+                `proofroom: ${join(dir, "results.json")} is unreadable, downloading again: ${err.message}`,
             );
         }
     }

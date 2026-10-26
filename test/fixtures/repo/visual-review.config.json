@@ -1,0 +1,82 @@
+{
+    "defaultBranch": "master",
+    "workflow": "ci.yml",
+    "baselines": "visual-baselines",
+    "approvals": "visual-review-approvals",
+    "workDir": "tmp/visual-review",
+    "commitPrefix": "test(workspace)",
+    "fontconfig": "visual-fonts/fonts.conf",
+    "issueLabels": ["bug", "priority:medium", "effort:low"],
+    "usage": true,
+    "ignoreBranches": ["dependabot/"],
+    "updateCheck": "ulimit -c 0 && pnpm install --frozen-lockfile --prefer-offline && NX_DAEMON=false NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx affected -t build --base=\"$VISUAL_REVIEW_UPDATE_BASE\" --head=HEAD",
+    "projects": {
+        "compact-mantine": {
+            "storybook": "compact-mantine/storybook-static",
+            "build": "NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run compact-mantine:build-storybook",
+            "workers": 8,
+            "seedFromDefaultBranch": true
+        },
+        "graphty-element": {
+            "storybook": "graphty-element/storybook-static",
+            "build": "NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run graphty-element:build-storybook",
+            "workers": 4,
+            "seedFromDefaultBranch": true,
+            "waitFor": {
+                "selector": "graphty-element",
+                "method": "waitForStableFrame",
+                "failOnConsole": "Graph settled timeout"
+            }
+        },
+        "layout": {
+            "storybook": "layout/storybook-static",
+            "build": "NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run layout:build && NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run layout:build-storybook",
+            "workers": 4,
+            "seedFromDefaultBranch": true
+        },
+        "algorithms": {
+            "storybook": "algorithms/storybook-static",
+            "build": "NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run algorithms:build && NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run algorithms:build-storybook",
+            "workers": 4,
+            "seedFromDefaultBranch": true,
+            "waitFor": {
+                "selector": "graphty-element",
+                "method": "waitForStableFrame",
+                "failOnConsole": "Graph settled timeout"
+            }
+        },
+        "graphty": {
+            "storybook": "graphty/storybook-static",
+            "build": "NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run graphty:build-storybook",
+            "workers": 4,
+            "seedFromDefaultBranch": true,
+            "waitFor": {
+                "selector": "graphty-element",
+                "method": "waitForStableFrame",
+                "failOnConsole": "Graph settled timeout"
+            }
+        },
+        "cytoscape-extensions": {
+            "storybook": "cytoscape-extensions/storybook-static",
+            "build": "NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run cytoscape-extensions:build-storybook",
+            "workers": 4,
+            "seedFromDefaultBranch": true,
+            "waitFor": {
+                "selector": "[data-demo]",
+                "method": "whenDone",
+                "failOnConsole": "graphty demo failed"
+            }
+        },
+        "graph-io-fidelity": {
+            "storybook": "graph-io/fidelity-stories/storybook-static",
+            "build": "NODE_OPTIONS=--max-old-space-size=8192 pnpm exec nx run graph-io:build-storybook",
+            "workers": 4,
+            "seedFromDefaultBranch": true,
+            "waitFor": {
+                "selector": "[data-fidelity]",
+                "method": "whenDone",
+                "failOnConsole": "fidelity story failed"
+            }
+        }
+    }
+}

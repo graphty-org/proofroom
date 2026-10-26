@@ -1,5 +1,5 @@
 /*
- * Update from master (`visual-review update <pr>`, the page's Update from master): merging the
+ * Update from master (`proofroom update <pr>`, the page's Update from master): merging the
  * default branch into a pull request's branch, taking its side for conflicting baselines, and the
  * gate's view of the result. Real repositories with a bare remote (helpers.mjs makeRepo).
  */
@@ -182,7 +182,7 @@ describe("update from master", () => {
     });
 });
 
-describe("visual-review update <pr>", () => {
+describe("proofroom update <pr>", () => {
     /**
      * Runs the CLI in the repository, with a gh on PATH that answers the pull request's details.
      * @param {object} r the repository
@@ -207,7 +207,7 @@ describe("visual-review update <pr>", () => {
         expect(run.stderr).toBe("");
         expect(run.status).toBe(0);
         const head = git(r.remote, "rev-parse", "feature");
-        expect(run.stdout).toContain(`visual-review update: pushed ${head} to feature`);
+        expect(run.stdout).toContain(`proofroom update: pushed ${head} to feature`);
         expect(run.stdout).toContain(`  took master's side: ${PATH}`);
         expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.feature);
     });

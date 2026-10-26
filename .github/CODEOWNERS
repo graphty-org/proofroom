@@ -1,0 +1,7 @@
+# What decides whether the gate passes, and the workflows that test and release the package:
+# a change to any of these needs the owner's review.
+/trusted/gate.mjs @apowers313
+/trusted/lib/approval.mjs @apowers313
+/trusted/lib/config.mjs @apowers313
+/trusted/page/passkey.js @apowers313
+/.github/ @apowers313

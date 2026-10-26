@@ -50,7 +50,7 @@
  * `checking_base_sha`), not with the base branch, since a batch stacked on another holds that
  * batch's changes; a draft that names no such commit fails. Nothing else changes.
  *
- * Usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> |
+ * Usage: proofroom gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> |
  * --queue-event <file>], or node gate.mjs with the same options. `--pr` is only reported. Standard library only (results.mjs, config.mjs and approval.mjs
  * have no dependencies), so it runs from a checkout of this package without an install.
  */
@@ -63,7 +63,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { PASSKEYS_FILE, parsePasskeys, verifyApproval, verifyRecord } from "./lib/approval.mjs";
-import { loadConfigAt, repoRoot } from "./lib/config.mjs";
+import { CONFIG_FILE, loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { isSkipMarker, SKIPPED_FILE, validateResults } from "./lib/results.mjs";
 
 const PASSING = new Set(["unchanged", "excluded"]);
@@ -269,14 +269,14 @@ const NOT_ACCEPTED = "(not accepted; a rejected item needs a code change, not an
  */
 function notSeeded(config, p) {
     const branch = config.defaultBranch;
-    const here = "accept them on this pull request with `visual-review serve`";
+    const here = "accept them on this pull request with `proofroom serve`";
     if (config.projects[p]?.seedFromDefaultBranch === false) {
         return `(not accepted; ${p} has no baselines on ${branch} yet, so ${here} to create its first ones)`;
     }
     return (
         `(not accepted; ${p} has no baselines on ${branch} yet. Seed it: capture a known-good commit with ` +
         `\`gh workflow run visual-seed.yml --ref ${branch} -f ref=<sha>\` (or take ${branch}'s newest run), ` +
-        `review that run with \`visual-review serve --master-run <run id>\` and merge the seed pull ` +
+        `review that run with \`proofroom serve --master-run <run id>\` and merge the seed pull ` +
         `request, then merge ${branch} into this branch; or ${here})`
     );
 }
@@ -481,7 +481,7 @@ export function treeApprovalProblems({ base, head, cwd, baselines, approvals, ke
     }
     const file = `${approvals}/${tree}.json`;
     const text = fileAt(head, file, cwd);
-    const how = "review the changes with `visual-review serve` and Finish, which signs the tree";
+    const how = "review the changes with `proofroom serve` and Finish, which signs the tree";
     if (text === null) {
         return [...problems, `${baselines}/ differs from the base (tree ${tree}), and no ${file} approves it: ${how}`];
     }
@@ -490,10 +490,10 @@ export function treeApprovalProblems({ base, head, cwd, baselines, approvals, ke
 }
 
 /**
- * The files a pull request could loosen the gate with: passkeys.json, the tool's trusted code and
- * its capture, and the workflow that runs them. A change to one is a warning, never a failure (CI
- * runs the base branch's copy of the code, and work on the tool changes it), so code review looks
- * at it.
+ * The files a pull request could loosen the gate with: passkeys.json, the tool's config and the
+ * workflow that runs the gate, which pins the tool's version. A change to one is a warning, never a
+ * failure, so code review looks at it. The tool's own code is not in the repository it checks, so
+ * it is not listed.
  * @param {string} base the base branch tip
  * @param {string} head the pull request's checkout
  * @param {string} workflow the workflow file that runs the gate
@@ -501,7 +501,7 @@ export function treeApprovalProblems({ base, head, cwd, baselines, approvals, ke
  * @returns {string[]} the changed ones
  */
 export function trustFilesChanged(base, head, workflow, cwd = process.cwd()) {
-    const files = [PASSKEYS_FILE, "visual-review/trusted/", "visual-review/capture/", `.github/workflows/${workflow}`];
+    const files = [PASSKEYS_FILE, CONFIG_FILE, `.github/workflows/${workflow}`];
     return gitOut(cwd, ["diff", "--name-only", base, head, "--", ...files])
         .toString("utf8")
         .split("\n")
@@ -620,7 +620,7 @@ function approvalLines({ base, diffBase, head, root, config, headConfig }) {
     return lines;
 }
 
-export const GATE_USAGE = `usage: visual-review gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
+export const GATE_USAGE = `usage: proofroom gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
 
 Fails (exit 1) while a pull request holds visual changes nobody accepted, or baselines whose
 tree the owner has not approved: when the baselines directory differs from the base, the head
@@ -702,7 +702,7 @@ export function runGate(args) {
         );
     }
     if (problems.length + unrecorded.length > 0) {
-        console.log("Review them with `visual-review serve` (the @graphty/visual-review README).");
+        console.log("Review them with `proofroom serve` (the proofroom README).");
         return 1;
     }
     console.log("No unaccepted visual changes, and the baselines are the base's or approved by the owner.");

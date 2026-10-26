@@ -499,7 +499,7 @@ export async function screenshotWholePage(page) {
 /**
  * Which build of this tool captured: the commit of its source checkout when it runs from one
  * (a monorepo that develops it), else the installed package's name and version.
- * @returns {string} a commit sha, or `@graphty/visual-review@<version>`
+ * @returns {string} a commit sha, or `proofroom@<version>`
  */
 export function toolVersion() {
     const here = dirname(fileURLToPath(import.meta.url));

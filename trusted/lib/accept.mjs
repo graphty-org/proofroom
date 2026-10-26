@@ -112,11 +112,11 @@ const gitOk = (cwd, args) =>
         () => false,
     );
 
-/** How to set up git-lfs; the README of @graphty/visual-review, "Requirements", has more. */
+/** How to set up git-lfs; the README of proofroom, "Requirements", has more. */
 const LFS_SETUP =
     "on Ubuntu 22.04 run `sudo apt-get install git-lfs`, or put the git-lfs binary from " +
     "https://github.com/git-lfs/git-lfs/releases in ~/bin; then run `git lfs install` " +
-    '(the @graphty/visual-review README, "Requirements")';
+    '(the proofroom README, "Requirements")';
 
 /**
  * Why an accept would commit raw PNGs instead of Git LFS pointers, if it would: git-lfs is
@@ -719,7 +719,7 @@ export async function signRecord({ repo, target, prepared, approval, keys, origi
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
         await removeWorktree(repo, tree).catch((err) =>
-            console.error(`visual-review: could not remove the accept worktree ${tree}: ${err.message}`),
+            console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
         );
     }
 }
@@ -837,7 +837,7 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
         await removeWorktree(repo, tree).catch((err) =>
-            console.error(`visual-review: could not remove the accept worktree ${tree}: ${err.message}`),
+            console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
         );
     }
 }
@@ -1028,7 +1028,7 @@ async function commitAccepts({
     } finally {
         // A cleanup failure must not hide what was pushed; the next Finish removes the tree.
         await removeWorktree(repo, tree).catch((err) =>
-            console.error(`visual-review: could not remove the accept worktree ${tree}: ${err.message}`),
+            console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
         );
     }
 }
@@ -1346,7 +1346,7 @@ export async function proposeKey({ repo, gh, entry, now = new Date(), config }) 
             await git(tree, ["push", "-q", "--no-verify", "origin", `HEAD:refs/heads/${branch}`]);
         } finally {
             await removeWorktree(repo, tree).catch((err) =>
-                console.error(`visual-review: could not remove the passkey worktree ${tree}: ${err.message}`),
+                console.error(`proofroom: could not remove the passkey worktree ${tree}: ${err.message}`),
             );
         }
     } catch (err) {
@@ -1499,7 +1499,7 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
             const message = [
                 `${config.commitPrefix}: merge ${defaultBranch} into ${branch} for visual review`,
                 "",
-                `Updates #${pr} from ${defaultBranch} (visual-review update). It accepts nothing.`,
+                `Updates #${pr} from ${defaultBranch} (proofroom update). It accepts nothing.`,
                 ...taken,
                 "",
             ].join("\n");
@@ -1526,7 +1526,7 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
             return { commit: await work(["rev-parse", "HEAD"]), branch, taken: conflicts, recapture };
         } finally {
             await removeWorktree(repo, tree).catch((err) =>
-                console.error(`visual-review: could not remove the update worktree ${tree}: ${err.message}`),
+                console.error(`proofroom: could not remove the update worktree ${tree}: ${err.message}`),
             );
         }
     } catch (err) {

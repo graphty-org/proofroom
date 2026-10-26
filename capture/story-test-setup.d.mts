@@ -1,4 +1,4 @@
-// Types for story-test-setup.mjs (@graphty/visual-review/vitest/setup), for TypeScript setup files.
+// Types for story-test-setup.mjs (proofroom/vitest/setup), for TypeScript setup files.
 
 export function installVisualStoryTest(options: {
     afterEach: unknown;

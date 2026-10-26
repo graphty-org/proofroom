@@ -191,7 +191,7 @@ describe("gateProblems fails closed", () => {
         );
         expect(problems[1]).toMatch(/^layout: 1 unseeded \(not accepted; layout has no baselines on master/);
         expect(problems[0]).toMatch(/gh workflow run visual-seed\.yml --ref master -f ref=<sha>/);
-        expect(problems[0]).toMatch(/visual-review serve --master-run <run id>/);
+        expect(problems[0]).toMatch(/proofroom serve --master-run <run id>/);
     });
 
     it("tells a project seeded on pull requests to accept its first baselines there", () => {
@@ -202,7 +202,7 @@ describe("gateProblems fails closed", () => {
         };
         expect(gateProblems({ config, seeded, captures })).toEqual([
             "layout: 1 new (not accepted; layout has no baselines on master yet, so accept them on this pull " +
-                "request with `visual-review serve` to create its first ones)",
+                "request with `proofroom serve` to create its first ones)",
         ]);
     });
 
@@ -517,7 +517,7 @@ describe("signed tree approvals", () => {
         commit(r, { [PATH]: "another image" });
         const tree = treeAt("pr", BASELINES, r.repo);
         expect(check(r)).toEqual([
-            `${BASELINES}/ differs from the base (tree ${tree}), and no ${APPROVALS}/${tree}.json approves it: review the changes with \`visual-review serve\` and Finish, which signs the tree`,
+            `${BASELINES}/ differs from the base (tree ${tree}), and no ${APPROVALS}/${tree}.json approves it: review the changes with \`proofroom serve\` and Finish, which signs the tree`,
         ]);
         // A statement filed under the head's tree that signs another one.
         const other = repoWith(passkeysJson(KEY));
@@ -658,18 +658,22 @@ describe("signed tree approvals", () => {
         );
     });
 
-    it("warns about a change to any of the tool's code, its capture, passkeys.json or the workflow", () => {
+    it("warns about a change to passkeys.json, the config or the workflow, and nothing else", () => {
         const r = repoWith();
+        const config = JSON.parse(readFileSync(join(r.repo, "visual-review.config.json"), "utf8"));
         commit(r, {
+            [PASSKEYS_FILE]: passkeysJson(KEY),
+            "visual-review.config.json": { ...config, workDir: "elsewhere" },
+            ".github/workflows/ci.yml": "x",
+            ".github/workflows/other.yml": "x",
             "visual-review/trusted/cli.mjs": "x",
             "visual-review/capture/capture.mjs": "x",
-            ".github/workflows/ci.yml": "x",
             "visual-review/README.md": "x",
         });
         expect(trustFilesChanged("master", "pr", "ci.yml", r.repo)).toEqual([
             ".github/workflows/ci.yml",
-            "visual-review/capture/capture.mjs",
-            "visual-review/trusted/cli.mjs",
+            "visual-review.config.json",
+            PASSKEYS_FILE,
         ]);
     });
 
@@ -703,6 +707,30 @@ describe("signed tree approvals", () => {
             expect(differs.stdout).toMatch(/::error::visual changes not accepted -- .*1 changed/);
             expect(differs.status).toBe(1);
             expect(run(r, ["--pr", "seven"]).status).toBe(2);
+        });
+
+        // The passkey list's path is a constant: a config key naming another list is not read, so
+        // neither the base nor a pull request can point the gate at a list holding its own key.
+        it("reads the passkey list from its fixed path, whatever the config names", () => {
+            const r = repoWith(passkeysJson(KEY));
+            const own = makeKey();
+            const config = JSON.parse(readFileSync(join(r.repo, "visual-review.config.json"), "utf8"));
+            git(r.repo, "checkout", "-q", "master");
+            commit(r, {
+                "visual-review.config.json": { ...config, passkeys: "elsewhere/passkeys.json" },
+                "elsewhere/passkeys.json": passkeysJson(own),
+            });
+            git(r.repo, "checkout", "-q", "pr");
+            git(r.repo, "merge", "-q", "master");
+            commit(r, { [PATH]: "new image" });
+            approveTree(r, { key: own });
+            const refused = run(r);
+            expect(refused.stdout).toContain("approval is from a key not in passkeys.json on the base branch");
+            expect(refused.status).toBe(1);
+            approveTree(r);
+            const out = run(r);
+            expect(out.stdout).toContain("the baselines are the base's or approved by the owner");
+            expect(out.status).toBe(0);
         });
 
         it("fails a pull request that moves the approvals directory", () => {

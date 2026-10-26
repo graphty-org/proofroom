@@ -825,11 +825,11 @@ describe("serve: decisions and Finish", () => {
         // A second Finish has nothing new to post.
         expect((await finishJob(s, "123")).job.error).toBe("nothing decided");
         expect(out.mock.calls.map(([line]) => line)).toEqual([
-            "visual-review: Finish of #123 started: 3 decisions, 4 undecided",
-            `visual-review: Finish of #123 done: commit ${body.commit}, 1 rejects`,
-            "visual-review: Finish of #123 started: 0 decisions, 4 undecided",
+            "proofroom: Finish of #123 started: 3 decisions, 4 undecided",
+            `proofroom: Finish of #123 done: commit ${body.commit}, 1 rejects`,
+            "proofroom: Finish of #123 started: 0 decisions, 4 undecided",
         ]);
-        expect(err.mock.calls.map(([line]) => line)).toEqual(["visual-review: Finish of #123 failed: nothing decided"]);
+        expect(err.mock.calls.map(([line]) => line)).toEqual(["proofroom: Finish of #123 failed: nothing decided"]);
     });
 
     it("treats a finished accept as published only while the branch holds it", async () => {
@@ -2484,8 +2484,8 @@ describe("network failures", () => {
         expect(await gh(["run", "download", "1"])).toBe("ok");
         expect(calls).toBe(3);
         expect(lines()).toEqual([
-            "visual-review: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
-            "visual-review: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
+            "proofroom: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
+            "proofroom: gh run download 1 failed; retrying in 0 s: error connecting to productionresultssa0.blob.core.windows.net",
         ]);
     });
 
@@ -2511,7 +2511,7 @@ describe("network failures", () => {
         }, [0, 0, 0]);
         await expect(gh(args)).rejects.toThrow(message.split("\n")[0]);
         expect(calls).toBe(1);
-        expect(lines()).toEqual([`visual-review: gh ${args.join(" ")} failed: ${message.split("\n")[0]}`]);
+        expect(lines()).toEqual([`proofroom: gh ${args.join(" ")} failed: ${message.split("\n")[0]}`]);
     });
 
     it("shows a project whose download failed, loads the others, and retries it on the next request", async () => {
@@ -2605,7 +2605,7 @@ describe("network failures", () => {
         const { status, body } = await s.api("GET", "/api/prs");
         expect(status).toBe(200);
         expect(body.targets.map((t) => t.id)).toEqual(["master"]);
-        expect(lines()).toContain("visual-review: pull requests not listed: error connecting to api.github.com");
+        expect(lines()).toContain("proofroom: pull requests not listed: error connecting to api.github.com");
     });
 });
 

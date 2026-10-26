@@ -1,59 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { CONFIG_FILE, loadConfig, loadConfigAt, normalizeConfig } from "../trusted/lib/config.mjs";
-import { CONFIG, git, isolateGit, tempDir } from "./helpers.mjs";
+import { git, isolateGit, tempDir } from "./helpers.mjs";
 
 beforeAll(isolateGit);
-
-const CI = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
-
-// The `visual` job's matrix: "- project: <name>" followed by "artifact: <name>" and, for a Storybook that is not
-// at <name>/storybook-static, "storybook: <directory>".
-function visualMatrix() {
-    const job = CI.slice(CI.indexOf("\n    visual:\n"));
-    const include = job.slice(job.indexOf("include:"), job.indexOf("steps:"));
-    return Object.fromEntries(
-        [...include.matchAll(/- project: (\S+)\s+artifact: (\S+)(?:\s+storybook: (\S+))?/g)].map((m) => [
-            m[1],
-            { artifact: m[2], storybook: m[3] ?? `${m[1]}/storybook-static` },
-        ]),
-    );
-}
-
-// The `build` job alone, so a matching download step in a later job cannot stand in for its upload.
-function buildJob() {
-    const start = CI.indexOf("\n    build:\n");
-    return CI.slice(start, CI.indexOf("\n    test:\n", start));
-}
-
-describe("the monorepo's visual-review.config.json", () => {
-    it("lists exactly the projects the CI visual job captures", () => {
-        expect(Object.keys(visualMatrix()).sort()).toEqual(Object.keys(CONFIG.projects).sort());
-    });
-
-    it("points each project at the Storybook the build job uploads, where the visual job puts it", () => {
-        // The download step puts the artifact at the row's storybook, else at <name>/storybook-static.
-        expect(CI.slice(CI.indexOf("\n    visual:\n"))).toContain(
-            "path: ${{ matrix.storybook || format('{0}/storybook-static', matrix.project) }}/",
-        );
-        for (const [name, { artifact, storybook }] of Object.entries(visualMatrix())) {
-            const dir = CONFIG.projects[name].storybook;
-            expect(dir).toBe(storybook);
-            expect(buildJob()).toMatch(
-                new RegExp(`uses: actions/upload-artifact@v7\\s+with:\\s+name: ${artifact}\\s+path: ${dir}/`),
-            );
-        }
-    });
-
-    // layout's stories import @graphty/layout, which resolves to layout/dist.
-    it("builds layout before its Storybook, which imports the built package", () => {
-        const layout = JSON.parse(readFileSync(new URL("../../layout/project.json", import.meta.url), "utf8"));
-        expect(layout.targets["build-storybook"]?.dependsOn).toContain("build");
-    });
-});
 
 describe("normalizeConfig", () => {
     it("fills in the defaults", () => {
@@ -134,7 +87,7 @@ describe("loadConfig and loadConfigAt", () => {
 
     it("names init when the repository has no config, and the file when it is not JSON", () => {
         const dir = repo();
-        expect(() => loadConfig(dir)).toThrow(/visual-review init/);
+        expect(() => loadConfig(dir)).toThrow(/proofroom init/);
         writeFileSync(join(dir, CONFIG_FILE), "{");
         expect(() => loadConfig(dir)).toThrow(/not valid JSON/);
     });
@@ -169,6 +122,6 @@ describe("loadConfig and loadConfigAt", () => {
             err = e;
         }
         expect(err.status).toBe(2);
-        expect(err.stderr.toString()).toMatch(/^visual-review reference: visual-review\.config\.json: baselines must/);
+        expect(err.stderr.toString()).toMatch(/^proofroom reference: visual-review\.config\.json: baselines must/);
     });
 });

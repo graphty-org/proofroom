@@ -240,7 +240,7 @@ export function repoRoot(cwd = process.cwd()) {
     try {
         return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", stdio: "pipe" }).trim();
     } catch {
-        throw new Error(`${cwd} is not inside a git repository: run visual-review in your repository`);
+        throw new Error(`${cwd} is not inside a git repository: run proofroom in your repository`);
     }
 }
 
@@ -252,7 +252,7 @@ export function repoRoot(cwd = process.cwd()) {
 export function loadConfig(root) {
     const file = join(root, CONFIG_FILE);
     if (!existsSync(file)) {
-        throw new Error(`no ${CONFIG_FILE} in ${root}: run \`visual-review init\` there first`);
+        throw new Error(`no ${CONFIG_FILE} in ${root}: run \`proofroom init\` there first`);
     }
     return parse(readFileSync(file, "utf8"));
 }

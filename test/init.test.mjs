@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { loadConfig } from "../trusted/lib/config.mjs";
-import { GENERATED, init, packageManager, renderTemplate } from "../trusted/lib/init.mjs";
+import { GENERATED, GENERATED_BEFORE, init, packageManager, renderTemplate } from "../trusted/lib/init.mjs";
 import { git, isolateGit, tempDir } from "./helpers.mjs";
 
 beforeAll(isolateGit);
@@ -41,9 +41,9 @@ describe("init", () => {
         const review = read(dir, ".github/workflows/visual-review.yml");
         expect(review.startsWith(GENERATED)).toBe(true);
         expect(review).toContain("branches: [trunk]");
-        expect(review).toContain("run: npx visual-review capture --project ${{ matrix.project }}");
+        expect(review).toContain("run: npx proofroom capture --project ${{ matrix.project }}");
         const version = JSON.parse(read(new URL("..", import.meta.url).pathname, "package.json")).version;
-        expect(review).toContain(`npx --yes @graphty/visual-review@${version} gate`);
+        expect(review).toContain(`npx --yes proofroom@${version} gate`);
         expect(read(dir, ".github/workflows/visual-seed.yml")).toContain("--ref trunk -f ref=<sha>");
         for (const file of ["visual-review.yml", "visual-seed.yml"]) {
             expect(read(dir, `.github/workflows/${file}`)).not.toMatch(/__[A-Z]+__/);
@@ -70,6 +70,14 @@ describe("init", () => {
         expect(["visual-review.config.json", ".gitattributes", ".gitignore"].map((f) => read(dir, f))).toEqual(before);
     });
 
+    it("rewrites with --force a workflow @graphty/visual-review's init wrote", () => {
+        const dir = repo();
+        init(dir);
+        writeFileSync(join(dir, ".github/workflows/visual-review.yml"), `${GENERATED_BEFORE} (@graphty/visual-review)\nOLD\n`);
+        expect(init(dir, { force: true })).toContain("wrote    .github/workflows/visual-review.yml");
+        expect(read(dir, ".github/workflows/visual-review.yml").startsWith(GENERATED)).toBe(true);
+    });
+
     it("adds to an existing .gitattributes and .gitignore, and skips a work directory already ignored", () => {
         const dir = repo();
         writeFileSync(join(dir, ".gitattributes"), "* text=auto");
@@ -90,7 +98,7 @@ describe("init", () => {
         const wf = read(dir, ".github/workflows/shots.yml");
         expect(wf).toContain("            - uses: pnpm/action-setup@v6\n");
         expect(wf).toContain("              run: pnpm install --frozen-lockfile\n");
-        expect(wf).toContain("run: pnpm exec visual-review install-browser");
+        expect(wf).toContain("run: pnpm exec proofroom install-browser");
     });
 
     it("tells the package manager from the lockfile", () => {
@@ -98,7 +106,7 @@ describe("init", () => {
         expect(packageManager(repo("pnpm-lock.yaml"))).toBe("pnpm");
         expect(packageManager(repo("yarn.lock"))).toBe("yarn");
         expect(renderTemplate("visual-seed.yml", { branch: "b", manager: "yarn", version: "1" })).toContain(
-            "run: yarn visual-review capture",
+            "run: yarn proofroom capture",
         );
     });
 });
@@ -109,7 +117,7 @@ describe("the CLI", () => {
         for (const command of ["init", "capture", "reference", "gate", "serve", "compare", "install-browser"]) {
             expect(help).toContain(`  ${command} `);
             expect(execFileSync(process.execPath, [CLI, command, "--help"], { encoding: "utf8" })).toMatch(
-                new RegExp(`^usage: (PORT=<n> )?visual-review ${command}`),
+                new RegExp(`^usage: (PORT=<n> )?proofroom ${command}`),
             );
         }
         let status = 0;

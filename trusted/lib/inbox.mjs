@@ -13,7 +13,7 @@
  * how many images the group holds once the ones shared by the same image are counted once, and,
  * when they all touch one package and none is breaking, a suggestion to fold them into the first.
  *
- * `notify` (the `visual-review notify` command) reads that file and sends one message when pull
+ * `notify` (the `proofroom notify` command) reads that file and sends one message when pull
  * requests become ready: the first at once, any more within `gap` held and sent together when the
  * gap ends, nothing when nothing is new. A pull request is announced once per head while it stays
  * ready; it can be announced again only after it left the ready list or was pushed again. It never

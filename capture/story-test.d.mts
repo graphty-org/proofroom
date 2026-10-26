@@ -1,4 +1,4 @@
-// Types for story-test.mjs (@graphty/visual-review/vitest), for TypeScript Vitest configs.
+// Types for story-test.mjs (proofroom/vitest), for TypeScript Vitest configs.
 
 import type { BrowserCommand } from "vitest/node";
 

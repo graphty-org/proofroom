@@ -1,6 +1,6 @@
 import { afterAll } from "vitest";
 
-import { isolateGit } from "../../tools/isolated-git-env.mjs";
+import { isolateGit } from "./isolated-git-env.mjs";
 import { removeTempDirs } from "./helpers.mjs";
 
 isolateGit();

@@ -1,0 +1,86 @@
+# Publishes the version in package.json, run by hand by a maintainer (Actions, Release, Run
+# workflow). It refuses when the tag v<version> already exists, runs the full CI, publishes to npm
+# with trusted publishing and provenance, then creates the tag and a GitHub release whose notes are
+# that version's section of CHANGELOG.md. Nothing is published before 1.0.0.
+name: Release
+
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release
+    cancel-in-progress: false
+
+jobs:
+    plan:
+        name: Plan
+        runs-on: ubuntu-24.04
+        outputs:
+            version: ${{ steps.version.outputs.version }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Refuse a version already released
+              id: version
+              run: |
+                  version=$(node -p 'require("./package.json").version')
+                  case "$version" in
+                      0.*) echo "::error::$version is a pre-1.0.0 version: nothing is published before 1.0.0"; exit 1 ;;
+                  esac
+                  if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+                      echo "::error::tag v$version already exists: raise the version in package.json first"
+                      exit 1
+                  fi
+                  if ! grep -q "^## $version\b" CHANGELOG.md; then
+                      echo "::error::CHANGELOG.md has no section '## $version'"
+                      exit 1
+                  fi
+                  echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    ci:
+        name: CI
+        needs: plan
+        uses: ./.github/workflows/ci.yml
+
+    publish:
+        name: Publish
+        needs: [plan, ci]
+        runs-on: ubuntu-24.04
+        environment: release
+        permissions:
+            contents: write
+            id-token: write
+        env:
+            VERSION: ${{ needs.plan.outputs.version }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  registry-url: https://registry.npmjs.org
+
+            # npm 11.5 or later publishes with trusted publishing (OIDC), no token.
+            - run: npm install -g npm@11
+
+            - run: npm ci
+
+            - run: npm publish --provenance --access public
+
+            - name: Tag and create the GitHub release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  awk -v v="$VERSION" '
+                      $0 ~ "^## " v "([^0-9.]|$)" { on = 1; next }
+                      on && /^## / { exit }
+                      on { print }
+                  ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+                  git tag "v$VERSION"
+                  git push origin "v$VERSION"
+                  gh release create "v$VERSION" --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"

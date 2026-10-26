@@ -1,11 +1,12 @@
 {
-    "name": "@graphty/visual-review",
-    "version": "0.2.35",
+    "name": "proofroom",
+    "version": "0.9.0",
     "description": "Self-hosted visual review of Storybook stories: capture in GitHub Actions, keep the baselines in git (Git LFS), accept or reject each change in a local page, and gate pull requests",
     "author": "Adam Powers <apowers@ato.ms>",
+    "license": "MIT",
     "type": "module",
     "bin": {
-        "visual-review": "./trusted/cli.mjs"
+        "proofroom": "./trusted/cli.mjs"
     },
     "exports": {
         "./package.json": "./package.json",
@@ -25,26 +26,24 @@
         "README.md",
         "LICENSE"
     ],
-    "publishConfig": {
-        "access": "public",
-        "provenance": true
-    },
     "engines": {
         "node": ">=20.0.0"
     },
     "scripts": {
-        "test": "vitest",
-        "test:run": "vitest run",
+        "test": "vitest run && node --test eslint-rules/*.test.mjs",
+        "test:watch": "vitest",
         "coverage": "vitest run --coverage",
         "lint": "eslint . && npm run typecheck",
-        "lint:knip": "cd .. && ./tools/run-knip.sh --workspace visual-review",
         "typecheck": "tsc -p tsconfig.json"
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/graphty-org/graphty-monorepo.git",
-        "directory": "visual-review"
+        "url": "git+https://github.com/graphty-org/proofroom.git"
     },
+    "bugs": {
+        "url": "https://github.com/graphty-org/proofroom/issues"
+    },
+    "homepage": "https://github.com/graphty-org/proofroom#readme",
     "keywords": [
         "storybook",
         "visual-regression",
@@ -57,11 +56,10 @@
         "chromatic-alternative",
         "review"
     ],
-    "license": "MIT",
-    "bugs": {
-        "url": "https://github.com/graphty-org/graphty-monorepo/issues"
+    "publishConfig": {
+        "access": "public",
+        "provenance": true
     },
-    "homepage": "https://graphty.app/docs/visual-review/",
     "dependencies": {
         "pngjs": "7.0.0"
     },
@@ -75,11 +73,18 @@
         }
     },
     "devDependencies": {
-        "@types/node": "^20.19.9",
-        "@vitest/coverage-v8": "catalog:",
-        "eslint": "^9.29.0",
+        "@commitlint/config-conventional": "19.8.1",
+        "@commitlint/lint": "19.8.1",
+        "@commitlint/load": "19.8.1",
+        "@eslint/js": "9.39.5",
+        "@types/node": "20.19.9",
+        "@vitest/coverage-v8": "4.1.11",
+        "eslint": "9.39.5",
+        "eslint-plugin-jsdoc": "50.8.0",
+        "globals": "15.15.0",
         "playwright": "1.57.0",
-        "typescript": "^5.9.3",
-        "vitest": "catalog:"
+        "typescript": "5.9.3",
+        "vite": "7.3.6",
+        "vitest": "4.1.11"
     }
 }

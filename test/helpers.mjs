@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { inject } from "vitest";
 
-import { isolateGit } from "../../tools/isolated-git-env.mjs";
+import { isolateGit } from "./isolated-git-env.mjs";
 import { contentHash } from "../trusted/gate.mjs";
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
@@ -41,15 +41,20 @@ export function removeTempDirs() {
 }
 
 export const FIXTURE = fileURLToPath(new URL("fixtures/results/", import.meta.url));
-export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
+/**
+ * A repository root shaped like graphty-monorepo, the tool's first user: its
+ * visual-review.config.json, the LFS lines of its .gitattributes (as `gitattributes`, so they do
+ * not apply to this repository) and its commitlint configuration.
+ */
+export const ROOT = fileURLToPath(new URL("fixtures/repo/", import.meta.url));
 
-/** The monorepo's own visual-review.config.json: default branch master, workflow ci.yml. */
+/** graphty-monorepo's visual-review.config.json: default branch master, workflow ci.yml. */
 const CONFIG_TEXT = readFileSync(join(ROOT, CONFIG_FILE), "utf8");
 export const CONFIG = normalizeConfig(JSON.parse(CONFIG_TEXT));
 
 /**
- * The config with only the two projects the fixtures hold, so adding a project to the monorepo's
- * config does not change what the tests expect, while their settings are still the live ones.
+ * The config with only the two projects the fixtures hold, so adding a project to the config
+ * fixture does not change what the tests expect.
  */
 export const FIXTURE_CONFIG = {
     ...CONFIG,
@@ -59,8 +64,8 @@ export const FIXTURE_CONFIG = {
     },
 };
 
-/** The line of the monorepo's .gitattributes that stores baseline PNGs in Git LFS. */
-export const LFS_ATTRIBUTES = readFileSync(join(ROOT, ".gitattributes"), "utf8")
+/** The line of graphty-monorepo's .gitattributes that stores baseline PNGs in Git LFS. */
+export const LFS_ATTRIBUTES = readFileSync(join(ROOT, "gitattributes"), "utf8")
     .split("\n")
     .find((l) => l.startsWith("visual-baselines/"));
 

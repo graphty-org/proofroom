@@ -1,5 +1,5 @@
 /**
- * Stories as tests, the browser side (`@graphty/visual-review/vitest/setup`): installed by a
+ * Stories as tests, the browser side (`proofroom/vitest/setup`): installed by a
  * Storybook project's Vitest setup file, which hands in its own Vitest functions so this file
  * imports nothing (a second copy of vitest in the page never finishes its handshake).
  *
@@ -233,7 +233,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         }
         if (unstable.length > 0) {
             throw new Error(
-                `visual-review: ${story.id} is unstable (two renders drew different pictures): ${unstable.join(", ")}`,
+                `proofroom: ${story.id} is unstable (two renders drew different pictures): ${unstable.join(", ")}`,
             );
         }
     });

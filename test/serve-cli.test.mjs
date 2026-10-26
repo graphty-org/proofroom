@@ -1,5 +1,5 @@
 /*
- * `visual-review serve` prints the URL to open: an IPv6 host goes in brackets, a name as it is.
+ * `proofroom serve` prints the URL to open: an IPv6 host goes in brackets, a name as it is.
  */
 
 import { spawn } from "node:child_process";
@@ -45,7 +45,7 @@ function openLine(host) {
         let err = "";
         child.stdout.on("data", (chunk) => {
             out += chunk;
-            const line = out.split("\n").find((l) => l.startsWith("visual-review: open "));
+            const line = out.split("\n").find((l) => l.startsWith("proofroom: open "));
             if (line) {
                 child.kill();
                 resolve(line);
@@ -56,12 +56,12 @@ function openLine(host) {
     });
 }
 
-describe("visual-review serve", () => {
+describe("proofroom serve", () => {
     it("brackets an IPv6 host in the URL it prints", async () => {
-        expect(await openLine("::1")).toMatch(/^visual-review: open http:\/\/\[::1\]:0\/#token=\S+$/);
+        expect(await openLine("::1")).toMatch(/^proofroom: open http:\/\/\[::1\]:0\/#token=\S+$/);
     });
 
     it("prints a host name as it is", async () => {
-        expect(await openLine("localhost")).toMatch(/^visual-review: open http:\/\/localhost:0\/#token=\S+$/);
+        expect(await openLine("localhost")).toMatch(/^proofroom: open http:\/\/localhost:0\/#token=\S+$/);
     });
 });

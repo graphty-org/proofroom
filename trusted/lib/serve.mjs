@@ -675,7 +675,7 @@ export function createApp({
                     `the server stopped while this Finish was at "${saved.step}", so it never ended: check ` +
                     `whether ${where} on origin has its commit before pressing Finish again`,
             };
-            console.error(`visual-review: ${job.error}`);
+            console.error(`proofroom: ${job.error}`);
         }
     } catch {
         // No Finish ran yet.
@@ -687,7 +687,7 @@ export function createApp({
             const warning = `could not save the Finish job (a restart would not report it): ${err.message}`;
             if (!j.warnings.includes(warning)) {
                 j.warnings.push(warning);
-                console.error(`visual-review: ${warning}`);
+                console.error(`proofroom: ${warning}`);
             }
         }
     };
@@ -776,7 +776,7 @@ export function createApp({
     const warnOnce = (message) => {
         if (!warned.has(message)) {
             warned.add(message);
-            console.error(`visual-review: ${message}`);
+            console.error(`proofroom: ${message}`);
         }
     };
 
@@ -806,7 +806,7 @@ export function createApp({
             const aside = `${file}.unreadable-${Date.now()}`;
             renameSync(file, aside);
             stateProblems.set(t.id, `the saved decisions were unreadable; the file was moved to ${aside}`);
-            console.error(`visual-review: ${file} is not a decisions file: moved it to ${aside}`);
+            console.error(`proofroom: ${file} is not a decisions file: moved it to ${aside}`);
             return {};
         }
         for (const [k, d] of Object.entries(saved)) {
@@ -1024,7 +1024,7 @@ export function createApp({
             // is, never overwritten with this refresh's evidence alone.
             if (err.code && err.code !== "ENOENT") {
                 const warning = `could not read the capture noise evidence (${evidenceFile}): ${err.message}`;
-                console.error(`visual-review: ${warning}`);
+                console.error(`proofroom: ${warning}`);
                 listWarnings.push(warning);
                 return;
             }
@@ -1046,7 +1046,7 @@ export function createApp({
             writeJson(noiseFile, noiseReport());
         } catch (err) {
             const warning = `could not keep the capture noise evidence (${noiseFile} is not current): ${err.message}`;
-            console.error(`visual-review: ${warning}`);
+            console.error(`proofroom: ${warning}`);
             listWarnings.push(warning);
         }
     }
@@ -1174,7 +1174,7 @@ export function createApp({
                     download.bytesDone += got.bytes;
                 }
                 if (partial) {
-                    fill(name).catch((err) => console.error(`visual-review: ${name} of ${info.id}: ${err.message}`));
+                    fill(name).catch((err) => console.error(`proofroom: ${name} of ${info.id}: ${err.message}`));
                 }
             },
             (planned) => {
@@ -1203,7 +1203,7 @@ export function createApp({
                         }
                     }
                 })
-                .catch((err) => console.error(`visual-review: rebuilding ${info.id} failed: ${err.message}`));
+                .catch((err) => console.error(`proofroom: rebuilding ${info.id} failed: ${err.message}`));
             partial = blank(info, null, run);
             partial.downloading = true;
             partial.download = download;
@@ -1535,7 +1535,7 @@ export function createApp({
                 if (!masterRun && kept.length === 0) {
                     throw err;
                 }
-                console.error(`visual-review: pull requests not listed: ${err.message}`);
+                console.error(`proofroom: pull requests not listed: ${err.message}`);
                 const warning = retryLater("could not list the pull requests", err.message);
                 listWarnings.push(warning);
                 for (const t of kept) {
@@ -1553,7 +1553,7 @@ export function createApp({
                 });
             const ref = (b) => `+refs/heads/${b}:refs/remotes/origin/${b}`;
             const logFetch = (what) => (err) => {
-                console.error(`visual-review: git fetch of ${what} failed: ${err.message}`);
+                console.error(`proofroom: git fetch of ${what} failed: ${err.message}`);
                 listWarnings.push(`git fetch of ${what} failed, so "behind master" may be wrong: ${err.message}`);
             };
             const fetched = (async () => {
@@ -1672,11 +1672,11 @@ export function createApp({
             return;
         }
         try {
-            // For the notifier (`visual-review notify`), which reads only this file.
+            // For the notifier (`proofroom notify`), which reads only this file.
             writeJson(inboxFile, { at: Date.now(), origin, ...inbox() });
         } catch (err) {
             const warning = `could not keep the inbox (the notifier reads it): ${err.message}`;
-            console.error(`visual-review: ${warning}`);
+            console.error(`proofroom: ${warning}`);
             if (!listWarnings.includes(warning)) {
                 listWarnings.push(warning);
             }
@@ -1693,7 +1693,7 @@ export function createApp({
             });
         } catch (err) {
             const warning = `could not keep the list of targets (a restart would wait for GitHub): ${err.message}`;
-            console.error(`visual-review: ${warning}`);
+            console.error(`proofroom: ${warning}`);
             if (!listWarnings.includes(warning)) {
                 listWarnings.push(warning);
             }
@@ -1746,7 +1746,7 @@ export function createApp({
                 refreshedAt = saved.at;
             }
         } catch (err) {
-            console.error(`visual-review: ignoring the kept list in ${listFile}: ${err.message}`);
+            console.error(`proofroom: ignoring the kept list in ${listFile}: ${err.message}`);
         }
     }
 
@@ -1881,7 +1881,7 @@ export function createApp({
             decided = decisionsOf(t);
         } catch (err) {
             // One unreadable state file never fails the whole list.
-            console.error(`visual-review: ${stateFile(t)}: ${err.message}`);
+            console.error(`proofroom: ${stateFile(t)}: ${err.message}`);
             warnings.push(`could not read the saved decisions: ${err.message}`);
         }
         if (stateProblems.has(t.id)) {
@@ -2569,7 +2569,7 @@ export function createApp({
             // CI hashed the bytes it uploaded, so the copy on this disk is damaged: drop it,
             // and the next reload downloads it again.
             console.error(
-                `visual-review: ${path} does not match results.json: downloading it again on the next reload`,
+                `proofroom: ${path} does not match results.json: downloading it again on the next reload`,
             );
             rmSync(join(dir, "results.json"), { force: true });
             return [409, { error: `${file}: the downloaded copy is damaged; reload the page to download it again` }];
@@ -2599,7 +2599,7 @@ export function createApp({
                 // A local preview that moved on (a project's capture written, or the preview done)
                 // is read again at once, so a project is never left showing a capture it lacked.
                 if (query.get("refresh") === "1" || previewsChanged() || (!loadedOnce && failure === null)) {
-                    refresh().catch((err) => console.error(`visual-review: refresh failed: ${err.message}`));
+                    refresh().catch((err) => console.error(`proofroom: refresh failed: ${err.message}`));
                 }
             } else {
                 await refresh();
@@ -3029,7 +3029,7 @@ export function createApp({
             passkeyOpened = { number: passkeyPr, id: entry.id, at: Date.now() };
             await readPasskeys();
             console.log(
-                `visual-review: registered passkey ${entry.id}; merge ${proposed.pullRequest} to enforce approvals`,
+                `proofroom: registered passkey ${entry.id}; merge ${proposed.pullRequest} to enforce approvals`,
             );
             return [200, { entry, ...proposed }];
         },
@@ -3149,7 +3149,7 @@ export function createApp({
             };
             persist(job);
             console.log(
-                `visual-review: Finish of ${finishLabel(t)} started: ${list.length} decisions, ${undecided} undecided`,
+                `proofroom: Finish of ${finishLabel(t)} started: ${list.length} decisions, ${undecided} undecided`,
             );
             runFinish(job, t, list, {
                 repo,
@@ -3221,7 +3221,7 @@ export function createApp({
      * @param {object} t the target
      */
     async function runUpdate(j, t) {
-        console.log(`visual-review: update of #${t.pr} from ${defaultBranch} started`);
+        console.log(`proofroom: update of #${t.pr} from ${defaultBranch} started`);
         try {
             j.result = await updateFromMaster({
                 repo,
@@ -3233,10 +3233,10 @@ export function createApp({
                     persist(j);
                 },
             });
-            console.log(`visual-review: update of #${t.pr} done: commit ${j.result.commit}`);
+            console.log(`proofroom: update of #${t.pr} done: commit ${j.result.commit}`);
         } catch (err) {
             j.error = err.message;
-            console.error(`visual-review: update of #${t.pr} failed: ${j.error}`);
+            console.error(`proofroom: update of #${t.pr} failed: ${j.error}`);
         } finally {
             j.running = false;
             j.step = null;
@@ -3244,7 +3244,7 @@ export function createApp({
             persist(j);
         }
         if (j.result) {
-            await refresh().catch((err) => console.error(`visual-review: refresh failed: ${err.message}`));
+            await refresh().catch((err) => console.error(`proofroom: refresh failed: ${err.message}`));
         }
     }
 
@@ -3301,14 +3301,14 @@ export function createApp({
             } catch (err) {
                 // What was pushed and posted stands; the decisions it applied are still saved.
                 j.warnings.push(`pushed and posted, but the decisions could not be cleared: ${err.message}`);
-                console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
+                console.error(`proofroom: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
             }
             const r = j.result;
             const status = r.statusError ? `; status not posted: ${r.statusError}` : "";
             console.log(
                 r.alreadyFinished
-                    ? `visual-review: Finish of ${finishLabel(t)} done: already finished as commit ${r.commit}`
-                    : `visual-review: Finish of ${finishLabel(t)} done: commit ${r.commit ?? "none"}, ${r.rejects} rejects${status}`,
+                    ? `proofroom: Finish of ${finishLabel(t)} done: already finished as commit ${r.commit}`
+                    : `proofroom: Finish of ${finishLabel(t)} done: commit ${r.commit ?? "none"}, ${r.rejects} rejects${status}`,
             );
         } catch (err) {
             if (err instanceof AcceptError && err.committed && !err.pullRequestMissing) {
@@ -3318,12 +3318,12 @@ export function createApp({
                     clear(false);
                 } catch (e) {
                     j.warnings.push(`the accepts pushed could not be cleared from the decisions: ${e.message}`);
-                    console.error(`visual-review: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
+                    console.error(`proofroom: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
                 }
             }
             // Refused before anything ran, the message says it all; later, it names the step.
             j.error = ["starting", "checking"].includes(j.step) ? err.message : `${j.step}: ${err.message}`;
-            console.error(`visual-review: Finish of ${finishLabel(t)} failed: ${j.error}`);
+            console.error(`proofroom: Finish of ${finishLabel(t)} failed: ${j.error}`);
         } finally {
             j.running = false;
             j.step = null;
@@ -3368,7 +3368,7 @@ export function createApp({
     if (warm) {
         // Download the captures now, and again every POLL so that a CI run that finished meanwhile
         // is on disk before the page first asks for it.
-        const failed = (when) => (err) => console.error(`visual-review: ${when} refresh failed: ${err.message}`);
+        const failed = (when) => (err) => console.error(`proofroom: ${when} refresh failed: ${err.message}`);
         restored.then(() => refresh().catch(failed("startup")));
         setInterval(() => refresh().catch(failed("background")), POLL).unref();
     }
@@ -3412,7 +3412,7 @@ export function createApp({
             // gh and git failures included, is ours.
             const client = err instanceof SyntaxError || err instanceof URIError || err.message.startsWith("body ");
             if (!client) {
-                console.error(`visual-review: ${req.method} ${req.url} failed: ${err.message}`);
+                console.error(`proofroom: ${req.method} ${req.url} failed: ${err.message}`);
             }
             return send(res, client ? 400 : 500, { error: err.message });
         }

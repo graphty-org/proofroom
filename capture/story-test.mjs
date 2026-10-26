@@ -2,8 +2,8 @@
  * Stories as tests, the Node side: a Storybook project's Vitest story tests take each story's
  * screenshot at the end of its test and compare it with the baseline, with capture.mjs's settings
  * and compare.mjs's code, and write the same results.json capture.mjs writes. Published as
- * `@graphty/visual-review/vitest`; the browser side is story-test-setup.mjs
- * (`@graphty/visual-review/vitest/setup`).
+ * `proofroom/vitest`; the browser side is story-test-setup.mjs
+ * (`proofroom/vitest/setup`).
  *
  * Every run writes a partial result into its own directory (one per shard): a results.json that
  * is never `complete` (so the gate never takes it for a whole capture) and whose `partial` says
@@ -264,7 +264,7 @@ async function storyFiles(vitest, modules, isOurs, root) {
 /**
  * The partial an earlier run left in `out`, when it is one of this project.
  * @param {string} out the run's directory
- * @param {string} project the visual-review project
+ * @param {string} project the proofroom project
  * @returns {any | null} its results.json, or null
  */
 function earlierRun(out, project) {
@@ -309,7 +309,7 @@ export const PRODUCTION = {
 
 /**
  * Everything one project's storybook Vitest project needs to shoot its stories.
- * @param {{ project: string, out: string, root?: string }} options the visual-review project, the
+ * @param {{ project: string, out: string, root?: string }} options the proofroom project, the
  *     directory this run's partial result goes to, and the repository root
  * @returns {{ viewport: object, providerOptions: object, commands: object, reporter: object }} for
  *     the Vitest project's `browser.viewport`, `playwright(...)`, `browser.commands` and the root
@@ -319,7 +319,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
     const config = loadConfig(root);
     const entry = config.projects[project];
     if (!entry) {
-        throw new Error(`visual-review: no project ${project} in the config`);
+        throw new Error(`proofroom: no project ${project} in the config`);
     }
     const baselines = join(root, config.baselines, project);
     const fontconfig = config.fontconfig ? join(root, config.fontconfig) : null;
