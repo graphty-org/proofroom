@@ -260,6 +260,22 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             expect((await settled(page, from)).map((a) => a.a)).toEqual(["pane1", "pane2"]);
         });
 
+        // WebKit has no DevTools protocol to type AZERTY's characters, so Shift stays held while the
+        // digit row's keys go down: the pane keys must follow event.code, not the character typed.
+        it.skipIf(name !== "webkit")("reads the digit row by key position while Shift is held", async () => {
+            const page = await open({});
+            await page.locator('.chg[data-chg="3484"]').click();
+            await page.locator(".iline").waitFor();
+            const from = t.actions.length;
+            await page.keyboard.down("Shift");
+            await page.keyboard.press("Digit1");
+            await expect.poll(() => message(page)).toBe("Changes shown.");
+            await page.keyboard.press("Digit2");
+            await expect.poll(() => message(page)).toMatch(/^Snapshots shown\./);
+            await page.keyboard.up("Shift");
+            expect((await settled(page, from)).map((a) => a.a)).toEqual(["pane1", "pane2"]);
+        });
+
         it("opens with the token in the address, as a link serve printed", async () => {
             const page = await open({ hash: `token=${TOKEN}&change=3484` });
             await expect

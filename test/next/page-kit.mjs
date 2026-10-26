@@ -41,10 +41,11 @@ export const BROWSERS = { chromium, webkit };
  * @param {import("playwright").Browser} browser the browser
  * @param {{ targets?: object[], list?: object, rows?: (id: string, project: string) => object,
  *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string>,
- *     clock?: boolean, ui?: "review" | "next", path?: string }} [options]
+ *     clock?: boolean, ui?: "review" | "next", path?: string, failList?: number }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
  *     project's reviewable), the window, the address after #, local storage to start with,
- *     whether the test controls the page's clock, the server's page at /, and the path to open
+ *     whether the test controls the page's clock, the server's page at /, the path to open, and
+ *     how many of the first asks for the list answer HTTP 500
  * @returns {Promise<{ page: import("playwright").Page, context: import("playwright").BrowserContext,
  *     close: () => Promise<void>, actions: object[],
  *     requests: string[], origin: string, setList: (answer: object) => void }>} the tab, how to
@@ -54,8 +55,11 @@ export const BROWSERS = { chromium, webkit };
 export async function openNext(browser, options = {}) {
     const s = await startApp(makeRepo(), { gh: fakeGh({}), token: TOKEN, ...(options.ui && { ui: options.ui }) });
     const context = await browser.newContext({ viewport: options.viewport ?? { width: 1440, height: 900 } });
-    // Copy link writes to the clipboard: Chromium asks for the permission, WebKit has none to give.
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
+    // Copy link writes to the clipboard: Chromium asks for the permission. WebKit has none to give,
+    // and asked for one, it refuses every new tab.
+    if (browser.browserType().name() === "chromium") {
+        await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    }
     const page = await context.newPage();
     page.setDefaultTimeout(0);
     const actions = [];
@@ -74,7 +78,14 @@ export async function openNext(browser, options = {}) {
         }
         return route.fulfill({ json: { kept: 0 } });
     });
-    await page.route("**/api/prs*", (route) => route.fulfill({ json: list }));
+    let failing = options.failList ?? 0;
+    await page.route("**/api/prs*", (route) => {
+        if (failing > 0) {
+            failing--;
+            return route.fulfill({ status: 500, json: { error: "the list failed" } });
+        }
+        return route.fulfill({ json: list });
+    });
     await page.route("**/api/pr/**", (route) => {
         const [, , , id, name] = new URL(route.request().url()).pathname.split("/").map(decodeURIComponent);
         const t = list.targets.find((x) => x.id === id);

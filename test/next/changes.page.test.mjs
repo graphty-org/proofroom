@@ -320,7 +320,9 @@ describe("the row menu", () => {
 
         await menuOf("3484").click();
         await page.getByRole("menuitem", { name: "Copy link" }).click();
-        await expect.poll(() => message(page)).toBe("Link copied: #3484.");
+        await expect
+            .poll(() => message(page))
+            .toBe("Link copied: #3484. It carries your session token: it opens this change on any device.");
         const link = await page.evaluate(() => navigator.clipboard.readText());
         expect(link).toBe(`${t.origin}/next/#token=${TOKEN}&change=3484`);
         // A preview has no page on the code host: its menu leaves Open on GitHub out.
@@ -595,6 +597,22 @@ describe("while the server's first list loads", () => {
         t.setList(listAnswer(fiftyChanges()));
         await page.locator(".chg").first().waitFor();
         expect(await page.locator("#wait-box").count()).toBe(0);
+    });
+});
+
+describe("when the server's first list fails", () => {
+    it("keeps the error and its Retry, stops the waiting box's clock, and Retry loads the changes", async () => {
+        const page = await open({ targets: fiftyChanges(), failList: 1 });
+        await expect.poll(() => message(page)).toMatch(/^The review server did not answer: /);
+        expect(await page.locator("#msg-x").getByRole("button").allInnerTexts()).toEqual(["Retry"]);
+        expect(await page.locator("#wait-box").innerText()).toMatch(
+            /^Waiting for the code host\n+The review server did not answer\.$/,
+        );
+        expect(await page.locator("#srvstatus").innerText()).toBe("Server not answering");
+        await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
+        await page.locator(".chg").first().waitFor();
+        expect(await page.locator("#wait-box").count()).toBe(0);
+        expect(await message(page)).toBe("Choose a change on the left: Up / Down move, Open [Enter] opens it.");
     });
 });
 

@@ -371,13 +371,20 @@ function drawWaiting() {
         ? (app.list.now ?? app.listAt) + (Date.now() - app.listAt) - r.startedAt
         : Date.now() - app.bootAt;
     const s = Math.max(0, Math.round(since / 1000));
-    const step = r?.step
-        ? `${r.step[0].toUpperCase()}${r.step.slice(1)}${r.total ? ` (${r.done ?? 0} of ${r.total})` : ""}`
-        : "Waiting for the review server";
+    const step =
+        app.failed !== null
+            ? "The review server did not answer."
+            : r?.step
+              ? `${r.step[0].toUpperCase()}${r.step.slice(1)}${r.total ? ` (${r.done ?? 0} of ${r.total})` : ""}`
+              : "Waiting for the review server";
     const box = $("wait-box") ?? el("div", { class: "tokenbox", id: "wait-box", role: "status" });
     box.replaceChildren(
         el("b", {}, "Waiting for the code host"),
-        el("p", { class: "small" }, `${step}, ${s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}`),
+        el(
+            "p",
+            { class: "small" },
+            app.failed !== null ? step : `${step}, ${s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}`,
+        ),
     );
     if (!box.isConnected) {
         $("screens").after(box);
@@ -633,7 +640,7 @@ app.copyLink = async (id) => {
     const link = `${location.origin}${location.pathname}${formatAddress({ token: currentToken(), change: id })}`;
     try {
         await navigator.clipboard.writeText(link);
-        say(`Link copied: ${app.change(id).label}.`);
+        say(`Link copied: ${app.change(id).label}. It carries your session token: it opens this change on any device.`);
     } catch (err) {
         say(`The link could not be copied: ${err.message}`, "err");
     }
@@ -919,7 +926,9 @@ async function loadList(query = "?cached=1") {
         app.failed = null;
     } catch (err) {
         app.failed = err.message;
-        say(`The review server did not answer: ${err.message}`, "err", [{ label: "Retry", run: () => app.refresh() }]);
+        say(`The review server did not answer: ${err.message}`, "err", [
+            { label: "Retry", run: () => (arrived ? app.refresh() : firstLoad()) },
+        ]);
         return false;
     }
     if (app.list.targets === null) {
@@ -956,7 +965,9 @@ function schedulePoll() {
 
 async function poll() {
     schedulePoll();
-    if (await loadList()) {
+    if (!arrived) {
+        await firstLoad();
+    } else if (await loadList()) {
         if (app.openId && !app.change(app.openId)) {
             say(`${app.openId} is no longer listed: showing every change.`);
             app.openId = null;
@@ -1028,6 +1039,9 @@ $("chg-find").addEventListener("input", () => {
     draw();
 });
 
+// Whether the first list is in and the page has opened where the reader starts.
+let arrived = false;
+
 async function boot() {
     startUsage();
     const wanted = app.wanted;
@@ -1035,17 +1049,27 @@ async function boot() {
         // Today's page's link: written again in the new page's form, in place.
         history.replaceState(null, "", formatAddress({ ...wanted, token: currentToken() }));
     }
-    app.bootAt = Date.now();
+    arrived = false;
     layout("changes");
     draw();
-    while (!(await loadList())) {
-        if (app.failed !== null) {
-            break;
-        }
+    await firstLoad();
+    schedulePoll();
+}
+
+// Until the first list is in, it is asked for every half second. A failed ask stops there, its
+// message and Retry left on screen; Retry and the next poll start this again.
+async function firstLoad() {
+    app.bootAt = Date.now();
+    while (!(await loadList()) && app.failed === null) {
         draw();
         await new Promise((resolve) => setTimeout(resolve, 500));
     }
     draw();
+    if (app.failed !== null || arrived) {
+        return;
+    }
+    arrived = true;
+    const wanted = app.wanted;
     if (wanted.change) {
         await follow(wanted);
     } else if (app.changes.length === 1) {
@@ -1061,7 +1085,6 @@ async function boot() {
                 : "Choose a change on the left: Up / Down move, Open [Enter] opens it.",
         );
     }
-    schedulePoll();
 }
 
 logUsage("load", { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, page: "next" });
