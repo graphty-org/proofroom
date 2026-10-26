@@ -5,7 +5,7 @@
     "sourceRoot": "visual-review/trusted",
     "tags": [],
     "namedInputs": {
-        "buildSources": []
+        "buildSources": ["{projectRoot}/**/*.d.mts", "{projectRoot}/**/*.d.ts"]
     },
     "targets": {
         "test": {
