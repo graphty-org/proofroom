@@ -470,7 +470,7 @@ export async function screenshotWholePage(page) {
 
 /**
  * Waits for two frames drawn in the tester iframe.
- * @param {import("playwright").Frame} frame the tester iframe
+ * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @returns {Promise<void>} once they are drawn
  */
 export const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
@@ -503,7 +503,7 @@ function imagesInPage() {
  * `height: 100%` (an app's stylesheet) scrolls the window little or not at all: its overflow
  * scrolls inside the body, so the body scrolls by what the window could not, and the elements
  * pinFixedInPage pinned are moved with the document.
- * @param {import("playwright").Frame} frame the tester iframe
+ * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @param {number} x in CSS px
  * @param {number} y in CSS px
  * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
