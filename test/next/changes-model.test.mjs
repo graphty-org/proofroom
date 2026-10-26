@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { formatAddress, parseAddress, snapParts } from "../../trusted/page/next/address.js";
 import { SECTIONS, changeOf, matchesFind, nextNeeding, sectionsOf, sharesOf } from "../../trusted/page/next/changes.js";
-import { fiftyChanges, project, target } from "./page-kit.mjs";
+import { fiftyChanges, project, target } from "./fixtures.mjs";
 
 const AT = { defaultBranch: "master", now: Date.UTC(2026, 9, 26, 12, 0, 0) };
 const rowOf = (t, at = {}) => changeOf(t, { ...AT, ...at });
