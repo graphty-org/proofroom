@@ -459,7 +459,7 @@ async function serve(args) {
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,
-        ui,
+        ui: /** @type {"review" | "next"} */ (ui),
         // What the owner types to run this server from their own shell, so Finish signs with
         // their key rather than the environment of whoever started it (an agent, say).
         startCommand:
