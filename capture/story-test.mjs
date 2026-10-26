@@ -158,71 +158,6 @@ async function encodeAsChromium(page, image, size) {
 }
 
 /**
- * In the page: gives every visible, opaque element fixed to the viewport (in open shadow roots
- * too) a compositing layer of its own, as iframe.html's document has when it is the page: there the
- * root scroller is composited, and a fixed element over it is composited too (reason "overlap").
- * The tester iframe's document scrolls nothing, so it paints them into its own layer, where a
- * pop-out's box-shadow rasterizes up to 9 levels off and a rounded border's anti-aliasing moves.
- * A translucent one is left alone (on a layer of its own its opacity is applied by the
- * compositor, 1 level off, where the page paints it into the layer it shares), and so is one that
- * sets its own will-change. Or, with `undo`, puts their own will-change back.
- * ponytail: two fixed elements the page squashes into one layer still get one layer each here;
- * where their shadows overlap they blend up to 9 levels apart.
- * @param {boolean} undo whether to put the styles back
- * @returns {void}
- */
-function compositeFixedInPage(undo) {
-    const key = "__visualReviewComposited";
-    if (undo) {
-        for (const [el, value, priority] of globalThis[key] ?? []) {
-            el.style.setProperty("will-change", value, priority);
-        }
-        delete globalThis[key];
-        return;
-    }
-    const all = [];
-    const walk = (root) => {
-        for (const el of root.querySelectorAll("*")) {
-            all.push(el);
-            if (el.shadowRoot) {
-                walk(el.shadowRoot);
-            }
-        }
-    };
-    walk(document);
-    // A transform, filter, perspective or paint containment makes an ancestor the containing block
-    // of a fixed element: then it is not fixed to the viewport, and the page composites nothing.
-    const holds = (style) =>
-        style.transform !== "none" ||
-        style.perspective !== "none" ||
-        style.filter !== "none" ||
-        /paint|layout|strict|content/.test(style.contain) ||
-        /transform|perspective|filter/.test(style.willChange);
-    const toViewport = (el) => {
-        for (let up = el.parentElement ?? el.getRootNode().host; up; up = up.parentElement ?? up.getRootNode().host) {
-            if (holds(getComputedStyle(up))) {
-                return false;
-            }
-        }
-        return true;
-    };
-    const fixed = all.filter((el) => {
-        const style = getComputedStyle(el);
-        const own = style.willChange !== "auto";
-        const shown = el.getBoundingClientRect().width > 0;
-        return style.position === "fixed" && style.opacity === "1" && !own && shown && toViewport(el);
-    });
-    globalThis[key] = fixed.map((el) => [
-        el,
-        el.style.getPropertyValue("will-change"),
-        el.style.getPropertyPriority("will-change"),
-    ]);
-    for (const el of fixed) {
-        el.style.setProperty("will-change", "opacity", "important");
-    }
-}
-
-/**
  * In the page, at scroll (0, 0): pins every position: fixed element (in open shadow roots too)
  * where it is, as position: absolute, so scrolled tiles draw it once, where a full-page shot draws
  * it, instead of once per tile. Or, with `undo`, puts their own styles back.
@@ -289,22 +224,18 @@ async function shootFrame(page, frame) {
     const size = await measure(frame);
     const view = { x: 0, y: 0, ...VIEWPORT };
     if (size.width <= VIEWPORT.width && size.height <= VIEWPORT.height) {
-        await frame.evaluate(compositeFixedInPage, false);
-        try {
-            await twoFrames(frame);
-            return await page.screenshot({ ...SHOT, clip: { ...view, ...size } });
-        } finally {
-            await frame.evaluate(compositeFixedInPage, true);
-        }
+        return page.screenshot({ ...SHOT, clip: { ...view, ...size } });
     }
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
     try {
-        // Composited first: pinned, they are no longer fixed, and the full-page shot draws them composited.
-        // Inside the try, so a failure in either still puts every style back (an undo of nothing does nothing).
-        await frame.evaluate(compositeFixedInPage, false);
+        // Inside the try, so a failure still puts every style back (an undo of nothing does nothing).
         await frame.evaluate(pinFixedInPage, false);
-        for (let top = 0; top < size.height; top += VIEWPORT.height) {
-            for (let left = 0; left < size.width; left += VIEWPORT.width) {
+        // Each tile copies only what it holds from where the frame actually scrolled to, and the next
+        // tile starts where it ended: a frame that scrolls short of the measured size (its scrollable
+        // height is less than the full-page size) must not have its clip read past the screenshot.
+        // ponytail: rows the frame never scrolls to stay transparent, so they show up as a diff.
+        for (let top = 0, h = 1; top < size.height && h > 0; top += h) {
+            for (let left = 0, w = 1; left < size.width && w > 0; left += w) {
                 // No further than the measured size's end: a body that overflows past the document
                 // (All Components, by 16 px) must not scroll the rows a full-page shot cuts off.
                 const at = await scrollFrame(
@@ -313,15 +244,17 @@ async function shootFrame(page, frame) {
                     Math.max(0, Math.min(top, size.height - VIEWPORT.height)),
                 );
                 const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
-                const w = Math.min(VIEWPORT.width, size.width - left) * SCALE;
-                const h = Math.min(VIEWPORT.height, size.height - top) * SCALE;
-                PNG.bitblt(tile, out, (left - at.x) * SCALE, (top - at.y) * SCALE, w, h, left * SCALE, top * SCALE);
+                const [x, y] = [left - at.x, top - at.y];
+                w = Math.min(VIEWPORT.width - x, size.width - left);
+                h = Math.min(VIEWPORT.height - y, size.height - top);
+                if (w > 0 && h > 0) {
+                    PNG.bitblt(tile, out, x * SCALE, y * SCALE, w * SCALE, h * SCALE, left * SCALE, top * SCALE);
+                }
             }
         }
     } finally {
         await scrollFrame(frame, 0, 0);
         await frame.evaluate(pinFixedInPage, true);
-        await frame.evaluate(compositeFixedInPage, true);
     }
     return encodeAsChromium(page, out, size);
 }
@@ -529,20 +462,14 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         /**
          * Moves the pointer off the page and gives the tester iframe the focus: iframe.html is its
          * page's only document, so it has the focus a story's play gives an element, and the focus
-         * ring that shows it. It also composites the iframe in a layer of its own, as iframe.html's
-         * document is when it is the page: painted into the orchestrator page's layer instead, a
-         * translucent element (the console button, opacity 0.6) blends 1 level off at its edges.
+         * ring that shows it.
          * @param {{ page: import("playwright").Page, frame: () => Promise<import("playwright").Frame> }} ctx
          *     the command's context
          * @returns {Promise<void>} once done
          */
         async visualPark(ctx) {
             await park(ctx.page);
-            const iframe = await (await ctx.frame()).frameElement();
-            await iframe.evaluate((el) =>
-                /** @type {HTMLElement} */ (el).style.setProperty("will-change", "transform"),
-            );
-            await iframe.focus();
+            await (await (await ctx.frame()).frameElement()).focus();
         },
         /**
          * What the browser side does for one story: its modes, the project's wait and the delay.
