@@ -938,9 +938,9 @@ const blobUrl = (hash) => `/api/blob/${hash}`;
 const picUrl = (item, kind) =>
     `/api/pic/${item.baseline ?? "none"}-${item.capture ?? "none"}-${item.threshold}-${item.includeAA ? 1 : 0}-${kind}`;
 
-// An image, loaded. One that fails is tried once more if the page had no good session cookie (a
-// server restarted since): signed in again first, unless the cookie is known good. A refused
-// token asks for it.
+// An image, loaded. One that fails is tried once more when the cookie was replaced after it was
+// asked for, or when the page had no good session cookie (a server restarted since) and signing in
+// replaced it. A refused token asks for it.
 function loaded(url, what, again = true) {
     const sent = token;
     const at = ++asked;
@@ -951,9 +951,17 @@ function loaded(url, what, again = true) {
         img.onerror = () => reject(new Error(`${what}: the image could not be shown`));
         img.src = url;
     }).catch(async (err) => {
-        const shownGood = cookie.goodFor === sent && cookie.changedAt < at;
-        const signed =
-            again && sent && sent === token && !shownGood ? await signIn().catch(() => ({ had: true })) : { had: true };
+        if (!again || !sent || sent !== token) {
+            throw err;
+        }
+        // The cookie was replaced after this image was asked for: tried again with the new one.
+        if (cookie.changedAt > at) {
+            return loaded(url, what, false);
+        }
+        if (cookie.goodFor === sent) {
+            throw err;
+        }
+        const signed = await signIn().catch(() => ({ had: true }));
         if (signed === null) {
             if (sent === token) {
                 askToken(REFUSED);

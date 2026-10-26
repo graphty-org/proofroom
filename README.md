@@ -256,7 +256,10 @@ PORT=4800 npx proofroom serve
 
 It prints the address to open, with a session token after `#token=`; open that exact URL. The
 token is kept in the work directory, so the URL stays valid across restarts; delete
-`<workDir>/state/token` to issue a new one. The page remembers the token in that browser. When it
+`<workDir>/state/token` to issue a new one. The page remembers the token in that browser, hands
+it to the server once and keeps an `HttpOnly` session cookie for that server; scripts can still send
+the token in the `x-review-token` header (see [The review page's
+session](docs/review-page-session.md)). When it
 has none, or the server refuses the one it has (a new token was issued), it asks for it: paste the
 token, or the whole URL `serve` printed, and it loads. The field hides what you paste.
 
