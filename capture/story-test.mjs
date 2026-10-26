@@ -471,7 +471,10 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         /**
          * Moves the pointer off the page and gives the tester iframe the focus: iframe.html is its
          * page's only document, so it has the focus a story's play gives an element, and the focus
-         * ring that shows it.
+         * ring that shows it. Then a Shift press: every story shares the tester iframe, and a real
+         * click in an earlier story leaves Chromium's input modality on "mouse", which hides the
+         * focus ring of a script focus() (a dialog's autofocus); capture.mjs loads each story fresh,
+         * where that ring shows, and a key press puts the modality back to that.
          * @param {{ page: import("playwright").Page, frame: () => Promise<import("playwright").Frame> }} ctx
          *     the command's context
          * @returns {Promise<void>} once done
@@ -479,6 +482,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         async visualPark(ctx) {
             await park(ctx.page);
             await (await (await ctx.frame()).frameElement()).focus();
+            await ctx.page.keyboard.press("Shift");
         },
         /**
          * What the browser side does for one story: its modes, the project's wait and the delay.
