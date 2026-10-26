@@ -33,20 +33,32 @@ const STATUS = {
 };
 const REVIEWABLE = Object.keys(STATUS);
 
+// The finished rows dismissed in this browser; null on the first visit, when there are none yet.
 const loadDismissed = () => {
     try {
-        return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]"));
+        const kept = localStorage.getItem(DISMISSED_KEY);
+        return kept === null ? null : new Set(JSON.parse(kept));
     } catch {
-        return new Set();
+        return null;
+    }
+};
+
+const saveDismissed = () => {
+    try {
+        localStorage.setItem(DISMISSED_KEY, JSON.stringify([...app.dismissed]));
+    } catch {
+        // Dismissed for this visit only.
     }
 };
 
 const app = {
     list: null, // the last GET /api/prs answer
+    listAt: 0, // when it came, on this browser's clock
     changes: [], // the changes rows (changes.js changeOf)
     sort: "needs",
     secOpen: new Set(SECTIONS.filter((s) => s[2]).map((s) => s[0])),
     curId: null, // the current changes row
+    pendingId: null, // the change being opened, current while its snapshots load
     openId: null, // the open change
     snaps: [], // the open change's snapshots, as plain rows
     snap: null, // the current snapshot, "<project>/<file>"
@@ -63,7 +75,7 @@ const app = {
     say,
     change: (id) => app.changes.find((c) => c.id === id) ?? null,
     open: () => app.change(app.openId),
-    currentChangeId: () => (app.level === 0 ? (app.curId ?? app.openId) : app.openId),
+    currentChangeId: () => app.pendingId ?? (app.level === 0 ? (app.curId ?? app.openId) : app.openId),
     findText: () => $("chg-find").value,
     sectionOpen: (k) => app.secOpen.has(k),
     sortLabel: () => SORTS[app.sort],
@@ -102,7 +114,9 @@ app.statusText = () => {
     if (!app.list?.updatedAt) {
         return "Loading...";
     }
-    const s = Math.max(0, Math.round((Date.now() - app.list.updatedAt) / 1000));
+    // On the server's clock, as the rows' ages are: its time when the list came, plus the time since.
+    const now = (app.list.now ?? app.listAt) + (Date.now() - app.listAt);
+    const s = Math.max(0, Math.round((now - app.list.updatedAt) / 1000));
     return s < 5 ? "Updated just now" : s < 60 ? `Updated ${s} s ago` : `Updated ${Math.floor(s / 60)} min ago`;
 };
 
@@ -457,9 +471,17 @@ app.openChange = async (id, { snap = null, quiet = false } = {}) => {
     app.curId = id;
     let snaps = [];
     if (c.total > 0) {
+        // The picked row is current at once, so a key pressed while its snapshots load acts on it.
+        app.pendingId = id;
+        draw();
         try {
             snaps = await loadSnaps(c, seq);
         } catch (err) {
+            if (seq !== app.opening) {
+                return;
+            }
+            app.pendingId = null;
+            draw();
             say(`${c.label} could not be opened: ${err.message}`, "err", [
                 { label: "Retry", run: () => app.openChange(id) },
             ]);
@@ -468,6 +490,7 @@ app.openChange = async (id, { snap = null, quiet = false } = {}) => {
         if (snaps === null) {
             return;
         }
+        app.pendingId = null;
     }
     app.openId = id;
     app.snaps = snaps;
@@ -532,11 +555,7 @@ app.focusFind = () => {
 app.dismiss = (id) => {
     const c = app.change(id);
     app.dismissed.add(c.dismissKey);
-    try {
-        localStorage.setItem(DISMISSED_KEY, JSON.stringify([...app.dismissed]));
-    } catch {
-        // Dismissed for this visit only.
-    }
+    saveDismissed();
     rebuild();
     draw();
 };
@@ -817,14 +836,24 @@ function rebuild() {
             defaultBranch: l.defaultBranch ?? "master",
             now: l.now ?? Date.now(),
             shares,
-            dismissed: app.dismissed,
+            dismissed: app.dismissed ?? new Set(),
         }),
     );
+    if (app.dismissed === null) {
+        // A first visit: the changes finished before it are not news, so only later finishes offer
+        // Dismiss.
+        app.dismissed = new Set(app.changes.filter((r) => r.dismissable).map((r) => r.dismissKey));
+        for (const r of app.changes) {
+            r.dismissable = false;
+        }
+        saveDismissed();
+    }
 }
 
 async function loadList(query = "?cached=1") {
     try {
         app.list = await api(`/api/prs${query}`);
+        app.listAt = Date.now();
         app.failed = null;
     } catch (err) {
         app.failed = err.message;

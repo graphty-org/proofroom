@@ -45,6 +45,7 @@ describe("with no changes", () => {
     it("says so, and Next change and Sort are unavailable with that reason", async () => {
         const page = await open({ targets: [] });
         await expect.poll(() => page.locator("#chg-list").innerText()).toBe("No changes yet");
+        expect(await page.title()).toBe("Visual review");
         const next = page.getByRole("button", { name: "Next change" });
         await expect.poll(() => next.getAttribute("aria-disabled")).toBe("true");
         expect(await next.getAttribute("title")).toBe("No changes yet");
@@ -96,6 +97,10 @@ describe("with 50 changes", () => {
                 "Drafts1",
             ]);
         expect(await page.locator("#chg-count").innerText()).toBe("50 changes");
+        // The tab's title counts the changes that need the reader.
+        expect(await page.title()).toBe("(8) Visual review");
+        // The top bar measures on the server's clock, as the rows' ages do.
+        expect(await page.locator("#srvstatus").innerText()).toBe("Updated 40 s ago");
         // Nothing to decide and Drafts start collapsed.
         expect(await page.locator('.sec[data-sec="nothing"]').getAttribute("aria-expanded")).toBe("false");
         expect(await page.locator('.sec[data-sec="drafts"]').getAttribute("aria-expanded")).toBe("false");
@@ -119,6 +124,12 @@ describe("with 50 changes", () => {
         ]) {
             expect(text, words).toContain(words);
         }
+        // An incomplete row says why and what to do; it has no job log to open.
+        const incomplete = page.locator('.chg[data-chg="3475"]');
+        expect(await incomplete.locator(".cnt").getAttribute("title")).toBe(
+            "graphty-element: artifact expired: re-run the visual job",
+        );
+        expect(await incomplete.getByRole("button", { name: "Job log" }).count()).toBe(0);
         // Kind tags: a pull request, a preview and a seed.
         const tags = await page.locator(".chg .tag").allInnerTexts();
         expect(new Set(tags)).toEqual(new Set(["PR", "preview", "seed"]));
@@ -213,6 +224,7 @@ describe("with 50 changes", () => {
         expect(await page.locator('#snaps-head [data-act="nextchange"]').count()).toBe(0);
         await page.locator('#changes [data-act="nextchange"]').click();
         await expect.poll(() => message(page)).toBe("Opened #3483 Change 3483: 18 undecided.");
+        expect(await page.title()).toBe("(8) Visual review");
         // Walking every change that needs you, by key from the changes, never reaches the
         // look-only preview, and comes round to the start.
         const seen = new Set();
@@ -226,6 +238,30 @@ describe("with 50 changes", () => {
         }
         expect(seen.has("local")).toBe(false);
         expect(seen.size).toBe(8);
+    });
+
+    it("makes a clicked row current at once, so Enter while its snapshots load opens that change", async () => {
+        const page = await open({ targets: fiftyChanges() });
+        await expect.poll(() => currentRow(page)).toBe("3484");
+        let release;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        let asked = 0;
+        await page.route("**/api/pr/3486/**", async (route) => {
+            asked++;
+            await held;
+            await route.fallback();
+        });
+        await page.locator('.chg[data-chg="3486"] .t').click();
+        await expect.poll(() => asked).toBeGreaterThan(0);
+        // The rows have not come, and the picked row is already current, with Open [Enter].
+        expect(await currentRow(page)).toBe("3486");
+        expect(await page.locator('.chg.cur [data-act="openchg"]').innerText()).toBe("OpenEnter");
+        await page.keyboard.press("Enter");
+        release();
+        await expect.poll(() => message(page)).toBe("Opened #3486 Storybook 9 upgrade: 300 undecided.");
+        expect(await page.evaluate(() => globalThis.location.hash)).toContain("change=3486");
     });
 
     it("shows the current change's summary in the Snapshots pane while none is open, with Open", async () => {
@@ -293,8 +329,20 @@ describe("the row menu", () => {
 
     it("opens by key, and Esc closes it before anything else", async () => {
         const page = await open({ targets: fiftyChanges() });
-        const button = page.locator('.chg[data-chg="3484"] [data-act="rowmenu"]');
-        await button.focus();
+        await page.locator(".chg").first().waitFor();
+        const focused = () =>
+            page.evaluate(() => {
+                const a = globalThis.document.activeElement;
+                return `${a?.closest(".chg")?.dataset.chg ?? ""} ${a?.dataset.act ?? a?.id}`;
+            });
+        // Tab, as a keyboard reader moves, until the first row's menu button has focus.
+        const tabToMenu = async () => {
+            for (let i = 0; i < 20 && (await focused()) !== "3484 rowmenu"; i++) {
+                await page.keyboard.press("Tab");
+            }
+            expect(await focused()).toBe("3484 rowmenu");
+        };
+        await tabToMenu();
         await page.keyboard.press("Enter");
         await page.getByRole("menu").waitFor();
         await page.keyboard.press("ArrowDown");
@@ -304,7 +352,7 @@ describe("the row menu", () => {
         await page.keyboard.press("Escape");
         await expect.poll(() => page.locator("dialog[open]").count()).toBe(0);
         await expect.poll(() => page.evaluate(() => globalThis.document.activeElement?.id)).toBe("chg-list");
-        await button.focus();
+        await tabToMenu();
         await page.keyboard.press("Enter");
         await page.getByRole("menu").waitFor();
         await page.keyboard.press("Escape");
@@ -314,17 +362,31 @@ describe("the row menu", () => {
 });
 
 describe("row actions", () => {
-    it("Dismiss takes the finished mark's button off a finished row, and it stays off", async () => {
-        const page = await open({ targets: fiftyChanges() });
+    it("Dismiss is offered only on a change finished since the first visit, and stays off once pressed", async () => {
+        const targets = fiftyChanges();
+        const page = await open({ targets });
         await page.locator('.sec[data-sec="nothing"]').click();
-        const row = page.locator('.chg[data-chg="3474"]');
+        // Changes finished before the first visit are not news: no Dismiss.
+        await page.locator('.chg[data-chg="3474"]').waitFor();
+        expect(await page.locator('[data-act="dismiss"]').count()).toBe(0);
+        // #3484 finishes; on the next refresh its row offers Dismiss.
+        const done = targets.map((x) =>
+            x.id === "3484"
+                ? { ...x, projects: x.projects.map((p) => ({ ...p, decided: 3, undecided: 0, finished: 3 })) }
+                : x,
+        );
+        t.setList(listAnswer(done));
+        await page.locator("#srvstatus").click();
+        const row = page.locator('.chg[data-chg="3484"]');
+        await expect.poll(() => row.getByRole("button", { name: "Dismiss" }).count()).toBe(1);
         expect(await row.innerText()).toContain("Finished, signed");
+        expect(await page.locator('[data-act="dismiss"]').count()).toBe(1);
         await row.getByRole("button", { name: "Dismiss" }).click();
         await expect.poll(() => row.getByRole("button", { name: "Dismiss" }).count()).toBe(0);
         await page.reload();
         await page.locator('.sec[data-sec="nothing"]').click();
-        await page.locator('.chg[data-chg="3474"]').waitFor();
-        expect(await page.locator('.chg[data-chg="3474"] [data-act="dismiss"]').count()).toBe(0);
+        await page.locator('.chg[data-chg="3484"]').waitFor();
+        expect(await page.locator('[data-act="dismiss"]').count()).toBe(0);
     });
 
     it("Job log opens a failed capture's log", async () => {

@@ -119,6 +119,10 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
             state: "incomplete",
             mark: ["failed", "c-failed"],
             count: `Incomplete: ${readyN} of ${plural(projects.length, "project")}`,
+            why: projects
+                .filter((p) => projectState(p) === "expired")
+                .map((p) => `${p.project}: ${p.problem}`)
+                .join("\n"),
         });
     } else if (failedStories.length > 0) {
         const n = failedStories.reduce((k, p) => k + p.failed.length, 0);
@@ -277,7 +281,7 @@ function rowOf(app, r) {
     const title = `${r.pr !== null && r.kind === "PR" ? `#${r.pr} ` : ""}${r.title}`;
     const details = [r.branch, r.author, r.source, `${r.ready} projects ready`, r.age].filter(Boolean).join("  ");
     const acts = [];
-    if (["failed", "capturing", "incomplete"].includes(r.state) && r.logUrl) {
+    if (["failed", "capturing"].includes(r.state) && r.logUrl) {
         acts.push(control(app, "joblog", { zone: "rows", ctx: { id: r.id } }));
     }
     if (r.dismissable) {
@@ -311,7 +315,7 @@ function rowOf(app, r) {
                 { class: "l2" },
                 el(
                     "span",
-                    { class: "cnt" },
+                    { class: "cnt", title: r.why ?? null },
                     r.mark ? ic(r.mark[0], r.mark[1]) : null,
                     el("span", { class: r.mark ? "" : "muted" }, r.count),
                 ),
@@ -333,6 +337,8 @@ export function drawChanges(app) {
     performance.mark("changes-start");
     const list = document.getElementById("chg-list");
     const rows = app.changes;
+    const needs = rows.filter((r) => r.section === "needs").length;
+    document.title = needs > 0 ? `(${needs}) Visual review` : "Visual review";
     const find = app.findText();
     const sections = sectionsOf(rows, app.sort, find);
     const shownN = [...sections.values()].reduce((n, l) => n + l.length, 0);
