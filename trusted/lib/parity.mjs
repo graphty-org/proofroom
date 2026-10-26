@@ -119,7 +119,7 @@ async function findImage(dirs, file, hash) {
  * @param {Buffer} b the second PNG
  * @returns {object | null} `{ problem, changedPixels? }`, or null when every RGBA byte matches
  */
-export function pixelDifference(a, b) {
+function pixelDifference(a, b) {
     const x = PNG.sync.read(a);
     const y = PNG.sync.read(b);
     if (x.width !== y.width || x.height !== y.height) {
