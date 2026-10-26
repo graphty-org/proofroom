@@ -2923,8 +2923,15 @@ export function createApp({
         return [200, { undone: files.length, files, unpublished: unpublishedOf(t) }];
     };
 
-    // The unpublished count after a write, so the page's Finish button stays current.
-    const unpublishedOf = (t) => finishList(t).list.length;
+    // The unpublished count after a write, so the page's Finish button stays current: the length
+    // of finishList(t).list, counted without sorting or hashing it.
+    const unpublishedOf = (t) => {
+        let n = 0;
+        for (const d of decisionsOf(t).values()) {
+            n += d.posted ? 0 : 1;
+        }
+        return n;
+    };
 
     /**
      * Each capture set's Look alike groups, with what they were computed from: they depend on the
