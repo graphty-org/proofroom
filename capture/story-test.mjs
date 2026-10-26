@@ -230,7 +230,13 @@ async function shootFrame(page, frame) {
     try {
         for (let top = 0; top < size.height; top += VIEWPORT.height) {
             for (let left = 0; left < size.width; left += VIEWPORT.width) {
-                const at = await scrollFrame(frame, left, top);
+                // No further than the measured size's end: a body that overflows past the document
+                // (All Components, by 16 px) must not scroll the rows a full-page shot cuts off.
+                const at = await scrollFrame(
+                    frame,
+                    Math.max(0, Math.min(left, size.width - VIEWPORT.width)),
+                    Math.max(0, Math.min(top, size.height - VIEWPORT.height)),
+                );
                 const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
                 const w = Math.min(VIEWPORT.width, size.width - left) * SCALE;
                 const h = Math.min(VIEWPORT.height, size.height - top) * SCALE;
