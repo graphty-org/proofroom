@@ -5,7 +5,7 @@
  *
  * A journey that breaks one returns its seed, its steps and the faults it met; the same seed
  * replays the same faults. To replay one with the server's log shown:
- *   FAULT_SEED=7 pnpm exec vitest run test/fault-journey.test.mjs
+ *   FAULT_SEED=7 npx vitest run test/fault-journey.test.mjs
  */
 
 import { cpSync, readFileSync, writeFileSync } from "node:fs";
