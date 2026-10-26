@@ -1121,6 +1121,11 @@ export function createApp({
                 loaded.problem = `not compared with ${defaultBranch}'s baselines: ${err.message}`;
             });
         }
+        // A directory loaded again may hold other images now (a new local preview, the default
+        // branch's baselines moved), so what it named before is forgotten first.
+        if (dir) {
+            forgetImages(dir);
+        }
         if (loaded.results) {
             indexImages(dir, loaded.results);
             prewarm(dir, loaded.results);
@@ -2776,6 +2781,16 @@ export function createApp({
     async function readImage({ path, hash, file, dir }) {
         const bytes = await readFile(path).catch(() => null);
         if (!bytes || sha256(bytes) !== hash) {
+            // The directory was written again since it was loaded (a new preview, moved
+            // baselines) and its results.json no longer names this image: it is gone, not damaged. A
+            // results.json already dropped (or unreadable) leaves the copy damaged.
+            const now = await readFile(join(dir, "results.json"), "utf8")
+                .then((t) => JSON.parse(t))
+                .catch(() => null);
+            const named = now?.items?.some?.((i) => i.file === file && (i.baseline === hash || i.capture === hash));
+            if (now && !named) {
+                return [404, { error: "no such image" }];
+            }
             // CI hashed the bytes it uploaded, so the copy on this disk is damaged: drop it,
             // and the next reload downloads it again.
             console.error(`proofroom: ${path} does not match results.json: downloading it again on the next reload`);

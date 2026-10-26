@@ -24,8 +24,9 @@ included, so the token never travels in a request header and a plain `<img>` can
   the token, or the whole URL `serve` printed.
 - A server restarted with the same token names its cookie anew. A page opened or reloaded after
   the restart signs in by itself from the token it remembers. In a page left open across the
-  restart, a picture can show "Failed -- tap to retry" until the page's next request to the server
-  signs it in again; tapping the picture signs in and loads it.
+  restart, a picture can show "Failed -- tap to retry", and an image opened in the viewer "the
+  image could not be shown", until the page's next request to the server signs it in again (or a
+  reload of the page); tapping a picture signs in and loads it.
 - It lasts a week, and the page renews it each time it opens, so the cookies of servers since
   restarted expire on their own.
 

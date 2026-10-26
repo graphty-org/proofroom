@@ -6,15 +6,16 @@
  * the `x-review-token` header, and any request naming another origin is refused.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
+import { PNG } from "pngjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { FIXTURE, FIXTURE_CONFIG, job, makeRepo, onePr } from "./helpers.mjs";
+import { copyFixture, fakeGh, FIXTURE, FIXTURE_CONFIG, job, makeRepo, onePr } from "./helpers.mjs";
 
 // Every directory read, by any code in this process.
 const dirReads = vi.hoisted(() => ({ count: 0 }));
@@ -216,6 +217,50 @@ describe("serve: images and pictures by their content", () => {
             const pic = await s.get(`/api/pic/${picName(BUTTON, "auto")}`, token);
             expect([closed, pic.status]).toEqual([closed, 200]);
         }
+    });
+
+    it("forgets the images a local preview named once it is captured again in the same directory", async () => {
+        const r = makeRepo();
+        const previews = join(r.dir, "previews");
+        const dest = join(previews, "123", "compact-mantine");
+        copyFixture("compact-mantine", dest, {
+            commit: "3".repeat(40),
+            headSha: r.head,
+            pr: 123,
+            runId: null,
+            runAttempt: null,
+            local: {
+                describe: "abc1234-dirty",
+                diff: "0".repeat(64),
+                preview: { merge: "3".repeat(40), host: "devbox", tool: "test" },
+            },
+        });
+        const status = join(previews, "123", "status.json");
+        writeFileSync(status, JSON.stringify({ state: "done" }));
+        const s = await start({ ghOf: () => fakeGh({ prs: [{ number: 123, head: r.head, branch: "feature" }] }), previews });
+        const token = { "x-review-token": TOKEN };
+        expect((await s.get(`/api/blob/${BUTTON.capture}`, token)).status).toBe(200);
+        // visual-preview.sh captures the pull request again: the button's image is another one.
+        const img = new PNG({ width: 10, height: 10 });
+        img.data.fill(77);
+        const bytes = PNG.sync.write(img);
+        writeFileSync(join(dest, BUTTON.file), bytes);
+        const saved = JSON.parse(readFileSync(join(dest, "results.json"), "utf8"));
+        saved.items.find((i) => i.file === BUTTON.file).capture = sha256(bytes);
+        writeFileSync(join(dest, "results.json"), JSON.stringify(saved));
+        // Before the server reads it again, the old image is gone, not damaged.
+        expect((await s.get(`/api/blob/${BUTTON.capture}`, token)).status).toBe(404);
+        expect(existsSync(join(dest, "results.json"))).toBe(true);
+        const later = new Date(Date.now() + 100000);
+        utimesSync(status, later, later);
+        expect((await s.get("/api/prs", token)).status).toBe(200);
+        const pr = await (await s.get("/api/pr/123/compact-mantine", token)).json();
+        expect(pr.items.find((i) => i.file === BUTTON.file).capture).toBe(sha256(bytes));
+        // Once it has, neither the old image nor its picture is found; the new image is.
+        expect((await s.get(`/api/blob/${BUTTON.capture}`, token)).status).toBe(404);
+        expect((await s.get(`/api/pic/${picName(BUTTON, "auto")}`, token)).status).toBe(404);
+        expect((await s.get(`/api/blob/${sha256(bytes)}`, token)).status).toBe(200);
+        expect(existsSync(join(dest, "results.json"))).toBe(true);
     });
 });
 
