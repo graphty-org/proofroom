@@ -134,23 +134,47 @@ export const withRetries =
 
 const api = async (gh, path) => JSON.parse(await gh(["api", path]));
 
-// Every open pull request with its head commit's check suites, one page of 100 at a time. A check
-// suite of GitHub Actions carries its workflow run; GraphQL has no run attempt, so the caller asks
-// REST for a run only when it changed since the previous refresh (serve.mjs).
-const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String) {
+// GitHub Actions' app id: check suites are asked only of it, so the runs below them stay few.
+const ACTIONS_APP_ID = 15368;
+
+// Every open pull request with its author and its head commit's check suites of GitHub Actions,
+// one page of 100 at a time. A check suite carries its workflow run, and its newest check runs
+// (the jobs, by name), so the list shows each project's capture job without a call per pull
+// request. GraphQL has no run attempt, so the caller asks REST for a run only when it changed since
+// the previous refresh (serve.mjs). The query costs 12 points by GitHub's formula (one request per
+// connection page: 1 + 100 + 100 + 1,000, divided by 100); the narrowing filters keep it there.
+const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String, $appId: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 100, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
       nodes {
         number title url headRefName headRefOid isDraft
-        commits(last: 1) { nodes { commit { checkSuites(first: 100) { nodes {
+        author { login }
+        commits(last: 1) { nodes { commit { checkSuites(first: 10, filterBy: { appId: $appId }) { nodes {
           databaseId status conclusion
           workflowRun { databaseId url updatedAt workflow { resourcePath } }
+          checkRuns(first: 50, filterBy: { checkType: LATEST }) { nodes { name status conclusion } }
         } } } } }
       }
     }
   }
 }`;
+
+/**
+ * The capture jobs among a check suite's runs, by project: only runs named `visual (<project>)`.
+ * @param {{ checkRuns?: { nodes: { name: string, status: string, conclusion: string | null }[] } }} suite
+ *     the check suite
+ * @returns {Record<string, { status: string, conclusion: string | null }> | null} each project's job,
+ *     lowercase as REST spells it; null when GitHub gave no runs (the caller asks the jobs instead)
+ */
+function visualRuns(suite) {
+    const runs = suite.checkRuns?.nodes ?? [];
+    const visual = runs.flatMap((r) => {
+        const m = /^visual \((.+)\)$/.exec(r.name);
+        return m ? [[m[1], { status: r.status.toLowerCase(), conclusion: r.conclusion?.toLowerCase() ?? null }]] : [];
+    });
+    return visual.length > 0 ? Object.fromEntries(visual) : null;
+}
 
 /**
  * Open pull requests, newest first, each with the newest run of the capturing workflow on its head
@@ -160,14 +184,27 @@ const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String) {
  * @param {{ workflow: string, ignoreBranches?: string[] }} config the workflow file that captures (the
  *     config's `workflow`), and the branch-name prefixes whose pull requests are left out
  * @returns {Promise<{ number: number, title: string, url: string, headSha: string, branch: string, draft: boolean,
- *     run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null }[]>}
+ *     author: string | null, run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null,
+ *     visual: Record<string, { status: string, conclusion: string | null }> | null }[]>}
  *     the pull requests; `run` is null when CI never ran on the head, and its status and
- *     conclusion are lowercase, as REST spells them
+ *     conclusion are lowercase, as REST spells them; `visual` is each project's capture job in
+ *     that run (visualRuns)
  */
 export async function openPullRequests(gh, { workflow, ignoreBranches = [] }) {
     const out = [];
     for (let after = null; ;) {
-        const args = ["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", `query=${PULLS_QUERY}`];
+        const args = [
+            "api",
+            "graphql",
+            "-F",
+            "owner={owner}",
+            "-F",
+            "name={repo}",
+            "-F",
+            `appId=${ACTIONS_APP_ID}`,
+            "-f",
+            `query=${PULLS_QUERY}`,
+        ];
         if (after) {
             args.push("-f", `after=${after}`);
         }
@@ -187,12 +224,15 @@ export async function openPullRequests(gh, { workflow, ignoreBranches = [] }) {
                 headSha: p.headRefOid,
                 branch: p.headRefName,
                 draft: p.isDraft === true,
+                // null for a deleted account ("ghost").
+                author: p.author?.login ?? null,
                 run: newest && {
                     id: newest.workflowRun.databaseId,
                     status: newest.status.toLowerCase(),
                     conclusion: newest.conclusion?.toLowerCase() ?? null,
                     updatedAt: newest.workflowRun.updatedAt,
                 },
+                visual: newest && visualRuns(newest),
             });
         }
         if (!page.pageInfo.hasNextPage) {
@@ -240,7 +280,7 @@ export const getRun = async (gh, id) => toRun(await api(gh, `repos/{owner}/{repo
  * @param {{ id: number }} run the run
  * @param {number} attempt the attempt
  * @param {string[]} projects project ids
- * @returns {Promise<Record<string, { conclusion: string | null, url: string } | undefined>>} by project
+ * @returns {Promise<Record<string, { status: string | null, conclusion: string | null, url: string } | undefined>>} by project
  */
 export async function visualJobs(gh, run, attempt, projects) {
     const { jobs } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100`);
@@ -249,7 +289,7 @@ export async function visualJobs(gh, run, attempt, projects) {
         projects.map((p) => {
             // The exact name: "visual (graphty-element)" also contains "graphty".
             const job = visual.find((j) => j.name === `visual (${p})`);
-            return [p, job && { conclusion: job.conclusion, url: job.html_url }];
+            return [p, job && { status: job.status ?? null, conclusion: job.conclusion, url: job.html_url }];
         }),
     );
 }
