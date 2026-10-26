@@ -108,7 +108,7 @@ function scrollLikeTopFrame(on) {
         const pixel = document.createElement("div");
         pixel.id = ID;
         const root = document.documentElement;
-        pixel.style.cssText = `position:absolute;left:0;top:${Math.max(root.scrollHeight, innerHeight)}px;width:1px;height:1px;visibility:hidden`;
+        pixel.style.cssText = `position:absolute;left:0;top:${Math.max(root.scrollHeight, root.clientHeight)}px;width:1px;height:1px;visibility:hidden`;
         root.append(pixel);
     }
 }
