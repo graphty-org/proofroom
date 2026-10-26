@@ -540,7 +540,12 @@ async function mergeResultsCommand(args) {
     let quarantine = [];
     if (values.quarantine) {
         try {
-            quarantine = quarantineEntries(JSON.parse(await readFile(resolve(values.quarantine), "utf8")));
+            // a list the run step never wrote (it stopped first) is an empty one; a malformed one is refused
+            const text = await readFile(resolve(values.quarantine), "utf8").catch((e) => {
+                if (e.code === "ENOENT") return '{ "quarantine": [] }';
+                throw e;
+            });
+            quarantine = quarantineEntries(JSON.parse(text));
         } catch (e) {
             console.error(`visual-review merge-results: --quarantine ${values.quarantine}: ${e.message}`);
             return 1;

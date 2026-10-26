@@ -46,7 +46,8 @@ export const unstableLine = (project, item) =>
  */
 export function promotion(results, blocking) {
     const files = results.items.filter((i) => !APPROVED.has(i.status)).map((i) => i.file);
-    return { blocking, blocked: blocking && files.length > 0, files };
+    // an incomplete capture (a missing shard, an unseen removal) is never promotable on its own say-so
+    return { blocking, blocked: blocking && (files.length > 0 || results.complete === false), files };
 }
 
 /**

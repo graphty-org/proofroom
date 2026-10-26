@@ -77,6 +77,12 @@ describe("story outcomes", () => {
         }
     });
 
+    it("never lets an incomplete capture promote, even with every recorded picture approved", () => {
+        const results = { project: "p", complete: false, items: [{ file: "a.png", status: "unchanged" }] };
+        expect(promotion(results, true).blocked).toBe(true);
+        expect(promotion({ ...results, complete: true }, true).blocked).toBe(false);
+    });
+
     it("gives a story unstable at first whose retry broke one verdict, [BROKEN], never [FLAKY] too", () => {
         const item = { file: "a--b.png", status: "failed", reason: "play threw", unstableFirst: true };
         for (const blocking of [false, true]) {
