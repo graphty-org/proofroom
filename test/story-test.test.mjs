@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
-import { visualStoryTest } from "../capture/story-test.mjs";
+import { pinFixedInPage, visualStoryTest } from "../capture/story-test.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
 import { tempDir } from "./helpers.mjs";
@@ -212,5 +212,34 @@ describe("story tests' visual step", () => {
             "b--wobbles": "unchanged",
         });
         expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(false);
+    });
+});
+
+describe("pinFixedInPage", () => {
+    it("draws a sticky element static while tiles are shot, and puts its style back", () => {
+        const el = (position) => {
+            const e = { position, style: { cssText: "", setProperty: (n, v) => (e.style[n] = v) } };
+            e.getBoundingClientRect = () => ({ top: 0, left: 0, width: 10, height: 10 });
+            e.querySelectorAll = () => [];
+            return e;
+        };
+        const header = el("sticky");
+        const plain = el("static");
+        Object.assign(globalThis, {
+            document: { querySelectorAll: () => [header, plain] },
+            getComputedStyle: (e) => ({ position: e.position }),
+        });
+        try {
+            pinFixedInPage(false);
+            expect(header.style.position).toBe("static");
+            expect(plain.style.position).toBeUndefined();
+            header.style.cssText = "changed";
+            pinFixedInPage(true);
+            expect(header.style.cssText).toBe("");
+            expect(globalThis.__visualReviewUnstuck).toBeUndefined();
+        } finally {
+            delete globalThis.document;
+            delete globalThis.getComputedStyle;
+        }
     });
 });
