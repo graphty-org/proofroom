@@ -36,6 +36,7 @@ import {
     toolVersion,
     VIEWPORT,
 } from "./capture.mjs";
+import { unstableLine } from "./story-outcomes.mjs";
 
 const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
 
@@ -384,7 +385,18 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         writeFileSync(join(out, "results.json.tmp"), `${JSON.stringify(results, null, 2)}\n`);
         renameSync(join(out, "results.json.tmp"), join(out, "results.json"));
     };
+    // Each story's test, as its JUnit report names it, so a quarantine entry can be matched to its items.
+    const tests = new Map();
     const record = (item) => {
+        const earlier = results.items.find((i) => i.file === item.file);
+        // A story unstable before its retry stays on record as unstable, whatever the retry drew.
+        if (item.status !== "unstable" && (earlier?.status === "unstable" || earlier?.unstableFirst)) {
+            item.unstableFirst = true;
+        }
+        const test = tests.get(item.id) ?? earlier?.test;
+        if (test) {
+            item.test = test;
+        }
         results.items = results.items.filter((i) => i.file !== item.file);
         results.items.push(item);
         results.expected = results.items.length;
@@ -406,13 +418,14 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         return theirs ? { baseline: theirs, from: old } : { baseline: own, from: null };
     };
 
-    const finish = async (job, first, second, console) => {
+    const finish = async (job, first, second, logged) => {
         const { id, mode, file, baseline, from, s } = job;
         const r = classify({ baseline, first, second, threshold: s.threshold, includeAA: s.includeAA, moved: !!from });
         if (["changed", "moved", "new", "unstable"].includes(r.status)) {
             writeFileSync(join(out, file), r.flaky ? second : first);
         }
         if (r.status === "unstable") {
+            console.log(`visual-review: ${unstableLine(project, { file })}`);
             writeFileSync(join(out, "second", file), second);
         } else {
             // A first run's unstable shot of this story, now settled on the retry.
@@ -421,7 +434,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         if (baseline && (r.status === "changed" || r.status === "unstable" || (from && r.baseline !== r.capture))) {
             writeFileSync(join(out, "baselines", file), baseline);
         }
-        const lines = r.status === "unchanged" || r.status === "moved" ? [] : clip(console);
+        const lines = r.status === "unchanged" || r.status === "moved" ? [] : clip(logged);
         record({
             id,
             mode,
@@ -454,12 +467,16 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
          * What the browser side does for one story: its modes, the project's wait and the delay.
          * A story its settings exclude is recorded here and has no modes to shoot.
          * @param {unknown} _ctx the command's context
-         * @param {{ id: string, chromatic: object }} story the story id and its parameters.chromatic
+         * @param {{ id: string, chromatic: object, test?: { file: string, name: string } }} story the
+         *     story id, its parameters.chromatic, and its test (absolute file, full name)
          * @returns {Promise<{ modes: object[], waitFor: object | null, delay: number }>} the plan
          */
-        async visualPlan(_ctx, { id, chromatic }) {
+        async visualPlan(_ctx, { id, chromatic, test }) {
             await ready;
             planned.add(id);
+            if (test?.file && test.name) {
+                tests.set(id, { file: relative(root, test.file).replaceAll("\\", "/"), name: test.name });
+            }
             const s = await settings(id, chromatic);
             if (!s.disableSnapshot) {
                 return { modes: s.modes, waitFor: entry.waitFor ?? null, delay: s.delay };
