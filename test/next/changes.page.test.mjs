@@ -607,7 +607,7 @@ describe("when the server's first list fails", () => {
         await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
         await page.locator(".chg").first().waitFor();
         expect(await page.locator("#wait-box").count()).toBe(0);
-        expect(await message(page)).toBe("Choose a change on the left: Up / Down move, Open [Enter] opens it.");        // The Retry press is logged as an action, as every control's is.
+        expect(await message(page)).toBe("Choose a change on the left: Up / Down move, Open [Enter] opens it."); // The Retry press is logged as an action, as every control's is.
         await expect.poll(() => t.actions.filter((a) => a.a === "retry").length).toBe(1);
     });
 });
