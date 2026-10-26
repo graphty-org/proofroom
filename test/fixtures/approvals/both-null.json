@@ -1,0 +1,29 @@
+{
+    "description": "An entry with neither a from nor a to.",
+    "expect": "fail",
+    "problem": "from and to are both null",
+    "schemaValid": false,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "change-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": null,
+            "approvedAt": "2026-10-25T14:02:11Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": null,
+                    "to": null,
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}

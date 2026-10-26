@@ -1,0 +1,35 @@
+{
+    "description": "An entry for a review record: those are not baselines.",
+    "expect": "fail",
+    "problem": "not under reviews/",
+    "schemaValid": false,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "change-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": null,
+            "approvedAt": "2026-10-25T14:02:11Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                },
+                {
+                    "path": "reviews/r.json",
+                    "from": null,
+                    "to": "{hash:x}",
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}
