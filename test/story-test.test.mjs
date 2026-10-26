@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
-import { pinFixedInPage, visualStoryTest } from "../capture/story-test.mjs";
+import { pinFixedInPage } from "../capture/capture.mjs";
+import { visualStoryTest } from "../capture/story-test.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
 import { tempDir } from "./helpers.mjs";
