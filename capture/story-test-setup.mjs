@@ -5,9 +5,10 @@
  *
  * It repeats capture.mjs's page set-up -- no WebGPU, `chromatic=true`, a fresh store, the fixed
  * running clock -- and, after each story's play function, its waits, then asks the Node commands
- * of story-test.mjs for the shot of every mode. A first shot that differs from the baseline is
- * rendered and shot again, as capture.mjs does. A failed play, a render error, the project's
- * console rule and an unstable story (two shots that disagree) fail the test.
+ * of story-test.mjs for the shot of every mode. A shot that did not pass is rendered and shot
+ * again while the adapter's `retries` allow, each shot one attempt. A failed play, a render error
+ * and the project's console rule fail the test; so does a snapshot that did not pass, unless the
+ * adapter's `fail` is "errors".
  */
 
 /* global document, requestAnimationFrame, history, location, localStorage, sessionStorage, indexedDB -- browser only */
@@ -185,12 +186,12 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         await settle(plan);
         const shot = { id: story.id, mode: mode.name, chromatic };
         let r = await commands.visualShot({ ...shot, console: lines.splice(0) });
-        if (r.again) {
+        while (r.again) {
             await render(story, mode);
             await settle(plan);
             r = await commands.visualShot({ ...shot, console: lines.splice(0) });
         }
-        return r.status;
+        return r.failure;
     };
 
     afterEach(async (context) => {
@@ -203,7 +204,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         const plan = await commands.visualPlan({ id: story.id, chromatic });
         const fail = (modes, reason) =>
             commands.visualFail({ id: story.id, modes, reason, chromatic, console: lines.splice(0) });
-        const unstable = [];
+        const failures = [];
         try {
             if (context.task.result?.state === "fail") {
                 await fail(
@@ -214,8 +215,9 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
             }
             for (const [i, mode] of plan.modes.entries()) {
                 try {
-                    if ((await shootMode(story, chromatic, plan, mode, i)) === "unstable") {
-                        unstable.push(mode.name ?? story.id);
+                    const failure = await shootMode(story, chromatic, plan, mode, i);
+                    if (failure) {
+                        failures.push(failure);
                     }
                 } catch (e) {
                     await fail(
@@ -231,10 +233,8 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
                 globalThis.Date = RealDate;
             }
         }
-        if (unstable.length > 0) {
-            throw new Error(
-                `proofroom: ${story.id} is unstable (two renders drew different pictures): ${unstable.join(", ")}`,
-            );
+        if (failures.length > 0) {
+            throw new Error(failures.join("\n"));
         }
     });
 }
