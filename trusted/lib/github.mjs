@@ -396,8 +396,8 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
             .sort((x, y) => y.attempt - x.attempt)[0];
     const newest = Object.fromEntries(
         projects.map((project) => {
-            const final = newestOf(new RegExp(`^visual-final-${project}-(\\d+)$`));
-            const a = final ? { ...final, final: true } : newestOf(new RegExp(`^visual-${project}-(\\d+)$`));
+            const final = newestOf(new RegExp(String.raw`^visual-final-${project}-(\d+)$`));
+            const a = final ? { ...final, final: true } : newestOf(new RegExp(String.raw`^visual-${project}-(\d+)$`));
             return [project, a ?? null];
         }),
     );
