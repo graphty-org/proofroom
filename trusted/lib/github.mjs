@@ -243,12 +243,24 @@ export const getRun = async (gh, id) => toRun(await api(gh, `repos/{owner}/{repo
  * @returns {Promise<Record<string, { conclusion: string | null, url: string } | undefined>>} by project
  */
 export async function visualJobs(gh, run, attempt, projects) {
-    const { jobs } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100`);
-    const visual = jobs.filter((j) => /^visual\b/.test(j.name));
+    // Every page: a run that calls the workflow beside other lanes can have more than 100 jobs.
+    const jobs = [];
+    for (let page = 1; ; page++) {
+        const got = await api(
+            gh,
+            `repos/{owner}/{repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+        );
+        jobs.push(...got.jobs);
+        if (got.jobs.length < 100 || jobs.length >= (got.total_count ?? 0)) {
+            break;
+        }
+    }
+    // A called workflow's jobs are named "<caller job> / visual (<project>)".
+    const visual = jobs.filter((j) => /(^| \/ )visual\b/.test(j.name));
     return Object.fromEntries(
         projects.map((p) => {
             // The exact name: "visual (graphty-element)" also contains "graphty".
-            const job = visual.find((j) => j.name === `visual (${p})`);
+            const job = visual.find((j) => j.name === `visual (${p})` || j.name.endsWith(` / visual (${p})`));
             return [p, job && { conclusion: job.conclusion, url: job.html_url }];
         }),
     );

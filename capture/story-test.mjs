@@ -36,6 +36,7 @@ import {
     toolVersion,
     VIEWPORT,
 } from "./capture.mjs";
+import { unstableLine } from "./story-outcomes.mjs";
 
 const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
 
@@ -226,10 +227,15 @@ async function shootFrame(page, frame) {
         return page.screenshot({ ...SHOT, clip: { ...view, ...size } });
     }
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
-    await frame.evaluate(pinFixedInPage, false);
     try {
-        for (let top = 0; top < size.height; top += VIEWPORT.height) {
-            for (let left = 0; left < size.width; left += VIEWPORT.width) {
+        // Inside the try, so a failure still puts every style back (an undo of nothing does nothing).
+        await frame.evaluate(pinFixedInPage, false);
+        // Each tile copies only what it holds from where the frame actually scrolled to, and the next
+        // tile starts where it ended: a frame that scrolls short of the measured size (its scrollable
+        // height is less than the full-page size) must not have its clip read past the screenshot.
+        // ponytail: rows the frame never scrolls to stay transparent, so they show up as a diff.
+        for (let top = 0, h = 1; top < size.height && h > 0; top += h) {
+            for (let left = 0, w = 1; left < size.width && w > 0; left += w) {
                 // No further than the measured size's end: a body that overflows past the document
                 // (All Components, by 16 px) must not scroll the rows a full-page shot cuts off.
                 const at = await scrollFrame(
@@ -238,9 +244,12 @@ async function shootFrame(page, frame) {
                     Math.max(0, Math.min(top, size.height - VIEWPORT.height)),
                 );
                 const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
-                const w = Math.min(VIEWPORT.width, size.width - left) * SCALE;
-                const h = Math.min(VIEWPORT.height, size.height - top) * SCALE;
-                PNG.bitblt(tile, out, (left - at.x) * SCALE, (top - at.y) * SCALE, w, h, left * SCALE, top * SCALE);
+                const [x, y] = [left - at.x, top - at.y];
+                w = Math.min(VIEWPORT.width - x, size.width - left);
+                h = Math.min(VIEWPORT.height - y, size.height - top);
+                if (w > 0 && h > 0) {
+                    PNG.bitblt(tile, out, x * SCALE, y * SCALE, w * SCALE, h * SCALE, left * SCALE, top * SCALE);
+                }
             }
         }
     } finally {
@@ -384,7 +393,18 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         writeFileSync(join(out, "results.json.tmp"), `${JSON.stringify(results, null, 2)}\n`);
         renameSync(join(out, "results.json.tmp"), join(out, "results.json"));
     };
+    // Each story's test, as its JUnit report names it, so a quarantine entry can be matched to its items.
+    const tests = new Map();
     const record = (item) => {
+        const earlier = results.items.find((i) => i.file === item.file);
+        // A story unstable before its retry stays on record as unstable, whatever the retry drew.
+        if (item.status !== "unstable" && (earlier?.status === "unstable" || earlier?.unstableFirst)) {
+            item.unstableFirst = true;
+        }
+        const test = tests.get(item.id) ?? earlier?.test;
+        if (test) {
+            item.test = test;
+        }
         results.items = results.items.filter((i) => i.file !== item.file);
         results.items.push(item);
         results.expected = results.items.length;
@@ -406,13 +426,14 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         return theirs ? { baseline: theirs, from: old } : { baseline: own, from: null };
     };
 
-    const finish = async (job, first, second, console) => {
+    const finish = async (job, first, second, logged) => {
         const { id, mode, file, baseline, from, s } = job;
         const r = classify({ baseline, first, second, threshold: s.threshold, includeAA: s.includeAA, moved: !!from });
         if (["changed", "moved", "new", "unstable"].includes(r.status)) {
             writeFileSync(join(out, file), r.flaky ? second : first);
         }
         if (r.status === "unstable") {
+            console.log(`visual-review: ${unstableLine(project, { file })}`);
             writeFileSync(join(out, "second", file), second);
         } else {
             // A first run's unstable shot of this story, now settled on the retry.
@@ -421,7 +442,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         if (baseline && (r.status === "changed" || r.status === "unstable" || (from && r.baseline !== r.capture))) {
             writeFileSync(join(out, "baselines", file), baseline);
         }
-        const lines = r.status === "unchanged" || r.status === "moved" ? [] : clip(console);
+        const lines = r.status === "unchanged" || r.status === "moved" ? [] : clip(logged);
         record({
             id,
             mode,
@@ -454,12 +475,16 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
          * What the browser side does for one story: its modes, the project's wait and the delay.
          * A story its settings exclude is recorded here and has no modes to shoot, only the wait.
          * @param {unknown} _ctx the command's context
-         * @param {{ id: string, chromatic: object }} story the story id and its parameters.chromatic
+         * @param {{ id: string, chromatic: object, test?: { file: string, name: string } }} story the
+         *     story id, its parameters.chromatic, and its test (absolute file, full name)
          * @returns {Promise<{ modes: object[], waitFor: object | null, delay: number }>} the plan
          */
-        async visualPlan(_ctx, { id, chromatic }) {
+        async visualPlan(_ctx, { id, chromatic, test }) {
             await ready;
             planned.add(id);
+            if (test?.file && test.name) {
+                tests.set(id, { file: relative(root, test.file).replaceAll("\\", "/"), name: test.name });
+            }
             const s = await settings(id, chromatic);
             if (!s.disableSnapshot) {
                 return { modes: s.modes, waitFor: entry.waitFor ?? null, delay: s.delay };
