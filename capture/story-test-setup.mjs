@@ -270,6 +270,22 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         }
     });
 
+    // A failed story is recorded as failed, not shot; an excluded one has no modes. Either still
+    // finishes here, not in the next story's test. True when the story is not shot.
+    const unshot = async (context, plan, fail) => {
+        const failed = context.task.result?.state === "fail";
+        if (failed) {
+            await fail(
+                plan.modes.map((m) => m.name),
+                context.task.result.errors?.[0]?.message ?? "the story test failed",
+            );
+        }
+        if ((failed || plan.modes.length === 0) && plan.waitFor) {
+            await waitForElements(plan.waitFor, true);
+        }
+        return failed;
+    };
+
     afterEach(async (context) => {
         confirm = null;
         const story = context.story;
@@ -284,19 +300,8 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
             commands.visualFail({ id: story.id, modes, reason, chromatic, console: lines.splice(0) });
         const again = [];
         try {
-            if (context.task.result?.state === "fail") {
-                await fail(
-                    plan.modes.map((m) => m.name),
-                    context.task.result.errors?.[0]?.message ?? "the story test failed",
-                );
-                if (plan.waitFor) {
-                    await waitForElements(plan.waitFor, true);
-                }
+            if (await unshot(context, plan, fail)) {
                 return;
-            }
-            if (plan.modes.length === 0 && plan.waitFor) {
-                // An excluded story is not shot, but it finishes here, not in the next story's test.
-                await waitForElements(plan.waitFor, true);
             }
             for (const [i, mode] of plan.modes.entries()) {
                 try {
