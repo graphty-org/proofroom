@@ -41,8 +41,11 @@ test case, as Maven Surefire does: `<flakyFailure>` or `<flakyError>` when the l
 `<rerunFailure>` or `<rerunError>` when it did not. proofroom itself never calls a snapshot flaky;
 the tool that reads the file decides what to make of the attempts.
 
-The workflow `proofroom init` writes runs this after the capture and uploads `junit.xml` inside the
-capture's artifact, `visual-<project>-<attempt>`. Hand it to your test-report step from there.
+`proofroom run` and `proofroom compare` write the same file themselves when they finish, as
+`junit.xml` beside `results.json` (`--junit <file>` puts it elsewhere), so the workflow
+`proofroom init` writes has it inside the capture's artifact, `visual-<project>-<attempt>`. Hand
+it to your test-report step from there. `proofroom junit` makes it again from any capture's
+`results.json`.
 
 Before wiring the file into a flaky-test tool, check that tool's settings: one that quarantines a
 failing test on its own would quarantine a story whose change is real and waiting for review.
@@ -80,8 +83,9 @@ more:
 }
 ```
 
-The last attempt of each snapshot is its result; earlier lines for the same snapshot are its
-earlier attempts.
+`proofroom run` and `proofroom compare` print one result line on standard output the moment each
+snapshot is judged, and append it to `results.ndjson` beside `results.json`. The last attempt of
+each snapshot is its result; earlier lines for the same snapshot are its earlier attempts.
 
 ## Fields of results.json other tools may meet
 
@@ -93,5 +97,6 @@ Besides the fields every capture has, an item can carry:
 reason, console }` (and `from` for a renamed story).
 
 and the file can name the browser that drew the images, `renderer: { name, version }`. All of them
-are optional: a reader must work without them. `flaky` is always written; it is `true` only when
-the capture shot a story twice and the second shot matched the baseline.
+are optional: a reader must work without them. `flaky` is always written, and always `false`:
+proofroom shoots each snapshot once per attempt and never calls one flaky. Captures made by older
+versions, which shot a story twice when it differed, can hold `true` there.
