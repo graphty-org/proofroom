@@ -330,7 +330,7 @@ describe("finish: a candidate of master", () => {
         git(s.repo, "commit", "-q", "-m", "test(workspace): approve the visual baselines of the seed");
         git(s.repo, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
         const before = git(s.remote, "rev-parse", branch);
-        const open = [{ head: { ref: branch }, html_url: "https://github.com/o/r/pull/8" }];
+        const open = [{ number: 8, head: { ref: branch }, html_url: "https://github.com/o/r/pull/8" }];
         const gh = async (args, input) => {
             s.calls.push({ args, input });
             if (args[1].endsWith("/pulls")) {
@@ -339,7 +339,10 @@ describe("finish: a candidate of master", () => {
             return JSON.stringify(args[1].includes("pulls?state=open") ? open : {});
         };
         const out = await s.run(
-            [accept("badge--default.light.png"), accept("button--primary.dark.png")],
+            [
+                accept("badge--default.light.png"),
+                accept("button--primary.dark.png", "compact-mantine", "the border is darker now"),
+            ],
             {
                 pr: null,
                 branch: null,
@@ -349,6 +352,10 @@ describe("finish: a candidate of master", () => {
             { gh },
         );
         expect(out.pullRequest).toBe("https://github.com/o/r/pull/8");
+        // The reused pull request's description is rewritten with this Finish's, so its notes are published.
+        const patch = s.calls.find((c) => c.args.includes("PATCH"));
+        expect(patch.args).toContain("repos/{owner}/{repo}/pulls/8");
+        expect(JSON.parse(patch.input).body).toContain("the border is darker now");
         expect(git(s.remote, "rev-parse", branch)).not.toBe(before);
         expect(remoteLog(s, branch)[1]).toBe(s.master);
     });

@@ -503,6 +503,24 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
         // A candidate's branch is replaced on a later Finish, so its pull request may be open already.
         const open = decided.target.candidate ? await openPullRequestOf(gh, branch).catch(() => null) : null;
         if (open) {
+            // Its description is the only place a candidate's accept notes are published, so it is
+            // rewritten with this Finish's (every decision of the candidate, notes included).
+            const body = seedBody(first, accepts, rejects, notes, config, decided.target.candidate);
+            try {
+                await net("updating the pull request", () =>
+                    gh(
+                        ["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${open.number}`, "--input", "-"],
+                        JSON.stringify({ body }),
+                    ),
+                );
+            } catch (patchErr) {
+                const e = new AcceptError(
+                    `${branch} was pushed as ${commit.slice(0, 10)}, but updating the description of ` +
+                        `${open.html_url} failed: ${patchErr.message}. Press Finish again to update it.`,
+                );
+                e.committed = commit;
+                throw e;
+            }
             return open.html_url;
         }
         const e = new AcceptError(
