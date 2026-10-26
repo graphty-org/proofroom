@@ -876,13 +876,33 @@ export function createApp({
      * A target's saved decisions by `<project>/<file>`, each with the hash of the image it was
      * taken on and of the baseline it was compared with (`base`); `bulk` marks an accept from Accept all that was never opened one by one, `posted`
      * a reject an earlier Finish already commented. A file that is not a decisions file is moved
-     * aside, never overwritten, so the owner can still recover what it held.
+     * aside, never overwritten, so the owner can still recover what it held. The file is the source
+     * of truth: what was read is kept and used again only while the file's modification time, size
+     * and inode are unchanged, so a decision another tab or process wrote is read at once. The
+     * answer is shared: callers never change it (update changes a copy).
      * @param {object} t the target
-     * @returns {Record<string, { decision: string, reason: string | null, hash: string | null,
-     *     base?: string | null, bulk?: true, posted?: true }>} the decisions
+     * @returns {Readonly<Record<string, { decision: string, reason: string | null, hash: string | null,
+     *     base?: string | null, bulk?: true, posted?: true }>>} the decisions
      */
     const readState = (t) => {
         const file = stateFile(t);
+        const stat = statSync(file, { throwIfNoEntry: false });
+        if (!stat) {
+            savedStates.delete(file);
+            return {};
+        }
+        const kept = savedStates.get(file);
+        if (kept?.stamp === stampOf(stat)) {
+            return kept.saved;
+        }
+        const saved = parseState(t, file);
+        savedStates.set(file, { stamp: stampOf(stat), saved });
+        return saved;
+    };
+    /** Each decisions file as last read or written, by path, with its stampOf when it was. */
+    const savedStates = new Map();
+    const stampOf = (stat) => `${stat.mtimeMs} ${stat.size} ${stat.ino}`;
+    const parseState = (t, file) => {
         let saved;
         try {
             saved = JSON.parse(readFileSync(file, "utf8"));
@@ -918,9 +938,15 @@ export function createApp({
      * @param {(saved: Record<string, object>) => void} change edits the decisions in place
      */
     const update = (t, change) => {
-        const saved = readState(t);
+        const saved = Object.fromEntries(Object.entries(readState(t)).map(([k, d]) => [k, { ...d }]));
         change(saved);
-        writeJson(stateFile(t), saved);
+        const file = stateFile(t);
+        writeJson(file, saved);
+        // What was just written is what the next read gets, unless the file changes again.
+        const stat = statSync(file, { throwIfNoEntry: false });
+        if (stat) {
+            savedStates.set(file, { stamp: stampOf(stat), saved });
+        }
     };
 
     /**
@@ -2901,30 +2927,6 @@ export function createApp({
     const unpublishedOf = (t) => finishList(t).list.length;
 
     /**
-     * Where a target's image is on this disk, by results.json.
-     * @param {string} id the target
-     * @param {string} name the project
-     * @param {string} kind "capture" or "baseline"
-     * @param {string} file the image's file name
-     * @param {string | null} [run] the run the page loaded (targetAt)
-     * @returns {Promise<Array<unknown> | { path: string, hash: string, file: string, dir: string, item: any }>}
-     *     where the image is, or the answer to send instead
-     */
-    async function imageOf(id, name, kind, file, run = null) {
-        const { t, p } = await projectOf(id, name, run);
-        if (!t) {
-            return gone(id, run);
-        }
-        const item = itemIn(p?.results, file);
-        // A failed item has no image in the artifact: capture keeps no copy of its baseline.
-        const hash = item && item.status !== "failed" && { capture: item.capture, baseline: item.baseline }[kind];
-        if (!hash) {
-            return [404, { error: "no such image" }];
-        }
-        return { ...whereOf(p.dir, item, kind), item };
-    }
-
-    /**
      * Each capture set's Look alike groups, with what they were computed from: they depend on the
      * images, the known noise and the images approved before, never on the decisions, so they are
      * computed once per load (and again only when a refresh replaces the noise or the approvals),
@@ -2953,6 +2955,30 @@ export function createApp({
         lookAlikes.set(results, { t, files: t.changedFiles, noise, approved, grouped });
         return grouped;
     };
+
+    /**
+     * Where a target's image is on this disk, by results.json.
+     * @param {string} id the target
+     * @param {string} name the project
+     * @param {string} kind "capture" or "baseline"
+     * @param {string} file the image's file name
+     * @param {string | null} [run] the run the page loaded (targetAt)
+     * @returns {Promise<Array<unknown> | { path: string, hash: string, file: string, dir: string, item: any }>}
+     *     where the image is, or the answer to send instead
+     */
+    async function imageOf(id, name, kind, file, run = null) {
+        const { t, p } = await projectOf(id, name, run);
+        if (!t) {
+            return gone(id, run);
+        }
+        const item = itemIn(p?.results, file);
+        // A failed item has no image in the artifact: capture keeps no copy of its baseline.
+        const hash = item && item.status !== "failed" && { capture: item.capture, baseline: item.baseline }[kind];
+        if (!hash) {
+            return [404, { error: "no such image" }];
+        }
+        return { ...whereOf(p.dir, item, kind), item };
+    }
 
     /**
      * Where an item's image is in its capture's directory.
