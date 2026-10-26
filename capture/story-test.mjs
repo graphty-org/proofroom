@@ -93,17 +93,33 @@ const park = (page) => page.mouse.move(-1, -1);
 
 /**
  * Scrolls the tester iframe's document, as near to (x, y) as it goes, and waits for what came
- * into view (a lazy image) and two frames.
+ * into view (a lazy image) and two frames. A page whose html and body are `overflow: hidden` and
+ * `height: 100%` (an app's stylesheet) scrolls the window little or not at all: its overflow
+ * scrolls inside the body, so the body scrolls by what the window could not, and the elements
+ * pinFixedInPage pinned are moved with the document.
  * @param {import("playwright").Frame} frame the tester iframe
  * @param {number} x in CSS px
  * @param {number} y in CSS px
- * @returns {Promise<{ x: number, y: number }>} where it scrolled to
+ * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
  */
 async function scrollFrame(frame, x, y) {
     const at = await frame.evaluate(
         ([left, top]) => {
             globalThis.scrollTo(left, top);
-            return { x: globalThis.scrollX, y: globalThis.scrollY };
+            const { body } = document;
+            // The body scrolls whatever the window could not (none of it on a page that scrolls the window).
+            body.scrollTo(left - globalThis.scrollX, top - globalThis.scrollY);
+            const at = { x: globalThis.scrollX + body.scrollLeft, y: globalThis.scrollY + body.scrollTop };
+            // A pinned element's containing block does not move when the body scrolls: put it where
+            // the document scrolled to (at) shows it, as a full-page shot does.
+            for (const [el, , docTop, docLeft] of globalThis.__visualReviewPinned ?? []) {
+                const now = el.getBoundingClientRect();
+                const move = (name, by) =>
+                    el.style.setProperty(name, `${parseFloat(el.style[name]) + by}px`, "important");
+                move("top", docTop - at.y - now.top);
+                move("left", docLeft - at.x - now.left);
+            }
+            return at;
         },
         [x, y],
     );
@@ -167,9 +183,11 @@ function pinFixedInPage(undo) {
     };
     walk(document);
     const fixed = all.filter((el) => getComputedStyle(el).position === "fixed");
-    globalThis[key] = fixed.map((el) => [el, el.style.cssText]);
-    for (const el of fixed) {
-        const r = el.getBoundingClientRect();
+    const rects = fixed.map((el) => el.getBoundingClientRect());
+    // Each one's own style, and where it sits in the document (the page is at scroll (0, 0)).
+    globalThis[key] = fixed.map((el, i) => [el, el.style.cssText, rects[i].top, rects[i].left]);
+    for (const [i, el] of fixed.entries()) {
+        const r = rects[i];
         const set = (name, value) => el.style.setProperty(name, value, "important");
         set("position", "absolute");
         set("box-sizing", "border-box");
@@ -212,7 +230,13 @@ async function shootFrame(page, frame) {
     try {
         for (let top = 0; top < size.height; top += VIEWPORT.height) {
             for (let left = 0; left < size.width; left += VIEWPORT.width) {
-                const at = await scrollFrame(frame, left, top);
+                // No further than the measured size's end: a body that overflows past the document
+                // (All Components, by 16 px) must not scroll the rows a full-page shot cuts off.
+                const at = await scrollFrame(
+                    frame,
+                    Math.max(0, Math.min(left, size.width - VIEWPORT.width)),
+                    Math.max(0, Math.min(top, size.height - VIEWPORT.height)),
+                );
                 const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
                 const w = Math.min(VIEWPORT.width, size.width - left) * SCALE;
                 const h = Math.min(VIEWPORT.height, size.height - top) * SCALE;
