@@ -273,9 +273,11 @@ export function copyFixture(project, dest, overrides = {}) {
 /**
  * The GraphQL answer openPullRequests reads: one page holding every pull request, each with its
  * head's check suites (the CI run's, when it has one, beside another workflow's).
- * @param {{ number: number, head: string, branch: string, draft?: boolean }[]} prs the pull requests
- * @param {(head: string) => { id: number, attempt?: number, status?: string, conclusion?: string | null } | undefined} runOf
- *     the head's CI run
+ * @param {{ number: number, head: string, branch: string, draft?: boolean, author?: string | null }[]} prs
+ *     the pull requests; `author` is "octocat" unless given (null: a deleted account)
+ * @param {(head: string) => { id: number, attempt?: number, status?: string, conclusion?: string | null,
+ *     checkRuns?: { name: string, status: string, conclusion: string | null }[] } | undefined} runOf
+ *     the head's CI run, with the check runs GitHub lists under it (none unless given)
  * @returns {string} the answer
  */
 export function pullsGraphql(prs, runOf) {
@@ -289,6 +291,7 @@ export function pullsGraphql(prs, runOf) {
             updatedAt: `attempt ${x.attempt ?? 1}`,
             workflow: { resourcePath: `/o/r/actions/workflows/${path}` },
         },
+        checkRuns: { nodes: x.checkRuns ?? [] },
     });
     const nodes = prs.map((p) => {
         const x = runOf(p.head);
@@ -300,6 +303,7 @@ export function pullsGraphql(prs, runOf) {
             headRefName: p.branch,
             headRefOid: p.head,
             isDraft: p.draft === true,
+            author: p.author === undefined ? { login: "octocat" } : p.author && { login: p.author },
             commits: { nodes: [{ commit: { checkSuites: { nodes: suites } } }] },
         };
     });

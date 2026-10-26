@@ -1188,6 +1188,17 @@ export function createApp({
     async function build(info, run) {
         const g = run.status === "completed" ? kept(run) : gh;
         const jobs = await visualJobs(g, run, run.attempt, names);
+        // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
+        // gave none there (a CI app the filter misses), the jobs call this build makes anyway:
+        // the job's status, or, where the answer has none, running while it has no conclusion.
+        const ciOf = (name) =>
+            info.visual?.[name] ??
+            (jobs[name]
+                ? {
+                      status: jobs[name].status ?? (jobs[name].conclusion ? "completed" : "in_progress"),
+                      conclusion: jobs[name].conclusion ?? null,
+                  }
+                : null);
         const others = [];
         // Each project's capture as its download lands; `partial` is the target listed while the
         // rest are still downloading, whose rows fill in one by one. `download` counts the
@@ -1204,6 +1215,7 @@ export function createApp({
                 info.pr !== null,
             );
             p.logUrl = jobs[name]?.url ?? run.url;
+            p.ci = ciOf(name);
             p.bytes = sizes[name] ?? null;
             partial.projects[names.indexOf(name)] = p;
             await withPreviews(partial);
@@ -1258,6 +1270,7 @@ export function createApp({
             for (const p of partial.projects) {
                 p.downloading = true;
                 p.bytes = sizes[p.project] ?? null;
+                p.ci = ciOf(p.project);
             }
             for (const name of landed.keys()) {
                 await fill(name);
@@ -1273,6 +1286,7 @@ export function createApp({
                 info.pr !== null,
             );
             p.logUrl = jobs[name]?.url ?? run.url;
+            p.ci = ciOf(name);
             list.push(p);
         }
         const warnings = others.map(
@@ -1633,6 +1647,8 @@ export function createApp({
                         branch: pr.branch,
                         head: pr.headSha,
                         draft: pr.draft,
+                        author: pr.author ?? null,
+                        visual: pr.visual ?? null,
                     };
                     try {
                         const run = await runOf(pr, read);
@@ -1685,6 +1701,7 @@ export function createApp({
         }
         signer = await signingIdentity(repo);
         await republish(next, seen);
+        holdPinned(next);
         targets = next;
         save();
         prune();
@@ -1907,10 +1924,10 @@ export function createApp({
         }
     }
 
-    // Deletes the downloads of runs no target shows any more (never state/). Not while a Finish
-    // reads its captures, nor after a refresh that could not load some target.
+    // Deletes the downloads of runs no target shows any more and no page has open (never state/).
+    // Not while a Finish reads its captures, nor after a refresh that could not load some target.
     function prune() {
-        const runs = new Set([...targets.values()].map((t) => t.runId));
+        const runs = new Set([...targets.values(), ...held.values()].map((t) => t.runId));
         if (results || finishing || runs.has(null) || !existsSync(tmp)) {
             return;
         }
@@ -1950,7 +1967,15 @@ export function createApp({
             runUrl: t.runUrl,
             commit: t.commit,
             headSha: t.headSha,
+            author: t.author ?? null,
             mergeMasterFirst: t.mergeMasterFirst,
+            // The changes list's row states: "behind <default branch>", "Changed on <default branch>:
+            // N newer baselines", look only.
+            behind: t.mergeMasterFirst === true ? defaultBranch : null,
+            stale: t.projects.reduce((n, p) => n + (p.newer?.length ?? 0), 0),
+            lookOnly: t.projects.every((p) => !p.results || isLocal(t, p.project)) && t.projects.some((p) => p.results),
+            // A run a page still has open (`run`), when the list has moved on to a newer one.
+            newerRun: newerRunOf(t),
             // The commit a pending push's capture is of (withPending): decisions yes, Finish not yet.
             pendingPush: t.pendingPush ?? null,
             downloading: t.downloading === true,
@@ -2009,6 +2034,8 @@ export function createApp({
                     // The size of the project's artifact, while it downloads.
                     bytes: p.downloading ? (p.bytes ?? null) : null,
                     logUrl: p.logUrl,
+                    // Its capture job on CI: { status, conclusion }, null when CI has none.
+                    ci: p.ci ?? null,
                     counts,
                     // The stories whose capture failed: the inbox holds the pull request back for them.
                     failed: (p.results?.items ?? [])
@@ -2134,13 +2161,81 @@ export function createApp({
         return targets.get(id);
     }
 
-    async function projectOf(id, name) {
+    /**
+     * The runs pages have open. A page names the run it loaded (`run`, `<run id>-<attempt>`) on
+     * every request, and the server keeps serving that run's rows and images while one does, even
+     * after a newer run of the change lands, so rows never change under the reviewer; the target's
+     * summary names the newer run (`newerRun`) for the page to offer. `pins` is when a page last
+     * named each `<target> <run>`; `held` keeps the runs the list has moved past, whose downloads
+     * prune() leaves on disk. ponytail: a pin lasts PIN_MS after the last request naming it (a
+     * closed tab says nothing), and held runs are not kept across a restart.
+     */
+    const PIN_MS = 10 * 60000;
+    const pins = new Map();
+    /** @type {Map<string, object>} */
+    const held = new Map();
+    const runKey = (t) => `${t.runId}-${t.runAttempt}`;
+    const pinFresh = (key) => Date.now() - (pins.get(key) ?? -Infinity) < PIN_MS;
+
+    // Keeps each run a page has open that `next` replaces, and lets go of those no page names now.
+    function holdPinned(next) {
+        for (const [id, old] of targets) {
+            const key = `${id} ${runKey(old)}`;
+            const now = next.get(id);
+            if (old.runId !== null && pinFresh(key) && !(now && runKey(now) === runKey(old))) {
+                held.set(key, old);
+            }
+        }
+        for (const [key, t] of held) {
+            const now = next.get(t.id);
+            if (!pinFresh(key) || (now && runKey(now) === runKey(t))) {
+                held.delete(key);
+            }
+        }
+        for (const key of pins.keys()) {
+            if (!pinFresh(key)) {
+                pins.delete(key);
+            }
+        }
+    }
+
+    // The run the list shows now, when it is not the one `t` is: what "A newer capture is ready" names.
+    const newerRunOf = (t) => {
+        const now = targets.get(t.id);
+        return now && now !== t && now.runId !== null && runKey(now) !== runKey(t)
+            ? { runId: now.runId, runAttempt: now.runAttempt, headSha: now.headSha ?? null }
+            : null;
+    };
+
+    /**
+     * A target as of the run a page loaded, which that page then keeps open (pins).
+     * @param {string} id the target
+     * @param {string | null | undefined} run `<run id>-<attempt>`; without it, the newest run
+     * @returns {Promise<object | undefined>} the target, or undefined when that run is not kept
+     */
+    async function targetAt(id, run) {
         const t = await targetOf(id);
+        if (typeof run !== "string") {
+            return t;
+        }
+        const key = `${id} ${run}`;
+        const at = t && runKey(t) === run ? t : held.get(key);
+        if (at) {
+            pins.set(key, Date.now());
+        }
+        return at;
+    }
+
+    async function projectOf(id, name, run) {
+        const t = await targetAt(id, run);
         const p = t?.projects.find((x) => x.project === name);
         return { t, p: p?.results ? p : undefined };
     }
 
-    const gone = (id) => {
+    const gone = (id, run = null) => {
+        if (typeof run === "string" && targets.has(id)) {
+            return [410, { error: `the capture this page loaded (run ${run}) is not kept any more: load the newest` }];
+        }
         const name = id === "master" ? defaultBranch : `#${id}`;
         return [404, { error: `${name} is not listed any more (closed, or it could not be loaded): reload the list` }];
     };
@@ -2671,6 +2766,86 @@ export function createApp({
         }
     }
 
+    // What a list row shows of an item (GET /api/pr?rows=1), and nothing a row does not: no console,
+    // attempts, list of areas or diff settings. `pic` names its pictures (`/api/pic/<pic>-<kind>`).
+    const ROW_FIELDS = [
+        "id",
+        "mode",
+        "file",
+        "status",
+        "from",
+        "baseline",
+        "capture",
+        "size",
+        "baselineSize",
+        "changedPixels",
+        "reason",
+        "reReview",
+        "noise",
+    ];
+    const rowOf = (item) => {
+        const row = Object.fromEntries(ROW_FIELDS.filter((k) => item[k] !== undefined).map((k) => [k, item[k]]));
+        const imaged = item.status !== "failed" && (item.baseline || item.capture);
+        const key = imaged ? pairKey(item.baseline ?? "none", item.capture ?? "none", item) : null;
+        const found = key && areas.get(key);
+        return {
+            ...row,
+            pic: key,
+            areas: found ? { crop: found.crop, zoom: found.zoom, count: found.areas } : null,
+        };
+    };
+
+    /**
+     * How many of an earlier run's decisions on one project still apply to `t` (the same story
+     * file, image and baseline: decisionsOf), which loading `t` keeps, and the ones that do not.
+     * @param {object} earlier the earlier run's target
+     * @param {object} t the newer one
+     * @param {string} name the project
+     * @returns {{ kept: number, lost: { file: string, decision: string }[] }} the count kept, and the rest
+     */
+    const carriedFrom = (earlier, t, name) => {
+        const prefix = `${name}/`;
+        const now = decisionsOf(t);
+        const before = [...decisionsOf(earlier)].filter(([k, d]) => k.startsWith(prefix) && !d.approvedBefore);
+        const lost = before.filter(([k]) => !now.has(k) || now.get(k).approvedBefore);
+        return {
+            kept: before.length - lost.length,
+            lost: lost.map(([k, d]) => ({ file: k.slice(prefix.length), decision: d.decision })),
+        };
+    };
+
+    // An accept or exclusion an earlier Finish published: its record holds it, so Undo cannot take it back.
+    const finished = (d) => d?.posted === true && d.decision !== "reject";
+    const FINISHED = "an earlier Finish published this decision, so it cannot be undone here: reload the page";
+
+    /**
+     * The bulk Undo of POST /api/accept-all: every listed file's decision deleted in one rewrite.
+     * @param {object} t the target
+     * @param {{ project: string, files?: unknown }} body the request
+     * @returns {[number, object]} the answer: the files undone, or why not
+     */
+    const undoAll = (t, body) => {
+        if (!(Array.isArray(body.files) && body.files.every((f) => typeof f === "string"))) {
+            return [400, { error: "an Undo needs files: the list of file names to undo" }];
+        }
+        if (isLocal(t, body.project)) {
+            return [403, { error: `${body.project} ${LOCAL}` }];
+        }
+        const mine = decisionsOf(t);
+        const files = [];
+        update(t, (saved) => {
+            for (const file of new Set(/** @type {string[]} */ (body.files))) {
+                const key = `${body.project}/${file}`;
+                const d = mine.get(key);
+                if (d && !d.approvedBefore && !finished(d) && saved[key]) {
+                    delete saved[key];
+                    files.push(file);
+                }
+            }
+        });
+        return [200, { undone: files.length, files, unpublished: unpublishedOf(t) }];
+    };
+
     // The unpublished count after a write, so the page's Finish button stays current.
     const unpublishedOf = (t) => finishList(t).list.length;
 
@@ -2680,13 +2855,14 @@ export function createApp({
      * @param {string} name the project
      * @param {string} kind "capture" or "baseline"
      * @param {string} file the image's file name
+     * @param {string | null} [run] the run the page loaded (targetAt)
      * @returns {Promise<Array<unknown> | { path: string, hash: string, file: string, dir: string, item: any }>}
      *     where the image is, or the answer to send instead
      */
-    async function imageOf(id, name, kind, file) {
-        const { t, p } = await projectOf(id, name);
+    async function imageOf(id, name, kind, file, run = null) {
+        const { t, p } = await projectOf(id, name, run);
         if (!t) {
-            return gone(id);
+            return gone(id, run);
         }
         const item = p?.results.items.find((i) => i.file === file);
         // A failed item has no image in the artifact: capture keeps no copy of its baseline.
@@ -2851,19 +3027,25 @@ export function createApp({
         },
         // One target's counts without refetching from GitHub; with ?finish=1, what Finish would do.
         "GET /api/target": async ([id], _, query) => {
-            const t = await targetOf(id);
+            const run = query?.get("run") ?? null;
+            const t = await targetAt(id, run);
             if (!t) {
-                return gone(id);
+                return gone(id, run);
             }
             if (query?.get("finish") === "1") {
                 return [200, { ...summary(t), finish: finishPreview(t) }];
             }
             return [200, summary(t)];
         },
-        "GET /api/pr": async ([id, name]) => {
-            const { t, p } = await projectOf(id, name);
+        // With `run`, that run's rows while the page has it open (targetAt); with `since` as well, how
+        // many of that earlier run's decisions still apply here (`carried`). With `rows=1`, only what
+        // a list row shows, with each changed pair's picture name (`pic`, PICTURE_NAME without the
+        // kind) and its areas (`areas`: crop, zoom, count) once its picture job has run.
+        "GET /api/pr": async ([id, name], _, query) => {
+            const run = query?.get("run") ?? null;
+            const { t, p } = await projectOf(id, name, run);
             if (!t) {
-                return gone(id);
+                return gone(id, run);
             }
             if (t.projects.find((x) => x.project === name)?.downloading) {
                 // The reviewer is waiting for this one: it downloads next. The page asks again.
@@ -2893,6 +3075,8 @@ export function createApp({
             const grouped = clusters(
                 shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !decided.get(i.file)?.approvedBefore),
             );
+            const since = query?.get("since");
+            const earlier = typeof since === "string" && since !== runKey(t) ? held.get(`${id} ${since}`) : null;
             return [
                 200,
                 {
@@ -2900,9 +3084,10 @@ export function createApp({
                     project: name,
                     acceptable: acceptable(t, name),
                     results: meta,
-                    items: shown,
+                    items: query?.get("rows") === "1" ? shown.map(rowOf) : shown,
                     decisions: Object.fromEntries(decided),
                     clusters: grouped.clusters,
+                    ...(earlier && { carried: carriedFrom(earlier, t, name) }),
                 },
             ];
         },
@@ -2932,13 +3117,13 @@ export function createApp({
                 return [502, { error: `GitHub did not give the pull request's description: ${err.message}` }];
             }
         },
-        "GET /api/img": async ([id, name, kind, file]) => {
-            const where = await imageOf(id, name, kind, file);
+        "GET /api/img": async ([id, name, kind, file], _, query) => {
+            const where = await imageOf(id, name, kind, file, query?.get("run"));
             return Array.isArray(where) ? where : readImage(where);
         },
         // The same image scaled down for a grid tile, made once and kept by the image's hash.
-        "GET /api/thumb": async ([id, name, kind, file]) => {
-            const where = await imageOf(id, name, kind, file);
+        "GET /api/thumb": async ([id, name, kind, file], _, query) => {
+            const where = await imageOf(id, name, kind, file, query?.get("run"));
             if (Array.isArray(where)) {
                 return where;
             }
@@ -2947,15 +3132,15 @@ export function createApp({
         // A changed item's picture of one kind of PICTURE_KINDS: spotlit ("spot"), cropped toward
         // its change ("zoom") or both; the row's zoomed pictures ("row-plain", "row-spot"); the
         // capture's thumbnail ("plain"); or "auto", what Zoom Auto shows.
-        "GET /api/spot": async ([id, name, kind, file]) => {
+        "GET /api/spot": async ([id, name, kind, file], _, query) => {
             if (!PICTURE_KINDS.includes(kind)) {
                 return [404, { error: "no such tile" }];
             }
-            const a = await imageOf(id, name, "baseline", file);
+            const a = await imageOf(id, name, "baseline", file, query?.get("run"));
             if (Array.isArray(a)) {
                 return a;
             }
-            const b = await imageOf(id, name, "capture", file);
+            const b = await imageOf(id, name, "capture", file, query?.get("run"));
             if (Array.isArray(b)) {
                 return b;
             }
@@ -2975,9 +3160,9 @@ export function createApp({
             return answer[0] === 200 ? [...answer, IMMUTABLE] : answer;
         },
         "POST /api/decide": async (_, body) => {
-            const { p, t } = await projectOf(String(body.id), body.project);
+            const { p, t } = await projectOf(String(body.id), body.project, body.run);
             if (!t) {
-                return gone(String(body.id));
+                return gone(String(body.id), body.run);
             }
             const item = p?.results.items.find((i) => i.file === body.file);
             if (!item) {
@@ -2991,6 +3176,17 @@ export function createApp({
                 return [403, { error: `${body.project} ${LOCAL}` }];
             }
             if (body.decision === null) {
+                const d = decisionsOf(t).get(key);
+                if (finished(d)) {
+                    return [409, { error: `${body.file}: ${FINISHED}` }];
+                }
+                // Only the decision this run shows: one saved for another image (a newer run's, in
+                // the decisions file every run of the target shares) is not this page's to undo.
+                if (!d || d.approvedBefore) {
+                    return readState(t)[key]
+                        ? [409, { error: `${body.file}: ${CHANGED}` }]
+                        : [200, { ok: true, unpublished: unpublishedOf(t) }];
+                }
                 update(t, (saved) => {
                     delete saved[key];
                 });
@@ -3040,10 +3236,13 @@ export function createApp({
             });
             return [200, { ok: true, unpublished: unpublishedOf(t) }];
         },
+        // With `decision: null` and `files`, the bulk Undo: those files' decisions undone in one
+        // rewrite, but never an accept an earlier Finish published, nor an approved before (never
+        // saved); the answer lists the files it undid.
         "POST /api/accept-all": async (_, body) => {
-            const { p, t } = await projectOf(String(body.id), body.project);
+            const { p, t } = await projectOf(String(body.id), body.project, body.run);
             if (!t) {
-                return gone(String(body.id));
+                return gone(String(body.id), body.run);
             }
             if (!p) {
                 return [404, { error: "no such capture" }];
@@ -3053,6 +3252,9 @@ export function createApp({
             }
             if (busy(t)) {
                 return [409, { error: BUSY }];
+            }
+            if (body.decision === null) {
+                return undoAll(t, body);
             }
             // `decision` (accept when absent) and `reason`: a cluster of the grouped review rejected
             // or excluded as one, stored per item exactly as one decision is.
