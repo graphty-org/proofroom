@@ -72,19 +72,23 @@ function shrink(src, [rx, ry, rw, rh], w, height) {
  * @param {number} o the index of the output pixel's red
  */
 function average(src, [x0, x1], [y0, y1], out, o) {
-    const sum = [0, 0, 0, 0];
+    // Four locals, not an array: this loop reads every source pixel and is the job's largest cost.
+    const { width, data } = src;
+    let [r, g, b, a] = [0, 0, 0, 0];
     for (let sy = y0; sy < y1; sy++) {
-        for (let i = (sy * src.width + x0) * 4; i < (sy * src.width + x1) * 4; i += 4) {
-            sum[0] += src.data[i];
-            sum[1] += src.data[i + 1];
-            sum[2] += src.data[i + 2];
-            sum[3] += src.data[i + 3];
+        const end = (sy * width + x1) * 4;
+        for (let i = (sy * width + x0) * 4; i < end; i += 4) {
+            r += data[i];
+            g += data[i + 1];
+            b += data[i + 2];
+            a += data[i + 3];
         }
     }
     const n = (y1 - y0) * (x1 - x0);
-    for (let c = 0; c < 4; c++) {
-        out[o + c] = Math.round(sum[c] / n);
-    }
+    out[o] = Math.round(r / n);
+    out[o + 1] = Math.round(g / n);
+    out[o + 2] = Math.round(b / n);
+    out[o + 3] = Math.round(a / n);
 }
 
 /**
