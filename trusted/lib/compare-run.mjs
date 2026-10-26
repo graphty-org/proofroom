@@ -150,6 +150,62 @@ export async function loadRenames(dir) {
 }
 
 /**
+ * Reads a story's settings file, `<dir>/<id>.json`.
+ * @param {string} dir the project's baselines directory
+ * @param {string} id the story id
+ * @returns {Promise<object | null>} the parsed settings, or null when the story has none
+ */
+export async function loadSettings(dir, id) {
+    try {
+        return JSON.parse(await readFile(join(dir, `${id}.json`), "utf8"));
+    } catch (e) {
+        if (e.code === "ENOENT") {
+            return null;
+        }
+        throw e;
+    }
+}
+
+/**
+ * A story's capture settings: its `parameters.chromatic`, with every key its settings file sets
+ * taking precedence. Modes map a name to Storybook globals; `disable: true` drops a mode.
+ * @param {{ chromatic?: object }} parameters the story's parameters (only `chromatic` is read)
+ * @param {object | null} file the story's settings file
+ * @returns {{ disableSnapshot: boolean, excludedByStory: boolean, reason: string | null, delay: number, threshold: number,
+ *     includeAA: boolean, modes: { name: string | null, globals: object | null }[] }} one mode
+ *     with a null name when the story has none
+ */
+export function storySettings(parameters, file) {
+    const fromStory = parameters.chromatic ?? {};
+    const s = { ...fromStory, ...file };
+    const disableSnapshot = s.disableSnapshot === true;
+    const byFile = file?.disableSnapshot === true;
+    const modes = Object.entries(s.modes ?? {})
+        .filter(([, m]) => m?.disable !== true)
+        .map(([name, m]) => ({
+            name,
+            globals: Object.fromEntries(Object.entries(m).filter(([k]) => k !== "disable")),
+        }));
+    // A mode names files and results.json items, which allow only these: refused before any story
+    // is captured, not when results.json is checked at the end.
+    for (const { name } of modes) {
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name.length > 50) {
+            throw new Error(`Chromatic mode "${name}": a mode name is lowercase letters, digits and "-", at most 50`);
+        }
+    }
+    const where = byFile ? "settings file" : "story's parameters";
+    return {
+        disableSnapshot,
+        excludedByStory: disableSnapshot && !byFile,
+        reason: disableSnapshot ? (file?.reason ?? `disableSnapshot in the ${where}`) : null,
+        delay: s.delay ?? 0,
+        threshold: s.diffThreshold ?? DEFAULT_THRESHOLD,
+        includeAA: s.diffIncludeAntiAliasing === true,
+        modes: modes.length > 0 ? modes : [{ name: null, globals: null }],
+    };
+}
+
+/**
  * Writes results.json atomically, so a reader never sees half a file.
  * @param {string} out the capture directory
  * @param {object} results the results
@@ -332,7 +388,7 @@ export async function* imageLines({ project, captures, threshold, includeAA, log
  * @returns {void}
  * @throws {Error} naming what is wrong
  */
-function checkLine(line, project) {
+export function checkLine(line, project) {
     const ok =
         typeof line === "object" &&
         line !== null &&
@@ -348,6 +404,136 @@ function checkLine(line, project) {
     if (!ok) {
         throw new Error(`not a capture line of project ${project}: ${JSON.stringify(line).slice(0, 300)}`);
     }
+}
+
+/**
+ * What judging one capture line needs: the project's baselines, renames and reference images, and
+ * what the lines judged so far named.
+ * @param {{ baselines: string, captures?: string | null, out?: string | null, reference?: string | null,
+ *     prune?: boolean, known?: Set<string> | null }} options `out` is where the images the item needs
+ *     are written (null: nowhere); `known` is every story id of the Storybook (null when unknown,
+ *     and then no rename applies)
+ * @returns {Promise<object>} the context judgeLine() takes
+ */
+export async function judgeContext({
+    baselines,
+    captures = null,
+    out = null,
+    reference = null,
+    prune = false,
+    known = null,
+}) {
+    return {
+        baselines,
+        captures,
+        out,
+        prune,
+        known,
+        renames: await loadRenames(baselines),
+        refs: await loadReference(reference),
+        existing: new Set(await pngsIn(baselines)),
+        // Baselines a line named (its own, or the old id's it was compared with): not removed.
+        named: new Set(),
+        newlyExcluded: new Set(),
+    };
+}
+
+/**
+ * The old id a renamed story is compared under, in this mode, or null.
+ * @param {object} ctx what judgeContext() returned
+ * @param {string} id the story id
+ * @param {string | null} mode the mode
+ * @returns {string | null} the old id, while the new id has no baseline of its own
+ */
+function renamedFrom(ctx, id, mode) {
+    const old = ctx.renames.get(id);
+    // A rename from an id that is still a story is not a move: it does nothing.
+    if (!old || !ctx.known || ctx.known.has(old)) {
+        return null;
+    }
+    return !ctx.existing.has(fileName(id, mode)) && ctx.existing.has(fileName(old, mode)) ? old : null;
+}
+
+/**
+ * Judges one capture line: reads its baseline, resolves a rename, classifies it, and keeps in
+ * `ctx.out` the images its item needs (the capture unless unchanged; the baseline it was compared
+ * with when changed). compare and compareSnapshot() both judge through this.
+ * @param {object} ctx what judgeContext() returned
+ * @param {object} line a checked `image`, `failed` or `excluded` capture line
+ * @returns {Promise<object | null>} the results.json item, or null for a story its own parameters
+ *     exclude while it has a baseline (reported removed once the whole capture is seen)
+ */
+export async function judgeLine(ctx, line) {
+    const { baselines, captures, out, prune, refs } = ctx;
+    const { id, mode, file, settings } = line;
+    const common = { id, mode, file, threshold: settings.threshold, includeAA: settings.includeAA };
+    const keep = (name, bytes) => (out ? writeFile(join(out, name), bytes) : undefined);
+    const drop = (name) => (out ? rm(join(out, name), { force: true }) : undefined);
+    if (line.type === "excluded") {
+        if (line.byStory === true && ctx.existing.has(file)) {
+            ctx.newlyExcluded.add(file);
+            return null;
+        }
+        ctx.named.add(file);
+        return { ...common, ...EMPTY, status: "excluded", reason: line.reason ?? "excluded" };
+    }
+    const from = renamedFrom(ctx, id, mode);
+    ctx.named.add(file);
+    if (from) {
+        ctx.named.add(fileName(from, mode));
+    }
+    const withFrom = from ? { ...common, from } : common;
+    const baseline = await readBaseline(join(baselines, from ? fileName(from, mode) : file));
+    const failed = (reason, console) => ({
+        ...withFrom,
+        ...EMPTY,
+        baseline: baseline && sha256(baseline),
+        status: "failed",
+        reason,
+        console,
+    });
+    if (line.type === "failed") {
+        await drop(join("baselines", file));
+        if (prune) {
+            await drop(file);
+        }
+        return failed(String(line.reason ?? "failed").slice(0, MAX_LINE), clip(line.console));
+    }
+    const bytes =
+        line.bytes ??
+        (await readFile(join(captures, file)).catch((e) => {
+            if (e.code === "ENOENT") {
+                return null;
+            }
+            throw e;
+        }));
+    if (bytes === null) {
+        return failed(`the capture has no image ${file}: run removes the images of snapshots that need no review`, []);
+    }
+    const r = classify({
+        baseline,
+        first: bytes,
+        reference: baseline ? null : (refs.images.get(file) ?? null),
+        threshold: settings.threshold,
+        includeAA: settings.includeAA,
+        moved: from !== null,
+    });
+    // A moved capture is also its baseline when the bytes are the same: the page reads it.
+    if (["changed", "moved", "new", "unseeded"].includes(r.status)) {
+        if (!captures || join(captures, file) !== join(out ?? "", file)) {
+            await keep(file, bytes);
+        }
+    } else if (prune) {
+        await drop(file);
+    }
+    const ownBaseline = r.status === "moved" && r.baseline !== r.capture;
+    if (baseline && (r.status === "changed" || ownBaseline)) {
+        await keep(join("baselines", file), baseline);
+    } else {
+        await drop(join("baselines", file));
+    }
+    const console = r.status === "unchanged" || r.status === "moved" ? [] : clip(line.console);
+    return { ...withFrom, ...r, reason: null, console };
 }
 
 /**
@@ -385,19 +571,13 @@ export async function compareRun({
     if (!ids) {
         await writeFile(join(out, RESULT_LINES), "");
     }
-    const renames = await loadRenames(baselines);
-    const refs = await loadReference(reference);
-    const existing = new Set(await pngsIn(baselines));
+    const ctx = await judgeContext({ baselines, captures, out, reference, prune });
+    const { renames, refs, existing, named, newlyExcluded } = ctx;
     const seeded = existing.size > 0;
     const written = [];
     const attempts = new Map();
-    // Baselines a line named (its own, or the old id's it was compared with): not removed.
-    const named = new Set();
-    const newlyExcluded = new Set();
     let start = null;
     let end = null;
-    // Every story id of the Storybook, from the start line; null for a plain directory of images.
-    let known = null;
 
     const report = async (item, line) => {
         const attempt = (attempts.get(item.file) ?? 0) + 1;
@@ -412,106 +592,6 @@ export async function compareRun({
         onResult(result, line);
     };
 
-    /**
-     * The old id a renamed story is compared under, in this mode, or null.
-     * @param {string} id the story id
-     * @param {string | null} mode the mode
-     * @returns {string | null} the old id, while the new id has no baseline of its own
-     */
-    const renamedFrom = (id, mode) => {
-        const old = renames.get(id);
-        // A rename from an id that is still a story is not a move: it does nothing.
-        if (!old || !known || known.has(old)) {
-            return null;
-        }
-        return !existing.has(fileName(id, mode)) && existing.has(fileName(old, mode)) ? old : null;
-    };
-
-    const judge = async (line) => {
-        const { id, mode, file, settings } = line;
-        const common = { id, mode, file, threshold: settings.threshold, includeAA: settings.includeAA };
-        if (line.type === "excluded") {
-            if (line.byStory === true && existing.has(file)) {
-                newlyExcluded.add(file);
-                return;
-            }
-            named.add(file);
-            await report({ ...common, ...EMPTY, status: "excluded", reason: line.reason ?? "excluded" }, line);
-            return;
-        }
-        const from = renamedFrom(id, mode);
-        named.add(file);
-        if (from) {
-            named.add(fileName(from, mode));
-        }
-        const withFrom = from ? { ...common, from } : common;
-        const baseline = await readBaseline(join(baselines, from ? fileName(from, mode) : file));
-        if (line.type === "failed") {
-            await rm(join(out, "baselines", file), { force: true });
-            if (prune) {
-                await rm(join(out, file), { force: true });
-            }
-            await report(
-                {
-                    ...withFrom,
-                    ...EMPTY,
-                    baseline: baseline && sha256(baseline),
-                    status: "failed",
-                    reason: String(line.reason ?? "failed").slice(0, MAX_LINE),
-                    console: clip(line.console),
-                },
-                line,
-            );
-            return;
-        }
-        const bytes =
-            line.bytes ??
-            (await readFile(join(captures, file)).catch((e) => {
-                if (e.code === "ENOENT") {
-                    return null;
-                }
-                throw e;
-            }));
-        if (bytes === null) {
-            await report(
-                {
-                    ...withFrom,
-                    ...EMPTY,
-                    baseline: baseline && sha256(baseline),
-                    status: "failed",
-                    reason: `the capture has no image ${file}: run removes the images of snapshots that need no review`,
-                    console: [],
-                },
-                line,
-            );
-            return;
-        }
-        const r = classify({
-            baseline,
-            first: bytes,
-            reference: baseline ? null : (refs.images.get(file) ?? null),
-            threshold: settings.threshold,
-            includeAA: settings.includeAA,
-            moved: from !== null,
-        });
-        // A moved capture is also its baseline when the bytes are the same: the page reads it.
-        if (["changed", "moved", "new", "unseeded"].includes(r.status)) {
-            if (join(captures, file) !== join(out, file)) {
-                await writeFile(join(out, file), bytes);
-            }
-        } else if (prune) {
-            await rm(join(out, file), { force: true });
-        }
-        const ownBaseline = r.status === "moved" && r.baseline !== r.capture;
-        if (baseline && (r.status === "changed" || ownBaseline)) {
-            await writeFile(join(out, "baselines", file), baseline);
-        } else {
-            await rm(join(out, "baselines", file), { force: true });
-        }
-        const console = r.status === "unchanged" || r.status === "moved" ? [] : clip(line.console);
-        await report({ ...withFrom, ...r, reason: null, console }, line);
-    };
-
     try {
         for await (const line of lines) {
             if (start === null) {
@@ -519,7 +599,7 @@ export async function compareRun({
                     throw new Error(`the capture lines must begin with project ${project}'s start line`);
                 }
                 start = line;
-                known = Array.isArray(line.stories) ? new Set(line.stories) : null;
+                ctx.known = Array.isArray(line.stories) ? new Set(line.stories) : null;
                 if (!ids) {
                     await renameErrors();
                 }
@@ -531,7 +611,10 @@ export async function compareRun({
             }
             checkLine(line, project);
             if (!ids || ids.has(line.file.slice(0, -4))) {
-                await judge(line);
+                const item = await judgeLine(ctx, line);
+                if (item) {
+                    await report(item, line);
+                }
             }
         }
     } catch (err) {
@@ -619,11 +702,11 @@ export async function compareRun({
      * @returns {Promise<void>} once reported
      */
     async function renameErrors() {
-        if (!known || start.only) {
+        if (!ctx.known || start.only) {
             return;
         }
         for (const [to, from] of renames) {
-            if (known.has(to)) {
+            if (ctx.known.has(to)) {
                 continue;
             }
             // Only a rename with an old baseline left to move is an error; once it is accepted the

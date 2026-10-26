@@ -10,6 +10,14 @@
     },
     "exports": {
         "./package.json": "./package.json",
+        "./compare": {
+            "types": "./trusted/lib/compare-api.d.mts",
+            "default": "./trusted/lib/compare.mjs"
+        },
+        "./capture": {
+            "types": "./capture/capture-api.d.mts",
+            "default": "./capture/capture.mjs"
+        },
         "./vitest": {
             "types": "./capture/story-test.d.mts",
             "default": "./capture/story-test.mjs"
@@ -77,12 +85,15 @@
         "@commitlint/lint": "19.8.1",
         "@commitlint/load": "19.8.1",
         "@eslint/js": "9.39.5",
+        "@playwright/test": "1.57.0",
         "@types/node": "20.19.9",
         "@vitest/coverage-v8": "4.1.11",
         "ajv": "8.20.0",
         "eslint": "9.39.5",
         "eslint-plugin-jsdoc": "50.8.0",
         "globals": "15.15.0",
+        "jest": "30.5.2",
+        "mocha": "11.7.5",
         "playwright": "1.57.0",
         "typescript": "5.9.3",
         "vite": "7.3.6",

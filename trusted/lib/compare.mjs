@@ -3,15 +3,25 @@
  *
  * The SHA-256 of the PNG bytes decides first; only when the bytes differ are both images decoded
  * and compared with pixelmatch at the story's threshold. A bounding box is [x, y, width, height].
+ *
+ * Published as `proofroom/compare`, for Node with no browser: `compareSnapshot()` judges one
+ * snapshot and returns its result line, and `assertSnapshot()` also throws Node's own
+ * `AssertionError` when the snapshot did not pass, so any test runner can report and retry it.
  */
 
+import { AssertionError } from "node:assert";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { threadId } from "node:worker_threads";
 
 // ponytail: pngjs until milestone 3 needs a dependency-free decoder
 import { PNG } from "pngjs";
 
 import pixelmatch from "../vendor/pixelmatch.mjs";
+import { checkLine, fileName, judgeContext, judgeLine, loadSettings, storySettings } from "./compare-run.mjs";
+import { loadConfig, repoRoot } from "./config.mjs";
+import { outcome, resultLine } from "./result-line.mjs";
 
 /** Chromatic's default `diffThreshold`, used when a story sets none. */
 export const DEFAULT_THRESHOLD = 0.063;
@@ -194,4 +204,180 @@ export function classify({ baseline, first, reference = null, threshold, include
  */
 export function pngSize(bytes) {
     return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
+}
+
+/** The result-line files compareSnapshot() appends to: one per process and thread. */
+const LINE_FILE = /^results-\d+-\d+\.ndjson$/;
+
+/** Attempts counted without an output directory, by project and file. */
+const counted = new Map();
+/** Per output directory: how far each result-line file was read, and the attempts in it. */
+const readSoFar = new Map();
+/** One count-and-append at a time per output directory, so two calls never take one attempt. */
+const turns = new Map();
+
+/**
+ * How many attempts of a snapshot the output directory already holds, from every process's
+ * result-line file (a runner that retries in a new worker process counts on). Each file is read
+ * only past where the last call stopped.
+ * @param {string} out the output directory
+ * @param {string} key `<project>\0<file>`
+ * @returns {Promise<number>} the attempts so far
+ */
+async function attemptsIn(out, key) {
+    const state = readSoFar.get(out) ?? { offsets: new Map(), attempts: new Map() };
+    readSoFar.set(out, state);
+    for (const name of (await readdir(out)).filter((f) => LINE_FILE.test(f))) {
+        const handle = await open(join(out, name), "r");
+        try {
+            const from = state.offsets.get(name) ?? 0;
+            const { size } = await handle.stat();
+            const { buffer } = await handle.read({ buffer: Buffer.alloc(size - from), position: from });
+            const text = buffer.toString("utf8");
+            // Only whole lines: another process may be writing the last one.
+            const whole = text.slice(0, text.lastIndexOf("\n") + 1);
+            state.offsets.set(name, from + Buffer.byteLength(whole));
+            for (const raw of whole.split("\n").filter(Boolean)) {
+                const line = JSON.parse(raw);
+                const k = `${line.project}\0${line.file}`;
+                state.attempts.set(k, (state.attempts.get(k) ?? 0) + 1);
+            }
+        } finally {
+            await handle.close();
+        }
+    }
+    return state.attempts.get(key) ?? 0;
+}
+
+/**
+ * Runs `work` after every earlier turn for the same directory has ended.
+ * @template T
+ * @param {string} out the output directory
+ * @param {() => Promise<T>} work the count and the append
+ * @returns {Promise<T>} what `work` returns
+ */
+function inTurn(out, work) {
+    const next = (turns.get(out) ?? Promise.resolve()).then(work);
+    turns.set(
+        out,
+        next.catch(() => undefined),
+    );
+    return next;
+}
+
+/**
+ * Judges one snapshot against its baseline, as compare judges one capture line (the same code),
+ * and returns its result line. A difference is never thrown: only a failure of the tool is (a
+ * baseline that is a Git LFS pointer, a bad story id). A second call for the same snapshot in the
+ * same run is its next attempt.
+ *
+ * With `out` (or the environment variable `PROOFROOM_OUT`), the line is appended to
+ * `<out>/results-<pid>-<threadId>.ndjson`, so parallel workers never write to one file, and the
+ * images the review page needs are written there: the capture unless it is unchanged, and the
+ * baseline it was compared with when it changed. `proofroom collect` turns those directories into
+ * the capture the page and the gate read.
+ * @param {{ project?: string, baselines?: string, root?: string, id: string, mode?: string | null,
+ *     image?: Buffer | string | null, type?: "image" | "failed" | "excluded", reason?: string | null,
+ *     byStory?: boolean, console?: string[], settings?: { threshold?: number, includeAA?: boolean },
+ *     reference?: string | null, out?: string | null }} options `project` names a project of
+ *     visual-review.config.json (in the git checkout `root`, default the current one), whose baselines
+ *     and story settings files are read; `baselines` is a directory of baselines instead (the
+ *     project then defaults to `images`); `image` is the PNG's bytes or path; without it (or with
+ *     `type: "failed"`) the snapshot is reported as not shot, with `reason`; `settings` overrides the
+ *     threshold and anti-aliasing switch the story's settings file gives; `reference` is the default
+ *     branch's capture, for "no baseline yet"
+ * @returns {Promise<object | null>} the result line: a results.json item with `project`, `attempt`
+ *     and `passed`; null for a story its own parameters exclude while it has a baseline
+ */
+export async function compareSnapshot(options) {
+    const { id, mode = null, image = null, reference = null, console = [] } = options;
+    const project = options.project ?? "images";
+    let baselines = options.baselines;
+    if (!baselines) {
+        if (!options.project) {
+            throw new Error("compareSnapshot needs a project or a baselines directory");
+        }
+        const root = options.root ?? repoRoot();
+        const config = loadConfig(root);
+        if (!Object.hasOwn(config.projects, project)) {
+            throw new Error(`compareSnapshot: no project ${project} in the config`);
+        }
+        baselines = join(root, config.baselines, project);
+    }
+    const out = options.out ?? process.env.PROOFROOM_OUT ?? null;
+    const fromFile = storySettings({}, await loadSettings(baselines, id));
+    const settings = {
+        threshold: options.settings?.threshold ?? fromFile.threshold,
+        includeAA: options.settings?.includeAA ?? fromFile.includeAA,
+    };
+    let type = options.type ?? (image === null ? "failed" : "image");
+    let reason = options.reason ?? null;
+    if (type !== "excluded" && fromFile.disableSnapshot && options.settings === undefined) {
+        [type, reason] = ["excluded", fromFile.reason];
+    }
+    const line = {
+        type,
+        project,
+        id,
+        mode,
+        file: typeof id === "string" ? fileName(id, mode) : null,
+        settings,
+        console,
+        reason: type === "failed" ? (reason ?? "the snapshot has no image") : reason,
+        ...(options.byStory === true && { byStory: true }),
+        ...(type === "image" && { bytes: typeof image === "string" ? await readFile(image) : Buffer.from(image) }),
+    };
+    checkLine(line, project);
+    if (out) {
+        await mkdir(join(out, "baselines"), { recursive: true });
+    }
+    // The story is the only one known, so a rename applies whenever its old id has the baseline.
+    const ctx = await judgeContext({ baselines, out, reference, known: new Set([id]) });
+    const item = await judgeLine(ctx, line);
+    if (!item) {
+        return null;
+    }
+    const key = `${project}\0${line.file}`;
+    if (!out) {
+        const attempt = (counted.get(key) ?? 0) + 1;
+        counted.set(key, attempt);
+        return resultLine(item, { project, attempt });
+    }
+    return inTurn(out, async () => {
+        const result = resultLine(item, { project, attempt: (await attemptsIn(out, key)) + 1 });
+        await appendFile(join(out, `results-${process.pid}-${threadId}.ndjson`), `${JSON.stringify(result)}\n`);
+        return result;
+    });
+}
+
+/**
+ * Throws when a result line did not pass, as assertSnapshot() does.
+ * @param {object} line a result line
+ * @returns {void}
+ * @throws {AssertionError} Node's own, with the message naming the snapshot and its status, and
+ *     `actual` the result line
+ */
+export function assertPassed(line) {
+    if (line && !line.passed) {
+        const { message } = outcome(line);
+        throw new AssertionError({
+            message: `proofroom: ${line.project}/${line.file.slice(0, -4)}: ${message}`,
+            actual: line,
+            operator: "assertSnapshot",
+        });
+    }
+}
+
+/**
+ * Judges one snapshot, as compareSnapshot() does, and throws when it did not pass: every test
+ * runner reports a thrown `AssertionError` as a failed test, and its retry calls the test again,
+ * which is the snapshot's next attempt.
+ * @param {Parameters<typeof compareSnapshot>[0]} options as for compareSnapshot()
+ * @returns {Promise<object | null>} the result line, when the snapshot passed
+ * @throws {AssertionError} Node's own, with `actual` the result line, when it did not
+ */
+export async function assertSnapshot(options) {
+    const line = await compareSnapshot(options);
+    assertPassed(line);
+    return line;
 }

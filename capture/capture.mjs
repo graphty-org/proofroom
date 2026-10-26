@@ -32,8 +32,18 @@ import { dirname, extname, join, normalize, relative, sep } from "node:path";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 
-import { DEFAULT_THRESHOLD, pngSize, sha256 } from "../trusted/lib/compare.mjs";
-import { CAPTURE_LINES, clip, compareRun, fileName, provenance, toolVersion } from "../trusted/lib/compare-run.mjs";
+import { pngSize, sha256 } from "../trusted/lib/compare.mjs";
+import {
+    CAPTURE_LINES,
+    clip,
+    compareRun,
+    fileName,
+    loadSettings,
+    provenance,
+    storySettings,
+    toolVersion,
+} from "../trusted/lib/compare-run.mjs";
+import { loadConfig, repoRoot } from "../trusted/lib/config.mjs";
 import { MAX_ATTEMPTS } from "../trusted/lib/results.mjs";
 
 // Moved to compare-run.mjs, where compare reads them without loading Playwright; still exported
@@ -45,8 +55,10 @@ export {
     fileName,
     hasBaselines,
     loadRenames,
+    loadSettings,
     pngsIn,
     provenance,
+    storySettings,
     toolVersion,
     writeResults,
 } from "../trusted/lib/compare-run.mjs";
@@ -104,62 +116,6 @@ export const storyIds = (index) =>
         .filter((e) => e.type === "story")
         .map((e) => e.id)
         .sort();
-
-/**
- * Reads a story's settings file, `<dir>/<id>.json`.
- * @param {string} dir the project's baselines directory
- * @param {string} id the story id
- * @returns {Promise<object | null>} the parsed settings, or null when the story has none
- */
-export async function loadSettings(dir, id) {
-    try {
-        return JSON.parse(await readFile(join(dir, `${id}.json`), "utf8"));
-    } catch (e) {
-        if (e.code === "ENOENT") {
-            return null;
-        }
-        throw e;
-    }
-}
-
-/**
- * A story's capture settings: its `parameters.chromatic`, with every key its settings file sets
- * taking precedence. Modes map a name to Storybook globals; `disable: true` drops a mode.
- * @param {{ chromatic?: object }} parameters the story's parameters (only `chromatic` is read)
- * @param {object | null} file the story's settings file
- * @returns {{ disableSnapshot: boolean, excludedByStory: boolean, reason: string | null, delay: number, threshold: number,
- *     includeAA: boolean, modes: { name: string | null, globals: object | null }[] }} one mode
- *     with a null name when the story has none
- */
-export function storySettings(parameters, file) {
-    const fromStory = parameters.chromatic ?? {};
-    const s = { ...fromStory, ...file };
-    const disableSnapshot = s.disableSnapshot === true;
-    const byFile = file?.disableSnapshot === true;
-    const modes = Object.entries(s.modes ?? {})
-        .filter(([, m]) => m?.disable !== true)
-        .map(([name, m]) => ({
-            name,
-            globals: Object.fromEntries(Object.entries(m).filter(([k]) => k !== "disable")),
-        }));
-    // A mode names files and results.json items, which allow only these: refused before any story
-    // is captured, not when results.json is checked at the end.
-    for (const { name } of modes) {
-        if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name.length > 50) {
-            throw new Error(`Chromatic mode "${name}": a mode name is lowercase letters, digits and "-", at most 50`);
-        }
-    }
-    const where = byFile ? "settings file" : "story's parameters";
-    return {
-        disableSnapshot,
-        excludedByStory: disableSnapshot && !byFile,
-        reason: disableSnapshot ? (file?.reason ?? `disableSnapshot in the ${where}`) : null,
-        delay: s.delay ?? 0,
-        threshold: s.diffThreshold ?? DEFAULT_THRESHOLD,
-        includeAA: s.diffIncludeAntiAliasing === true,
-        modes: modes.length > 0 ? modes : [{ name: null, globals: null }],
-    };
-}
 
 const TYPES = {
     ".html": "text/html",
@@ -467,6 +423,151 @@ async function cpuModel() {
 }
 
 /**
+ * The snapshots of some stories: one per story and mode, each with its capture line's common
+ * fields, and either the excluded line or what shooting it needs.
+ * @param {{ project: string, ids: string[], params: Record<string, { chromatic?: object }>,
+ *     baselines: string, base: string }} options the stories, their parameters, where their
+ *     settings files are, and the Storybook's base URL
+ * @returns {Promise<{ common: object, excluded: object | null, url: string, delay: number }[]>} in story order
+ */
+async function snapshotsOf({ project, ids, params, baselines, base }) {
+    const snapshots = [];
+    for (const id of ids) {
+        const s = storySettings(params[id] ?? {}, await loadSettings(baselines, id));
+        for (const mode of s.modes) {
+            const common = {
+                project,
+                id,
+                mode: mode.name,
+                file: fileName(id, mode.name),
+                settings: { threshold: s.threshold, includeAA: s.includeAA, delay: s.delay },
+            };
+            const excluded = s.disableSnapshot
+                ? {
+                      type: "excluded",
+                      ...common,
+                      sha256: null,
+                      size: null,
+                      console: [],
+                      reason: s.reason,
+                      ...(s.excludedByStory && { byStory: true }),
+                  }
+                : null;
+            snapshots.push({ common, excluded, url: base + storyUrl(id, mode.globals), delay: s.delay });
+        }
+    }
+    return snapshots;
+}
+
+/**
+ * Shoots one snapshot once.
+ * @param {import("playwright").Browser} browser the browser
+ * @param {{ common: object, url: string, delay: number }} snapshot what snapshotsOf() planned
+ * @param {object | null} waitFor the project's config entry (see shoot)
+ * @returns {Promise<object>} its `image` capture line, with the PNG as `bytes`, or its `failed` line
+ */
+async function shootSnapshot(browser, { common, url, delay }, waitFor) {
+    const shot = await shoot(browser, url, { delay, waitFor });
+    if (!shot.png) {
+        return {
+            type: "failed",
+            ...common,
+            sha256: null,
+            size: null,
+            reason: shot.reason,
+            console: clip(shot.console),
+        };
+    }
+    return {
+        type: "image",
+        ...common,
+        sha256: sha256(shot.png),
+        size: pngSize(shot.png),
+        console: clip(shot.console),
+        bytes: shot.png,
+    };
+}
+
+/**
+ * Opens one project's built Storybook for a caller that drives the order itself, such as a test
+ * runner that makes each snapshot a test case: `stories()` lists the snapshots, `shoot(story)`
+ * shoots one, once, in a fresh browser context as capture() does, and `close()` closes the
+ * browser. Hand what `shoot()` returns to `assertSnapshot()` from `proofroom/compare`.
+ * @param {{ project: string, root?: string, storybook?: string, baselines?: string,
+ *     stories?: string[] | null }} options the project of visual-review.config.json in the git
+ *     checkout `root` (default the current one); `storybook` and `baselines` override the config's;
+ *     `stories` keeps only the story ids starting with one of these prefixes
+ * @returns {{ stories: () => Promise<object[]>, shoot: (story: object) => Promise<object>,
+ *     close: () => Promise<void> }} each story is a capture line without an image: `type` is
+ *     `image` (to shoot) or `excluded`; `shoot()` returns it with `image` (the PNG, or null with
+ *     `reason` when the story could not be shot) and `console`, or an excluded story unchanged
+ */
+export function openCapture({ project, root = repoRoot(), storybook, baselines, stories = null }) {
+    const config = loadConfig(root);
+    const entry = config.projects[project];
+    if (!entry) {
+        throw new Error(`openCapture: no project ${project} in the config`);
+    }
+    const dir = baselines ?? join(root, config.baselines, project);
+    const fontconfig = config.fontconfig ? join(root, config.fontconfig) : null;
+    const planned = new Map();
+    let opened = null;
+    const open = () =>
+        (opened ??= (async () => {
+            const sb = storybook ?? join(root, entry.storybook);
+            const fontEnv = fontconfig
+                ? { FONTCONFIG_FILE: fontconfig, XDG_CACHE_HOME: await mkdtemp(join(tmpdir(), "visual-review-fonts-")) }
+                : {};
+            const [server, base] = await serve(sb);
+            const browser = await chromium.launch({
+                args: CHROMIUM_ARGS,
+                env: { ...process.env, ...fontEnv, TZ: "UTC" },
+            });
+            const all = storyIds(JSON.parse(await readFile(join(sb, "index.json"), "utf8")));
+            const ids = all.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+            const { params } = await extract(browser, base);
+            return {
+                server,
+                browser,
+                fontEnv,
+                snapshots: await snapshotsOf({ project, ids, params, baselines: dir, base }),
+            };
+        })());
+    return {
+        async stories() {
+            const { snapshots } = await open();
+            return snapshots.map((snapshot) => {
+                planned.set(snapshot.common.file, snapshot);
+                return snapshot.excluded ?? { type: "image", ...snapshot.common };
+            });
+        },
+        async shoot(story) {
+            if (story.type === "excluded") {
+                return story;
+            }
+            const snapshot = planned.get(story.file);
+            if (!snapshot) {
+                throw new Error(`openCapture: ${story.file} is not a story stories() listed`);
+            }
+            const { browser } = await open();
+            const { bytes = null, ...line } = await shootSnapshot(browser, snapshot, entry.waitFor ?? null);
+            return { ...line, image: bytes };
+        },
+        async close() {
+            if (!opened) {
+                return;
+            }
+            const { server, browser, fontEnv } = await opened;
+            await browser.close();
+            server.close();
+            if (fontEnv.XDG_CACHE_HOME) {
+                await rm(fontEnv.XDG_CACHE_HOME, { recursive: true, force: true });
+            }
+        },
+    };
+}
+
+/**
  * Captures one project, yielding one capture line per snapshot as soon as its image is written.
  *
  * The returned generator also has `again(line)`: it shoots that line's snapshot once more, and the
@@ -525,31 +626,12 @@ export function capture({
         try {
             const { params, renderer, gpu } = await extract(browsers[0], base);
             const excluded = [];
-            for (const id of ids) {
-                const s = storySettings(params[id] ?? {}, await loadSettings(baselines, id));
-                for (const mode of s.modes) {
-                    const file = fileName(id, mode.name);
-                    const common = {
-                        project,
-                        id,
-                        mode: mode.name,
-                        file,
-                        settings: { threshold: s.threshold, includeAA: s.includeAA, delay: s.delay },
-                    };
-                    if (s.disableSnapshot) {
-                        excluded.push({
-                            type: "excluded",
-                            ...common,
-                            sha256: null,
-                            size: null,
-                            console: [],
-                            reason: s.reason,
-                            ...(s.excludedByStory && { byStory: true }),
-                        });
-                    } else {
-                        jobs.set(file, { common, url: base + storyUrl(id, mode.globals), delay: s.delay });
-                        queue.push(file);
-                    }
+            for (const snapshot of await snapshotsOf({ project, ids, params, baselines, base })) {
+                if (snapshot.excluded) {
+                    excluded.push(snapshot.excluded);
+                } else {
+                    jobs.set(snapshot.common.file, snapshot);
+                    queue.push(snapshot.common.file);
                 }
             }
             const emojiFont = hasEmojiFont({ ...process.env, ...fontEnv });
@@ -591,28 +673,12 @@ export function capture({
             let running = 0;
             let wake = () => {};
             const shootJob = async (browser, file) => {
-                const { common, url, delay } = jobs.get(file);
                 shots++;
-                const shot = await shoot(browser, url, { delay, waitFor });
-                if (!shot.png) {
-                    return record({
-                        type: "failed",
-                        ...common,
-                        sha256: null,
-                        size: null,
-                        reason: shot.reason,
-                        console: clip(shot.console),
-                    });
+                const line = await shootSnapshot(browser, jobs.get(file), waitFor);
+                if (line.bytes) {
+                    await writeFile(join(out, file), line.bytes);
                 }
-                await writeFile(join(out, file), shot.png);
-                return record({
-                    type: "image",
-                    ...common,
-                    sha256: sha256(shot.png),
-                    size: pngSize(shot.png),
-                    console: clip(shot.console),
-                    bytes: shot.png,
-                });
+                return record(line);
             };
             pump = () => {
                 while (free.length > 0 && queue.length > 0) {
