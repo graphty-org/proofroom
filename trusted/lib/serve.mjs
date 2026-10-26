@@ -52,9 +52,12 @@
  * rebuilt in the cache when they land; `GET /api/pr/...` of a project still downloading answers
  * 202 and moves its download to the front of the queue. What GitHub says about a finished run
  * (its jobs and artifacts) is asked once and kept beside its downloads. Grid tiles load
- * thumbnails (`GET /api/thumb/...`), scaled down in worker threads as soon as a capture lands and
- * kept on disk; with Spotlight all or Zoom to changes on, a changed item's tile
- * (`GET /api/spot/...`) is made the same way, after every plain thumbnail.
+ * thumbnails (`GET /api/thumb/...`) and a changed item's other pictures (`GET /api/spot/...`:
+ * spotlit, zoomed toward its change, the row's zoomed pictures, or `auto`), made in child
+ * processes as soon as a capture lands and kept on disk: one job per item, every kind of a changed
+ * pair from one decode, queued in list order (component, then number), the change just opened
+ * first. Each pair's row crop, zoom and area count are kept in memory and appended to one file,
+ * `<tmp>/spots/areas.jsonl`, read once at start.
  *
  * Safe filters (filters.mjs): an item whose capture is an image the owner already approved for the
  * same story and mode, in a review record on the default branch or an open pull request's branch,
@@ -128,7 +131,7 @@ import { CONFIG_FILE } from "./config.mjs";
 import { approvalIndex, clusters, isNoise, knownNoise, observations } from "./filters.mjs";
 import { coupledGroups, inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
-import { SPOT_KINDS, scaled } from "./thumbs.mjs";
+import { autoKind, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
 import { USAGE_FILE } from "./usage.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -156,6 +159,25 @@ const HEADERS = {
  * @returns {string} the component part
  */
 const componentOf = (id) => id.split("--")[0];
+
+/**
+ * Items in the list's default order: by component, in the order each first appears, then by
+ * number (their place in results.json).
+ * @template {{ id: string }} T
+ * @param {T[]} items the items
+ * @returns {T[]} the same items in that order
+ */
+function listOrder(items) {
+    const groups = new Map();
+    for (const item of items) {
+        const c = componentOf(item.id);
+        if (!groups.has(c)) {
+            groups.set(c, []);
+        }
+        groups.get(c).push(item);
+    }
+    return [...groups.values()].flat();
+}
 
 const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "unstable", "failed"]);
 // The statuses whose accept changes the baseline file: two pull requests with one of these on the
@@ -590,6 +612,8 @@ async function loadResults(dir, name) {
  * @param {number} [options.patience] how long, in milliseconds, a page load waits for a run's
  *     captures before listing the target as downloading; Infinity waits for them
  * @param {number[]} [options.retryDelays] milliseconds before each retry of a Finish's network call
+ * @param {import("./thumbs.mjs").Pool} [options.pictures] the queue the pictures are made in (a
+ *     test's fake records the order they start in)
  * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void> }}
  *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
  *     tile is being made in the background
@@ -608,6 +632,7 @@ export function createApp({
     previews = null,
     patience = PATIENCE,
     retryDelays,
+    pictures = pool,
 }) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
@@ -2404,33 +2429,54 @@ export function createApp({
     const making = new Map();
 
     /**
-     * Grid tiles made in a child process (`scaled`) unless on disk already, and kept there, one
+     * Grid tiles made in a child process (`pictures`) unless on disk already, and kept there, one
      * file per image the child makes. A tile waiting for one (`when` "now") goes ahead of those
      * made in advance, even of its own made in advance.
      * @param {Record<string, string>} kept where each image the child makes is kept, by its name
      * @param {string} want the name of the one to answer with
-     * @param {"now" | "ahead" | "last"} when see `scaled`
-     * @param {() => Promise<unknown>} load what the child works on; an error carrying an `answer`
+     * @param {"now" | "ahead"} when see `createPool`
+     * @param {() => Promise<object>} load what the child works on; an error carrying an `answer`
      *     is answered with it
+     * @param {object} [more] more about the job
+     * @param {string | null} [more.tag] the capture's directory, for `raise`
+     * @param {(facts: { crop: number[], zoom: number, areas: number }) => void} [more.found] given
+     *     what a pair's job found, once its pictures are kept
+     * @param {boolean} [more.again] make it even if the file wanted is on disk
      * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
      */
-    async function keptOnce(kept, want, when, load) {
+    async function keptOnce(kept, want, when, load, { tag = null, found = () => {}, again = false } = {}) {
         const urgent = when === "now";
         // Made in advance, it was just found missing: reading here, for a thousand items at once,
         // would fill Node's file thread pool and stall every other request's file reads.
-        const cached = urgent ? await readFile(kept[want]).catch(() => null) : null;
+        const cached = urgent && !again ? await readFile(kept[want]).catch(() => null) : null;
         if (cached) {
             return [200, cached, "image/png"];
         }
         const id = Object.values(kept)[0];
         const was = making.get(id);
-        let done = was && (was.urgent || !urgent) ? was.done : null;
+        // A job already running, or one at least as urgent, is waited for, not made twice.
+        let done = was && (was.urgent || !urgent || was.started) ? was.done : null;
         if (!done) {
+            const entry = { urgent, started: false, done: null, overtaken: null };
+            // A waiting advance job overtaken by a tile's: when its turn comes, it answers with that one.
+            if (was) {
+                was.overtaken = entry;
+            }
+            const begin = async () => {
+                if (entry.overtaken) {
+                    throw Object.assign(new Error("overtaken"), { overtaken: entry.overtaken.done });
+                }
+                entry.started = true;
+                return load();
+            };
             done = (async () => {
-                let images;
+                let made;
                 try {
-                    images = await scaled(load, when);
+                    made = await pictures.run(begin, when, tag);
                 } catch (err) {
+                    if (err.overtaken) {
+                        return err.overtaken;
+                    }
                     if (err.answer) {
                         return err.answer;
                     }
@@ -2441,19 +2487,23 @@ export function createApp({
                         // Its own temporary name: the advance copy and a tile's may be written at once.
                         const part = `${path}.${urgent ? "tile" : "ahead"}.tmp`;
                         mkdirSync(dirname(path), { recursive: true });
-                        writeFileSync(part, images[name]);
+                        writeFileSync(part, made.images[name]);
                         renameSync(part, path);
                     }
                 } catch (err) {
                     warnOnce(`could not keep thumbnails in ${dirname(id)}: ${err.message}`);
                 }
-                return images;
+                if (made.facts) {
+                    found(made.facts);
+                }
+                return made.images;
             })().finally(() => {
                 if (making.get(id)?.done === done) {
                     making.delete(id);
                 }
             });
-            making.set(id, { urgent, done });
+            entry.done = done;
+            making.set(id, entry);
         }
         const made = await done;
         return Array.isArray(made) ? made : [200, made[want], "image/png"];
@@ -2475,61 +2525,124 @@ export function createApp({
      * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
      */
     const thumbOf = (where, urgent) =>
-        keptOnce({ png: join(tmp, "thumbs", `${where.hash}.png`) }, "png", urgent ? "now" : "ahead", () =>
-            imageFor(where),
+        keptOnce(
+            { plain: join(tmp, "thumbs", `${where.hash}.png`) },
+            "plain",
+            urgent ? "now" : "ahead",
+            async () => ({ image: await imageFor(where), label: where.path }),
+            { tag: where.dir },
         );
 
-    // Where a changed item's spotlit tiles are kept: by both images' hashes and the diff's settings.
-    const spotFiles = (baseline, capture, { threshold, includeAA }) =>
+    // A changed pair, by both images' hashes and the diff's settings: what its pictures are named by.
+    const pairKey = (baseline, capture, { threshold, includeAA }) =>
+        `${baseline}-${capture}-${threshold}-${includeAA ? 1 : 0}`;
+    // Where a changed pair's pictures are kept: its plain one is the capture's thumbnail.
+    const spotFiles = (baseline, capture, settings) =>
         Object.fromEntries(
-            SPOT_KINDS.map((k) => [
+            PAIR_KINDS.map((k) => [
                 k,
-                join(tmp, "spots", `${baseline}-${capture}-${threshold}-${includeAA ? 1 : 0}-${k}.png`),
+                k === "plain"
+                    ? join(tmp, "thumbs", `${capture}.png`)
+                    : join(tmp, "spots", `${pairKey(baseline, capture, settings)}-${k}.png`),
             ]),
         );
 
     /**
-     * A changed item's spotlit tile of one kind, its pair's three tiles made at once.
+     * What each pair's job found (its row crop, zoom and area count), by pairKey: filled as jobs
+     * end and appended to one file, which a restart reads once, here. The list never reads a file
+     * per snapshot. A line cut short by a crash is skipped; its pair is made again when asked.
+     */
+    const areasFile = join(tmp, "spots", "areas.jsonl");
+    const areas = new Map();
+    try {
+        const text = readFileSync(areasFile, "utf8");
+        for (const line of text.split("\n")) {
+            try {
+                const { key, ...facts } = JSON.parse(line);
+                areas.set(key, facts);
+            } catch {
+                // An empty or cut line.
+            }
+        }
+        // A cut last line is ended, so the next line written is not joined to it.
+        if (text.length > 0 && !text.endsWith("\n")) {
+            appendFileSync(areasFile, "\n");
+        }
+    } catch {
+        // None made yet, or not writable: foundAreas warns.
+    }
+    const foundAreas = (key) => (facts) => {
+        areas.set(key, facts);
+        try {
+            appendFileSync(areasFile, `${JSON.stringify({ key, ...facts })}\n`);
+        } catch (err) {
+            warnOnce(`could not keep the changed areas in ${areasFile}: ${err.message}`);
+        }
+    };
+
+    /**
+     * A changed item's picture of one kind, its pair's every kind made at once. `auto` is the
+     * spotlit picture, zoomed or not as autoKind decides from what the job found.
      * @param {{ path: string, hash: string, file: string, dir: string }} a where the baseline is
      * @param {{ path: string, hash: string, file: string, dir: string }} b where the capture is
      * @param {{ threshold: number, includeAA: boolean }} item the item's diff settings
-     * @param {string} kind one of SPOT_KINDS
-     * @param {"now" | "last"} when see `scaled`
+     * @param {string} kind one of PICTURE_KINDS
+     * @param {"now" | "ahead"} when see `createPool`
      * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
      */
-    const spotOf = (a, b, { threshold, includeAA }, kind, when) =>
-        keptOnce(spotFiles(a.hash, b.hash, { threshold, includeAA }), kind, when, async () => ({
-            baseline: await imageFor(a),
-            capture: await imageFor(b),
-            threshold,
-            includeAA,
-        }));
+    const spotOf = async (a, b, { threshold, includeAA }, kind, when) => {
+        const key = pairKey(a.hash, b.hash, { threshold, includeAA });
+        const files = spotFiles(a.hash, b.hash, { threshold, includeAA });
+        const make = (want, again = false) =>
+            keptOnce(
+                files,
+                want,
+                when,
+                async () => ({
+                    baseline: await imageFor(a),
+                    capture: await imageFor(b),
+                    threshold,
+                    includeAA,
+                    label: b.path,
+                }),
+                { tag: b.dir, found: foundAreas(key), again },
+            );
+        if (kind !== "auto") {
+            return make(kind);
+        }
+        if (!areas.has(key)) {
+            // Its pictures may be on disk without what the job found (a lost areas file): made again.
+            const made = await make("row-spot", true);
+            if (made[0] !== 200) {
+                return made;
+            }
+        }
+        return make(autoKind(areas.get(key)));
+    };
 
     /**
-     * Makes, in the background, the grid thumbnail of every item of a capture that needs a
-     * decision, so a grid opens with its tiles ready; and, after all of them, the spotlit tiles of
-     * every changed one.
+     * Makes, in the background, the pictures of every item of a capture that needs a decision, so
+     * a list opens with them ready: one job per item, in list order. A changed pair's job makes
+     * every kind; an item with one image only its thumbnail.
      * @param {string} dir the capture's directory
      * @param {{ items: object[] }} r its results.json
      */
     function prewarm(dir, r) {
         const warn = (path) => (err) => warnOnce(`could not make the thumbnail of ${path}: ${err.message}`);
-        for (const item of r.items.filter((i) => REVIEWABLE.has(i.status) && i.status !== "failed")) {
+        for (const item of listOrder(r.items.filter((i) => REVIEWABLE.has(i.status) && i.status !== "failed"))) {
             const kind = item.capture ? "capture" : "baseline";
             const hash = item[kind];
             const own = kind === "capture" || item.baseline === item.capture;
             const path = own ? join(dir, item.file) : join(dir, "baselines", item.file);
-            if (hash && !existsSync(join(tmp, "thumbs", `${hash}.png`))) {
-                thumbOf({ path, hash, file: item.file, dir }, false).catch(warn(path));
-            }
-            if (
-                item.baseline &&
-                item.capture &&
-                item.baseline !== item.capture &&
-                !existsSync(spotFiles(item.baseline, item.capture, item).both)
-            ) {
-                const a = { path: join(dir, "baselines", item.file), hash: item.baseline, file: item.file, dir };
-                spotOf(a, { path, hash, file: item.file, dir }, item, "both", "last").catch(warn(path));
+            const where = { path, hash, file: item.file, dir };
+            if (item.baseline && item.capture && item.baseline !== item.capture) {
+                const files = spotFiles(item.baseline, item.capture, item);
+                if (!existsSync(files["row-spot"]) || !existsSync(files.plain)) {
+                    const a = { path: join(dir, "baselines", item.file), hash: item.baseline, file: item.file, dir };
+                    spotOf(a, where, item, "row-spot", "ahead").catch(warn(path));
+                }
+            } else if (hash && !existsSync(join(tmp, "thumbs", `${hash}.png`))) {
+                thumbOf(where, false).catch(warn(path));
             }
         }
     }
@@ -2650,6 +2763,8 @@ export function createApp({
             if (!p) {
                 return [404, { error: "no such capture" }];
             }
+            // The change just opened: its pictures not made yet are made next.
+            pictures.raise((tag) => t.projects.some((x) => x.dir === tag));
             const { items, ...meta } = p.results;
             const prefix = `${name}/`;
             const mine = [...decisionsOf(t)].filter(([k]) => k.startsWith(prefix));
@@ -2719,9 +2834,11 @@ export function createApp({
             }
             return thumbOf(where, true);
         },
-        // A changed item's grid tile spotlit ("spot"), cropped toward its change ("zoom") or both.
+        // A changed item's picture of one kind of PICTURE_KINDS: spotlit ("spot"), cropped toward
+        // its change ("zoom") or both; the row's zoomed pictures ("row-plain", "row-spot"); the
+        // capture's thumbnail ("plain"); or "auto", what Zoom Auto shows.
         "GET /api/spot": async ([id, name, kind, file]) => {
-            if (!SPOT_KINDS.includes(kind)) {
+            if (!PICTURE_KINDS.includes(kind)) {
                 return [404, { error: "no such tile" }];
             }
             const a = await imageOf(id, name, "baseline", file);

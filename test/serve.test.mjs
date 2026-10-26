@@ -1970,22 +1970,30 @@ describe("serve: what the page waits on", () => {
         const s = await start({ gh: onePr() });
         await s.api("GET", "/api/prs");
         await app.idle();
-        // Six thumbnails and three changed pairs of three spotlit tiles: nothing is still being made.
+        // Six thumbnails and three changed pairs of five pictures: nothing is still being made.
         expect(readdirSync(join(s.tmp, "thumbs")).filter((f) => f.endsWith(".png"))).toHaveLength(6);
-        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(9);
+        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(15);
     });
 
-    it("makes each changed item's spotlit and zoomed tiles once, after the thumbnails, kept by both images and the diff's settings", async () => {
+    it("makes each changed item's spotlit and zoomed tiles once, kept by both images and the diff's settings", async () => {
         const s = await start({ gh: onePr(), tiles: false });
         await s.api("GET", "/api/prs");
-        const spots = () => (existsSync(join(s.tmp, "spots")) ? readdirSync(join(s.tmp, "spots")).sort() : []);
-        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three tiles each.
-        await until(() => spots().filter((f) => f.endsWith(".png")).length === 9);
+        const spots = () =>
+            existsSync(join(s.tmp, "spots"))
+                ? readdirSync(join(s.tmp, "spots"))
+                      .filter((f) => f.endsWith(".png"))
+                      .sort()
+                : [];
+        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), five pictures
+        // each beside the capture's thumbnail.
+        await until(() => spots().length === 15);
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         const button = body.items.find((i) => i.file === "button--primary.dark.png");
         expect(spots()).toContain(`${button.baseline}-${button.capture}-0.063-0-both.png`);
         expect(spots().filter((f) => f.startsWith(`${button.baseline}-${button.capture}-`))).toEqual(
-            ["both", "spot", "zoom"].map((k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`),
+            ["both", "row-plain", "row-spot", "spot", "zoom"].map(
+                (k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`,
+            ),
         );
         const tiles = {};
         for (const kind of ["spot", "zoom", "both"]) {
@@ -2003,7 +2011,7 @@ describe("serve: what the page waits on", () => {
         expect(at(tiles.spot, 2, 2)[3]).toBeGreaterThanOrEqual(190);
         expect(at(tiles.spot, 2, 2).slice(0, 3)).not.toEqual(at(plain, 1, 1).slice(0, 3));
         expect(tiles.zoom.data.equals(tiles.both.data)).toBe(false);
-        expect(spots()).toHaveLength(9);
+        expect(spots()).toHaveLength(15);
         // A slider of another height is padded, as the page pads it.
         expect((await s.api("GET", "/api/spot/123/compact-mantine/both/slider--sizes.png")).status).toBe(200);
         // An unchanged story and a new one have no change to light; an unknown kind is no tile.
