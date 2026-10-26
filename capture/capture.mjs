@@ -49,7 +49,7 @@ import { PNG } from "pngjs";
 import { classify, DEFAULT_THRESHOLD, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
-/* global document, requestAnimationFrame -- read only inside the page */
+/* global document, getComputedStyle, requestAnimationFrame -- read only inside the page */
 
 /** The instant every page's clock starts at. It keeps running from there. */
 export const CLOCK_START = "2026-01-01T12:00:00Z";
@@ -440,60 +440,216 @@ async function shootOnce(browser, url, { delay, waitFor }) {
  */
 export const MAX_SHOT_HEIGHT = 8192;
 
+/** What every screenshot is taken with. */
+export const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+
 /**
- * A full-page screenshot of the whole page, however tall. A page within MAX_SHOT_HEIGHT is the
- * one screenshot Playwright takes, byte for byte; a taller one is shot in slices of at most
- * MAX_SHOT_HEIGHT device px, clipped from the full page, and stitched row for row into one PNG.
+ * A screenshot of the whole page, however big. A page within the viewport is one screenshot of
+ * its size; a bigger one is shot in viewport-sized tiles (see shootTiles), never with Chromium's
+ * beyond-viewport capture, which drew a story's `monospace` text in another font.
  * @param {import("playwright").Page} page the page, at device scale factor SCALE
  * @returns {Promise<Buffer>} the PNG
  */
 export async function screenshotWholePage(page) {
-    const options = /** @type {const} */ ({ animations: "disabled", caret: "hide", fullPage: true });
-    // Chromium's first screenshot beyond the viewport lays text out again, and line boxes of
-    // 'normal' height can come out a pixel shorter for good (11px monospace: 21 CSS px a line
-    // before, 20 after), so a page measured before it is taller than the page it draws: the image
-    // gets background rows below the story (#1982), and later slices of a tall page come back
-    // short (#1976). One throwaway capture settles the layout; everything below measures after it.
-    // A full-page capture also resizes the page while it runs, and a story that redraws on resize
-    // (Cytoscape's canvases) draws again in the next frames: wait for them, or the real capture
-    // catches that redraw half done and two captures of the story differ.
-    await page.screenshot({ ...options, clip: { x: 0, y: 0, width: 1, height: 1 } });
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-    // The page's size as Playwright measures it for a full-page screenshot.
+    // A throwaway screenshot and two frames first: a story that redraws on a screenshot (Cytoscape's
+    // canvases) is done redrawing before the real one.
+    await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, width: 1, height: 1 } });
+    await page.evaluate(twoFramesInPage);
     const size = await page.evaluate(() => {
         const [b, d] = [document.body, document.documentElement];
-        return {
-            width: Math.max(b.scrollWidth, d.scrollWidth, b.offsetWidth, d.offsetWidth, b.clientWidth, d.clientWidth),
-            height: Math.max(
-                b.scrollHeight,
-                d.scrollHeight,
-                b.offsetHeight,
-                d.offsetHeight,
-                b.clientHeight,
-                d.clientHeight,
-            ),
-        };
+        const most = (key) =>
+            Math.max(...[b, d].flatMap((e) => [e[`scroll${key}`], e[`offset${key}`], e[`client${key}`]]));
+        return { width: most("Width"), height: most("Height") };
     });
-    const width = size.width * SCALE;
-    const height = size.height * SCALE;
-    if (height <= MAX_SHOT_HEIGHT) {
-        return page.screenshot(options);
+    const vp = page.viewportSize();
+    if (size.width <= vp.width && size.height <= vp.height) {
+        return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
     }
-    const out = new PNG({ width, height });
-    for (let top = 0; top < height; top += MAX_SHOT_HEIGHT) {
-        const rows = Math.min(MAX_SHOT_HEIGHT, height - top);
-        const clip = { x: 0, y: top / SCALE, width: size.width, height: rows / SCALE };
-        const slice = PNG.sync.read(await page.screenshot({ ...options, clip }));
-        if (slice.width !== width || slice.height !== rows) {
-            throw new Error(
-                `screenshot slice at ${top} px is ${slice.width} x ${slice.height}, not ${width} x ${rows}`,
-            );
+    return shootTiles(page, page, size);
+}
+
+/**
+ * Waits for two frames drawn in the tester iframe.
+ * @param {import("playwright").Frame} frame the tester iframe
+ * @returns {Promise<void>} once they are drawn
+ */
+export const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
+
+/**
+ * In the page: waits for two frames to be drawn.
+ * @returns {Promise<void>} once they are drawn
+ */
+function twoFramesInPage() {
+    return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
+
+/**
+ * In the page: waits until every image in the document has loaded and decoded, or failed. A lazy
+ * image loads now: one outside the viewport would never load, and its decode() would never settle.
+ * @returns {Promise<void>} once they have
+ */
+function imagesInPage() {
+    for (const img of document.images) {
+        if (img.loading === "lazy") {
+            img.loading = "eager";
         }
-        slice.data.copy(out.data, top * width * 4);
     }
-    // Paeth on every row: the same size as pngjs's default (try all five filters per row) on
-    // screenshots, at a third of the time.
-    return PNG.sync.write(out, { filterType: 4 });
+    return Promise.all([...document.images].map((img) => img.decode().catch(() => undefined))).then(() => undefined);
+}
+
+/**
+ * Scrolls the tester iframe's document, as near to (x, y) as it goes, and waits for what came
+ * into view (a lazy image) and two frames. A page whose html and body are `overflow: hidden` and
+ * `height: 100%` (an app's stylesheet) scrolls the window little or not at all: its overflow
+ * scrolls inside the body, so the body scrolls by what the window could not, and the elements
+ * pinFixedInPage pinned are moved with the document.
+ * @param {import("playwright").Frame} frame the tester iframe
+ * @param {number} x in CSS px
+ * @param {number} y in CSS px
+ * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
+ */
+async function scrollFrame(frame, x, y) {
+    const at = await frame.evaluate(
+        ([left, top]) => {
+            globalThis.scrollTo(left, top);
+            const { body } = document;
+            // The body scrolls whatever the window could not (none of it on a page that scrolls the window).
+            body.scrollTo(left - globalThis.scrollX, top - globalThis.scrollY);
+            const at = { x: globalThis.scrollX + body.scrollLeft, y: globalThis.scrollY + body.scrollTop };
+            // A pinned element's containing block does not move when the body scrolls: put it where
+            // the document scrolled to (at) shows it, as a full-page shot does.
+            for (const [el, , docTop, docLeft] of globalThis.__visualReviewPinned ?? []) {
+                const now = el.getBoundingClientRect();
+                const move = (name, by) =>
+                    el.style.setProperty(name, `${parseFloat(el.style[name]) + by}px`, "important");
+                move("top", docTop - at.y - now.top);
+                move("left", docLeft - at.x - now.left);
+            }
+            return at;
+        },
+        [x, y],
+    );
+    await frame.evaluate(imagesInPage);
+    await twoFrames(frame);
+    return at;
+}
+
+/**
+ * The stitched picture as Chromium's own screenshot encodes it, so its bytes are what
+ * capture.mjs's one full-page screenshot holds: shown 1:1 in a page of its own size and shot. A
+ * picture taller than one screenshot is encoded as capture.mjs stitches its slices.
+ * @param {import("playwright").Page} page vitest's page, whose context opens the new page
+ * @param {PNG} image the stitched picture, at SCALE device px per CSS px
+ * @param {{ width: number, height: number }} size in CSS px
+ * @returns {Promise<Buffer>} the PNG
+ */
+async function encodeAsChromium(page, image, size) {
+    const png = PNG.sync.write(image, { filterType: 4 });
+    if (image.height > MAX_SHOT_HEIGHT) {
+        return png;
+    }
+    const shown = await page.context().newPage();
+    try {
+        await shown.setViewportSize(size);
+        await shown.setContent(
+            `<style>html,body{margin:0}img{display:block;width:${size.width}px;height:${size.height}px}</style>` +
+                `<img src="data:image/png;base64,${png.toString("base64")}">`,
+        );
+        await shown.evaluate(imagesInPage);
+        return await shown.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+    } finally {
+        await shown.close();
+    }
+}
+
+/**
+ * In the page, at scroll (0, 0): pins every position: fixed element (in open shadow roots too)
+ * where it is, as position: absolute, so scrolled tiles draw it once, where a full-page shot draws
+ * it, instead of once per tile. Or, with `undo`, puts their own styles back.
+ * @param {boolean} undo whether to put the styles back
+ * @returns {void}
+ */
+function pinFixedInPage(undo) {
+    const key = "__visualReviewPinned";
+    if (undo) {
+        for (const [el, css] of globalThis[key] ?? []) {
+            el.style.cssText = css;
+        }
+        delete globalThis[key];
+        return;
+    }
+    const all = [];
+    const walk = (root) => {
+        for (const el of root.querySelectorAll("*")) {
+            all.push(el);
+            if (el.shadowRoot) {
+                walk(el.shadowRoot);
+            }
+        }
+    };
+    walk(document);
+    const fixed = all.filter((el) => getComputedStyle(el).position === "fixed");
+    const rects = fixed.map((el) => el.getBoundingClientRect());
+    // Each one's own style, and where it sits in the document (the page is at scroll (0, 0)).
+    globalThis[key] = fixed.map((el, i) => [el, el.style.cssText, rects[i].top, rects[i].left]);
+    for (const [i, el] of fixed.entries()) {
+        const r = rects[i];
+        const set = (name, value) => el.style.setProperty(name, value, "important");
+        set("position", "absolute");
+        set("box-sizing", "border-box");
+        set("width", `${r.width}px`);
+        set("height", `${r.height}px`);
+        set("margin", "0");
+        set("right", "auto");
+        set("bottom", "auto");
+        set("top", `${r.top}px`);
+        set("left", `${r.left}px`);
+        // The element's containing block is now its positioned ancestor, not the viewport.
+        const now = el.getBoundingClientRect();
+        set("top", `${2 * r.top - now.top}px`);
+        set("left", `${2 * r.left - now.left}px`);
+    }
+}
+
+/**
+ * A page bigger than the viewport, shot in viewport-sized tiles: `frame`'s document is scrolled to
+ * each tile, `page` is shot clipped to the viewport at its top left, and the tiles are stitched.
+ * The layout keeps the viewport (its `vh` units too), and fixed elements are pinned in
+ * the document so each is drawn once. Never Chromium's beyond-viewport capture (Playwright's
+ * `fullPage` on a page that overflows): it re-resolves generic font families, so a story's
+ * `monospace` text switched from the pinned fontconfig's DejaVu Sans Mono to Liberation Mono.
+ * @param {import("playwright").Page} page the page to shoot
+ * @param {import("playwright").Page | import("playwright").Frame} frame the document to scroll: the
+ *     page itself, or an iframe at the page's top left at scale 1
+ * @param {{ width: number, height: number }} size the document's whole size in CSS pixels
+ * @returns {Promise<Buffer>} the PNG
+ */
+export async function shootTiles(page, frame, size) {
+    const vp = page.viewportSize();
+    const view = { x: 0, y: 0, ...vp };
+    const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+    await frame.evaluate(pinFixedInPage, false);
+    try {
+        for (let top = 0; top < size.height; top += vp.height) {
+            for (let left = 0; left < size.width; left += vp.width) {
+                // No further than the measured size's end: a body that overflows past the document
+                // (All Components, by 16 px) must not scroll the rows a full-page shot cuts off.
+                const at = await scrollFrame(
+                    frame,
+                    Math.max(0, Math.min(left, size.width - vp.width)),
+                    Math.max(0, Math.min(top, size.height - vp.height)),
+                );
+                const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
+                const w = Math.min(vp.width, size.width - left) * SCALE;
+                const h = Math.min(vp.height, size.height - top) * SCALE;
+                PNG.bitblt(tile, out, (left - at.x) * SCALE, (top - at.y) * SCALE, w, h, left * SCALE, top * SCALE);
+            }
+        }
+    } finally {
+        await scrollFrame(frame, 0, 0);
+        await frame.evaluate(pinFixedInPage, true);
+    }
+    return encodeAsChromium(page, out, size);
 }
 
 /**
