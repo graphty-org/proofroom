@@ -160,13 +160,24 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
     const rendered = (story, mode, i) =>
         i === 0 && Object.entries(mode.globals ?? {}).every(([k, v]) => story.globals?.[k] === v);
 
+    // The project's wait on every matching element. `settled`: for a story that is not shot (excluded, or
+    // already failed), so the wait only lets its scene finish here, not in the next story's test, and its
+    // outcome (a rejection, an element without the method) decides nothing.
+    const waitForElements = ({ selector, method }, settled) => {
+        const els = [...document.querySelectorAll(selector)];
+        if (!settled) {
+            return Promise.all(els.map((el) => el[method]()));
+        }
+        return Promise.allSettled(els.filter((el) => typeof el[method] === "function").map((el) => el[method]()));
+    };
+
     const settle = async (plan) => {
         await document.fonts.ready;
         await frame();
         await document.fonts.ready;
         if (plan.waitFor) {
-            const { selector, method, failOnConsole } = plan.waitFor;
-            await Promise.all([...document.querySelectorAll(selector)].map((el) => el[method]()));
+            const { failOnConsole } = plan.waitFor;
+            await waitForElements(plan.waitFor, false);
             await frame();
             if (failOnConsole && lines.some((l) => l.includes(failOnConsole))) {
                 throw new Error(failOnConsole);
@@ -210,12 +221,14 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
                     plan.modes.map((m) => m.name),
                     context.task.result.errors?.[0]?.message ?? "the story test failed",
                 );
+                if (plan.waitFor) {
+                    await waitForElements(plan.waitFor, true);
+                }
                 return;
             }
             if (plan.modes.length === 0 && plan.waitFor) {
                 // An excluded story is not shot, but it finishes here, not in the next story's test.
-                const { selector, method } = plan.waitFor;
-                await Promise.all([...document.querySelectorAll(selector)].map((el) => el[method]()));
+                await waitForElements(plan.waitFor, true);
             }
             for (const [i, mode] of plan.modes.entries()) {
                 try {
