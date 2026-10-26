@@ -209,7 +209,7 @@ export function pngSize(bytes) {
 /** The result-line files compareSnapshot() appends to: one per process and thread. */
 const LINE_FILE = /^results-\d+-\d+\.ndjson$/;
 
-/** Attempts counted without an output directory, by project and file. */
+/** Attempts counted without an output directory, by baselines directory, project and file. */
 const counted = new Map();
 /** Per output directory: how far each result-line file was read, and the attempts in it. */
 const readSoFar = new Map();
@@ -332,15 +332,17 @@ export async function compareSnapshot(options) {
         await mkdir(join(out, "baselines"), { recursive: true });
     }
     // The story is the only one known, so a rename applies whenever its old id has the baseline.
-    const ctx = await judgeContext({ baselines, out, reference, known: new Set([id]) });
+    // The images in out are this function's own, so an earlier attempt's capture goes (prune).
+    const ctx = await judgeContext({ baselines, out, reference, prune: true, known: new Set([id]) });
     const item = await judgeLine(ctx, line);
     if (!item) {
         return null;
     }
     const key = `${project}\0${line.file}`;
     if (!out) {
-        const attempt = (counted.get(key) ?? 0) + 1;
-        counted.set(key, attempt);
+        const here = `${baselines}\0${key}`;
+        const attempt = (counted.get(here) ?? 0) + 1;
+        counted.set(here, attempt);
         return resultLine(item, { project, attempt });
     }
     return inTurn(out, async () => {

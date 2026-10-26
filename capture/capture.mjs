@@ -498,8 +498,8 @@ async function shootSnapshot(browser, { common, url, delay }, waitFor) {
  *     checkout `root` (default the current one); `storybook` and `baselines` override the config's;
  *     `stories` keeps only the story ids starting with one of these prefixes
  * @returns {{ stories: () => Promise<object[]>, shoot: (story: object) => Promise<object>,
- *     close: () => Promise<void> }} each story is a capture line without an image: `type` is
- *     `image` (to shoot) or `excluded`; `shoot()` returns it with `image` (the PNG, or null with
+ *     close: () => Promise<void> }} each story is a capture line without an image, with its
+ *     `baselines` directory: `type` is `image` (to shoot) or `excluded`; `shoot()` returns it with `image` (the PNG, or null with
  *     `reason` when the story could not be shot) and `console`, or an excluded story unchanged
  */
 export function openCapture({ project, root = repoRoot(), storybook, baselines, stories = null }) {
@@ -538,7 +538,8 @@ export function openCapture({ project, root = repoRoot(), storybook, baselines, 
             const { snapshots } = await open();
             return snapshots.map((snapshot) => {
                 planned.set(snapshot.common.file, snapshot);
-                return snapshot.excluded ?? { type: "image", ...snapshot.common };
+                // Its baselines go with it, so assertSnapshot() judges it where capture read its settings.
+                return { ...(snapshot.excluded ?? { type: "image", ...snapshot.common }), baselines: dir };
             });
         },
         async shoot(story) {
@@ -551,7 +552,7 @@ export function openCapture({ project, root = repoRoot(), storybook, baselines, 
             }
             const { browser } = await open();
             const { bytes = null, ...line } = await shootSnapshot(browser, snapshot, entry.waitFor ?? null);
-            return { ...line, image: bytes };
+            return { ...line, baselines: dir, image: bytes };
         },
         async close() {
             if (!opened) {
