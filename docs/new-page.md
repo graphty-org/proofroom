@@ -1,0 +1,41 @@
+# Trying the new page
+
+The review server serves a new review page beside today's at `/next/`. Both pages read and write
+the same decisions, so you can switch between them in the middle of a review. Today's page stays
+the page at `/` until the new one does everything it does.
+
+## Open it
+
+Take the address `proofroom serve` printed and put `next/` after the host and port:
+
+```text
+proofroom: open https://review.example:4800/#token=<token>
+               https://review.example:4800/next/#token=<token>
+```
+
+The token works on both pages, and a browser that already opened one page with it opens the other
+without asking. To make the new page the page at `/`, start the server with `--ui next`:
+
+```sh
+PORT=4800 proofroom serve --ui next
+```
+
+## What it has so far
+
+- **The changes pane.** Every change with captures, in sections: Needs you, Decided, not finished,
+  Capturing or downloading, Not ready, Look only, Nothing to decide and Drafts. Each row says what
+  state the change is in and what it waits for. **Find [/]** finds a change by number, title,
+  branch or author; **Sort** orders them; **Next change [Shift+N]** opens the next change that
+  needs you. A row's **...** menu has About this change, Open on GitHub and Copy link.
+- **Panes and levels.** **Hide [Shift+1]** and **Hide [Shift+2]** turn the Changes and Snapshots
+  panes into narrow rails; the rail, or the same key, brings the pane back. Opening a change folds
+  the panes the review does not need, and the viewer is never narrower than 800 px. **Back [Esc]**
+  says where it goes: back to the list, or back to the changes. The page remembers your pane
+  choices in this browser, separately for small changes (10 snapshots or fewer) and large ones.
+- **The snapshots of a change**, as a plain list for now. The pictures, the viewer and the decision
+  keys come next; until then, decide on today's page.
+- **Addresses.** Every change and snapshot you open is in the address, so a copied link opens it
+  again and the browser's Back and Forward move between them. Links today's page wrote, such as
+  those in pull request comments, open the same change and snapshot here.
+
+Every key is printed on the control it presses, and a key does only what a visible key box says.

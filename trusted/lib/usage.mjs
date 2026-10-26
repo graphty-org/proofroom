@@ -111,13 +111,20 @@ export function summarize(events) {
         return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, timing(v)]));
     };
 
-    // Controls: presses, and the ones shown but never pressed.
+    // Controls: presses, and the ones shown but never pressed. Today's page logs a press by the
+    // control's name ("press", with key presses named "key-J"); the new page logs every press by
+    // its action id ("action", by pointer or by key), so a key press there is "key-<action id>".
     const presses = new Map();
     for (const e of byType("press")) {
         bump(presses, e.c);
     }
+    const actions = byType("action").filter((e) => typeof e.a === "string");
+    for (const e of actions) {
+        bump(presses, e.via === "key" ? `key-${e.a}` : e.a);
+    }
+    const used = new Set([...presses.keys(), ...actions.map((e) => e.a)]);
     const seen = new Set(byType("controls").flatMap((e) => e.c ?? []));
-    const neverUsed = [...seen].filter((c) => !presses.has(c)).sort((a, b) => a.localeCompare(b));
+    const neverUsed = [...seen].filter((c) => !used.has(c)).sort((a, b) => a.localeCompare(b));
     const controls = sortedCounts(new Map([...presses].filter(([c]) => !String(c).startsWith("key-"))));
     const keys = sortedCounts(new Map([...presses].filter(([c]) => String(c).startsWith("key-"))));
 

@@ -5,6 +5,48 @@
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <title>Visual review</title>
         <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+        <link rel="stylesheet" href="/next/next.css" />
+        <script type="module" src="/next/app.js"></script>
     </head>
-    <body></body>
+    <body>
+        <header id="top">
+            <span class="brand">Visual review</span><span class="repo" id="repo"></span>
+            <span class="tabs" id="tabs"></span>
+            <span class="grow"></span>
+            <span id="status-slot"></span>
+        </header>
+        <div id="screens">
+            <nav id="changes" class="pane" aria-label="Changes">
+                <div id="rail-c"></div>
+                <div class="pane-head">
+                    <div class="pane-title"><span class="grow">Changes</span><span id="hide-c"></span></div>
+                    <input
+                        type="search"
+                        id="chg-find"
+                        data-act="chgfind"
+                        data-key="/"
+                        data-zone="changes-head"
+                        data-find="Find a change: number, title, branch, author"
+                        aria-label="Find a change: number, title, branch, author"
+                        autocomplete="off"
+                    />
+                    <div class="row-ctrl small">
+                        <span id="chg-next"></span><span id="chg-sort"></span
+                        ><span class="grow muted" id="chg-count"></span>
+                    </div>
+                </div>
+                <div class="list" id="chg-list" tabindex="0" role="listbox" aria-label="Changes"></div>
+            </nav>
+            <section id="snaps" class="pane" aria-label="Snapshots">
+                <div id="rail-s"></div>
+                <div class="pane-head" id="snaps-head"></div>
+                <div class="list" id="snap-list" tabindex="0" aria-label="Snapshots"></div>
+            </section>
+            <main class="viewer" id="viewer" tabindex="-1" aria-label="Viewer"></main>
+        </div>
+        <footer id="msgline">
+            <span class="t" id="msg-t" role="status"></span><span id="msg-x"></span><span id="msg-btn"></span>
+        </footer>
+        <dialog id="dlg"></dialog>
+    </body>
 </html>

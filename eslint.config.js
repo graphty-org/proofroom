@@ -9,7 +9,7 @@ import globals from "globals";
 import noTestTiming from "./eslint-rules/no-test-timing.mjs";
 
 export default [
-    { ignores: ["node_modules/**", "coverage/**", "tmp/**", "trusted/vendor/**"] },
+    { ignores: ["node_modules/**", "coverage/**", "tmp/**", "tmp-review/**", "trusted/vendor/**"] },
     eslint.configs.recommended,
     jsdoc.configs["flat/recommended-typescript-error"],
     {

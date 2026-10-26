@@ -4,3 +4,4 @@ tmp/
 .visual-review/
 *.tgz
 test-results/
+tmp-review/
