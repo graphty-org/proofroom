@@ -950,7 +950,10 @@ const firmDecision = (item) => (decisionOf(item)?.approvedBefore ? null : decisi
 const postedReject = (d) => d?.posted === true && d.decision === "reject";
 const day = (iso) => (iso ? String(iso).slice(0, 10) : "");
 const prName = (pr) => (pr === null ? "seed" : "#" + pr);
-const approvedText = (a) => `Approved before (${prName(a.pr)}, ${day(a.reviewedAt)})`;
+// Where an earlier approval came from: its pull request, else a change statement's change as it
+// names itself (`branch:feat/x`), else a seed.
+const approvedFrom = (a) => (a.pr === null && a.change ? a.change : prName(a.pr));
+const approvedText = (a) => `Approved before (${approvedFrom(a)}, ${day(a.reviewedAt)})`;
 // The image a decision is about, as the server checks it: a decision on an image another run
 // replaced since this page loaded is refused.
 const imageHash = (item) => item.capture ?? item.baseline ?? null;
@@ -4433,7 +4436,7 @@ function approvedList(t, items) {
         return el(
             "a",
             { href: `#${p}`, onclick: (e) => e.currentTarget.closest("dialog")?.close("no") },
-            `${x.project}/${x.file} (${prName(x.pr)})`,
+            `${x.project}/${x.file} (${approvedFrom(x)})`,
         );
     };
     return el(

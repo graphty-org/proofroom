@@ -133,6 +133,7 @@ import {
     hurry,
     openPullRequests,
     pullRequestContext,
+    repositoryNumber,
     retrying,
     reviewerLogin,
     visualJobs,
@@ -747,8 +748,10 @@ export function createApp({
     const addedIn = new Map();
     /** What each blob of the approvals directory says (accept.mjs earlierApprovalsAt). */
     const statementRecords = new Map();
-    /** Who wrote each image on the default branch, by hash (filters.mjs baselineWriters). */
+    /** Who wrote each image on the default branch, by `<path> <hash>` (filters.mjs baselineWriters). */
     let writers = new Map();
+    /** This repository's id on GitHub (`github:<id>`) once GitHub gave it; null when it is not there. */
+    let githubId;
     /** The stories proven to be capture noise, by `<project>/<file>` (filters.mjs knownNoise). */
     let noise = new Map();
     const evidenceFile = join(stateDir, "noise-evidence.json");
@@ -1188,10 +1191,11 @@ export function createApp({
             return;
         }
         const keys = passkeyState.main.length > 0 ? passkeyState.main : null;
+        const repository = keys === null ? null : await repositoryId();
         const records = [];
         const statements = [];
         for (const { sha, main } of await approvalRefs(list)) {
-            const found = await earlierApprovalsAt(repo, sha, config, keys, statementRecords);
+            const found = await earlierApprovalsAt(repo, sha, config, keys, statementRecords, repository);
             for (const r of await reviewRecordsAt(sha, main, found.records)) {
                 records.push({ ...r, treeSigned: found.treeSigned.has(r.blob) });
             }
@@ -1205,6 +1209,20 @@ export function createApp({
             statements.filter((st) => st.main),
             keys,
         );
+    }
+
+    /**
+     * The id change statements of this repository name, as the gate reads it (gate.mjs
+     * repositoryOf): `github:<id>` on GitHub, asked once, else the config's `repositoryId`; null
+     * when there is neither, so no statement verifies. A failed ask is asked again next time.
+     * @returns {Promise<string | null>} the id
+     */
+    async function repositoryId() {
+        githubId ??= await repositoryNumber(gh).then(
+            (id) => (id === null ? null : `github:${id}`),
+            () => undefined,
+        );
+        return githubId ?? config.repositoryId ?? null;
     }
 
     const gitIn = (args) => exec("git", args, { cwd: repo });
@@ -2532,7 +2550,7 @@ export function createApp({
             // Each of them, so the sheet lists them and opens any one: none is included unseen.
             approvedBeforeItems: list
                 .filter((x) => x.approvedBefore)
-                .map((x) => ({ project: x.project, file: x.file, pr: x.approvedBefore.pr })),
+                .map((x) => ({ project: x.project, file: x.file, pr: x.approvedBefore.pr, change: x.approvedBefore.change })),
             notOpened: s.projects.reduce((n, p) => n + p.notOpened, 0),
             undecided: s.projects
                 .filter((p) => p.undecided > 0)
@@ -4205,8 +4223,8 @@ export function createApp({
     handler.work = work;
     // A target's decisions as the list shows them, by `<project>/<file>`: for the bench's lookup timing.
     handler.decisionsOf = (id) => (targets.has(id) ? decisionsOf(targets.get(id)) : null);
-    // The default branch's newest record or statement that accepted an image, by its hash, as of the
-    // last refresh (filters.mjs baselineWriters): for the Baselines screen's history.
-    handler.baselineWriter = (hash) => writers.get(hash) ?? null;
+    // The default branch's newest record or statement that wrote an image to a baseline path, as of
+    // the last refresh (filters.mjs baselineWriters): for the Baselines screen's history.
+    handler.baselineWriter = (path, hash) => writers.get(`${path} ${hash}`) ?? null;
     return handler;
 }

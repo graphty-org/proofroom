@@ -582,3 +582,14 @@ export async function pullRequestContext(gh, pr, reviewer) {
  * @returns {Promise<string | null>} the login
  */
 export const reviewerLogin = async (gh) => (await api(gh, "user")).login ?? null;
+
+/**
+ * The repository's GitHub id, which a rename or a transfer does not change: what change statements
+ * name on GitHub (`github:<id>`, gate.mjs repositoryOf).
+ * @param {Function} gh the gh runner
+ * @returns {Promise<number | null>} the id
+ */
+export const repositoryNumber = async (gh) => {
+    const { id } = await api(gh, "repos/{owner}/{repo}");
+    return Number.isInteger(id) ? id : null;
+};

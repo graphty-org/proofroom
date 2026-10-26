@@ -576,7 +576,8 @@ Three filters on the grid save time without hiding a change:
   record or change statement at the default branch's tip or an open pull request's head (a fork's
   included), and it must still be the newest decision on that file there: a later accept of another
   image, an exclusion or a reject replaces it. A change statement counts only when its signature
-  verifies against the default branch's passkeys and it sits where its content says it belongs
+  verifies against the default branch's passkeys, it names this repository (`github:<id>` on
+  GitHub, else the config's `repositoryId`) and it sits where its content says it belongs
   (`docs/approval-format.md`); one that does not is never used. Finish's sheet counts
   these and lists each, one tap from opening it. Finish's record names the earlier record and its
   commit, and the gate accepts the item only when that record approves exactly this image for this

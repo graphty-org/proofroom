@@ -753,20 +753,23 @@ export async function treeSignedRecords(repo, sha, config, keys, cache = new Map
  * Every earlier approval at a commit, from one `git ls-tree` of the approvals directory and the
  * review records: the review record files, the record blobs a signed tree statement covers
  * (treeSignedRecords), and every change statement (change-approval.mjs), each blob read once.
- * A change statement is verified when it sits where its content says it belongs, is about these
- * baselines and carries a valid signature from one of `keys`; an unverified one is listed too, so
- * a history can show it as unverified, and never counts as an approval.
+ * A change statement is verified when it sits where its content says it belongs, names this
+ * repository, is about these baselines and carries a valid signature from one of `keys`; an
+ * unverified one is listed too, so a history can show it as unverified, and never counts as an
+ * approval.
  * @param {string} repo the repository
  * @param {string} sha the commit
  * @param {{ approvals: string, baselines: string }} config the settings
  * @param {object[] | null} keys the default branch's keys; null when it has none, so nothing
  *     verifies
- * @param {Map<string, any>} [cache] what each statement blob says, by blob and keys, kept across
- *     calls
+ * @param {Map<string, any>} [cache] what each statement blob says, by blob, keys and placement,
+ *     kept across calls
+ * @param {string | null} [repository] this repository's id as the gate names it (gate.mjs
+ *     repositoryOf); null when it is not known, so no change statement verifies
  * @returns {Promise<{ records: { path: string, blob: string }[], treeSigned: Set<string>,
  *     statements: { path: string, blob: string, statement: object, verified: boolean }[] }>} them
  */
-export async function earlierApprovalsAt(repo, sha, config, keys, cache = new Map()) {
+export async function earlierApprovalsAt(repo, sha, config, keys, cache = new Map(), repository = null) {
     const approvals = `${config.approvals}/`;
     const reviews = `${config.baselines}/reviews/`;
     const listing = await git(repo, ["ls-tree", "-r", sha, "--", approvals, reviews]).catch(() => "");
@@ -784,14 +787,16 @@ export async function earlierApprovalsAt(repo, sha, config, keys, cache = new Ma
             out.records.push({ path, blob });
             continue;
         }
-        const key = `${blob} ${ids}`;
+        const nested = rest.includes("/");
+        const key = `${blob} ${ids} ${nested}`;
         if (!cache.has(key)) {
-            cache.set(key, await readApproval(repo, blob, config, keys, rest.includes("/")));
+            cache.set(key, await readApproval(repo, blob, config, keys, nested));
         }
         const read = cache.get(key);
         if (read.statement) {
             const placed = statementPath(config.approvals, read.statement) === path;
-            out.statements.push({ path, blob, statement: read.statement, verified: read.signed && placed });
+            const ours = repository !== null && read.statement.repository === repository;
+            out.statements.push({ path, blob, statement: read.statement, verified: read.signed && placed && ours });
         }
         read.records?.forEach((b) => out.treeSigned.add(b));
     }

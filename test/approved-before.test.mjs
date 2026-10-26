@@ -50,19 +50,31 @@ afterEach(async () => {
     server = null;
 });
 
+// The id the statements below name: the config's, since the fake GitHub gives no id of its own.
+const REPO_ID = "test-repository";
+const CONFIG = { ...FIXTURE_CONFIG, repositoryId: REPO_ID };
+
 /**
  * Starts the app on a random port for pull request #123 of a repository.
  * @param {object} r the repository (makeRepo)
+ * @param {object} [o] options
+ * @param {object} [o.config] the settings (default CONFIG)
+ * @param {number} [o.githubId] the repository id GitHub answers with; none by default
  * @returns {Promise<{ api: (method: string, path: string) => Promise<any> }>} the app's API
  */
-async function start(r) {
+async function start(r, { config = CONFIG, githubId } = {}) {
     vi.spyOn(console, "log").mockImplementation(() => {});
     onTestFinished(() => vi.restoreAllMocks());
     const tmp = join(r.repo, "tmp/visual-review");
     server = createServer((req, res) => app(req, res));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    app = createApp({ repo: r.repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, gh: onePr()(r) });
+    const fake = onePr()(r);
+    const gh = (args, input) =>
+        githubId !== undefined && args[0] === "api" && args[1] === "repos/{owner}/{repo}"
+            ? Promise.resolve(JSON.stringify({ id: githubId }))
+            : fake(args, input);
+    app = createApp({ repo: r.repo, tmp, config, token: TOKEN, origin, gh });
     const api = async (method, path) => {
         const res = await fetch(`${origin}${path}`, { method, headers: { "x-review-token": TOKEN, origin } });
         return { status: res.status, body: await res.json() };
@@ -119,7 +131,7 @@ function statement(entries, { key = KEY, tamper = {}, ...more } = {}) {
     const unsigned = {
         version: 2,
         type: "change-approval",
-        repository: "test-repository",
+        repository: REPO_ID,
         baselines: FIXTURE_CONFIG.baselines,
         change: "pr:77",
         capturedHead: "a".repeat(40),
@@ -144,8 +156,9 @@ function record(items, { tamper = {} } = {}) {
     const path = `${FIXTURE_CONFIG.baselines}/reviews/20261010T090000Z-pr66.json`;
     return { path, doc: { ...unsigned, approval: approve(unsigned, KEY), ...tamper } };
 }
+const baseline = (i) => `${FIXTURE_CONFIG.baselines}/${PROJECT}/${i.file}`;
 const recordItem = (i) => ({
-    path: `${FIXTURE_CONFIG.baselines}/${PROJECT}/${i.file}`,
+    path: baseline(i),
     from: i.baseline,
     to: i.capture,
     reason: null,
@@ -202,9 +215,42 @@ describe("approved before, from change statements", () => {
         const rec = record([recordItem(SLIDER)], { tamper: { pr: 67 } });
         const s = await start(repoWith(forged, foreign, rec));
         expect(await decisions(s)).toEqual({});
-        expect(app.baselineWriter(BUTTON.capture)).toMatchObject({ file: forged.path, verified: false });
-        expect(app.baselineWriter(BADGE.capture)).toMatchObject({ file: foreign.path, verified: false });
-        expect(app.baselineWriter(SLIDER.capture)).toMatchObject({ file: rec.path, verified: false });
+        expect(app.baselineWriter(baseline(BUTTON), BUTTON.capture)).toMatchObject({ file: forged.path, verified: false });
+        expect(app.baselineWriter(baseline(BADGE), BADGE.capture)).toMatchObject({ file: foreign.path, verified: false });
+        expect(app.baselineWriter(baseline(SLIDER), SLIDER.capture)).toMatchObject({ file: rec.path, verified: false });
+    });
+
+    it("never preselects from a statement of another repository, or when this one's id is unknown", async () => {
+        const elsewhere = statement([accept(BUTTON)], { repository: "another-repository" });
+        const ours = statement([accept(BADGE)], { change: "pr:79" });
+        const r = repoWith(elsewhere, ours);
+        const s = await start(r);
+        expect(Object.keys(await decisions(s))).toEqual([BADGE.file]);
+        expect(app.baselineWriter(baseline(BUTTON), BUTTON.capture)).toMatchObject({ verified: false });
+        await new Promise((resolve) => server.close(() => resolve()));
+        await app.idle();
+        expect(await decisions(await start(r, { config: FIXTURE_CONFIG }))).toEqual({});
+    });
+
+    it("on GitHub, counts only statements that name the repository's GitHub id", async () => {
+        const github = statement([accept(BUTTON)], { repository: "github:42" });
+        const config = statement([accept(BADGE)], { change: "pr:79" });
+        const shown = await decisions(await start(repoWith(github, config), { githubId: 42 }));
+        expect(Object.keys(shown)).toEqual([BUTTON.file]);
+    });
+
+    it("names a change that is not a pull request as the statement names it", async () => {
+        const st = statement([accept(BUTTON)], { change: "branch:feat/x" });
+        const shown = await decisions(await start(repoWith(st)));
+        expect(shown[BUTTON.file]).toMatchObject({ approvedBefore: { pr: null, change: "branch:feat/x" } });
+    });
+
+    it("reads a statement blob by where it sits, whichever place is read first", async () => {
+        const st = statement([accept(BUTTON)]);
+        // The same bytes at the top of the approvals directory, where only tree statements live.
+        const copy = { path: `${APPROVALS}/copied.json`, doc: st.doc };
+        const shown = await decisions(await start(repoWith(copy, st)));
+        expect(shown[BUTTON.file]).toMatchObject({ approvedBefore: { record: st.path } });
     });
 
     it("never preselects from a statement at another place than its content gives", async () => {
@@ -212,7 +258,7 @@ describe("approved before, from change statements", () => {
         const moved = { ...st, path: `${APPROVALS}/pr-78/${st.path.split("/").at(-1)}` };
         const s = await start(repoWith(moved));
         expect(await decisions(s)).toEqual({});
-        expect(app.baselineWriter(BUTTON.capture)).toMatchObject({ verified: false });
+        expect(app.baselineWriter(baseline(BUTTON), BUTTON.capture)).toMatchObject({ verified: false });
     });
 });
 
@@ -223,14 +269,28 @@ describe("the default branch's writer of each image", () => {
         const newer = statement([accept(BUTTON)], { change: "pr:71", approvedAt: "2026-10-15T08:00:00Z" });
         const s = await start(repoWith(rec, newer, older));
         await s.api("GET", "/api/prs");
-        expect(app.baselineWriter(BUTTON.capture)).toEqual({
+        expect(app.baselineWriter(baseline(BUTTON), BUTTON.capture)).toEqual({
             path: `${FIXTURE_CONFIG.baselines}/${PROJECT}/${BUTTON.file}`,
             file: newer.path,
             change: "pr:71",
             at: "2026-10-15T08:00:00Z",
             verified: true,
         });
-        expect(app.baselineWriter(SLIDER.capture)).toBeNull();
+        expect(app.baselineWriter(baseline(SLIDER), SLIDER.capture)).toBeNull();
+    });
+    it("names each path's own writer of an image, and an exclude that wrote it", async () => {
+        const button = statement([accept(BUTTON)], { change: "pr:70", approvedAt: "2026-10-12T08:00:00Z" });
+        // The same image, later, as the slider's baseline.
+        const slider = statement([accept({ ...SLIDER, capture: BUTTON.capture })], {
+            change: "pr:71",
+            approvedAt: "2026-10-15T08:00:00Z",
+        });
+        const excluded = statement([accept(BADGE, { decision: "exclude", reason: "flaky" })], { change: "pr:72" });
+        const s = await start(repoWith(button, slider, excluded));
+        await s.api("GET", "/api/prs");
+        expect(app.baselineWriter(baseline(BUTTON), BUTTON.capture)).toMatchObject({ file: button.path });
+        expect(app.baselineWriter(baseline(SLIDER), BUTTON.capture)).toMatchObject({ file: slider.path });
+        expect(app.baselineWriter(baseline(BADGE), BADGE.capture)).toMatchObject({ file: excluded.path, verified: true });
     });
 });
 

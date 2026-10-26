@@ -39,9 +39,11 @@ import { newestDecisions, statementId } from "./change-approval.mjs";
  * @param {object[] | null} keys the default branch's passkeys (null when none)
  * @param {{ ref: string, commit: string, path: string, statement: any, verified: boolean,
  *     main: boolean }[]} [statements] change statements, read as the records are
- * @returns {Map<string, { pr: number | null, commit: string, record: string, reviewedAt: string }>}
- *     by `<path> <hash>`; a default branch approval wins over a pull request's, then the newest.
- *     `record` is the record's or the statement's path
+ * @returns {Map<string, { pr: number | null, change?: string, commit: string, record: string,
+ *     reviewedAt: string }>} by `<path> <hash>`; a default branch approval wins over a pull
+ *     request's, then the newest. `record` is the record's or the statement's path; a statement's
+ *     also names its `change` (`pr:7`, `branch:feat/x`), and its `pr` is null for one that is not a
+ *     pull request's
  */
 export function approvalIndex(records, keys, statements = []) {
     const index = new Map();
@@ -92,6 +94,7 @@ export function approvalIndex(records, keys, statements = []) {
                 const pr = /^pr:(\d+)$/.exec(statement.change);
                 const value = {
                     pr: pr ? Number(pr[1]) : null,
+                    change: statement.change,
                     commit: d.row.commit,
                     record: d.row.path,
                     reviewedAt: statement.approvedAt,
@@ -150,24 +153,26 @@ function statementDecisions(rows) {
 }
 
 /**
- * Who wrote each image, for a baselines history: by image hash, the newest change statement or
- * review record that accepts it, with whether its signature verified. An unverified one is listed
- * so the history can show it as unverified; approvalIndex never counts it.
+ * Who wrote each image, for a baselines history: by baseline path and image hash, the newest change
+ * statement or review record that wrote that image there (an accept, or an exclude that writes
+ * `to`), with whether its signature verified. An unverified one is listed so the history can show
+ * it as unverified; approvalIndex never counts it.
  * @param {{ path: string, record: any, treeSigned?: boolean }[]} records review records, as for
  *     approvalIndex
  * @param {{ path: string, statement: any, verified: boolean }[]} statements change statements, as
  *     for approvalIndex
  * @param {object[] | null} keys the default branch's passkeys (null when none: nothing verifies)
  * @returns {Map<string, { path: string, file: string, change: string | null, at: string,
- *     verified: boolean }>} by hash: the baseline it was written to, the record's or statement's
- *     path, its change (`pr:7`; null for a record of the default branch), and when
+ *     verified: boolean }>} by `<path> <hash>`: the baseline it was written to, the record's or
+ *     statement's path, its change (`pr:7`; null for a record of the default branch), and when
  */
 export function baselineWriters(records, statements, keys) {
     const out = new Map();
     const put = (hash, w) => {
-        const was = out.get(hash);
+        const key = `${w.path} ${hash}`;
+        const was = out.get(key);
         if (!was || !(Date.parse(was.at) > Date.parse(w.at))) {
-            out.set(hash, w);
+            out.set(key, w);
         }
     };
     for (const r of records) {
@@ -180,7 +185,7 @@ export function baselineWriters(records, statements, keys) {
         }
     }
     for (const s of statements) {
-        for (const e of s.statement.entries.filter((x) => x.decision === "accept" && typeof x.to === "string")) {
+        for (const e of s.statement.entries.filter((x) => (x.decision === "accept" || x.decision === "exclude") && typeof x.to === "string")) {
             put(e.to, {
                 path: `${s.statement.baselines}/${e.path}`,
                 file: s.path,
