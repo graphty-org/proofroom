@@ -123,12 +123,21 @@ JSON line per difference (bytes that differ, a story only one side captured, a s
 failed to capture), then a summary. Exits 1 on any difference: different bytes from the same
 commit are a bug in one environment, so no threshold applies.`,
 
-    "merge-results": `usage: proofroom merge-results --project <id> --out <dir> [--baselines <dir>] <partial>...
+    collect: `usage: proofroom collect --project <id> --out <dir> [--baselines <dir>] [--junit <file>] <dir>...
 
-Combines one project's partial captures from its story tests (one directory per shard, written by
-proofroom/vitest) into one capture directory that serve and gate read. It is complete
-only when every shard is there once, between them they ran every story file of the project, and
-each reported every story test it ran; then every baseline no story drew is reported removed. Exits 1, writing it incomplete, otherwise.`,
+Combines one project's result lines, written by compareSnapshot() or assertSnapshot() in your
+test runner or by proofroom/vitest (one directory per shard or runner), into one capture
+directory that serve and gate read: results.json, the images to review and the JUnit file. The
+last attempt of each snapshot is its result, the earlier ones its attempts. It is complete only
+when no snapshot is in two directories and, for proofroom/vitest's directories, every shard is
+there once, between them they ran every story file of the project and each reported every story
+test it ran; then every baseline no snapshot drew is reported removed. Exits 1, writing it
+incomplete, otherwise. \`merge-results\` is another name for it, until 1.0.0.
+
+  --project <id>     a project of visual-review.config.json
+  --out <dir>        where the capture goes
+  --baselines <dir>  the baselines (default: <baselines>/<id> from the config)
+  --junit <file>     the JUnit file (default: <out>/junit.xml)`,
 
     junit: `usage: proofroom junit --results <dir> --out <file>
 
@@ -188,7 +197,8 @@ const COMMANDS = {
     reference,
     compare,
     parity,
-    "merge-results": mergeResultsCommand,
+    collect: collectCommand,
+    "merge-results": collectCommand,
     junit,
     serve,
     gate,
@@ -214,7 +224,7 @@ Commands:
   notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
   parity           compare two captures of the same commit byte for byte
-  merge-results    combine the story tests' partial captures of one project
+  collect          combine one project's result lines from test runners into one capture
   junit            write a capture set's results as a JUnit XML file
   usage            sum up the review page's usage events (when the config turns them on)
   install-browser  install the Chromium capture uses
@@ -656,29 +666,40 @@ async function parity(args) {
     return differences.length > 0 ? 1 : 0;
 }
 
-async function mergeResultsCommand(args) {
+async function collectCommand(args) {
     const { values, positionals } = parseArgs({
         args,
-        options: { project: { type: "string" }, out: { type: "string" }, baselines: { type: "string" } },
+        options: {
+            project: { type: "string" },
+            out: { type: "string" },
+            baselines: { type: "string" },
+            junit: { type: "string" },
+        },
         allowPositionals: true,
     });
     if (!values.project || !values.out || positionals.length === 0) {
-        console.error(HELP["merge-results"]);
+        console.error(HELP.collect);
         return 2;
     }
     const { root, config } = await settings();
-    const { mergeResults } = await import("../capture/merge-results.mjs");
-    const { results, problems } = await mergeResults({
-        project: values.project,
-        baselines: resolve(values.baselines ?? join(root, config.baselines, values.project)),
-        out: resolve(values.out),
-        dirs: positionals.map((p) => resolve(p)),
+    const { collect } = await import("./lib/collect.mjs");
+    return toolExit("collect", async () => {
+        const out = resolve(values.out);
+        const { results, problems } = await collect({
+            project: values.project,
+            baselines: resolve(values.baselines ?? join(root, config.baselines, values.project)),
+            out,
+            dirs: positionals.map((p) => resolve(p)),
+            junit: resolve(values.junit ?? join(out, "junit.xml")),
+        });
+        for (const problem of problems) {
+            console.error(`proofroom collect: ${problem}`);
+        }
+        console.log(
+            JSON.stringify({ project: values.project, items: results.items.length, complete: results.complete }),
+        );
+        return problems.length > 0 ? 1 : 0;
     });
-    for (const problem of problems) {
-        console.error(`proofroom merge-results: ${problem}`);
-    }
-    console.log(JSON.stringify({ project: values.project, items: results.items.length, complete: results.complete }));
-    return problems.length > 0 ? 1 : 0;
 }
 
 async function junit(args) {
