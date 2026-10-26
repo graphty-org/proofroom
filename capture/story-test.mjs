@@ -428,7 +428,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         },
         /**
          * What the browser side does for one story: its modes, the project's wait and the delay.
-         * A story its settings exclude is recorded here and has no modes to shoot.
+         * A story its settings exclude is recorded here and has no modes to shoot, only the wait.
          * @param {unknown} _ctx the command's context
          * @param {{ id: string, chromatic: object }} story the story id and its parameters.chromatic
          * @returns {Promise<{ modes: object[], waitFor: object | null, delay: number }>} the plan
@@ -456,7 +456,9 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
                     });
                 }
             }
-            return { modes: [], waitFor: null, delay: 0 };
+            // Still the project's wait: a story left mid-render goes on in the page after its test,
+            // and its late console lines (a disposed scene) would fail the story after it.
+            return { modes: [], waitFor: entry.waitFor ?? null, delay: 0 };
         },
         /**
          * Shoots the mounted story in one mode. A first shot that differs from the baseline (or has

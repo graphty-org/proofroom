@@ -212,6 +212,11 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
                 );
                 return;
             }
+            if (plan.modes.length === 0 && plan.waitFor) {
+                // An excluded story is not shot, but it finishes here, not in the next story's test.
+                const { selector, method } = plan.waitFor;
+                await Promise.all([...document.querySelectorAll(selector)].map((el) => el[method]()));
+            }
             for (const [i, mode] of plan.modes.entries()) {
                 try {
                     if ((await shootMode(story, chromatic, plan, mode, i)) === "unstable") {
