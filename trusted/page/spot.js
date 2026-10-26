@@ -121,3 +121,39 @@ export function cropOf(boxes, w, h) {
     const clamp = (v, max) => Math.min(Math.max(0, v), max);
     return [clamp((x0 + x1) / 2 - cw / 2, w - cw), clamp((y0 + y1) / 2 - ch / 2, h - ch), cw, ch];
 }
+
+// A row's zoomed picture: its shape (400 x 156 pixels), and the smallest part of an image it shows,
+// so a crop never goes past one image pixel per screen pixel at the row's largest size.
+export const ROW = [400, 156];
+const ROW_MIN = [380, 148];
+// How much room a crop leaves around the area it is centered on.
+const ROW_PAD = 1.2;
+
+/**
+ * Zoom rows to the change: the part of a w x h image a zoomed row shows, centered on the largest
+ * changed box, at the row's shape and at least ROW_MIN, kept inside the image (so a small image
+ * gives a smaller crop, still at the row's shape). With no boxes, it centers on the whole image.
+ * @param {number[][]} boxes what regions() returns
+ * @param {number} w the image's width
+ * @param {number} h its height
+ * @returns {{ crop: number[], zoom: number }} the crop [x, y, width, height] (fractions allowed),
+ *     and how much larger it shows the image than the row's unzoomed picture fitted whole
+ */
+export function rowCrop(boxes, w, h) {
+    const [bx, by, bw, bh] = boxes.reduce((m, b) => (b[2] * b[3] > m[2] * m[3] ? b : m), boxes[0] ?? [0, 0, w, h]);
+    const shape = ROW[0] / ROW[1];
+    let cw = Math.max(ROW_MIN[0], bw * ROW_PAD);
+    let ch = Math.max(ROW_MIN[1], bh * ROW_PAD);
+    if (cw / ch < shape) {
+        cw = ch * shape;
+    } else {
+        ch = cw / shape;
+    }
+    const fit = Math.min(1, w / cw, h / ch);
+    [cw, ch] = [cw * fit, ch * fit];
+    const clamp = (v, max) => Math.min(Math.max(0, v), max);
+    return {
+        crop: [clamp(bx + bw / 2 - cw / 2, w - cw), clamp(by + bh / 2 - ch / 2, h - ch), cw, ch],
+        zoom: Math.max(w / cw, h / ch),
+    };
+}
