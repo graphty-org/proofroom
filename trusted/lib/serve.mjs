@@ -1666,6 +1666,8 @@ export function createApp({
                         draft: pr.draft,
                         author: pr.author ?? null,
                         visual: pr.visual ?? null,
+                        // When CI last touched the run: the changes list's "4 min ago".
+                        readyAt: pr.run?.updatedAt ?? null,
                     };
                     try {
                         const run = await runOf(pr, read);
@@ -1985,6 +1987,7 @@ export function createApp({
             commit: t.commit,
             headSha: t.headSha,
             author: t.author ?? null,
+            readyAt: t.readyAt ?? null,
             mergeMasterFirst: t.mergeMasterFirst,
             // The changes list's row states: "behind <default branch>", "Changed on <default branch>:
             // N newer baselines", look only.
@@ -3028,6 +3031,8 @@ export function createApp({
                     inbox: summaries && !results ? inbox(summaries) : null,
                     warning: listWarnings.join("\n") || null,
                     defaultBranch,
+                    // The repository's name, for the new page's top bar: its checkout's folder.
+                    repository: basename(repo),
                     updatedAt: refreshedAt || null,
                     now: Date.now(),
                     refreshing: progress,
