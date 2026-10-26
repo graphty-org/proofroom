@@ -279,10 +279,11 @@ async function shootFrame(page, frame) {
         }
     }
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
-    // Composited first: pinned, they are no longer fixed, and the full-page shot draws them composited.
-    await frame.evaluate(compositeFixedInPage, false);
-    await frame.evaluate(pinFixedInPage, false);
     try {
+        // Composited first: pinned, they are no longer fixed, and the full-page shot draws them composited.
+        // Inside the try, so a failure in either still puts every style back (an undo of nothing does nothing).
+        await frame.evaluate(compositeFixedInPage, false);
+        await frame.evaluate(pinFixedInPage, false);
         for (let top = 0; top < size.height; top += VIEWPORT.height) {
             for (let left = 0; left < size.width; left += VIEWPORT.width) {
                 const at = await scrollFrame(frame, left, top);
