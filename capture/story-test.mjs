@@ -17,7 +17,7 @@ import { join, relative } from "node:path";
 
 import { PNG } from "pngjs";
 
-import { classify, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
+import { classify, compareImages, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 import { loadConfig, repoRoot } from "../trusted/lib/config.mjs";
 import {
     CHROMIUM_ARGS,
@@ -308,6 +308,29 @@ export const PRODUCTION = {
 };
 
 /**
+ * Judges a story from up to two shots, as this adapter has until each story is shot once per
+ * attempt: a first shot that differs and a second that matches is `unchanged` (or `moved`) and
+ * flaky; two shots that differ from the baseline and from each other are `unstable`.
+ * @param {{ baseline: Buffer | null, first: Buffer, second: Buffer | null, threshold: number,
+ *     includeAA: boolean, moved: boolean }} input the baseline and the shots
+ * @returns {Omit<ReturnType<typeof classify>, "status" | "flaky"> & { status: string, flaky: boolean }} the
+ *     item's comparison fields
+ */
+function judgeTwo({ baseline, first, second, threshold, includeAA, moved }) {
+    const options = { threshold, includeAA, moved };
+    const one = classify({ baseline, first, ...options });
+    if (second === null || one.status === "unchanged" || one.status === "moved") {
+        return one;
+    }
+    const two = classify({ baseline, first: second, ...options });
+    if (two.status === "unchanged" || two.status === "moved") {
+        return { ...two, flaky: true };
+    }
+    const agree = compareImages(first, second, { threshold, includeAA }).status === "unchanged";
+    return agree ? one : { ...one, status: "unstable" };
+}
+
+/**
  * Everything one project's storybook Vitest project needs to shoot its stories.
  * @param {{ project: string, out: string, root?: string }} options the proofroom project, the
  *     directory this run's partial result goes to, and the repository root
@@ -384,7 +407,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
 
     const finish = async (job, first, second, console) => {
         const { id, mode, file, baseline, from, s } = job;
-        const r = classify({ baseline, first, second, threshold: s.threshold, includeAA: s.includeAA, moved: !!from });
+        const r = judgeTwo({ baseline, first, second, threshold: s.threshold, includeAA: s.includeAA, moved: !!from });
         if (["changed", "moved", "new", "unstable"].includes(r.status)) {
             writeFileSync(join(out, file), r.flaky ? second : first);
         }

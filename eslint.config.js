@@ -44,8 +44,10 @@ export default [
     },
     // Tests wait on conditions and assert on counted work, never on the clock
     // (eslint-rules/no-test-timing.mjs has the rule and its reasons).
+    // test/fixtures/ holds copies of earlier versions' own code, which waits as the product does.
     {
         files: ["test/**/*.mjs"],
+        ignores: ["test/fixtures/**"],
         plugins: { local: { rules: { "no-test-timing": noTestTiming } } },
         rules: { "local/no-test-timing": "error" },
     },

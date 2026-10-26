@@ -1,5 +1,5 @@
 /**
- * Capture: screenshot every story of one built Storybook and classify each against its baseline.
+ * Capture: screenshot every story of one built Storybook, once per snapshot, and judge nothing.
  *
  * Serves storybook-static on 127.0.0.1, reads the story list from index.json and every story's
  * `parameters.chromatic` from the preview's own `extract()`, then opens each story and mode in a
@@ -9,45 +9,47 @@
  * tall (see screenshotWholePage). It waits
  * for Storybook's render (play functions included) and, when the project's config names a
  * `waitFor` (an element selector and a method returning a promise, such as graphty-element's
- * `waitForStableFrame()`), for that; a story that errors or never settles is `failed`, never a picture,
- * after one retry in a new context, so a single timeout on a busy runner does not block a pull
- * request. WebGPU is removed from every page (`navigator.gpu` is deleted before any script runs):
+ * `waitForStableFrame()`), for that; a story that errors or never settles is `failed`, never a
+ * picture, and is not shot again behind the caller's back: retrying is `run --retries` or the
+ * test runner's. WebGPU is removed from every page (`navigator.gpu` is deleted before any script runs):
  * no Chromium switch hides it, and whether an adapter request fails differs by host, so without
  * this a component with a CPU and a GPU path would draw whichever the machine offers.
- * Anything that differs from its baseline, or has none, is captured once more in a new context,
- * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs).
  *
- * The output directory gets results.json (rewritten after every item; `complete: true` only at
- * the end), the first capture of every changed, new and unstable item, `second/<file>` for the
- * second capture of an unstable one, and `baselines/<file>`: the baseline each changed, unstable
- * and removed item was compared with.
- *
- * A story renamed in the project's `renames.json` (see loadRenames) is compared with the baseline
- * of its old id, mode by mode: `moved` when it looks the same, `changed` otherwise, each carrying
- * `from`; that old baseline is then not reported `removed`. A rename whose new id is not a story
- * is a `failed` item under the new id, so the page lists it; one whose old id is still a story
- * does nothing.
- *
- * With `reference`, a directory holding the default branch's newest capture of the project (CI
- * downloads it on pull requests), a story with no baseline whose capture matches it is `unseeded`, not
- * `new`: seeding is per story, so a story nobody has accepted yet does not block every pull
- * request, only one that changes it.
+ * `capture()` is an async generator of capture lines (see compare-run.mjs for their fields): a
+ * `start` line, one line per snapshot the moment its image is on disk (with the PNG's bytes), and
+ * an `end` line. Each is also appended to `<out>/capture.ndjson`, and each image is written to
+ * `<out>/<file>`. Capture never reads a baseline image; it reads only the story settings files
+ * beside the baselines. Compare (compare-run.mjs) judges the lines.
  */
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, extname, join, normalize, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 
-import { classify, DEFAULT_THRESHOLD, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
-import { validateResults } from "../trusted/lib/results.mjs";
+import { DEFAULT_THRESHOLD, pngSize, sha256 } from "../trusted/lib/compare.mjs";
+import { CAPTURE_LINES, clip, compareRun, fileName, provenance, toolVersion } from "../trusted/lib/compare-run.mjs";
+import { MAX_ATTEMPTS } from "../trusted/lib/results.mjs";
+
+// Moved to compare-run.mjs, where compare reads them without loading Playwright; still exported
+// here for the modules and callers that import them from capture.
+export {
+    BASELINE_NAME,
+    clip,
+    EMPTY,
+    fileName,
+    hasBaselines,
+    loadRenames,
+    pngsIn,
+    provenance,
+    toolVersion,
+    writeResults,
+} from "../trusted/lib/compare-run.mjs";
 
 /* global document, requestAnimationFrame -- read only inside the page */
 
@@ -73,7 +75,6 @@ export const CHROMIUM_ARGS = [
     "--disable-lcd-text",
     "--font-render-hinting=none",
 ];
-const MAX_CONSOLE = 100;
 const MAX_LINE = 2000;
 
 /**
@@ -103,23 +104,6 @@ export const storyIds = (index) =>
         .filter((e) => e.type === "story")
         .map((e) => e.id)
         .sort();
-
-/**
- * The PNG name of a story and mode.
- * @param {string} id the story id
- * @param {string | null} mode the mode name
- * @returns {string} `<id>.png` or `<id>.<mode>.png`
- */
-export const fileName = (id, mode) => (mode === null ? `${id}.png` : `${id}.${mode}.png`);
-
-/**
- * Whether a project has any baseline PNG, which is what makes its results `seeded`.
- * @param {string} dir the project's baselines directory
- * @returns {Promise<boolean>} true when the directory holds a PNG
- */
-export async function hasBaselines(dir) {
-    return (await pngsIn(dir)).length > 0;
-}
 
 /**
  * Reads a story's settings file, `<dir>/<id>.json`.
@@ -175,63 +159,6 @@ export function storySettings(parameters, file) {
         includeAA: s.diffIncludeAntiAliasing === true,
         modes: modes.length > 0 ? modes : [{ name: null, globals: null }],
     };
-}
-
-/** A project's renames file, in its baselines directory. */
-const RENAMES = "renames.json";
-
-const STORY_ID = /^[a-z0-9][a-z0-9-]*$/;
-
-/**
- * Reads a project's renames file, `<dir>/renames.json`: `[{ "from": "<old story id>", "to":
- * "<new story id>" }]`, for stories whose id changed while they stayed the same story.
- * @param {string} dir the project's baselines directory
- * @returns {Promise<Map<string, string>>} the old id by new id; empty when there is no file
- */
-export async function loadRenames(dir) {
-    const path = join(dir, RENAMES);
-    let list;
-    try {
-        list = JSON.parse(await readFile(path, "utf8"));
-    } catch (e) {
-        if (e.code === "ENOENT") {
-            return new Map();
-        }
-        throw new Error(`${path}: ${e.message}`);
-    }
-    if (!Array.isArray(list)) {
-        throw new Error(`${path}: must be an array of { "from": "<old id>", "to": "<new id>" }`);
-    }
-    const byTo = new Map();
-    const froms = new Set();
-    list.forEach((r, i) => {
-        const ok = (v) => typeof v === "string" && v.length <= 200 && STORY_ID.test(v);
-        if (!ok(r?.from) || !ok(r?.to) || r.from === r.to) {
-            throw new Error(`${path}: entry ${i} must be { "from": "<old id>", "to": "<another id>" }`);
-        }
-        if (byTo.has(r.to) || froms.has(r.from)) {
-            throw new Error(`${path}: entry ${i} renames ${r.from} or to ${r.to} a second time`);
-        }
-        byTo.set(r.to, r.from);
-        froms.add(r.from);
-    });
-    return byTo;
-}
-
-/**
- * The PNG files in a directory.
- * @param {string} dir the directory
- * @returns {Promise<string[]>} their names, sorted; empty when the directory does not exist
- */
-export async function pngsIn(dir) {
-    try {
-        return (await readdir(dir)).filter((f) => f.endsWith(".png")).sort();
-    } catch (e) {
-        if (e.code === "ENOENT") {
-            return [];
-        }
-        throw e;
-    }
 }
 
 const TYPES = {
@@ -334,19 +261,6 @@ async function extract(browser, base) {
 }
 
 /**
- * Renders one story and mode, retrying once in a new context when it fails.
- * @param {import("playwright").Browser} browser the browser
- * @param {string} url the story's full URL
- * @param {{ delay: number, waitFor: object | null }} options as for shootOnce
- * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the
- *     second attempt's result when the first failed
- */
-async function shoot(browser, url, options) {
-    const first = await shootOnce(browser, url, options);
-    return first.png ? first : shootOnce(browser, url, options);
-}
-
-/**
  * Renders one story and mode in a fresh context and screenshots it.
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
@@ -357,7 +271,7 @@ async function shoot(browser, url, options) {
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the PNG,
  *     or a reason it failed; a failure's console holds the rest of its message and any stack
  */
-async function shootOnce(browser, url, { delay, waitFor }) {
+async function shoot(browser, url, { delay, waitFor }) {
     const context = await newContext(browser);
     const lines = [];
     const fail = (reason) => {
@@ -497,70 +411,6 @@ export async function screenshotWholePage(page) {
 }
 
 /**
- * Which build of this tool captured: the commit of its source checkout when it runs from one
- * (a monorepo that develops it), else the installed package's name and version.
- * @returns {string} a commit sha, or `proofroom@<version>`
- */
-export function toolVersion() {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(readFileSync(join(here, "../package.json"), "utf8"));
-    const installed = `${pkg.name}@${pkg.version}`;
-    if (here.split(sep).includes("node_modules")) {
-        return installed;
-    }
-    try {
-        return git("-C", here, "rev-parse", "HEAD");
-    } catch {
-        return installed;
-    }
-}
-
-export const clip = (lines) => lines.slice(0, MAX_CONSOLE).map((l) => l.slice(0, MAX_LINE));
-
-const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 30 }).trim();
-
-/**
- * Where this run came from: GitHub Actions' environment in CI, the working tree locally. A local
- * preview of a pull request (tools/visual-preview.sh) sets VISUAL_REVIEW_PREVIEW_PR and
- * VISUAL_REVIEW_PREVIEW_HEAD while it captures the pull request's merge tree: the capture then names
- * the pull request and its head, and `local.preview` says which merge commit was built, where, and
- * with which build of this tool, so the review page can offer it for decisions before CI's lands.
- * @returns {Promise<object>} the commit, pull request and run fields of results.json, and `local`
- */
-export async function provenance() {
-    if (process.env.GITHUB_ACTIONS !== "true") {
-        const diff = execFileSync("git", ["diff", "HEAD", "--binary"], { maxBuffer: 1 << 30 });
-        const commit = git("rev-parse", "HEAD");
-        const pr = Number(process.env.VISUAL_REVIEW_PREVIEW_PR) || null;
-        const head = process.env.VISUAL_REVIEW_PREVIEW_HEAD ?? "";
-        const preview = pr !== null && /^[0-9a-f]{40}$/.test(head);
-        return {
-            commit,
-            headSha: preview ? head : null,
-            pr: preview ? pr : null,
-            runId: null,
-            runAttempt: null,
-            local: {
-                describe: git("describe", "--always", "--dirty"),
-                diff: sha256(diff),
-                ...(preview && { preview: { merge: commit, host: hostname(), tool: toolVersion() } }),
-            },
-        };
-    }
-    const event = process.env.GITHUB_EVENT_PATH
-        ? JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8"))
-        : {};
-    return {
-        commit: process.env.GITHUB_SHA,
-        headSha: event.pull_request?.head?.sha ?? null,
-        pr: event.pull_request?.number ?? null,
-        runId: Number(process.env.GITHUB_RUN_ID),
-        runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-        local: null,
-    };
-}
-
-/**
  * Whether any font draws emoji, asked of fontconfig with one common emoji (U+1F680): the pinned
  * fonts when `env` names a FONTCONFIG_FILE, else the machine's. Without one, every emoji in a story
  * renders as an empty box, so capture warns.
@@ -617,308 +467,246 @@ async function cpuModel() {
 }
 
 /**
- * Reads an earlier capture's images of stories that had no baseline, to compare new captures with.
- * Only complete, valid results are used, and only `new` items (captured twice and stable) whose
- * file hashes to the capture results.json names.
- * @param {string | null} dir the earlier capture's directory, or null
- * @returns {Promise<{ images: Map<string, Buffer>, runId: number | null }>} images by file name
- */
-async function loadReference(dir) {
-    const images = new Map();
-    let results = null;
-    try {
-        results = dir ? JSON.parse(await readFile(join(dir, "results.json"), "utf8")) : null;
-    } catch {
-        // No reference downloaded: every story without a baseline is new.
-    }
-    if (!results || validateResults(results).length > 0 || !results.complete) {
-        return { images, runId: null };
-    }
-    // Both statuses mean "captured with no baseline, hash recorded". Reading only `new` made a story
-    // alternate: a run that matched its reference says `unseeded`, so the next run found no image
-    // for it and said `new` again.
-    for (const item of results.items.filter((i) => i.status === "new" || i.status === "unseeded")) {
-        const bytes = await readFile(join(dir, item.file)).catch(() => null);
-        if (bytes && sha256(bytes) === item.capture) {
-            images.set(item.file, bytes);
-        }
-    }
-    return { images, runId: results.runId };
-}
-
-/**
- * Captures one project.
+ * Captures one project, yielding one capture line per snapshot as soon as its image is written.
+ *
+ * The returned generator also has `again(line)`: it shoots that line's snapshot once more, and the
+ * new shot is yielded as a later line of the same snapshot before the `end` line. Call it while
+ * handling the line (before asking for the next one), as `run --retries` does.
  * @param {{ project: string, storybook: string, baselines: string, out: string, workers: number,
- *     waitFor?: object | null, reference?: string | null, stories?: string[] | null,
- *     fontconfig?: string | null, log?: (line: string) => void }} options `fontconfig` is the
- *     absolute path of the fonts.conf every browser draws with (the config's `fontconfig`), null for
- *     the host's fonts; `waitFor` is the project's config entry (see
- *     shootOnce); `reference` is the default branch's capture (see above); `stories` keeps only
- *     the story ids starting with one of these prefixes, for a quick local preview, and then no
- *     baseline is reported removed
- * @returns {Promise<object>} the final results.json contents
+ *     waitFor?: object | null, stories?: string[] | null, fontconfig?: string | null,
+ *     log?: (line: string) => void }} options `baselines` is where the story settings files are
+ *     (no baseline image is read); `fontconfig` is the absolute path of the fonts.conf every
+ *     browser draws with (the config's `fontconfig`), null for the host's fonts; `waitFor` is the
+ *     project's config entry (see shoot); `stories` keeps only the story ids starting with one of
+ *     these prefixes, for a quick local preview, and then compare reports no baseline removed
+ * @returns {AsyncGenerator<object> & { again: (line: object) => void }} the capture lines
  */
-export async function capture({
+export function capture({
     project,
     storybook,
     baselines,
     out,
     workers,
     waitFor = null,
-    reference = null,
     stories = null,
     fontconfig = null,
-    log = console.log,
+    log = console.error,
 }) {
-    const started = Date.now();
-    // Pinned fonts: only the committed directory, and a font cache of this run's own (only for the
-    // browsers: Playwright finds its Chromium under XDG_CACHE_HOME).
-    const fonts = fontconfig ? await pinnedFonts(fontconfig) : null;
-    const fontEnv = fontconfig
-        ? { FONTCONFIG_FILE: fontconfig, XDG_CACHE_HOME: await mkdtemp(join(tmpdir(), "visual-review-fonts-")) }
-        : {};
-    await mkdir(join(out, "baselines"), { recursive: true });
-    await mkdir(join(out, "second"), { recursive: true });
-    const allIds = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
-    const ids = allIds.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
-    const renames = await loadRenames(baselines);
-    const refs = await loadReference(reference);
-    const [server, base] = await serve(storybook);
-    // One browser per worker: every page of a browser shares its one GPU process, so with
-    // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.
-    const browsers = await Promise.all(
-        Array.from({ length: Math.max(1, workers) }, () =>
-            chromium.launch({ args: CHROMIUM_ARGS, env: { ...process.env, ...fontEnv, TZ: "UTC" } }),
-        ),
-    );
-    const [browser] = browsers;
-    try {
-        const { params, renderer, gpu } = await extract(browser, base);
-
-        const jobs = [];
-        const items = [];
-        const planned = new Set();
-        const existing = new Set(await pngsIn(baselines));
-        // A story whose own parameters exclude it while it still has a baseline is reported as
-        // removed, so a pull request cannot drop a story from review without the owner seeing it.
-        const newlyExcluded = new Set();
-        // Old baselines a rename compares a story with (or reports as a broken rename): not removed.
-        const renamed = new Set();
-        const renameErrors = [];
-        const known = new Set(allIds);
-        for (const [to, from] of stories ? [] : renames) {
-            if (known.has(to)) {
-                continue;
+    const queue = [];
+    const jobs = new Map();
+    let pump = () => {};
+    async function* lines() {
+        const started = Date.now();
+        // Pinned fonts: only the committed directory, and a font cache of this run's own (only for the
+        // browsers: Playwright finds its Chromium under XDG_CACHE_HOME).
+        const fonts = fontconfig ? await pinnedFonts(fontconfig) : null;
+        const fontEnv = fontconfig
+            ? { FONTCONFIG_FILE: fontconfig, XDG_CACHE_HOME: await mkdtemp(join(tmpdir(), "visual-review-fonts-")) }
+            : {};
+        await mkdir(out, { recursive: true });
+        await writeFile(join(out, CAPTURE_LINES), "");
+        const allIds = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
+        const ids = allIds.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+        const [server, base] = await serve(storybook);
+        // One browser per worker: every page of a browser shares its one GPU process, so with
+        // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.
+        const browsers = await Promise.all(
+            Array.from({ length: Math.max(1, workers) }, () =>
+                chromium.launch({ args: CHROMIUM_ARGS, env: { ...process.env, ...fontEnv, TZ: "UTC" } }),
+            ),
+        );
+        let shots = 0;
+        // The bytes stay in memory: on disk the image is its own file.
+        const record = async (line) => {
+            const text = JSON.stringify(line, (key, value) => (key === "bytes" ? undefined : value));
+            await appendFile(join(out, CAPTURE_LINES), `${text}\n`);
+            return line;
+        };
+        try {
+            const { params, renderer, gpu } = await extract(browsers[0], base);
+            const excluded = [];
+            for (const id of ids) {
+                const s = storySettings(params[id] ?? {}, await loadSettings(baselines, id));
+                for (const mode of s.modes) {
+                    const file = fileName(id, mode.name);
+                    const common = {
+                        project,
+                        id,
+                        mode: mode.name,
+                        file,
+                        settings: { threshold: s.threshold, includeAA: s.includeAA, delay: s.delay },
+                    };
+                    if (s.disableSnapshot) {
+                        excluded.push({
+                            type: "excluded",
+                            ...common,
+                            sha256: null,
+                            size: null,
+                            console: [],
+                            reason: s.reason,
+                            ...(s.excludedByStory && { byStory: true }),
+                        });
+                    } else {
+                        jobs.set(file, { common, url: base + storyUrl(id, mode.globals), delay: s.delay });
+                        queue.push(file);
+                    }
+                }
             }
-            // Only a rename with an old baseline left to move is an error; once it is accepted the
-            // old baselines are gone, and the entry does nothing.
-            for (const file of existing) {
-                const [id, mode = null] = file.slice(0, -4).split(".");
-                if (id === from && BASELINE_NAME.test(file)) {
-                    renamed.add(file);
-                    renameErrors.push({
-                        id: to,
-                        mode,
-                        file: fileName(to, mode),
-                        from,
-                        threshold: DEFAULT_THRESHOLD,
-                        includeAA: false,
-                        ...EMPTY,
-                        status: "failed",
-                        reason: `${RENAMES} renames ${from} to ${to}, but the Storybook has no story ${to}: fix ${RENAMES}`,
+            const emojiFont = hasEmojiFont({ ...process.env, ...fontEnv });
+            if (emojiFont === false) {
+                const where = fontconfig ? `in ${fontconfig}` : "on this machine";
+                log(
+                    `warning: no font ${where} draws emoji (fc-list ` +
+                        ":charset=1f680 found none), so every emoji in a story is captured as an empty box; " +
+                        "add one, such as Noto Color Emoji",
+                );
+            }
+            yield await record({
+                type: "start",
+                project,
+                ...(await provenance()),
+                capturedAt: new Date().toISOString(),
+                clock: { start: CLOCK_START, running: true },
+                scale: SCALE,
+                environment: {
+                    chromium: browsers[0].version(),
+                    renderer,
+                    gpu,
+                    cpu: await cpuModel(),
+                    emojiFont,
+                    fonts,
+                    tool: toolVersion(),
+                },
+                stories: allIds,
+                only: stories,
+            });
+            for (const line of excluded) {
+                yield await record(line);
+            }
+
+            // Each free browser takes the next snapshot in the queue as soon as it is free, whether
+            // or not the caller is still handling an earlier line.
+            const ready = [];
+            const free = [...browsers];
+            let running = 0;
+            let wake = () => {};
+            const shootJob = async (browser, file) => {
+                const { common, url, delay } = jobs.get(file);
+                shots++;
+                const shot = await shoot(browser, url, { delay, waitFor });
+                if (!shot.png) {
+                    return record({
+                        type: "failed",
+                        ...common,
+                        sha256: null,
+                        size: null,
+                        reason: shot.reason,
+                        console: clip(shot.console),
                     });
                 }
-            }
-        }
-        items.push(...renameErrors);
-        for (const id of ids) {
-            const s = storySettings(params[id] ?? {}, await loadSettings(baselines, id));
-            for (const mode of s.modes) {
-                const file = fileName(id, mode.name);
-                const common = { id, mode: mode.name, file, threshold: s.threshold, includeAA: s.includeAA };
-                if (s.excludedByStory && existing.has(file)) {
-                    newlyExcluded.add(file);
+                await writeFile(join(out, file), shot.png);
+                return record({
+                    type: "image",
+                    ...common,
+                    sha256: sha256(shot.png),
+                    size: pngSize(shot.png),
+                    console: clip(shot.console),
+                    bytes: shot.png,
+                });
+            };
+            pump = () => {
+                while (free.length > 0 && queue.length > 0) {
+                    const browser = free.pop();
+                    running++;
+                    shootJob(browser, queue.shift())
+                        .then(
+                            (line) => ready.push({ line }),
+                            (error) => ready.push({ error }),
+                        )
+                        .finally(() => {
+                            running--;
+                            free.push(browser);
+                            pump();
+                            wake();
+                        });
+                }
+            };
+            for (;;) {
+                pump();
+                if (ready.length === 0) {
+                    if (running === 0) {
+                        break;
+                    }
+                    await new Promise((r) => (wake = () => r(null)));
                     continue;
                 }
-                planned.add(file);
-                if (s.disableSnapshot) {
-                    items.push({ ...common, ...EMPTY, status: "excluded", reason: s.reason });
-                } else {
-                    // Renamed: compared with the old id's baseline of this mode, while the new id
-                    // has none of its own (after the accept it does, and the rename is done).
-                    // A rename from an id that is still a story is not a move: it does nothing.
-                    const old =
-                        renames.has(id) && !known.has(renames.get(id)) ? fileName(renames.get(id), mode.name) : null;
-                    const from = old && !existing.has(file) && existing.has(old) ? renames.get(id) : null;
-                    if (from) {
-                        renamed.add(old);
-                    }
-                    jobs.push({ ...common, from, url: base + storyUrl(id, mode.globals), delay: s.delay });
+                const { line, error } = ready.shift();
+                if (error) {
+                    throw error;
                 }
+                yield line;
             }
-        }
-        const gone = stories
-            ? []
-            : [...existing].filter((f) => !planned.has(f) && !renamed.has(f) && BASELINE_NAME.test(f));
-
-        const emojiFont = hasEmojiFont({ ...process.env, ...fontEnv });
-        if (emojiFont === false) {
-            const where = fontconfig ? `in ${fontconfig}` : "on this machine";
+            yield await record({ type: "end", project, complete: true });
             log(
-                `warning: no font ${where} draws emoji (fc-list ` +
-                    ":charset=1f680 found none), so every emoji in a story is captured as an empty box; " +
-                    "add one, such as Noto Color Emoji",
+                JSON.stringify({
+                    project,
+                    snapshots: jobs.size + excluded.length,
+                    shots,
+                    seconds: (Date.now() - started) / 1000,
+                }),
             );
-        }
-        const results = {
-            version: 1,
-            project,
-            ...(await provenance()),
-            seeded: await hasBaselines(baselines),
-            reference: refs.runId,
-            complete: false,
-            expected: items.length + jobs.length + gone.length,
-            capturedAt: new Date().toISOString(),
-            clock: { start: CLOCK_START, running: true },
-            scale: SCALE,
-            environment: {
-                chromium: browser.version(),
-                renderer,
-                gpu,
-                cpu: await cpuModel(),
-                emojiFont,
-                fonts,
-                tool: toolVersion(),
-            },
-            items,
-        };
-        let saving = Promise.resolve();
-        const save = () => (saving = saving.then(() => writeResults(out, results)));
-        await save();
-
-        for (const file of gone) {
-            const baseline = await readBaseline(join(baselines, file));
-            const [id, mode = null] = file.slice(0, -4).split(".");
-            await writeFile(join(out, "baselines", file), baseline);
-            items.push({
-                id,
-                mode,
-                file,
-                ...classify({ baseline, first: null, threshold: DEFAULT_THRESHOLD, includeAA: false }),
-                threshold: DEFAULT_THRESHOLD,
-                includeAA: false,
-                reason: newlyExcluded.has(file) ? "the story's parameters now set disableSnapshot" : null,
-                console: [],
-            });
-        }
-
-        const run = async (browser, job) => {
-            const { url, delay, from, ...rest } = job;
-            // `from` only on a renamed story, so results.json of a project with no renames is as before.
-            const common = from ? { ...rest, from } : rest;
-            const baseline = await readBaseline(join(baselines, from ? fileName(from, job.mode) : job.file));
-            const reference = baseline ? null : (refs.images.get(job.file) ?? null);
-            const opts = { threshold: job.threshold, includeAA: job.includeAA, reference, moved: from !== null };
-            const failed = (shot, prefix = "") => ({
-                ...common,
-                ...EMPTY,
-                baseline: baseline && sha256(baseline),
-                status: "failed",
-                reason: prefix + shot.reason,
-                console: clip(shot.console),
-            });
-            const first = await shoot(browser, url, { delay, waitFor });
-            if (!first.png) {
-                return failed(first);
+        } finally {
+            pump = () => {};
+            await Promise.all(browsers.map((b) => b.close()));
+            server.close();
+            if (fontEnv.XDG_CACHE_HOME) {
+                await rm(fontEnv.XDG_CACHE_HOME, { recursive: true, force: true });
             }
-            let result = classify({ baseline, first: first.png, ...opts });
-            let second = null;
-            if (result.status === "changed" || result.status === "new") {
-                second = await shoot(browser, url, { delay, waitFor });
-                if (!second.png) {
-                    return failed(second, "second capture: ");
-                }
-                result = classify({ baseline, first: first.png, second: second.png, ...opts });
-            }
-            const { status } = result;
-            // A moved capture is also its baseline when the bytes are the same: the page reads it.
-            if (["changed", "moved", "new", "unseeded", "unstable"].includes(status)) {
-                // The capture results.json names: the second one when the first was a flake.
-                await writeFile(join(out, job.file), result.flaky ? second.png : first.png);
-            }
-            if (status === "unstable") {
-                await writeFile(join(out, "second", job.file), second.png);
-            }
-            const ownBaseline = status === "moved" && result.baseline !== result.capture;
-            if (baseline && (status === "changed" || status === "unstable" || ownBaseline)) {
-                await writeFile(join(out, "baselines", job.file), baseline);
-            }
-            const lines =
-                status === "unchanged" || status === "moved"
-                    ? []
-                    : clip([...first.console, ...(second?.console ?? [])]);
-            return { ...common, ...result, reason: null, console: lines };
-        };
-
-        let next = 0;
-        await Promise.all(
-            browsers.map(async (b) => {
-                while (next < jobs.length) {
-                    const item = await run(b, jobs[next++]);
-                    items.push(item);
-                    if (item.status !== "unchanged") {
-                        const why = item.reason ? `: ${item.reason}` : "";
-                        log(`${item.status} ${item.file}${why}`);
-                    }
-                    await save();
-                }
-            }),
-        );
-
-        items.sort((a, b) => (a.file < b.file ? -1 : 1));
-        // Validated before it is saved as complete, so an invalid file is never uploaded as finished.
-        const problems = validateResults({ ...results, complete: true });
-        if (problems.length > 0) {
-            throw new Error(`results.json is invalid:\n${problems.slice(0, 20).join("\n")}`);
-        }
-        results.complete = true;
-        await save();
-        const counts = {};
-        for (const item of items) {
-            counts[item.status] = (counts[item.status] ?? 0) + 1;
-        }
-        log(JSON.stringify({ project, items: items.length, seconds: (Date.now() - started) / 1000, counts }));
-        return results;
-    } finally {
-        await Promise.all(browsers.map((b) => b.close()));
-        server.close();
-        if (fontEnv.XDG_CACHE_HOME) {
-            await rm(fontEnv.XDG_CACHE_HOME, { recursive: true, force: true });
         }
     }
+    return Object.assign(lines(), {
+        again(line) {
+            if (!jobs.has(line.file)) {
+                throw new Error(`capture: ${line.file} is not a snapshot this capture shoots`);
+            }
+            // At the front, so a retry runs while the snapshot's first shot is still fresh.
+            queue.unshift(line.file);
+            pump();
+        },
+    });
 }
 
-export const EMPTY = {
-    flaky: false,
-    baseline: null,
-    capture: null,
-    size: null,
-    baselineSize: null,
-    changedPixels: null,
-    bbox: null,
-    console: [],
-};
-
-export const BASELINE_NAME = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?\.png$/;
-
 /**
- * Writes results.json atomically, so a reader never sees half a file.
- * @param {string} out the capture directory
- * @param {object} results the results
- * @returns {Promise<void>} once written
+ * Captures one project and compares it in one process (`proofroom run`): each snapshot is judged
+ * the moment its image is written, so its result line follows it by the judging time alone.
+ * ponytail: the judging runs on this thread, between the browsers' events (230 ms for a changed
+ * pair, 0.3 ms for equal bytes); a worker-thread pool if a change-heavy capture shows browser stalls.
+ * @param {Parameters<typeof capture>[0] & { reference?: string | null, retries?: number,
+ *     junit?: string | null, print?: (line: object) => void }} options capture()'s options, and
+ *     compareRun()'s `reference`, `junit` and `print`; `retries` shoots a snapshot that did not pass
+ *     again, up to that many times, each shot one attempt
+ * @returns {ReturnType<typeof compareRun>} what compareRun returns
  */
-export async function writeResults(out, results) {
-    const tmp = join(out, "results.json.tmp");
-    await writeFile(tmp, `${JSON.stringify(results, null, 2)}\n`);
-    await rename(tmp, join(out, "results.json"));
+export function run({ reference = null, retries = 0, junit, print, ...options }) {
+    if (!(Number.isInteger(retries) && retries >= 0 && retries <= MAX_ATTEMPTS)) {
+        throw new Error(`retries must be an integer from 0 to ${MAX_ATTEMPTS}`);
+    }
+    const shots = capture(options);
+    return compareRun({
+        project: options.project,
+        baselines: options.baselines,
+        captures: options.out,
+        out: options.out,
+        lines: shots,
+        reference,
+        ...(junit !== undefined && { junit }),
+        prune: true,
+        print,
+        log: options.log,
+        onResult: (result, line) => {
+            if (!result.passed && line && result.attempt <= retries) {
+                shots.again(line);
+            }
+        },
+    });
 }
