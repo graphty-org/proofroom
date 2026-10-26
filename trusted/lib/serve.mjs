@@ -136,7 +136,7 @@ import {
     visualJobs,
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
-import { approvalIndex, clusters, isNoise, knownNoise, observations } from "./filters.mjs";
+import { approvalIndex, clusters, isNoise, itemsByFile, knownNoise, observations } from "./filters.mjs";
 import { coupledGroups, inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { autoKind, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
@@ -825,10 +825,27 @@ export function createApp({
     const busy = (t) => finishing && job?.target === t.id;
     const BUSY = "a Finish is running on this target: wait for it to end";
 
+    /**
+     * Each capture set's items by file name, built when the set loads (a results object is never
+     * changed after that), so a decision finds its item without a scan of the list.
+     * @type {WeakMap<object, Map<string, object>>}
+     */
+    const itemIndex = new WeakMap();
+    const itemIn = (results, file) => {
+        if (!results) {
+            return undefined;
+        }
+        let index = itemIndex.get(results);
+        if (!index) {
+            index = itemsByFile(results.items);
+            itemIndex.set(results, index);
+        }
+        return index.get(file);
+    };
     const itemOf = (t, key) => {
         const at = key.indexOf("/");
         const p = t.projects.find((x) => x.project === key.slice(0, at));
-        return p?.results?.items.find((i) => i.file === key.slice(at + 1));
+        return itemIn(p?.results, key.slice(at + 1));
     };
     const stateFile = (t) => join(stateDir, `${t.id}.json`);
     const warned = new Set();
@@ -1144,6 +1161,7 @@ export function createApp({
             forgetImages(dir);
         }
         if (loaded.results) {
+            itemIndex.set(loaded.results, itemsByFile(loaded.results.items));
             indexImages(dir, loaded.results);
             prewarm(dir, loaded.results);
         }
@@ -3088,10 +3106,7 @@ export function createApp({
                 };
             });
             const decided = new Map(mine.map(([k, v]) => [k.slice(prefix.length), v]));
-            // The clusters leave out what has a group of its own: known noise and approved before.
-            const grouped = clusters(
-                shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !decided.get(i.file)?.approvedBefore),
-            );
+            const grouped = lookAlike(t, name, p.results, shown);
             const since = query?.get("since");
             const earlier = typeof since === "string" && since !== runKey(t) ? held.get(`${id} ${since}`) : null;
             return [
@@ -3333,7 +3348,7 @@ export function createApp({
         // An Undo there undoes only the same decision; one decided otherwise is listed in `failed`.
         "POST /api/decide-group": async (_, body) => {
             const { t, p } = await projectOf(String(body.id), body.project);
-            const item = p?.results.items.find((i) => i.file === body.file);
+            const item = itemIn(p?.results, body.file);
             const key = `${body.project}/${body.file}`;
             const before = t && item ? decisionsOf(t).get(key) : undefined;
             const [status, answer] = await call("POST /api/decide", body);
@@ -3812,9 +3827,21 @@ export function createApp({
     }`;
 
     function send(res, status, body, type = "application/json", headers = {}) {
-        const data = type === "application/json" ? JSON.stringify(body) : body;
-        res.writeHead(status, { ...HEADERS, "content-type": type, ...headers });
-        res.end(data);
+        if (type !== "application/json") {
+            res.writeHead(status, { ...HEADERS, "content-type": type, ...headers });
+            res.end(body);
+            return;
+        }
+        const data = JSON.stringify(body) ?? "";
+        const gzip = Buffer.byteLength(data) >= GZIP_FROM && acceptsGzip(res.req?.headers["accept-encoding"]);
+        res.writeHead(status, {
+            ...HEADERS,
+            "content-type": type,
+            vary: "accept-encoding",
+            ...(gzip && { "content-encoding": "gzip" }),
+            ...headers,
+        });
+        res.end(gzip ? gzipSync(data) : data);
     }
 
     async function readBody(req) {
