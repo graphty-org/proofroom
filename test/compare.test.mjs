@@ -60,8 +60,18 @@ describe("compareImages", () => {
         const base = png(8, 8, WHITE);
         const cap = png(8, 8, WHITE, (set) => set(3, 5, [250, 250, 250]));
         const r = compareImages(base, cap, OPTS);
-        expect(r).toMatchObject({ status: "unchanged", changedPixels: 0, bbox: null });
+        expect(r).toMatchObject({ status: "unchanged", changedPixels: 0, bbox: null, exact: false });
         expect(r.capture).not.toBe(r.baseline);
+    });
+
+    it("marks a capture exact when its bytes differ but every RGBA byte is the baseline's", () => {
+        const image = PNG.sync.read(png(8, 8, WHITE, (set) => set(3, 5, [10, 20, 30])));
+        const base = PNG.sync.write(image, { deflateLevel: 0, filterType: 0 });
+        const cap = PNG.sync.write(image, { deflateLevel: 9, filterType: 4 });
+        const r = compareImages(base, cap, OPTS);
+        expect(r.capture).not.toBe(r.baseline);
+        expect(r).toMatchObject({ status: "unchanged", changedPixels: 0, exact: true });
+        expect(compareImages(base, Buffer.from(base), OPTS).exact).toBe(true);
     });
 
     it("pads different sizes to the larger one, top-left, and counts the padding", () => {
