@@ -5,9 +5,11 @@
 # visual-review.config.json is built, every story is screenshot and compared with its baseline PNG
 # in git, and the results are uploaded as the artifact "visual-<project>-<attempt>" for
 # `proofroom serve`, which finds this workflow by its file name (the config's "workflow") and
-# the capture jobs by their names, "visual (<project>)". A difference never fails a capture job;
-# on a pull request the "Visual gate" job fails while any difference is not accepted, so make
-# "Visual gate" a required status check (Settings, Branches or Rulesets).
+# the capture jobs by their names, "visual (<project>)". Each capture job's "Capture and compare"
+# step fails when a snapshot did not pass, and the job carries on (continue-on-error), so a
+# difference waiting for review never fails the run; on a pull request the "Visual gate" job fails
+# while any difference is not accepted, so make "Visual gate" a required status check (Settings,
+# Branches or Rulesets).
 
 name: Visual review
 
@@ -94,19 +96,14 @@ jobs:
                   GH_TOKEN: ${{ github.token }}
               run: echo "dir=$(__CLI__ reference --project ${{ matrix.project }} --out "$RUNNER_TEMP/reference")" >> "$GITHUB_OUTPUT"
 
-            - name: Capture
-              run: __CLI__ capture --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual" --reference "${{ steps.reference.outputs.dir }}"
+            # Shoots every story once and judges it at once against its baseline: a result line per
+            # snapshot in the log, the images to review, results.json and junit.xml (one test case per
+            # snapshot, for test-report and flaky-test tools) in the artifact. To shoot a snapshot that
+            # did not pass once more before it counts, add --retries 1.
+            - name: Capture and compare
+              run: __CLI__ run --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual" --reference "${{ steps.reference.outputs.dir }}"
 
-            # The results as a JUnit file (junit.xml, in the artifact), one test case per snapshot, for
-            # test-report and flaky-test tools. A failing snapshot never fails this step.
-            - name: Write the JUnit report
-              if: always()
-              run: |
-                  if [[ -f "$RUNNER_TEMP/visual/results.json" ]]; then
-                      __CLI__ junit --results "$RUNNER_TEMP/visual" --out "$RUNNER_TEMP/visual/junit.xml"
-                  fi
-
-            # Kept even when capture crashed, so the reviewer sees the partial results.json.
+            # Kept when a snapshot did not pass or the tool crashed, so the reviewer sees what was judged.
             - name: Upload captures
               if: always()
               uses: actions/upload-artifact@v7

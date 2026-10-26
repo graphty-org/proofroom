@@ -131,10 +131,11 @@ jobs:
             - name: Install Chromium
               run: __CLI__ install-browser
 
-            - name: Capture
-              run: __CLI__ capture --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual"
+            # --no-fail: an older commit's stories differ from today's baselines by design.
+            - name: Capture and compare
+              run: __CLI__ run --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual" --no-fail
 
-            # capture takes the commit from GITHUB_SHA, the default branch's here; a seed Finish branches
+            # run takes the commit from GITHUB_SHA, the default branch's here; a seed Finish branches
             # from results.json's commit, so it must name the commit whose Storybook was captured.
             - name: Record the captured commit
               if: always()

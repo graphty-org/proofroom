@@ -41,7 +41,7 @@ describe("init", () => {
         const review = read(dir, ".github/workflows/visual-review.yml");
         expect(review.startsWith(GENERATED)).toBe(true);
         expect(review).toContain("branches: [trunk]");
-        expect(review).toContain("run: npx proofroom capture --project ${{ matrix.project }}");
+        expect(review).toContain("run: npx proofroom run --project ${{ matrix.project }}");
         const version = JSON.parse(read(new URL("..", import.meta.url).pathname, "package.json")).version;
         expect(review).toContain(`npx --yes proofroom@${version} gate`);
         expect(read(dir, ".github/workflows/visual-seed.yml")).toContain("--ref trunk -f ref=<sha>");
@@ -73,7 +73,10 @@ describe("init", () => {
     it("rewrites with --force a workflow @graphty/visual-review's init wrote", () => {
         const dir = repo();
         init(dir);
-        writeFileSync(join(dir, ".github/workflows/visual-review.yml"), `${GENERATED_BEFORE} (@graphty/visual-review)\nOLD\n`);
+        writeFileSync(
+            join(dir, ".github/workflows/visual-review.yml"),
+            `${GENERATED_BEFORE} (@graphty/visual-review)\nOLD\n`,
+        );
         expect(init(dir, { force: true })).toContain("wrote    .github/workflows/visual-review.yml");
         expect(read(dir, ".github/workflows/visual-review.yml").startsWith(GENERATED)).toBe(true);
     });
@@ -106,7 +109,7 @@ describe("init", () => {
         expect(packageManager(repo("pnpm-lock.yaml"))).toBe("pnpm");
         expect(packageManager(repo("yarn.lock"))).toBe("yarn");
         expect(renderTemplate("visual-seed.yml", { branch: "b", manager: "yarn", version: "1" })).toContain(
-            "run: yarn proofroom capture",
+            "run: yarn proofroom run",
         );
     });
 });
@@ -114,7 +117,7 @@ describe("init", () => {
 describe("the CLI", () => {
     it("has help for every command, and exits 2 on an unknown one", () => {
         const help = execFileSync(process.execPath, [CLI, "--help"], { encoding: "utf8" });
-        for (const command of ["init", "capture", "reference", "gate", "serve", "compare", "install-browser"]) {
+        for (const command of ["init", "capture", "run", "reference", "gate", "serve", "compare", "install-browser"]) {
             expect(help).toContain(`  ${command} `);
             expect(execFileSync(process.execPath, [CLI, command, "--help"], { encoding: "utf8" })).toMatch(
                 new RegExp(`^usage: (PORT=<n> )?proofroom ${command}`),
