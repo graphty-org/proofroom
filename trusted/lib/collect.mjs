@@ -31,7 +31,7 @@ import { validateResults } from "./results.mjs";
 const LINE_FILE = /^results-\d+-\d+\.ndjson$/;
 const RUN_FILE = /^run-\d+-\d+\.json$/;
 /** What a run file says about its run, beside the capture header results.json takes from it. */
-const RUN_KEYS = ["project", "shard", "reported", "missing", "files", "ran"];
+const RUN_KEYS = ["project", "shard", "reported", "missing", "excluded", "files", "ran"];
 
 /**
  * Copies a file when it exists.
@@ -189,9 +189,10 @@ function runProblems(project, parts) {
  * @param {object[]} items the collected items
  * @param {string} baselines the project's baselines directory
  * @param {string} out the collected capture's directory, which gets each removed baseline
+ * @param {Set<string>} excluded the snapshots their own parameters now exclude
  * @returns {Promise<object[]>} the removed items
  */
-async function removedItems(items, baselines, out) {
+async function removedItems(items, baselines, out, excluded) {
     const drew = new Set(items.flatMap((i) => [i.file, i.from && fileName(i.from, i.mode)]));
     const removed = [];
     for (const file of await pngsIn(baselines)) {
@@ -209,7 +210,7 @@ async function removedItems(items, baselines, out) {
             ...r,
             threshold: DEFAULT_THRESHOLD,
             includeAA: false,
-            reason: null,
+            reason: excluded.has(file) ? "the story's parameters now set disableSnapshot" : null,
             console: [],
         });
     }
@@ -227,6 +228,7 @@ async function removedItems(items, baselines, out) {
 export async function collect({ project, baselines, out, dirs, junit = join(out, "junit.xml") }) {
     const parts = await Promise.all(dirs.map(readDir));
     const { problems, header } = runProblems(project, parts);
+    const excluded = new Set(parts.flatMap((p) => p.runs.flatMap((r) => r.excluded ?? [])));
     await mkdir(join(out, "baselines"), { recursive: true });
     const lines = [];
     const where = new Map();
@@ -253,7 +255,7 @@ export async function collect({ project, baselines, out, dirs, junit = join(out,
         }
     }
     if (problems.length === 0) {
-        items.push(...(await removedItems(items, baselines, out)));
+        items.push(...(await removedItems(items, baselines, out, excluded)));
     }
     items.sort((a, b) => (a.file < b.file ? -1 : 1));
     const results = {

@@ -311,6 +311,8 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
     // A file of its own per adapter, so a rerun into the same directory keeps the first run's.
     const runFile = join(out, `run-${process.pid}-${++adapters}.json`);
     const planned = new Set();
+    // Snapshots their own parameters now exclude while they have a baseline: collect says why they are removed.
+    const excluded = new Set();
     // Shots of each snapshot in the story test running now, for `retries`.
     const shots = new Map();
     const settings = async (id, chromatic) => storySettings({ chromatic }, await loadSettings(baselines, id));
@@ -358,7 +360,9 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
             }
             for (const { name } of s.modes) {
                 // Excluded by its own parameters while it has a baseline: collect reports it removed.
-                await judge(id, name, s, { type: "excluded", reason: s.reason, byStory: s.excludedByStory });
+                if (!(await judge(id, name, s, { type: "excluded", reason: s.reason, byStory: s.excludedByStory }))) {
+                    excluded.add(fileName(id, name));
+                }
             }
             return { modes: [], waitFor: null, delay: 0 };
         },
@@ -439,6 +443,7 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
                 shard,
                 reported: header.commit !== null && missing.length === 0,
                 missing,
+                excluded: [...excluded].sort((a, b) => a.localeCompare(b)),
                 ...files,
             };
             writeFileSync(`${runFile}.tmp`, `${JSON.stringify(run, null, 2)}\n`);

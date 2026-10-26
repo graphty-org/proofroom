@@ -56,6 +56,19 @@ describe("collect", () => {
         expect(readFileSync(join(out, "b--two.png"))).toEqual(png(70));
         expect(readFileSync(join(out, "junit.xml"), "utf8")).toMatch(/<testcase name="b--two"/);
 
+        // A story its own parameters now exclude, while it has a baseline: removed, and why, as compare says.
+        const off = tempDir("story-test-shard-");
+        const v = visualStoryTest({ project: PROJECT, out: off, root, fail: "errors" });
+        await v.commands.visualPlan(context([]), { id: "a--gone", chromatic: { disableSnapshot: true } });
+        await report(v, root, { shard: { index: 1, count: 2 }, files, ran: { "a.stories.ts": ["a--gone"] } });
+        const dropped = await collect({ project: PROJECT, baselines, out: tempDir("m-"), dirs: [off, two] });
+        expect(dropped.problems).toEqual([]);
+        expect(dropped.results.items.map((i) => [i.id, i.status, i.reason])).toEqual([
+            ["a--gone", "removed", "the story's parameters now set disableSnapshot"],
+            ["a--one", "removed", null],
+            ["b--two", "new", null],
+        ]);
+
         const half = await collect({ project: PROJECT, baselines, out: tempDir("m-"), dirs: [one] });
         expect(half.problems).toEqual([
             "shard 2 of 2: missing",
