@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
-import { pinFixedInPage, visualStoryTest } from "../capture/story-test.mjs";
+import { pinFixedInPage } from "../capture/capture.mjs";
+import { visualStoryTest } from "../capture/story-test.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
 import { tempDir } from "./helpers.mjs";
@@ -115,7 +116,11 @@ describe("story tests' visual step", () => {
         expect(await shoot("a--fresh", [png(50), png(50)])).toEqual({ status: "new" });
         await v.commands.visualPlan(context([]), { id: "a--broken", chromatic: {} });
         await v.commands.visualFail(context([]), { id: "a--broken", modes: [null], reason: "play threw", console: [] });
-        await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } });
+        // An excluded story is not shot, but the page still waits for it to finish, so its late
+        // console lines cannot fail the story after it.
+        expect(
+            await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } }),
+        ).toEqual({ modes: [], waitFor: expect.objectContaining({ method: "waitForStableFrame" }), delay: 0 });
 
         await report(v, root, {
             files: ["a.stories.ts", "b.stories.ts", "c.stories.ts", "d.stories.ts"],
