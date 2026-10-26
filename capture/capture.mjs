@@ -529,7 +529,7 @@ async function scrollFrame(frame, x, y) {
             for (const [el, , docTop, docLeft] of globalThis.__visualReviewPinned ?? []) {
                 const now = el.getBoundingClientRect();
                 const move = (name, by) =>
-                    el.style.setProperty(name, `${parseFloat(el.style[name]) + by}px`, "important");
+                    el.style.setProperty(name, `${Number.parseFloat(el.style[name]) + by}px`, "important");
                 move("top", docTop - at.y - now.top);
                 move("left", docLeft - at.x - now.left);
             }
