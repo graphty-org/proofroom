@@ -127,12 +127,9 @@ let nav = 0; // bumped by each screen change that waits on the server: a superse
 const drafts = new Map();
 // The last messages, in full, for the key overlay.
 const messages = [];
-// The least recently used last-opened images and diffs are dropped past these, so a long session
-// stays small: an object URL holds its image, and a diff about 13 bytes per image pixel.
-const images = new Map();
-const IMAGES_KEPT = 50;
-const thumbs = new Map();
-const THUMBS_KEPT = 400;
+// The least recently used diffs are dropped past this, so a long session stays small: a diff holds
+// about 13 bytes per image pixel. Images and pictures are the browser's to keep: their addresses
+// name their content, and the server sends them immutable.
 const diffs = new Map();
 const DIFFS_KEPT = 4;
 // Each item's focus point, as the box [x, y, width, height] in image pixels to center on: a few
@@ -236,9 +233,10 @@ async function sendUsage() {
     try {
         // Not through api(): a refused token here must not ask for it again. The answer is read, so
         // the request ends (a page test waits for the page's writes to end).
+        await signing?.done.catch(() => {});
         const res = await fetch("/api/usage", {
             method: "POST",
-            headers: { "x-review-token": token, "content-type": "application/json" },
+            headers: { "content-type": "application/json" },
             body: JSON.stringify({ events }),
         });
         await res.text();
@@ -254,7 +252,8 @@ async function sendUsage() {
 // Asks the server once per token whether to log; until it answers, events wait in the queue.
 async function startUsage() {
     try {
-        const res = await fetch("/api/usage-setting", { headers: { "x-review-token": token } });
+        await signing?.done.catch(() => {});
+        const res = await fetch("/api/usage-setting");
         if (res.status === 401) {
             return; // asked again once a token is pasted
         }
@@ -827,17 +826,71 @@ function useToken(e, field) {
     } catch {
         // Kept for this visit only.
     }
+    signIn().catch(() => {});
     checkFinish();
     route();
 }
 
+// The session: the page posts its token to the server once, which answers with an HttpOnly cookie
+// that every request carries, a plain <img> too. It resolves to null when the server refuses the
+// token, else to `{ had }`: whether the page already held a good cookie (a server restarted since
+// names its cookie anew). One request per token at a time.
+let signing = null;
+// What the page knows of its cookie: the token an answer last showed it good for (until a 401 or
+// a tap to retry a tile says it may not be), and when, in the order requests were sent (`asked`),
+// a sign-in last replaced it. An image that fails while the cookie is known good, and that was not
+// asked for before the cookie was replaced, failed for another reason: it does not sign in again.
+let asked = 0;
+const cookie = { goodFor: null, changedAt: 0 };
+function signIn() {
+    if (signing?.token !== token) {
+        const sent = token;
+        const at = ++asked;
+        const done = fetch("/api/session", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ token: sent }),
+        }).then(async (res) => {
+            if (res.status === 401) {
+                return null;
+            }
+            if (!res.ok) {
+                throw new Error(`signing in: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
+            }
+            const answer = await res.json();
+            if (!answer.had) {
+                cookie.changedAt = at;
+            }
+            cookie.goodFor = sent;
+            return answer;
+        });
+        signing = { token: sent, done };
+        done.finally(() => {
+            if (signing?.done === done) {
+                signing = null;
+            }
+        }).catch(() => {});
+    }
+    return signing.done;
+}
+
 async function api(path, body) {
     const sent = token;
-    const res = await fetch(path, {
-        method: body ? "POST" : "GET",
-        headers: { "x-review-token": token, ...(body ? { "content-type": "application/json" } : {}) },
-        body: body ? JSON.stringify(body) : undefined,
-    });
+    await signing?.done.catch(() => {});
+    const send = async () => {
+        const res = await fetch(path, {
+            method: body ? "POST" : "GET",
+            headers: body ? { "content-type": "application/json" } : {},
+            body: body ? JSON.stringify(body) : undefined,
+        });
+        cookie.goodFor = res.status === 401 ? null : sent;
+        return res;
+    };
+    let res = await send();
+    // No cookie, or one of a server since restarted: signed in again, the request is sent again.
+    if (res.status === 401 && sent && sent === token && (await signIn())) {
+        res = await send();
+    }
     if (res.status === 401) {
         // Only the token in use is refused: an answer to an older one changes nothing.
         if (sent === token) {
@@ -878,41 +931,47 @@ function cached(map, key, limit, make, drop = () => {}) {
     return value;
 }
 
-// Loads an image through the API (it needs the token header) and returns an object URL. Keyed by
-// the image's hash too, so a newer CI run's image is never answered with an older one. `route`
-// is "img" for the image itself, "thumb" for the grid's small copy, "spot" for its spotlit or
-// zoomed copy (`kind` then "spot", "zoom" or "both", and `hash` both images' hashes).
-function image(kind, file, hash, route = "img") {
-    return cached(
-        route === "img" ? images : thumbs,
-        `${state.target.id}/${state.project}/${kind}/${file}/${hash}`,
-        route === "img" ? IMAGES_KEPT : THUMBS_KEPT,
-        () => {
-            const path = [route, state.target.id, state.project, kind, file].map(encodeURIComponent).join("/");
-            const sent = token;
-            return fetch(`/api/${path}`, { headers: { "x-review-token": sent } }).then(async (res) => {
-                if (res.status === 401) {
-                    if (sent === token) {
-                        askToken(sent ? REFUSED : "");
-                    }
-                    return refused();
-                }
-                if (!res.ok) {
-                    throw new Error(`${file}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
-                }
-                return URL.createObjectURL(await res.blob());
-            });
-        },
-        (url) => url.then(URL.revokeObjectURL, () => {}),
-    );
-}
+// An image's address, by its hash: the server answers it once, and the browser keeps it.
+const blobUrl = (hash) => `/api/blob/${hash}`;
+// An item's picture of one kind (plain, spot, zoom, both, row-plain, row-spot or auto), named by
+// both images' hashes and the diff's settings as the server names it.
+const picUrl = (item, kind) =>
+    `/api/pic/${item.baseline ?? "none"}-${item.capture ?? "none"}-${item.threshold}-${item.includeAA ? 1 : 0}-${kind}`;
 
-function loaded(url, what) {
+// An image, loaded. One that fails is tried once more when the cookie was replaced after it was
+// asked for, or when the page had no good session cookie (a server restarted since) and signing in
+// replaced it. A refused token asks for it.
+function loaded(url, what, again = true) {
+    const sent = token;
+    const at = ++asked;
     return new Promise((resolve, reject) => {
         const img = new Image();
+        img.decoding = "async";
         img.onload = () => resolve(img);
         img.onerror = () => reject(new Error(`${what}: the image could not be shown`));
         img.src = url;
+    }).catch(async (err) => {
+        if (!again || !sent || sent !== token) {
+            throw err;
+        }
+        // The cookie was replaced after this image was asked for: tried again with the new one.
+        if (cookie.changedAt > at) {
+            return loaded(url, what, false);
+        }
+        if (cookie.goodFor === sent) {
+            throw err;
+        }
+        const signed = await signIn().catch(() => ({ had: true }));
+        if (signed === null) {
+            if (sent === token) {
+                askToken(REFUSED);
+            }
+            return refused();
+        }
+        if (!signed.had) {
+            return loaded(url, what, false);
+        }
+        throw err;
     });
 }
 
@@ -2267,14 +2326,16 @@ const nearScreen = new IntersectionObserver(
 function pumpThumbs() {
     while (thumbsLoading < 6 && thumbQueue.length > 0) {
         const img = thumbQueue.shift();
-        if (!img.isConnected) {
+        const { file } = img.dataset;
+        // A tile whose item a newer list no longer has is about to go: it takes no slot.
+        const item = img.isConnected ? state.data?.items.find((i) => i.file === file) : undefined;
+        if (!item) {
             continue;
         }
         thumbsLoading++;
-        const { kind, file, hash } = img.dataset;
         const wait = img.previousElementSibling;
-        const item = (state.gridSpot || state.gridZoom) && state.data.items.find((i) => i.file === file);
-        const spot = item?.baseline && item.capture && item.baseline !== item.capture;
+        const spot =
+            (state.gridSpot || state.gridZoom) && item.baseline && item.capture && item.baseline !== item.capture;
         const show = (url, lit) => {
             img.src = url;
             img.hidden = false;
@@ -2283,7 +2344,8 @@ function pumpThumbs() {
             wait?.remove();
             delete img.closest(".tile").dataset.failed;
         };
-        const plain = image(kind, file, hash, "thumb");
+        const url = picUrl(item, "plain");
+        const plain = loaded(url, file).then(() => url);
         // A spotlit tile shows the plain thumbnail until the server's spotlit one comes.
         const shown = spot
             ? plain.then((url) => {
@@ -2317,8 +2379,11 @@ function spotTile(item) {
     if (state.gridSpot && state.gridZoom) {
         kind = "both";
     }
-    const pair = `${item.baseline}-${item.capture}`;
-    return image(kind, item.file, pair, "spot").catch(() => spotThumb(item, state.gridSpot, state.gridZoom));
+    const url = picUrl(item, kind);
+    return loaded(url, item.file).then(
+        () => url,
+        () => spotThumb(item, state.gridSpot, state.gridZoom),
+    );
 }
 
 let spotUrls = [];
@@ -2395,6 +2460,8 @@ function tile(item) {
             onclick: (e) => {
                 // A failed thumbnail is fetched again; otherwise the tile opens its item.
                 if (img && e.currentTarget.dataset.failed !== undefined) {
+                    // A server restarted since may have ended the cookie: the retry checks it.
+                    cookie.goodFor = null;
                     thumbQueue.push(img);
                     img.previousElementSibling.textContent = "Loading...";
                     pumpThumbs();
@@ -3782,7 +3849,7 @@ async function skimmed(item, seq) {
 // One of the item's two images, loaded, with its alt text.
 async function stageImage(item, kind) {
     const what = kind === "capture" ? "new image" : "baseline";
-    const img = await loaded(await image(kind, item.file, item[kind]), `${what} of ${item.file}`);
+    const img = await loaded(blobUrl(item[kind]), `${what} of ${item.file}`);
     img.alt = `${what} of ${itemName(item)}`;
     return img;
 }
@@ -3974,7 +4041,7 @@ function shown(stage, item) {
         for (const next of after) {
             for (const kind of ["baseline", "capture"]) {
                 if (next[kind]) {
-                    image(kind, next.file, next[kind]).catch(() => {});
+                    loaded(blobUrl(next[kind]), next.file).catch(() => {});
                 }
             }
         }
@@ -4097,7 +4164,7 @@ async function focusBox(item) {
             box = (await diffOf(item)).boxes[0] ?? null;
         } else {
             const kind = item.capture ? "capture" : "baseline";
-            box = contentBox(await loaded(await image(kind, item.file, item[kind]), `${kind} of ${item.file}`));
+            box = contentBox(await loaded(blobUrl(item[kind]), `${kind} of ${item.file}`));
         }
         focusBoxes.set(key, box);
         if (focusBoxes.size > FOCUS_KEPT) {
@@ -4305,8 +4372,8 @@ async function diffOf(item) {
     const key = `${state.target.id}/${state.project}/${file}/${baseline}/${capture}/${threshold}/${includeAA}`;
     return cached(diffs, key, DIFFS_KEPT, async () => {
         const [a, b] = await Promise.all([
-            loaded(await image("baseline", item.file, item.baseline), `baseline of ${item.file}`),
-            loaded(await image("capture", item.file, item.capture), `capture of ${item.file}`),
+            loaded(blobUrl(item.baseline), `baseline of ${item.file}`),
+            loaded(blobUrl(item.capture), `capture of ${item.file}`),
         ]);
         const w = Math.max(a.naturalWidth, b.naturalWidth);
         const h = Math.max(a.naturalHeight, b.naturalHeight);
@@ -6149,6 +6216,7 @@ document.addEventListener("visibilitychange", () => {
 if (token === "") {
     askToken();
 } else {
+    signIn().catch(() => {});
     checkFinish();
     route();
 }

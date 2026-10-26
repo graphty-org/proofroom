@@ -1,10 +1,18 @@
 /**
  * The review page's server: the static page and a small JSON API over the downloaded captures.
  *
- * Every /api request carries the session token in `x-review-token`; the page reads it from the
- * URL fragment `serve` prints. State-changing requests are POST only and must come from the
- * served origin. Images are served only when their file is named by results.json and its bytes
- * hash to the hash results.json gives, so the page shows exactly what CI compared. Decisions
+ * Every /api request carries the session token in `x-review-token`, or the session cookie: the page
+ * reads the token from the URL fragment `serve` prints and posts it once to POST /api/session,
+ * which sets an HttpOnly, SameSite=Strict cookie (Secure over HTTPS), so a plain `<img src>`
+ * carries it. The cookie is named `vr_session_<server id>`, the id random per server start, so
+ * review servers on several ports of one host never sign each other's pages out, and its value is
+ * derived from the token, so a new token ends it. State-changing requests are POST only and must
+ * come from the served origin; a read naming another origin is refused too, since SameSite does
+ * not tell ports apart. Images are served only when their file is named by results.json and its
+ * bytes hash to the hash results.json gives, so the page shows exactly what CI compared. Images
+ * (`GET /api/blob/<sha256>`) and pictures (`GET /api/pic/<baseline>-<capture>-<settings>-<kind>`)
+ * are named by their content, so they are served immutable and a browser fetches each once; JSON
+ * is never cached. Decisions
  * are kept in `<tmp>/state/<target>.json` until Finish, each with the hash of the image it was
  * taken on, so a restart resumes them and a new CI run or attempt shows only those whose image is
  * unchanged. The file is the only copy: every request reads it and every change rewrites it, so a
@@ -77,7 +85,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
     appendFileSync,
     existsSync,
@@ -90,7 +98,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -153,6 +161,11 @@ const HEADERS = {
     "referrer-policy": "no-referrer",
     "cache-control": "no-store",
 };
+// What a content-addressed answer (an image by its hash, a picture by both hashes and the
+// settings) is sent with: its bytes never change, so a browser never asks for it again.
+const IMMUTABLE = { "cache-control": "private, max-age=31536000, immutable" };
+// A picture's name: both images' hashes (`none` for a missing side), the diff's settings and its kind.
+const PICTURE_NAME = /^((?:none|[0-9a-f]{64})-(?:none|[0-9a-f]{64})-[^-]+-[01])-([a-z-]+)$/;
 /**
  * The component a story belongs to: its id before "--" (`components-overlays-tooltip--states`).
  * @param {string} id the story id
@@ -183,6 +196,8 @@ const REVIEWABLE = new Set(["changed", "moved", "new", "unseeded", "removed", "u
 // The statuses whose accept changes the baseline file: two pull requests with one of these on the
 // same file conflict once the first merges.
 const CHANGES = new Set(["changed", "moved", "new", "unseeded", "removed"]);
+// The Sec-Fetch-Site values of a request this server's own page made, or one typed in the address bar.
+const SAME_SITE = new Set(["same-origin", "none"]);
 const WRITES = new Set([
     "decide",
     "decide-group",
@@ -614,9 +629,10 @@ async function loadResults(dir, name) {
  * @param {number[]} [options.retryDelays] milliseconds before each retry of a Finish's network call
  * @param {import("./thumbs.mjs").Pool} [options.pictures] the queue the pictures are made in (a
  *     test's fake records the order they start in)
- * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void> }}
+ * @param {string} [options.serverId] what names this server's session cookie; random per start
+ * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string }}
  *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
- *     tile is being made in the background
+ *     tile is being made in the background, and `serverId`
  */
 export function createApp({
     repo,
@@ -633,6 +649,7 @@ export function createApp({
     patience = PATIENCE,
     retryDelays,
     pictures = pool,
+    serverId = randomBytes(8).toString("hex"),
 }) {
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
@@ -1104,7 +1121,13 @@ export function createApp({
                 loaded.problem = `not compared with ${defaultBranch}'s baselines: ${err.message}`;
             });
         }
+        // A directory loaded again may hold other images now (a new local preview, the default
+        // branch's baselines moved), so what it named before is forgotten first.
+        if (dir) {
+            forgetImages(dir);
+        }
         if (loaded.results) {
+            indexImages(dir, loaded.results);
             prewarm(dir, loaded.results);
         }
         return { project: name, dir, results: loaded.results, problem: problem ?? loaded.problem, logUrl: null };
@@ -1895,6 +1918,7 @@ export function createApp({
             const run = /^(\d+)-\d+$/.exec(d)?.[1];
             if (run && !runs.has(Number(run))) {
                 rmSync(join(tmp, d), { recursive: true, force: true });
+                forgetImages(join(tmp, d));
             }
         }
     }
@@ -2670,20 +2694,106 @@ export function createApp({
         if (!hash) {
             return [404, { error: "no such image" }];
         }
+        return { ...whereOf(p.dir, item, kind), item };
+    }
+
+    /**
+     * Where an item's image is in its capture's directory.
+     * @param {string} dir the capture's directory
+     * @param {{ file: string, baseline?: string | null, capture?: string | null }} item the item
+     * @param {string} kind which image: "baseline" or "capture"
+     * @returns {{ path: string, hash: string, file: string, dir: string }} where it is
+     */
+    function whereOf(dir, item, kind) {
         // A moved item's baseline is its capture's bytes, so the artifact holds only the capture.
         const own = kind === "capture" || item.baseline === item.capture;
-        const path = own ? join(p.dir, file) : join(p.dir, "baselines", file);
-        return { path, hash, file, dir: p.dir, item };
+        const path = own ? join(dir, item.file) : join(dir, "baselines", item.file);
+        return { path, hash: item[kind], file: item.file, dir };
+    }
+
+    /**
+     * Every image a loaded capture's results.json names, by its hash, and every item's pictures, by
+     * pairKey with `none` for a missing side: filled as each capture loads, so the image and
+     * picture routes find a file in a Map, never by reading a directory. Each key keeps every
+     * capture directory that names it, so two targets showing the same image both keep it when
+     * one's download is pruned.
+     */
+    const blobs = new Map();
+    const pictured = new Map();
+    const remember = (map, key, dir, value) => {
+        const by = map.get(key) ?? new Map();
+        by.delete(dir);
+        by.set(dir, value);
+        map.set(key, by);
+    };
+    // The newest capture that names the key.
+    const recall = (map, key) => [...(map.get(key)?.values() ?? [])].pop();
+    // Forgets every capture directory under `root`, as prune() removes it.
+    function forgetImages(root) {
+        for (const map of [blobs, pictured]) {
+            for (const [key, by] of map) {
+                for (const dir of by.keys()) {
+                    if (dir === root || dir.startsWith(`${root}${sep}`)) {
+                        by.delete(dir);
+                    }
+                }
+                if (by.size === 0) {
+                    map.delete(key);
+                }
+            }
+        }
+    }
+    function indexImages(dir, r) {
+        for (const item of r.items) {
+            // A failed item has no image in the artifact.
+            if (item.status === "failed") {
+                continue;
+            }
+            const [a, b] = ["baseline", "capture"].map((k) => (item[k] ? whereOf(dir, item, k) : null));
+            for (const w of [a, b]) {
+                if (w) {
+                    remember(blobs, w.hash, dir, w);
+                }
+            }
+            remember(pictured, pairKey(item.baseline ?? "none", item.capture ?? "none", item), dir, { a, b, item });
+        }
+    }
+
+    /**
+     * A picture by its content-addressed name (PICTURE_NAME): a changed pair's of any kind, or the
+     * thumbnail of an item with one image (`plain` only).
+     * @param {string} name the picture's name
+     * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
+     */
+    async function pictureNamed(name) {
+        const [, key, kind] = PICTURE_NAME.exec(name) ?? [];
+        const found = key && PICTURE_KINDS.includes(kind) ? recall(pictured, key) : undefined;
+        if (!found) {
+            return [404, { error: "no such picture" }];
+        }
+        const { a, b, item } = found;
+        if (a && b && a.hash !== b.hash) {
+            return spotOf(a, b, item, kind, "now");
+        }
+        return kind === "plain" ? thumbOf(b ?? a, true) : [404, { error: "nothing changed" }];
     }
 
     async function readImage({ path, hash, file, dir }) {
         const bytes = await readFile(path).catch(() => null);
         if (!bytes || sha256(bytes) !== hash) {
+            // The directory was written again since it was loaded (a new preview, moved
+            // baselines) and its results.json no longer names this image: it is gone, not damaged. A
+            // results.json already dropped (or unreadable) leaves the copy damaged.
+            const now = await readFile(join(dir, "results.json"), "utf8")
+                .then((t) => JSON.parse(t))
+                .catch(() => null);
+            const named = now?.items?.some?.((i) => i.file === file && (i.baseline === hash || i.capture === hash));
+            if (now && !named) {
+                return [404, { error: "no such image" }];
+            }
             // CI hashed the bytes it uploaded, so the copy on this disk is damaged: drop it,
             // and the next reload downloads it again.
-            console.error(
-                `proofroom: ${path} does not match results.json: downloading it again on the next reload`,
-            );
+            console.error(`proofroom: ${path} does not match results.json: downloading it again on the next reload`);
             rmSync(join(dir, "results.json"), { force: true });
             return [409, { error: `${file}: the downloaded copy is damaged; reload the page to download it again` }];
         }
@@ -2853,6 +2963,16 @@ export function createApp({
                 return [404, { error: "nothing changed" }];
             }
             return spotOf(a, b, b.item, kind, "now");
+        },
+        // An image results.json names, by its hash; and a picture, by its content-addressed name.
+        "GET /api/blob": async ([hash]) => {
+            const where = recall(blobs, hash);
+            const answer = where ? await readImage(where) : [404, { error: "no such image" }];
+            return answer[0] === 200 ? [...answer, IMMUTABLE] : answer;
+        },
+        "GET /api/pic": async ([name]) => {
+            const answer = await pictureNamed(name);
+            return answer[0] === 200 ? [...answer, IMMUTABLE] : answer;
         },
         "POST /api/decide": async (_, body) => {
             const { p, t } = await projectOf(String(body.id), body.project);
@@ -3451,15 +3571,30 @@ export function createApp({
 
     const finishLabel = (t) => (t.pr === null ? "the master seed" : `#${t.pr}`);
 
-    const tokenOk = (given) => {
+    const tokenOk = (given, expected = token) => {
         const a = Buffer.from(String(given ?? ""));
-        const b = Buffer.from(token);
+        const b = Buffer.from(expected);
         return b.length > 0 && a.length === b.length && timingSafeEqual(a, b);
     };
 
-    function send(res, status, body, type = "application/json") {
+    // The session cookie: its value is derived from the token, so a new token ends it.
+    const COOKIE = `vr_session_${serverId}`;
+    const cookieValue = createHmac("sha256", token).update(`proofroom session ${serverId}`).digest("base64url");
+    const cookieOk = (header) => {
+        const given = String(header ?? "")
+            .split(";")
+            .map((c) => c.trim())
+            .find((c) => c.startsWith(`${COOKIE}=`));
+        return given !== undefined && token.length > 0 && tokenOk(given.slice(COOKIE.length + 1), cookieValue);
+    };
+    // A week, so the cookies of earlier starts (each its own name) expire; the page signs in on load.
+    const setCookie = `${COOKIE}=${cookieValue}; Path=/; Max-Age=604800; HttpOnly; SameSite=Strict${
+        origin.startsWith("https:") ? "; Secure" : ""
+    }`;
+
+    function send(res, status, body, type = "application/json", headers = {}) {
         const data = type === "application/json" ? JSON.stringify(body) : body;
-        res.writeHead(status, { ...HEADERS, "content-type": type });
+        res.writeHead(status, { ...HEADERS, "content-type": type, ...headers });
         res.end(data);
     }
 
@@ -3504,10 +3639,21 @@ export function createApp({
             if (!url.pathname.startsWith("/api/")) {
                 return await sendStatic(req, res, url.pathname);
             }
-            if (!tokenOk(req.headers["x-review-token"])) {
+            const [, , route, ...args] = url.pathname.split("/").map(decodeURIComponent);
+            const from = req.headers.origin;
+            if (route === "session" && req.method === "POST") {
+                return await startSession(req, res);
+            }
+            const byCookie = !tokenOk(req.headers["x-review-token"]);
+            if (byCookie && !cookieOk(req.headers.cookie)) {
                 return send(res, 401, { error: "missing or wrong session token: open the URL serve printed" });
             }
-            const [, , route, ...args] = url.pathname.split("/").map(decodeURIComponent);
+            // SameSite tells hosts apart, not ports: a page on another port of this host sends the
+            // cookie too, so whatever names another origin, or another site's fetch, is refused.
+            const site = req.headers["sec-fetch-site"];
+            if ((from !== undefined && from !== origin) || (byCookie && site !== undefined && !SAME_SITE.has(site))) {
+                return send(res, 403, { error: "foreign origin" });
+            }
             const writes = WRITES.has(route);
             const handler = routes[`${req.method} /api/${route}`];
             if (!handler) {
@@ -3515,15 +3661,15 @@ export function createApp({
                     error: "not allowed",
                 });
             }
-            if (writes && req.headers.origin !== origin) {
+            if (writes && from !== origin) {
                 return send(res, 403, { error: "foreign origin" });
             }
-            const [status, body, type] = await handler(
+            const [status, body, type, headers] = await handler(
                 args,
                 writes ? await readBody(req) : undefined,
                 url.searchParams,
             );
-            return send(res, status, body, type);
+            return send(res, status, body, type, headers);
         } catch (err) {
             // A malformed request (bad JSON, bad escape, oversized body) is the client's; the rest,
             // gh and git failures included, is ours.
@@ -3535,6 +3681,25 @@ export function createApp({
         }
     };
     /**
+     * POST /api/session: the page's token, once, for the session cookie. Answers whether the
+     * request already carried a good cookie (`had`), so a page whose image failed knows whether
+     * signing in again can help.
+     * @param {import("node:http").IncomingMessage} req the request
+     * @param {import("node:http").ServerResponse} res its answer
+     * @returns {Promise<void>}
+     */
+    async function startSession(req, res) {
+        if (req.headers.origin !== origin) {
+            return send(res, 403, { error: "foreign origin" });
+        }
+        const body = await readBody(req);
+        if (!tokenOk(body.token)) {
+            return send(res, 401, { error: "missing or wrong session token: open the URL serve printed" });
+        }
+        return send(res, 200, { had: cookieOk(req.headers.cookie) }, "application/json", { "set-cookie": setCookie });
+    }
+
+    /**
      * Settles once no tile is being made in the background (the thumbnails and spotlit tiles made
      * in advance), so whoever stops the server can wait for that work instead of leaving it running.
      * @returns {Promise<void>}
@@ -3544,5 +3709,6 @@ export function createApp({
             await Promise.allSettled([...making.values()].map((m) => m.done));
         }
     };
+    handler.serverId = serverId;
     return handler;
 }

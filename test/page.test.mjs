@@ -38,6 +38,17 @@ import {
 } from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
+// The fixture's compact-mantine items, for the addresses their images and pictures are served at.
+const CM_ITEMS = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
+const cmItem = (file) => CM_ITEMS.find((i) => i.file === file);
+// Where an image of the fixture is served: by its hash, whichever item or pull request shows it.
+const blobPath = (kind, file) => `/api/blob/${cmItem(file)[kind]}`;
+const blobOf = (kind, file) => `**${blobPath(kind, file)}`;
+// Where a picture of the fixture is served: by both images' hashes, the settings and its kind.
+const picPath = (file, kind) => {
+    const i = cmItem(file);
+    return `/api/pic/${i.baseline ?? "none"}-${i.capture ?? "none"}-${i.threshold}-${i.includeAA ? 1 : 0}-${kind}`;
+};
 const START = "cd /repo && PORT=9 node visual-review/trusted/cli.mjs serve";
 
 let browser;
@@ -559,7 +570,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
         await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
-        await page.route("**/api/img/123/compact-mantine/capture/button--primary.dark.png", async (route) => {
+        await page.route(blobOf("capture", "button--primary.dark.png"), async (route) => {
             await held;
             await route.continue();
         });
@@ -677,12 +688,12 @@ describe("review page: the Focus point, on an iPad", () => {
         let release;
         const held = new Promise((resolve) => (release = resolve));
         await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
-        await page.route("**/api/img/123/compact-mantine/baseline/slider--sizes.png", async (route) => {
+        await page.route(blobOf("baseline", "slider--sizes.png"), async (route) => {
             await held;
             await route.continue();
         });
         // Its new image, which the page may fetch ahead, before the Accept.
-        const arrived = page.waitForResponse((res) => res.url().endsWith("/capture/slider--sizes.png"));
+        const arrived = page.waitForResponse((res) => res.url().endsWith(blobPath("capture", "slider--sizes.png")));
         await page.locator(".component").first().waitFor();
         await openStory(2);
         await page.locator("#stage figure:nth-child(2) img").waitFor();
@@ -724,7 +735,7 @@ describe("review page: the Focus point, on an iPad", () => {
         }
         const body = PNG.sync.write(png);
         await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
-        await page.route("**/api/img/123/compact-mantine/capture/badge--default.light.png", (route) =>
+        await page.route(blobOf("capture", "badge--default.light.png"), (route) =>
             route.fulfill({ status: 200, contentType: "image/png", body }),
         );
         await page.locator(".component").first().waitFor();
@@ -939,11 +950,9 @@ describe("review page: a pull request", () => {
 
     it("loads each tile's thumbnail from the server, not the full image", async () => {
         const img = page.locator('.component[data-component="button"] .tile img');
-        await expect.poll(() => img.getAttribute("src")).toMatch(/^blob:/);
-        expect(
-            requested.some((u) => u.includes("/api/thumb/123/compact-mantine/capture/button--primary.dark.png")),
-        ).toBe(true);
-        expect(requested.some((u) => u.includes("/api/img/"))).toBe(false);
+        await expect.poll(() => img.getAttribute("src")).toBe(picPath("button--primary.dark.png", "plain"));
+        expect(requested.some((u) => u.endsWith(picPath("button--primary.dark.png", "plain")))).toBe(true);
+        expect(requested.some((u) => u.includes("/api/blob/"))).toBe(false);
     });
 
     // Where each pane and each image is on the screen, and whether anything scrolls.
@@ -1002,7 +1011,7 @@ describe("review page: a pull request", () => {
         // The new image is slow: its pane says so, in the place the image will take.
         let release;
         const held = new Promise((resolve) => (release = resolve));
-        await page.route("**/api/img/123/compact-mantine/capture/button--primary.dark.png", async (route) => {
+        await page.route(blobOf("capture", "button--primary.dark.png"), async (route) => {
             await held;
             await route.continue();
         });
@@ -1190,7 +1199,7 @@ describe("review page: a pull request", () => {
     });
 
     it("shows a compared view's failed image as an error in both panes, under the view's labels", async () => {
-        await page.route("**/api/img/123/compact-mantine/baseline/button--primary.dark.png", (route) =>
+        await page.route(blobOf("baseline", "button--primary.dark.png"), (route) =>
             route.fulfill({ status: 500, body: "broken" }),
         );
         await openStory(2);
@@ -3239,7 +3248,7 @@ describe("review page: narrow windows, touch and wording", () => {
         await page.locator(".component").first().waitFor();
         let release;
         const held = new Promise((resolve) => (release = resolve));
-        await page.route("**/api/img/123/compact-mantine/capture/button--primary.dark.png", async (route) => {
+        await page.route(blobOf("capture", "button--primary.dark.png"), async (route) => {
             await held;
             await route.continue();
         });
@@ -3717,9 +3726,12 @@ describe("review page: safe filters and the pull request's context", () => {
                 c.getContext("2d").drawImage(img, 0, 0, 64, 40);
                 return Array.from(c.getContext("2d").getImageData(0, 0, 64, 40).data);
             });
+        const kinds = { "false,false": "plain", "true,false": "spot", "false,true": "zoom", "true,true": "both" };
         const shown = async (spot, zoomed) => {
             await expect.poll(look).toEqual([spot, zoomed]);
-            await expect.poll(() => tile.getAttribute("src")).toMatch(/^blob:/);
+            await expect
+                .poll(() => tile.getAttribute("src"))
+                .toBe(picPath("button--primary.dark.png", kinds[`${spot},${zoomed}`]));
             return pixels();
         };
         expect(await page.locator("#spot-all").getAttribute("aria-pressed")).toBe("false");
@@ -3761,7 +3773,8 @@ describe("review page: safe filters and the pull request's context", () => {
                 globalThis[key] = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
             }, name);
         let refused = 0;
-        await page.route("**/api/spot/**", (route) => {
+        const spotlit = /\/api\/pic\/.*-(spot|zoom|both)$/;
+        await page.route(spotlit, (route) => {
             refused++;
             return route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
         });
@@ -3770,11 +3783,11 @@ describe("review page: safe filters and the pull request's context", () => {
         await expect.poll(lit).toBe(true);
         expect(refused).toBeGreaterThan(0);
         await pixels("own");
-        await page.unroute("**/api/spot/**");
+        await page.unroute(spotlit);
         // Off and on again: the tile asks the server again, which answers this time.
         await page.locator("#zoom-all").click();
         const answered = page.waitForResponse(
-            (res) => res.url().includes("/api/spot/123/compact-mantine/both/button--primary.dark.png") && res.ok(),
+            (res) => res.url().endsWith(picPath("button--primary.dark.png", "both")) && res.ok(),
         );
         await page.locator("#zoom-all").click();
         await answered;
