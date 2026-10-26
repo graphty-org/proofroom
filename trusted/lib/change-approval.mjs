@@ -464,7 +464,7 @@ function checkStatement(file, bytes, at) {
  *     the change's statements
  * @returns {{ problem: string } | { decisions: Map<string, object | { conflict: true }> }} the result
  */
-function newestDecisions(chain) {
+export function newestDecisions(chain) {
     const byId = new Map(chain.map((s) => [s.id, s]));
     const parents = new Map(chain.map((s) => [s.id, s.previous === null ? [] : [s.previous].flat()]));
     for (const s of chain) {

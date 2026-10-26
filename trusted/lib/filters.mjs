@@ -3,10 +3,11 @@
  * without hiding one.
  *
  * - **Approved before.** A capture byte-identical to an image the owner already approved for the
- *   same story and mode (a review record on the default branch or on an open pull request's
- *   branch) is accepted again, with the record that approved it named in the new record. The
- *   record counts only when it passes gate.mjs earlierApprovalProblem or the owner signed a
- *   baselines tree that holds it (accept.mjs treeSignedRecords), and the owner's Finish
+ *   same story and mode (a review record or a change statement on the default branch or on an
+ *   open pull request's branch) is accepted again, with the record or statement that approved it
+ *   named in the new record. A record counts only when it passes gate.mjs earlierApprovalProblem
+ *   or the owner signed a baselines tree that holds it (accept.mjs treeSignedRecords), a statement
+ *   only when its signature verifies (accept.mjs earlierApprovalsAt), and the owner's Finish
  *   sheet lists every such accept before the owner signs the baselines with it.
  * - **Known capture noise.** A story whose capture changed on two pull requests that touch none of
  *   its package's files, or that flips between the same two images, is flaky. It is labeled, never
@@ -16,29 +17,43 @@
  */
 
 import { earlierApprovalProblem } from "../gate.mjs";
+import { verifyRecord } from "./approval.mjs";
+import { newestDecisions, statementId } from "./change-approval.mjs";
 
 /**
- * The images the owner approved, by baseline path and image hash, from review records.
+ * The images the owner approved, by baseline path and image hash, from review records and change
+ * statements.
  *
  * A record counts only where it cannot have been planted: before a passkey is registered, only on
  * the default branch (a pull request the owner finished and merged); once one is, anywhere, with
- * a valid approval of its own or inside a baselines tree the owner signed (`treeSigned`). And an approval counts only while it is still the newest decision on
- * that path where it lives: a later record that accepts another image for the path, or rejects one,
- * replaces it.
+ * a valid approval of its own or inside a baselines tree the owner signed (`treeSigned`). A change
+ * statement counts only once a passkey is registered, and only when it is verified (accept.mjs
+ * earlierApprovalsAt). And an approval counts only while it is still the newest decision on that
+ * path where it lives: a later record or statement that accepts another image for the path, or
+ * rejects or excludes it, replaces it. Within one change, statements are ordered by their chain
+ * (`previous`, change-approval.mjs newestDecisions); otherwise by time.
  * @param {{ ref: string, commit: string, path: string, record: any, main: boolean,
  *     treeSigned?: boolean }[]} records review records: the tip they were read at (`ref`), the
  *     commit to name for them, their path, whether `ref` is the default branch, and whether a
  *     baselines tree the owner signed with a passkey holds the record
  * @param {object[] | null} keys the default branch's passkeys (null when none)
+ * @param {{ ref: string, commit: string, path: string, statement: any, verified: boolean,
+ *     main: boolean }[]} [statements] change statements, read as the records are
  * @returns {Map<string, { pr: number | null, commit: string, record: string, reviewedAt: string }>}
- *     by `<path> <hash>`; a default branch record wins over a pull request's, then the newest
+ *     by `<path> <hash>`; a default branch approval wins over a pull request's, then the newest.
+ *     `record` is the record's or the statement's path
  */
-export function approvalIndex(records, keys) {
+export function approvalIndex(records, keys, statements = []) {
     const index = new Map();
     const byRef = new Map();
-    for (const r of records) {
-        byRef.set(r.ref, [...(byRef.get(r.ref) ?? []), r]);
-    }
+    const atRef = (ref) => {
+        if (!byRef.has(ref)) {
+            byRef.set(ref, { records: [], statements: [] });
+        }
+        return byRef.get(ref);
+    };
+    records.forEach((r) => atRef(r.ref).records.push(r));
+    statements.filter((s) => keys && s.verified).forEach((s) => atRef(s.ref).statements.push(s));
     const verdicts = new Map();
     const holds = (record, first) => {
         if (!verdicts.has(record)) {
@@ -46,31 +61,136 @@ export function approvalIndex(records, keys) {
         }
         return verdicts.get(record);
     };
-    for (const list of byRef.values()) {
+    for (const { records: list, statements: signed } of byRef.values()) {
         // Record names start with their UTC time, so the name orders them as reviewedAt does.
         const sorted = [...list].sort((a, b) => (a.path < b.path ? -1 : 1));
         const newest = newestByPath(sorted);
+        const decided = statementDecisions(signed);
         for (const r of sorted) {
             const direct = listOf(r.record, "items").filter(
-                (i) => typeof i.to === "string" && i.approvedBefore === undefined && newest.get(i.path) === r,
+                (i) =>
+                    typeof i.to === "string" &&
+                    i.approvedBefore === undefined &&
+                    newest.get(i.path) === r &&
+                    !(decided.get(i.path)?.time >= recordTime(r)),
             );
             // One check per record: its own approval holds for every item.
             if (direct.length > 0 && (keys || r.main) && (r.treeSigned === true || holds(r.record, direct[0]))) {
-                direct.forEach((i) => keep(index, `${i.path} ${i.to}`, r));
+                const value = {
+                    pr: r.record.pr ?? null,
+                    commit: r.commit,
+                    record: r.path,
+                    reviewedAt: String(r.record.reviewedAt ?? ""),
+                };
+                direct.forEach((i) => keep(index, `${i.path} ${i.to}`, { main: r.main, time: recordTime(r), value }));
+            }
+        }
+        for (const [path, d] of decided) {
+            const r = newest.get(path);
+            if (d.entry?.decision === "accept" && typeof d.entry.to === "string" && !(r && recordTime(r) > d.time)) {
+                const { statement } = d.row;
+                const pr = /^pr:(\d+)$/.exec(statement.change);
+                const value = {
+                    pr: pr ? Number(pr[1]) : null,
+                    commit: d.row.commit,
+                    record: d.row.path,
+                    reviewedAt: statement.approvedAt,
+                };
+                keep(index, `${path} ${d.entry.to}`, { main: d.row.main, time: d.time, value });
             }
         }
     }
-    return new Map(
-        [...index].map(([k, v]) => [
-            k,
-            {
-                pr: v.record.pr ?? null,
-                commit: v.commit,
-                record: v.path,
-                reviewedAt: String(v.record.reviewedAt ?? ""),
-            },
-        ]),
-    );
+    return new Map([...index].map(([k, v]) => [k, v.value]));
+}
+
+const recordTime = (r) => Date.parse(String(r.record.reviewedAt ?? "")) || 0;
+const statementTime = (s) => Date.parse(s.statement.approvedAt) || 0;
+
+/**
+ * The newest decision the statements of one tip make on each path: per change by its chain, then
+ * the newest change. A change whose chain does not stand (a fork not closed, a missing previous),
+ * and a path its newest statements decide differently, approve nothing there.
+ * @param {{ path: string, statement: any }[]} rows the tip's verified statements
+ * @returns {Map<string, { row: object, entry: object | null, time: number }>} by path, with the
+ *     baselines directory as review records write it; `entry` null where nothing is approved
+ */
+function statementDecisions(rows) {
+    const byChange = new Map();
+    for (const s of rows) {
+        byChange.set(s.statement.change, [...(byChange.get(s.statement.change) ?? []), s]);
+    }
+    const out = new Map();
+    const take = (path, d) => {
+        if (!(out.get(path)?.time > d.time)) {
+            out.set(path, d);
+        }
+    };
+    for (const chain of byChange.values()) {
+        const rowOf = new Map(chain.flatMap((s) => s.statement.entries.map((e) => [e, s])));
+        const latest = Math.max(...chain.map(statementTime));
+        const r = newestDecisions(
+            chain.map((s) => ({
+                file: s.path,
+                id: statementId(s.statement),
+                previous: s.statement.previous,
+                entries: s.statement.entries,
+            })),
+        );
+        const decisions = "problem" in r ? new Map([...rowOf.keys()].map((e) => [e.path, null])) : r.decisions;
+        const dir = `${chain[0].statement.baselines}/`;
+        for (const [path, e] of decisions) {
+            const row = rowOf.get(e);
+            take(
+                dir + path,
+                row ? { row, entry: e, time: statementTime(row) } : { row: chain[0], entry: null, time: latest },
+            );
+        }
+    }
+    return out;
+}
+
+/**
+ * Who wrote each image, for a baselines history: by image hash, the newest change statement or
+ * review record that accepts it, with whether its signature verified. An unverified one is listed
+ * so the history can show it as unverified; approvalIndex never counts it.
+ * @param {{ path: string, record: any, treeSigned?: boolean }[]} records review records, as for
+ *     approvalIndex
+ * @param {{ path: string, statement: any, verified: boolean }[]} statements change statements, as
+ *     for approvalIndex
+ * @param {object[] | null} keys the default branch's passkeys (null when none: nothing verifies)
+ * @returns {Map<string, { path: string, file: string, change: string | null, at: string,
+ *     verified: boolean }>} by hash: the baseline it was written to, the record's or statement's
+ *     path, its change (`pr:7`; null for a record of the default branch), and when
+ */
+export function baselineWriters(records, statements, keys) {
+    const out = new Map();
+    const put = (hash, w) => {
+        const was = out.get(hash);
+        if (!was || !(Date.parse(was.at) > Date.parse(w.at))) {
+            out.set(hash, w);
+        }
+    };
+    for (const r of records) {
+        const pr = r.record?.pr;
+        const verified =
+            r.treeSigned === true || (keys !== null && verifyRecord(r.record, keys, { pr: pr ?? null }) === null);
+        for (const i of listOf(r.record, "items").filter((x) => typeof x.to === "string")) {
+            const change = typeof pr === "number" ? `pr:${pr}` : null;
+            put(i.to, { path: i.path, file: r.path, change, at: String(r.record.reviewedAt ?? ""), verified });
+        }
+    }
+    for (const s of statements) {
+        for (const e of s.statement.entries.filter((x) => x.decision === "accept" && typeof x.to === "string")) {
+            put(e.to, {
+                path: `${s.statement.baselines}/${e.path}`,
+                file: s.path,
+                change: s.statement.change,
+                at: s.statement.approvedAt,
+                verified: keys !== null && s.verified,
+            });
+        }
+    }
+    return out;
 }
 
 // The record items (or rejects) that name a path.
@@ -92,12 +212,11 @@ function newestByPath(sorted) {
     return newest;
 }
 
-// Indexes a record row for a key: the default branch's wins, then the newest.
-function keep(index, key, r) {
+// Indexes an approval for a key: the default branch's wins, then the newest.
+function keep(index, key, a) {
     const was = index.get(key);
-    const at = (x) => String(x.record.reviewedAt ?? "");
-    if (!was || (r.main && !was.main) || (r.main === was.main && at(r) > at(was))) {
-        index.set(key, r);
+    if (!was || (a.main && !was.main) || (a.main === was.main && a.time > was.time)) {
+        index.set(key, a);
     }
 }
 

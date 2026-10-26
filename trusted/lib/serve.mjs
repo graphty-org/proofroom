@@ -68,9 +68,10 @@
  * `<tmp>/spots/areas.jsonl`, read once at start.
  *
  * Safe filters (filters.mjs): an item whose capture is an image the owner already approved for the
- * same story and mode, in a review record on the default branch or an open pull request's branch,
- * counts as accepted ("approved before", never saved in the decisions file, and replaced by any
- * decision the owner takes on it), and Finish names that record in the new one. Every refresh adds what the captures show about capture noise to
+ * same story and mode, in a review record or a change statement on the default branch or an open
+ * pull request's branch, counts as accepted ("approved before", never saved in the decisions
+ * file, and replaced by any decision the owner takes on it), and Finish names that record or
+ * statement in the new record. Every refresh adds what the captures show about capture noise to
  * `<tmp>/state/noise-evidence.json` and writes the stories proven noisy to
  * `<tmp>/state/known-noise.json` (also `GET /api/noise`); they are labeled, never accepted. `GET
  * /api/pr` groups each project's changed items into clusters the page can decide as one.
@@ -118,7 +119,7 @@ import {
     prepareApproval,
     proposeKey,
     signRecord,
-    treeSignedRecords,
+    earlierApprovalsAt,
     treeStatement,
     unsignedRecordAt,
     updateFromMaster,
@@ -137,7 +138,15 @@ import {
     visualJobs,
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
-import { approvalIndex, clusters, isNoise, itemsByFile, knownNoise, observations } from "./filters.mjs";
+import {
+    approvalIndex,
+    baselineWriters,
+    clusters,
+    isNoise,
+    itemsByFile,
+    knownNoise,
+    observations,
+} from "./filters.mjs";
 import { coupledGroups, inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { autoKind, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
@@ -337,7 +346,10 @@ async function heldAt(repo, tip, records) {
 export async function repositoryName(repo) {
     const git = (args) => exec("git", args, { cwd: repo }).then((out) => out.trim());
     const url = await git(["remote", "get-url", "origin"]).catch(() => "");
-    const fromUrl = url.split(/[/:]/).pop().replace(/\.git$/, "");
+    const fromUrl = url
+        .split(/[/:]/)
+        .pop()
+        .replace(/\.git$/, "");
     if (fromUrl) {
         return fromUrl;
     }
@@ -733,8 +745,10 @@ export function createApp({
     const recordBlobs = new Map();
     /** The default branch's commit that added each review record blob. */
     const addedIn = new Map();
-    /** The record blobs each signed tree statement covers (accept.mjs treeSignedRecords). */
+    /** What each blob of the approvals directory says (accept.mjs earlierApprovalsAt). */
     const statementRecords = new Map();
+    /** Who wrote each image on the default branch, by hash (filters.mjs baselineWriters). */
+    let writers = new Map();
     /** The stories proven to be capture noise, by `<project>/<file>` (filters.mjs knownNoise). */
     let noise = new Map();
     const evidenceFile = join(stateDir, "noise-evidence.json");
@@ -1159,26 +1173,38 @@ export function createApp({
             : null;
 
     /**
-     * Reads the review records on the default branch and on every listed pull request's branch,
-     * each blob once, into the index of approved images. Records verify as the gate verifies them,
-     * by their own approval or by a signed statement of a baselines tree that holds them; with the
-     * keys unreadable, nothing counts as approved before.
+     * Reads the review records and change statements on the default branch and on every listed
+     * pull request's branch, one listing per branch and each blob once, into the index of approved
+     * images and the default branch's writer of each image. Records verify as the gate verifies
+     * them, by their own approval or by a signed statement of a baselines tree that holds them, and
+     * statements by their signature against the default branch's keys; with the keys unreadable,
+     * nothing counts as approved before.
      * @param {object[]} list the targets
      */
     async function readApprovals(list) {
         if (passkeyState.problem !== null) {
             approved = new Map();
+            writers = new Map();
             return;
         }
         const keys = passkeyState.main.length > 0 ? passkeyState.main : null;
         const records = [];
+        const statements = [];
         for (const { sha, main } of await approvalRefs(list)) {
-            const signed = keys ? await treeSignedRecords(repo, sha, config, keys, statementRecords) : new Set();
-            for (const r of await reviewRecordsAt(sha, main)) {
-                records.push({ ...r, treeSigned: signed.has(r.blob) });
+            const found = await earlierApprovalsAt(repo, sha, config, keys, statementRecords);
+            for (const r of await reviewRecordsAt(sha, main, found.records)) {
+                records.push({ ...r, treeSigned: found.treeSigned.has(r.blob) });
+            }
+            for (const st of found.statements) {
+                statements.push({ ...st, ref: sha, commit: await addingCommit(sha, main, st), main });
             }
         }
-        approved = approvalIndex(records, keys);
+        approved = approvalIndex(records, keys, statements);
+        writers = baselineWriters(
+            records.filter((r) => r.main),
+            statements.filter((st) => st.main),
+            keys,
+        );
     }
 
     const gitIn = (args) => exec("git", args, { cwd: repo });
@@ -1210,32 +1236,39 @@ export function createApp({
     }
 
     /**
-     * The review records at a commit, each blob read once. On the default branch each names the
-     * commit that added it, which the gate finds on the base of every pull request branched later.
+     * The review records at a commit, each blob read once.
      * @param {string} sha the commit
      * @param {boolean} main whether it is the default branch's tip
+     * @param {{ path: string, blob: string }[]} files the record files there (earlierApprovalsAt)
      * @returns {Promise<{ ref: string, commit: string, path: string, blob: string, record: any,
      *     main: boolean }[]>} them
      */
-    async function reviewRecordsAt(sha, main) {
+    async function reviewRecordsAt(sha, main, files) {
         const out = [];
-        const listing = await gitIn(["ls-tree", sha, "--", `${config.baselines}/reviews/`]).catch(() => "");
-        for (const line of listing.split("\n")) {
-            const [meta, path] = line.split("\t");
-            const blob = meta.split(" ")[2];
-            if (!path?.endsWith(".json")) {
-                continue;
-            }
+        for (const file of files) {
+            const { blob } = file;
             if (!recordBlobs.has(blob)) {
                 recordBlobs.set(blob, await gitIn(["cat-file", "blob", blob]).then(JSON.parse, () => null));
             }
-            if (main && !addedIn.has(blob)) {
-                addedIn.set(blob, await gitIn(["log", "-1", "--format=%H", "--diff-filter=A", sha, "--", path]));
-            }
-            const commit = (main && addedIn.get(blob)) || sha;
-            out.push({ ref: sha, commit, path, blob, record: recordBlobs.get(blob), main });
+            const commit = await addingCommit(sha, main, file);
+            out.push({ ref: sha, commit, path: file.path, blob, record: recordBlobs.get(blob), main });
         }
         return out;
+    }
+
+    /**
+     * The commit to name for a record or statement: on the default branch, the commit that added
+     * it, which the gate finds on the base of every pull request branched later; else the tip.
+     * @param {string} sha the tip
+     * @param {boolean} main whether it is the default branch's tip
+     * @param {{ path: string, blob: string }} file the file
+     * @returns {Promise<string>} the commit
+     */
+    async function addingCommit(sha, main, { path, blob }) {
+        if (main && !addedIn.has(blob)) {
+            addedIn.set(blob, await gitIn(["log", "-1", "--format=%H", "--diff-filter=A", sha, "--", path]));
+        }
+        return (main && addedIn.get(blob)) || sha;
     }
 
     /**
@@ -4172,5 +4205,8 @@ export function createApp({
     handler.work = work;
     // A target's decisions as the list shows them, by `<project>/<file>`: for the bench's lookup timing.
     handler.decisionsOf = (id) => (targets.has(id) ? decisionsOf(targets.get(id)) : null);
+    // The default branch's newest record or statement that accepted an image, by its hash, as of the
+    // last refresh (filters.mjs baselineWriters): for the Baselines screen's history.
+    handler.baselineWriter = (hash) => writers.get(hash) ?? null;
     return handler;
 }
