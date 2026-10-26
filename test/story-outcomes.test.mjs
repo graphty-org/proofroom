@@ -77,6 +77,16 @@ describe("story outcomes", () => {
         }
     });
 
+    it("gives a story unstable at first whose retry broke one verdict, [BROKEN], never [FLAKY] too", () => {
+        const item = { file: "a--b.png", status: "failed", reason: "play threw", unstableFirst: true };
+        for (const blocking of [false, true]) {
+            const { lines, code } = storyVerdict({ project: "p", items: [item] }, { blocking });
+            expect(lines.filter((l) => l.includes("[FLAKY]"))).toEqual([]);
+            expect(lines.filter((l) => l.includes("[BROKEN]"))).toHaveLength(1);
+            expect(code).toBe(blocking ? 1 : 0);
+        }
+    });
+
     it("fails a blocking run for a story still unstable after its retry, unless an unexpired entry quarantines it", async () => {
         vi.spyOn(console, "log").mockImplementation(() => undefined);
         const root = repo({ "a--wobbles.png": png(10) });

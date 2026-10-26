@@ -104,7 +104,7 @@ export function storyVerdict(results, { blocking, quarantine = [], gh = false })
             } else if (blocking) {
                 say(`[UNSTABLE] ${project}: ${item.file} is still unstable after its retry and not quarantined`, true);
             }
-        } else if (item.unstableFirst) {
+        } else if (item.unstableFirst && item.status !== "failed") {
             say(unstableLine(project, item), false);
             say(`[FLAKY] ${project}: ${item.file} settled on its retry, so it does not fail the run`, false);
         }
