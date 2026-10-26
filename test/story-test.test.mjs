@@ -30,35 +30,53 @@ describe("story tests' visual step", () => {
         expect([gray(0), gray(1799), gray(1800), gray(1809)]).toEqual([10, 10, 20, 20]);
     });
 
-    it("scrolls the body when the window cannot scroll (html and body overflow: hidden, height: 100%)", async () => {
+    // 1,063 CSS px tall, as graphty's CompactOverview Size Specifications: the window scrolls
+    // `windowMax` px at most and the body scrolls the rest of the way to the end (163 px), whose
+    // last 163 px are the rows below the first tile. A fixed toast pinned at document row 1,000
+    // must follow the body's scroll, since its containing block does not.
+    it.each([
+        { name: "the window cannot scroll (html and body overflow: hidden, height: 100%)", windowMax: 0 },
+        { name: "the window scrolls 16 px (the body's margin) and the body the rest", windowMax: 16 },
+    ])("scrolls the body by what the window could not when $name", async ({ windowMax }) => {
         const out = tempDir("story-test-out-");
         const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
-        // 1,063 CSS px tall, as graphty's CompactOverview Size Specifications: the window stays at 0
-        // and the body scrolls to its end (163 px), whose last 163 px are the rows below the first tile.
         const tiles = [png(10, 2400, 1800), png(20, 2400, 1800)];
         const ctx = context([...tiles, ...tiles], { width: 1200, height: 1063 });
         const frame = await ctx.frame();
         const measured = frame.evaluate;
+        const win = { scrollX: 0, scrollY: 0 };
+        const body = { scrollLeft: 0, scrollTop: 0 };
+        body.scrollTo = (x, y) =>
+            Object.assign(body, { scrollLeft: Math.max(0, x), scrollTop: Math.max(0, Math.min(y, 163 - windowMax)) });
+        // Absolute against the initial containing block: the window's scroll moves it, the body's does not.
+        const toast = { style: { top: "1000px", left: "8px", setProperty: (n, value) => (toast.style[n] = value) } };
+        toast.getBoundingClientRect = () => ({
+            top: parseFloat(toast.style.top) - win.scrollY,
+            left: parseFloat(toast.style.left) - win.scrollX,
+        });
+        const toastTops = [];
         frame.evaluate = async (fn, arg) => {
             if (!fn.toString().includes("scrollTo")) {
                 return measured(fn, arg);
             }
-            const body = { scrollLeft: 0, scrollTop: 0 };
-            const root = { scrollWidth: 1200, clientWidth: 1200, scrollHeight: 900, clientHeight: 900 };
-            body.scrollTo = (x, y) => Object.assign(body, { scrollLeft: Math.max(0, x), scrollTop: Math.min(y, 163) });
-            const saved = { scrollTo: globalThis.scrollTo, document: globalThis.document };
             Object.assign(globalThis, {
-                scrollTo: () => undefined,
-                scrollX: 0,
-                scrollY: 0,
-                document: { body, documentElement: root },
+                scrollTo: (_x, y) => Object.assign(win, { scrollX: 0, scrollY: Math.max(0, Math.min(y, windowMax)) }),
+                document: { body },
+                __visualReviewPinned: [[toast, "", 1000, 8]],
+            });
+            Object.defineProperties(globalThis, {
+                scrollX: { get: () => win.scrollX, configurable: true },
+                scrollY: { get: () => win.scrollY, configurable: true },
             });
             try {
-                return fn(arg);
+                const at = fn(arg);
+                // Where the toast shows in the document the tile draws: its viewport top plus the scroll.
+                toastTops.push(toast.getBoundingClientRect().top + at.y);
+                return at;
             } finally {
-                Object.assign(globalThis, saved);
-                delete globalThis.scrollX;
-                delete globalThis.scrollY;
+                for (const name of ["scrollTo", "document", "__visualReviewPinned", "scrollX", "scrollY"]) {
+                    delete globalThis[name];
+                }
             }
         };
         await v.commands.visualPlan(ctx, { id: "a--app-css", chromatic: {} });
@@ -69,6 +87,7 @@ describe("story tests' visual step", () => {
         expect([shot.width, shot.height]).toEqual([2400, 2126]);
         const gray = (y) => shot.data[y * 2400 * 4];
         expect([gray(0), gray(1799), gray(1800), gray(2125)]).toEqual([10, 10, 20, 20]);
+        expect(new Set(toastTops)).toEqual(new Set([1000]));
     });
 
     it("records unchanged, changed (after a second render), unstable and failed stories as capture.mjs does", async () => {
