@@ -49,9 +49,9 @@ if (id === "demo--broken") {
     document.body.insertAdjacentHTML("beforeend",
         "<div style='position:absolute;left:100px;top:100px;width:50px;height:20px;background:red'></div>");
 } else if (id === "demo--tall") {
-    // A story 2000 px tall, taller than the 900 px viewport.
+    // A story 1000 px tall, taller than the 900 px viewport: two tiles, the fewest a tall story takes.
     document.body.insertAdjacentHTML("beforeend",
-        "<div style='position:absolute;left:0;top:0;width:10px;height:2000px;background:red'></div>");
+        "<div style='position:absolute;left:0;top:0;width:10px;height:1000px;background:red'></div>");
 } else {
     document.body.insertAdjacentHTML("beforeend", "<h1 style='font: 40px monospace'>" + (id ?? "preview") +
         (navigator.gpu ? " gpu" : " no-gpu") + "</h1>");
@@ -251,7 +251,7 @@ describe("capture", () => {
         expect(items["demo--small.png"].size).toEqual([1200 * 2, 900 * 2]);
         expect(items["demo--plain.png"].size).toEqual([1200 * 2, 900 * 2]);
         // A story taller than the viewport is captured to its full scroll height.
-        expect(items["demo--tall.png"].size).toEqual([1200 * 2, 2000 * 2]);
+        expect(items["demo--tall.png"].size).toEqual([1200 * 2, 1000 * 2]);
         // The capture waits for the page's fonts: the box drawn at (400, 300) when they settle is in it.
         const png = PNG.sync.read(readFileSync(join(out, "demo--late-font.png")));
         const at = (405 * 2 + 305 * 2 * png.width) * 4;
@@ -389,12 +389,19 @@ describe("screenshotWholePage", () => {
 
     it("keeps the pinned monospace font on a page taller than the viewport", async () => {
         // Chromium's capture beyond the viewport re-resolved the generic `monospace` from the pinned
-        // fontconfig's DejaVu Sans Mono to Liberation Mono (#3472).
-        const env = {
-            ...process.env,
-            FONTCONFIG_FILE: join(import.meta.dirname, "../../visual-fonts/fonts.conf"),
-            XDG_CACHE_HOME: mkdtempSync(join(tmpdir(), "visual-review-fonts-")),
-        };
+        // fontconfig's DejaVu Sans Mono to Liberation Mono (#3472). The pinned configuration, read
+        // over the host's /usr/share/fonts: visual-fonts/fonts/ is Git LFS, absent in a test checkout,
+        // and is a snapshot of the CI runner's /usr/share/fonts.
+        const fontsDir = join(import.meta.dirname, "../../visual-fonts");
+        const cache = mkdtempSync(join(tmpdir(), "visual-review-fonts-"));
+        const conf = join(cache, "fonts.conf");
+        writeFileSync(
+            conf,
+            readFileSync(join(fontsDir, "fonts.conf"), "utf8")
+                .replace('<dir prefix="relative">fonts</dir>', "<dir>/usr/share/fonts</dir>")
+                .replace('prefix="relative">conf.d<', `>${join(fontsDir, "conf.d")}<`),
+        );
+        const env = { ...process.env, FONTCONFIG_FILE: conf, XDG_CACHE_HOME: cache };
         const pinned = await chromium.launch({ args: CHROMIUM_ARGS, env });
         try {
             const context = await pinned.newContext({ viewport: { width: 100, height: 900 }, deviceScaleFactor: 2 });
