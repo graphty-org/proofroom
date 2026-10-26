@@ -384,7 +384,11 @@ async function shootOnce(browser, url, { delay, waitFor }) {
             }),
         );
         await page.goto(wrapper, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        const frame = await (await page.waitForSelector("iframe")).contentFrame();
+        // Focused, as the story was when it was the page itself (and as story-test.mjs's
+        // visualPark focuses the tester iframe), so a play function's focus ring still shows.
+        const element = await page.waitForSelector("iframe");
+        await element.focus();
+        const frame = await element.contentFrame();
         const phase = await frame
             .waitForFunction(
                 () => {
