@@ -177,7 +177,7 @@ export const masterSubject = (prefix, candidate) =>
  * @param {string} candidate the candidate's commit
  * @returns {string} `visual/approve-<short sha>`
  */
-export const candidateBranch = (candidate) => `visual/approve-${candidate.slice(0, 12)}`;
+const candidateBranch = (candidate) => `visual/approve-${candidate.slice(0, 12)}`;
 
 /**
  * Refuses an accept commit for a candidate that changes anything outside the baselines and
