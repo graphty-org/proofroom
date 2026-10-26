@@ -465,7 +465,7 @@ export async function screenshotWholePage(page) {
     if (size.width <= vp.width && size.height <= vp.height) {
         return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
     }
-    return shootTiles(page, page, size);
+    return shootTiles(page, page, size, vp);
 }
 
 /**
@@ -512,10 +512,18 @@ async function scrollFrame(frame, x, y) {
     const at = await frame.evaluate(
         ([left, top]) => {
             globalThis.scrollTo(left, top);
-            const { body } = document;
-            // The body scrolls whatever the window could not (none of it on a page that scrolls the window).
-            body.scrollTo(left - globalThis.scrollX, top - globalThis.scrollY);
-            const at = { x: globalThis.scrollX + body.scrollLeft, y: globalThis.scrollY + body.scrollTop };
+            const { body, scrollingElement } = document;
+            // The body scrolls whatever the window could not (none of it on a page that scrolls the
+            // window). In quirks mode the body IS the window's scroller: scrolling it again would undo
+            // the window's scroll, and its scrollTop would count that scroll twice.
+            const own = body !== scrollingElement;
+            if (own) {
+                body.scrollTo(left - globalThis.scrollX, top - globalThis.scrollY);
+            }
+            const at = {
+                x: globalThis.scrollX + (own ? body.scrollLeft : 0),
+                y: globalThis.scrollY + (own ? body.scrollTop : 0),
+            };
             // A pinned element's containing block does not move when the body scrolls: put it where
             // the document scrolled to (at) shows it, as a full-page shot does.
             for (const [el, , docTop, docLeft] of globalThis.__visualReviewPinned ?? []) {
@@ -622,10 +630,11 @@ function pinFixedInPage(undo) {
  * @param {import("playwright").Page | import("playwright").Frame} frame the document to scroll: the
  *     page itself, or an iframe at the page's top left at scale 1
  * @param {{ width: number, height: number }} size the document's whole size in CSS pixels
+ * @param {{ width: number, height: number }} vp the size of the document's viewport (the iframe's,
+ *     for a frame), shot from the page's top left
  * @returns {Promise<Buffer>} the PNG
  */
-export async function shootTiles(page, frame, size) {
-    const vp = page.viewportSize();
+export async function shootTiles(page, frame, size, vp) {
     const view = { x: 0, y: 0, ...vp };
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
     await frame.evaluate(pinFixedInPage, false);

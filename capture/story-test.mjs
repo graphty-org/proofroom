@@ -81,7 +81,7 @@ async function shootFrame(page, frame) {
     if (size.width <= VIEWPORT.width && size.height <= VIEWPORT.height) {
         return page.screenshot({ ...SHOT, clip: { ...view, ...size } });
     }
-    return shootTiles(page, frame, size);
+    return shootTiles(page, frame, size, VIEWPORT);
 }
 
 /**
