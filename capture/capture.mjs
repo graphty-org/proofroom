@@ -551,7 +551,9 @@ export async function provenance() {
         ? JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8"))
         : {};
     return {
-        commit: process.env.GITHUB_SHA,
+        // The commit checked out and captured: in a called workflow given another ref (a full run of
+        // an older master commit), GITHUB_SHA is the caller's commit, not this one.
+        commit: git("rev-parse", "HEAD"),
         headSha: event.pull_request?.head?.sha ?? null,
         pr: event.pull_request?.number ?? null,
         runId: Number(process.env.GITHUB_RUN_ID),

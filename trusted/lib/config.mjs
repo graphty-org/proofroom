@@ -22,6 +22,7 @@ const DEFAULTS = {
     issueLabels: ["bug"],
     fontconfig: null,
     updateCheck: null,
+    candidates: null,
     usage: false,
     ignoreBranches: [],
 };
@@ -36,7 +37,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -128,6 +129,14 @@ function commandSettings(raw, out, fail) {
             fail("updateCheck must be a shell command");
         }
         out.updateCheck = raw.updateCheck;
+    }
+    // The shell command `serve --candidate next` runs in the repository to list the default
+    // branch's full runs: JSON on stdout, `[{ commit, runId, waiting, at }]`. Null: none.
+    if (raw.candidates !== undefined && raw.candidates !== null) {
+        if (typeof raw.candidates !== "string" || raw.candidates.trim() === "") {
+            fail("candidates must be a shell command");
+        }
+        out.candidates = raw.candidates;
     }
 }
 

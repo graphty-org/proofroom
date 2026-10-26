@@ -36,6 +36,7 @@ import {
     toolVersion,
     VIEWPORT,
 } from "./capture.mjs";
+import { unstableLine } from "./story-outcomes.mjs";
 
 const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
 
@@ -93,17 +94,33 @@ const park = (page) => page.mouse.move(-1, -1);
 
 /**
  * Scrolls the tester iframe's document, as near to (x, y) as it goes, and waits for what came
- * into view (a lazy image) and two frames.
+ * into view (a lazy image) and two frames. A page whose html and body are `overflow: hidden` and
+ * `height: 100%` (an app's stylesheet) scrolls the window little or not at all: its overflow
+ * scrolls inside the body, so the body scrolls by what the window could not, and the elements
+ * pinFixedInPage pinned are moved with the document.
  * @param {import("playwright").Frame} frame the tester iframe
  * @param {number} x in CSS px
  * @param {number} y in CSS px
- * @returns {Promise<{ x: number, y: number }>} where it scrolled to
+ * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
  */
 async function scrollFrame(frame, x, y) {
     const at = await frame.evaluate(
         ([left, top]) => {
             globalThis.scrollTo(left, top);
-            return { x: globalThis.scrollX, y: globalThis.scrollY };
+            const { body } = document;
+            // The body scrolls whatever the window could not (none of it on a page that scrolls the window).
+            body.scrollTo(left - globalThis.scrollX, top - globalThis.scrollY);
+            const at = { x: globalThis.scrollX + body.scrollLeft, y: globalThis.scrollY + body.scrollTop };
+            // A pinned element's containing block does not move when the body scrolls: put it where
+            // the document scrolled to (at) shows it, as a full-page shot does.
+            for (const [el, , docTop, docLeft] of globalThis.__visualReviewPinned ?? []) {
+                const now = el.getBoundingClientRect();
+                const move = (name, by) =>
+                    el.style.setProperty(name, `${parseFloat(el.style[name]) + by}px`, "important");
+                move("top", docTop - at.y - now.top);
+                move("left", docLeft - at.x - now.left);
+            }
+            return at;
         },
         [x, y],
     );
@@ -232,9 +249,11 @@ function pinFixedInPage(undo) {
     };
     walk(document);
     const fixed = all.filter((el) => getComputedStyle(el).position === "fixed");
-    globalThis[key] = fixed.map((el) => [el, el.style.cssText]);
-    for (const el of fixed) {
-        const r = el.getBoundingClientRect();
+    const rects = fixed.map((el) => el.getBoundingClientRect());
+    // Each one's own style, and where it sits in the document (the page is at scroll (0, 0)).
+    globalThis[key] = fixed.map((el, i) => [el, el.style.cssText, rects[i].top, rects[i].left]);
+    for (const [i, el] of fixed.entries()) {
+        const r = rects[i];
         const set = (name, value) => el.style.setProperty(name, value, "important");
         set("position", "absolute");
         set("box-sizing", "border-box");
@@ -286,7 +305,13 @@ async function shootFrame(page, frame) {
         await frame.evaluate(pinFixedInPage, false);
         for (let top = 0; top < size.height; top += VIEWPORT.height) {
             for (let left = 0; left < size.width; left += VIEWPORT.width) {
-                const at = await scrollFrame(frame, left, top);
+                // No further than the measured size's end: a body that overflows past the document
+                // (All Components, by 16 px) must not scroll the rows a full-page shot cuts off.
+                const at = await scrollFrame(
+                    frame,
+                    Math.max(0, Math.min(left, size.width - VIEWPORT.width)),
+                    Math.max(0, Math.min(top, size.height - VIEWPORT.height)),
+                );
                 const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
                 const w = Math.min(VIEWPORT.width, size.width - left) * SCALE;
                 const h = Math.min(VIEWPORT.height, size.height - top) * SCALE;
@@ -435,7 +460,18 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         writeFileSync(join(out, "results.json.tmp"), `${JSON.stringify(results, null, 2)}\n`);
         renameSync(join(out, "results.json.tmp"), join(out, "results.json"));
     };
+    // Each story's test, as its JUnit report names it, so a quarantine entry can be matched to its items.
+    const tests = new Map();
     const record = (item) => {
+        const earlier = results.items.find((i) => i.file === item.file);
+        // A story unstable before its retry stays on record as unstable, whatever the retry drew.
+        if (item.status !== "unstable" && (earlier?.status === "unstable" || earlier?.unstableFirst)) {
+            item.unstableFirst = true;
+        }
+        const test = tests.get(item.id) ?? earlier?.test;
+        if (test) {
+            item.test = test;
+        }
         results.items = results.items.filter((i) => i.file !== item.file);
         results.items.push(item);
         results.expected = results.items.length;
@@ -457,13 +493,14 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         return theirs ? { baseline: theirs, from: old } : { baseline: own, from: null };
     };
 
-    const finish = async (job, first, second, console) => {
+    const finish = async (job, first, second, logged) => {
         const { id, mode, file, baseline, from, s } = job;
         const r = classify({ baseline, first, second, threshold: s.threshold, includeAA: s.includeAA, moved: !!from });
         if (["changed", "moved", "new", "unstable"].includes(r.status)) {
             writeFileSync(join(out, file), r.flaky ? second : first);
         }
         if (r.status === "unstable") {
+            console.log(`visual-review: ${unstableLine(project, { file })}`);
             writeFileSync(join(out, "second", file), second);
         } else {
             // A first run's unstable shot of this story, now settled on the retry.
@@ -472,7 +509,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         if (baseline && (r.status === "changed" || r.status === "unstable" || (from && r.baseline !== r.capture))) {
             writeFileSync(join(out, "baselines", file), baseline);
         }
-        const lines = r.status === "unchanged" || r.status === "moved" ? [] : clip(console);
+        const lines = r.status === "unchanged" || r.status === "moved" ? [] : clip(logged);
         record({
             id,
             mode,
@@ -511,12 +548,16 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
          * What the browser side does for one story: its modes, the project's wait and the delay.
          * A story its settings exclude is recorded here and has no modes to shoot.
          * @param {unknown} _ctx the command's context
-         * @param {{ id: string, chromatic: object }} story the story id and its parameters.chromatic
+         * @param {{ id: string, chromatic: object, test?: { file: string, name: string } }} story the
+         *     story id, its parameters.chromatic, and its test (absolute file, full name)
          * @returns {Promise<{ modes: object[], waitFor: object | null, delay: number }>} the plan
          */
-        async visualPlan(_ctx, { id, chromatic }) {
+        async visualPlan(_ctx, { id, chromatic, test }) {
             await ready;
             planned.add(id);
+            if (test?.file && test.name) {
+                tests.set(id, { file: relative(root, test.file).replaceAll("\\", "/"), name: test.name });
+            }
             const s = await settings(id, chromatic);
             if (!s.disableSnapshot) {
                 return { modes: s.modes, waitFor: entry.waitFor ?? null, delay: s.delay };
