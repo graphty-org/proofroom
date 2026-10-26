@@ -12,6 +12,9 @@ import { renderTemplate } from "../trusted/lib/init.mjs";
 import { CONFIG, tempDir } from "./helpers.mjs";
 
 const workflow = (name) => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), "utf8");
+// A Dependabot bump of an action's version is not drift: compare workflows with every
+// `uses: owner/action@ref` reduced to `uses: owner/action`.
+const unpinned = (text) => text.replace(/^(\s*(?:- )?uses: [^@\s]+)@\S+/gm, "$1");
 const values = { branch: CONFIG.defaultBranch, manager: "pnpm", version: "0.0.0" };
 const job = (text, name, next) => {
     const start = text.indexOf(`\n    ${name}:\n`);
@@ -21,7 +24,14 @@ const job = (text, name, next) => {
 
 describe("the monorepo's workflows", () => {
     it("visual-seed.yml is the template as init writes it", () => {
-        expect(workflow("visual-seed.yml")).toBe(renderTemplate("visual-seed.yml", values));
+        expect(unpinned(workflow("visual-seed.yml"))).toBe(unpinned(renderTemplate("visual-seed.yml", values)));
+    });
+
+    it("ignores an action version bump but not any other difference", () => {
+        const a = "steps:\n  - uses: actions/setup-node@v4\n    with:\n      x: 1\n";
+        expect(unpinned(a)).toBe(unpinned(a.replace("@v4", "@v7")));
+        expect(unpinned(a)).not.toBe(unpinned(a.replace("x: 1", "x: 2")));
+        expect(unpinned(a)).not.toBe(unpinned(a.replace("actions/setup-node", "actions/cache")));
     });
 
     it("ci.yml's visual job runs the template's commands and uploads the same artifact", () => {
@@ -110,7 +120,9 @@ describe("visual-seed.yml", () => {
         const visual = job(seed, "visual");
         expect(visual).toContain("if: ${{ !cancelled() && needs.plan.result == 'success' }}");
         // The download comes first, so a project whose own build failed stops before installing.
-        const steps = [...visual.matchAll(/^ {12}- (?:name: (.+)|uses: (.+))$/gm)].map((m) => m[1] ?? m[2]);
-        expect(steps.slice(0, 2)).toEqual(["actions/checkout@v4", "Download Storybook build"]);
+        const steps = [...visual.matchAll(/^ {12}- (?:name: (.+)|uses: (.+))$/gm)].map(
+            (m) => m[1] ?? m[2]?.replace(/@\S+$/, ""),
+        );
+        expect(steps.slice(0, 2)).toEqual(["actions/checkout", "Download Storybook build"]);
     });
 });
