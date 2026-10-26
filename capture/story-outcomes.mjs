@@ -54,12 +54,12 @@ export function promotion(results, blocking) {
  * @param {unknown} parsed the file's parsed JSON
  * @param {string} [day] today, as an ISO date
  * @returns {{ file: string, name: string }[]} the entries
- * @throws {Error} when it is not `{ quarantine: [...] }`
+ * @throws {TypeError} when it is not `{ quarantine: [...] }`
  */
 export function quarantineEntries(parsed, day = new Date().toISOString().slice(0, 10)) {
     const list = /** @type {{ quarantine?: unknown }} */ (parsed)?.quarantine;
     if (!Array.isArray(list)) {
-        throw new Error("a quarantine file holds { quarantine: [{ file, name, expires? }] }");
+        throw new TypeError("a quarantine file holds { quarantine: [{ file, name, expires? }] }");
     }
     return list.filter(
         (q) =>

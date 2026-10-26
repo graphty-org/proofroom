@@ -158,7 +158,11 @@ describe("story outcomes", () => {
         ]);
         const on = storyVerdict(results, { blocking: true, gh: true });
         expect(on.code).toBe(1);
-        expect(on.lines).toEqual(["::error::[BROKEN] graphty-element: a--broken.png: the story never settled"]);
+        expect(on.lines).toEqual([
+            "::error::[BROKEN] graphty-element: a--broken.png: the story never settled",
+            // a broken story has no approved picture either, so promotion waits too
+            "::warning::[PROMOTION] graphty-element: 1 picture(s) wait for the owner's approval",
+        ]);
     });
 
     it("sets the promotion flag for a changed picture only with the switch on", async () => {
