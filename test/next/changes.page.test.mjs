@@ -342,7 +342,7 @@ describe("row actions", () => {
 describe("the top bar and the message line", () => {
     it("names the repository, refreshes on a click of the status, and keeps the last messages", async () => {
         const page = await open({ targets: fiftyChanges() });
-        expect(await page.locator("#repo").innerText()).toBe("graphty-monorepo");
+        await expect.poll(() => page.locator("#repo").innerText()).toBe("graphty-monorepo");
         await page.getByRole("button", { name: "Review" }).click();
         await page.locator("#srvstatus").click();
         await expect.poll(() => message(page)).toBe("Refreshed.");
