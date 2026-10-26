@@ -87,6 +87,15 @@ proofroom/vitest) into one capture directory that serve and gate read. It is com
 only when every shard is there once, between them they ran every story file of the project, and
 each reported every story test it ran; then every baseline no story drew is reported removed. Exits 1, writing it incomplete, otherwise.`,
 
+    junit: `usage: proofroom junit --results <dir> --out <file>
+
+Writes a capture set's results (the results.json in <dir>, or that file itself) as a JUnit XML
+file, one test case per snapshot, for CI systems and flaky-test tools. A snapshot passes exactly
+when its capture is the approved baseline; changed, moved, new, no baseline yet and removed are
+failures typed by status, a story that could not be shot is an error with its reason and console,
+and an excluded story is skipped. Exits 0 once the file is written, whatever the snapshots' results;
+2 when results.json is missing or invalid.`,
+
     gate: null, // gate.mjs's own usage
 
     notify: `usage: proofroom notify [--command '<json argv>'] [--gap <minutes>]
@@ -136,6 +145,7 @@ const COMMANDS = {
     compare,
     parity,
     "merge-results": mergeResultsCommand,
+    junit,
     serve,
     gate,
     notify,
@@ -160,6 +170,7 @@ Commands:
   compare          compare two directories of PNGs (local use)
   parity           compare two captures of the same commit byte for byte
   merge-results    combine the story tests' partial captures of one project
+  junit            write a capture set's results as a JUnit XML file
   usage            sum up the review page's usage events (when the config turns them on)
   install-browser  install the Chromium capture uses
 
@@ -532,6 +543,35 @@ async function mergeResultsCommand(args) {
     }
     console.log(JSON.stringify({ project: values.project, items: results.items.length, complete: results.complete }));
     return problems.length > 0 ? 1 : 0;
+}
+
+async function junit(args) {
+    const { values } = parseArgs({ args, options: { results: { type: "string" }, out: { type: "string" } } });
+    if (!values.results || !values.out) {
+        console.error(HELP.junit);
+        return 2;
+    }
+    const { stat, writeFile } = await import("node:fs/promises");
+    const { validateResults } = await import("./lib/results.mjs");
+    const { junitFromResults } = await import("./lib/junit.mjs");
+    let path = resolve(values.results);
+    let results;
+    try {
+        if ((await stat(path)).isDirectory()) {
+            path = join(path, "results.json");
+        }
+        results = JSON.parse(await readFile(path, "utf8"));
+    } catch (err) {
+        console.error(`proofroom junit: cannot read ${path}: ${err.message}`);
+        return 2;
+    }
+    const problems = validateResults(results);
+    if (problems.length > 0) {
+        console.error(`proofroom junit: ${path} is invalid:\n  ${problems.slice(0, 20).join("\n  ")}`);
+        return 2;
+    }
+    await writeFile(resolve(values.out), junitFromResults(results));
+    return 0;
 }
 
 async function gate(args) {

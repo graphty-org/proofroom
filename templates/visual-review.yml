@@ -97,6 +97,15 @@ jobs:
             - name: Capture
               run: __CLI__ capture --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual" --reference "${{ steps.reference.outputs.dir }}"
 
+            # The results as a JUnit file (junit.xml, in the artifact), one test case per snapshot, for
+            # test-report and flaky-test tools. A failing snapshot never fails this step.
+            - name: Write the JUnit report
+              if: always()
+              run: |
+                  if [[ -f "$RUNNER_TEMP/visual/results.json" ]]; then
+                      __CLI__ junit --results "$RUNNER_TEMP/visual" --out "$RUNNER_TEMP/visual/junit.xml"
+                  fi
+
             # Kept even when capture crashed, so the reviewer sees the partial results.json.
             - name: Upload captures
               if: always()
