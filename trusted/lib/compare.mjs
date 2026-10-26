@@ -1,5 +1,5 @@
 /**
- * Comparison: is a capture the same as its baseline, and what does a story's pair of captures say?
+ * Comparison: is a capture the same as its baseline?
  *
  * The SHA-256 of the PNG bytes decides first; only when the bytes differ are both images decoded
  * and compared with pixelmatch at the story's threshold. A bounding box is [x, y, width, height].
@@ -147,9 +147,9 @@ function crop(img, w, h) {
 }
 
 /**
- * Classifies one story and mode from its baseline and up to two captures. A second capture is
- * taken, in a fresh browser context, only when the first differs from the baseline or there is
- * no baseline; without one (a local run) the first capture stands alone.
+ * Classifies one snapshot from its baseline and its capture. Each capture is judged on its own:
+ * a snapshot is shot once per attempt, and retrying is the caller's choice (`run --retries`, or
+ * the user's test runner).
  *
  * A story with no baseline is `unseeded` ("no baseline yet") when its capture matches
  * `reference`, master's newest capture of it: the pull request did not change it, so it needs no
@@ -158,43 +158,33 @@ function crop(img, w, h) {
  * `moved` says the baseline is another story id's, named in the project's renames.json: a story
  * that only moved (same image, new id) is `moved` rather than `unchanged`, so it still needs an
  * accept, which writes its baseline under the new name.
- * @param {{ baseline: Buffer | null, first: Buffer | null, second?: Buffer | null,
- *     reference?: Buffer | null, threshold: number, includeAA: boolean, moved?: boolean }} input
- *     `first` is null when the story is gone
- * @returns {{ status: "unchanged" | "moved" | "changed" | "new" | "unseeded" | "removed" | "unstable", flaky: boolean,
+ * @param {{ baseline: Buffer | null, first: Buffer | null, reference?: Buffer | null,
+ *     threshold: number, includeAA: boolean, moved?: boolean }} input `first` is the capture, null
+ *     when the story is gone (named as when a story was shot twice)
+ * @returns {{ status: "unchanged" | "moved" | "changed" | "new" | "unseeded" | "removed", flaky: boolean,
  *     baseline: string | null, capture: string | null, size: number[] | null,
  *     baselineSize: number[] | null, changedPixels: number | null, bbox: number[] | null }}
- *     `capture` is the hash of the capture the status describes: the second one when flaky
+ *     `flaky` is always false, kept for the gates of older versions, which require it
  */
-export function classify({ baseline, first, second = null, reference = null, threshold, includeAA, moved = false }) {
+export function classify({ baseline, first, reference = null, threshold, includeAA, moved = false }) {
     const options = { threshold, includeAA };
-    const matched = (r, flaky) => ({ ...r, status: moved ? "moved" : "unchanged", flaky });
     const none = { flaky: false, size: null, baselineSize: null, changedPixels: null, bbox: null };
     if (first === null) {
         return { status: "removed", ...none, baseline: sha256(baseline), capture: null };
     }
-    const agree = () => second === null || compareImages(first, second, options).status === "unchanged";
     if (baseline === null) {
         const same = reference !== null && compareImages(reference, first, options).status === "unchanged";
-        /** @type {"unseeded" | "new" | "unstable"} */
-        let status = "unseeded";
-        if (!same) {
-            status = agree() ? "new" : "unstable";
-        }
-        return { status, ...none, baseline: null, capture: sha256(first), size: pngSize(first) };
+        return {
+            status: same ? "unseeded" : "new",
+            ...none,
+            baseline: null,
+            capture: sha256(first),
+            size: pngSize(first),
+        };
     }
-    const vsFirst = compareImages(baseline, first, options);
-    if (vsFirst.status === "unchanged") {
-        return matched(vsFirst, false);
-    }
-    if (second === null) {
-        return { ...vsFirst, flaky: false };
-    }
-    const vsSecond = compareImages(baseline, second, options);
-    if (vsSecond.status === "unchanged") {
-        return matched(vsSecond, true);
-    }
-    return { ...vsFirst, status: agree() ? "changed" : "unstable", flaky: false };
+    const r = compareImages(baseline, first, options);
+    const status = r.status === "unchanged" && moved ? "moved" : r.status;
+    return { ...r, status, flaky: false };
 }
 
 /**
@@ -202,6 +192,6 @@ export function classify({ baseline, first, second = null, reference = null, thr
  * @param {Buffer} bytes PNG bytes
  * @returns {number[]} [width, height], read from the IHDR chunk without decoding the image
  */
-function pngSize(bytes) {
+export function pngSize(bytes) {
     return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
 }
