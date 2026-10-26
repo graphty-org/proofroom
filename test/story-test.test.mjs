@@ -30,6 +30,47 @@ describe("story tests' visual step", () => {
         expect([gray(0), gray(1799), gray(1800), gray(1809)]).toEqual([10, 10, 20, 20]);
     });
 
+    it("scrolls the body when the window cannot scroll (html and body overflow: hidden, height: 100%)", async () => {
+        const out = tempDir("story-test-out-");
+        const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
+        // 1,063 CSS px tall, as graphty's CompactOverview Size Specifications: the window stays at 0
+        // and the body scrolls to its end (163 px), whose last 163 px are the rows below the first tile.
+        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800)];
+        const ctx = context([...tiles, ...tiles], { width: 1200, height: 1063 });
+        const frame = await ctx.frame();
+        const measured = frame.evaluate;
+        frame.evaluate = async (fn, arg) => {
+            if (!fn.toString().includes("scrollTo")) {
+                return measured(fn, arg);
+            }
+            const body = { scrollLeft: 0, scrollTop: 0 };
+            const root = { scrollWidth: 1200, clientWidth: 1200, scrollHeight: 900, clientHeight: 900 };
+            body.scrollTo = (x, y) => Object.assign(body, { scrollLeft: Math.max(0, x), scrollTop: Math.min(y, 163) });
+            const saved = { scrollTo: globalThis.scrollTo, document: globalThis.document };
+            Object.assign(globalThis, {
+                scrollTo: () => undefined,
+                scrollX: 0,
+                scrollY: 0,
+                document: { body, documentElement: root },
+            });
+            try {
+                return fn(arg);
+            } finally {
+                Object.assign(globalThis, saved);
+                delete globalThis.scrollX;
+                delete globalThis.scrollY;
+            }
+        };
+        await v.commands.visualPlan(ctx, { id: "a--app-css", chromatic: {} });
+        const shoot = () => v.commands.visualShot(ctx, { id: "a--app-css", mode: null, chromatic: {}, console: [] });
+        expect(await shoot()).toEqual({ again: true });
+        expect(await shoot()).toEqual({ status: "new" });
+        const shot = PNG.sync.read(readFileSync(join(out, "a--app-css.png")));
+        expect([shot.width, shot.height]).toEqual([2400, 2126]);
+        const gray = (y) => shot.data[y * 2400 * 4];
+        expect([gray(0), gray(1799), gray(1800), gray(2125)]).toEqual([10, 10, 20, 20]);
+    });
+
     it("records unchanged, changed (after a second render), unstable and failed stories as capture.mjs does", async () => {
         const root = repo({ "a--same.png": png(10), "a--moves.png": png(10), "a--wobbles.png": png(10) });
         const out = tempDir("story-test-out-");

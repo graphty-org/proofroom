@@ -93,17 +93,22 @@ const park = (page) => page.mouse.move(-1, -1);
 
 /**
  * Scrolls the tester iframe's document, as near to (x, y) as it goes, and waits for what came
- * into view (a lazy image) and two frames.
+ * into view (a lazy image) and two frames. A page whose html and body are `overflow: hidden` and
+ * `height: 100%` (an app's stylesheet) does not scroll the window at all: its overflow scrolls
+ * inside the body, so the body scrolls instead.
  * @param {import("playwright").Frame} frame the tester iframe
  * @param {number} x in CSS px
  * @param {number} y in CSS px
- * @returns {Promise<{ x: number, y: number }>} where it scrolled to
+ * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
  */
 async function scrollFrame(frame, x, y) {
     const at = await frame.evaluate(
         ([left, top]) => {
             globalThis.scrollTo(left, top);
-            return { x: globalThis.scrollX, y: globalThis.scrollY };
+            const { body, documentElement: d } = document;
+            // Only on an axis the window cannot scroll at all does the body hold the overflow.
+            body.scrollTo(d.scrollWidth > d.clientWidth ? 0 : left, d.scrollHeight > d.clientHeight ? 0 : top);
+            return { x: globalThis.scrollX + body.scrollLeft, y: globalThis.scrollY + body.scrollTop };
         },
         [x, y],
     );
