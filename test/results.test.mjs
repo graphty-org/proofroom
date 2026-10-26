@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { parseResultLines, passed, resultLine, validateResultLine } from "../trusted/lib/result-line.mjs";
 import { MAX_ITEMS, validateResults } from "../trusted/lib/results.mjs";
+import { FIXTURE } from "./helpers.mjs";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -128,5 +132,100 @@ describe("validateResults", () => {
     it("rejects a non-object and a wrong version", () => {
         expect(validateResults(null)).not.toEqual([]);
         expect(validateResults(results({ version: 2 }))).not.toEqual([]);
+    });
+});
+
+describe("validateResults reads the fields compare and run add", () => {
+    const areas = [
+        [10, 20, 80, 24],
+        [0, 0, 1, 1],
+    ];
+    const pictures = { plain: "button--primary.dark.plain.webp", spot: "button--primary.dark.spot.png" };
+    const attempts = [{ status: "changed", capture: HASH_B, changedPixels: 3, reason: null, console: ["warn"] }];
+    const renderer = { name: "chromium", version: "143.0.7499.4" };
+
+    it("accepts areas, pictures, attempts and the renderer", () => {
+        const items = [
+            item({ areas, pictures, attempts }),
+            item({ id: "b--c", mode: null, file: "b--c.png", areas: [] }),
+        ];
+        expect(validateResults(results({ renderer, items }))).toEqual([]);
+    });
+
+    it("accepts an item without flaky, and an old file as it is", () => {
+        const noFlaky = item();
+        delete noFlaky.flaky;
+        expect(validateResults(results({ items: [noFlaky] }))).toEqual([]);
+        const old = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        expect(validateResults(old)).toEqual([]);
+        expect(validateResults(results())).toEqual([]);
+    });
+
+    it("rejects a bad area, picture, attempt or renderer", () => {
+        const at = (overrides) => validateResults(results({ items: [item(overrides)] }));
+        expect(at({ areas: [[0, 0, 0, 5]] })).toEqual([
+            "items[0].areas must be at most 1000 boxes [x, y, width, height]",
+        ]);
+        expect(at({ areas: [[1, 2, 3]] })).toHaveLength(1);
+        expect(at({ pictures: { plain: "../x.webp" } })).toEqual([
+            "items[0].pictures must map at most 20 kinds to .png or .webp file names",
+        ]);
+        expect(at({ pictures: { plain: "a/b.webp" } })).toHaveLength(1);
+        expect(at({ pictures: { Plain: "b.webp" } })).toHaveLength(1);
+        expect(at({ pictures: ["b.webp"] })).toHaveLength(1);
+        expect(at({ attempts: {} })).toEqual(["items[0].attempts must be an array of at most 20 earlier attempts"]);
+        expect(at({ attempts: [{ ...attempts[0], status: "approved", capture: "x" }] })).toEqual([
+            "items[0].attempts[0].status must be one of unchanged, moved, changed, new, unseeded, removed, unstable, failed, excluded",
+            "items[0].attempts[0].capture must be a sha256 or null",
+        ]);
+        expect(at({ attempts: [null] })).toEqual(["items[0].attempts[0] must be an object"]);
+        expect(at({ flaky: "no" })).toEqual(["items[0].flaky must be a boolean"]);
+        expect(validateResults(results({ renderer: { name: "chromium" } }))).toEqual([
+            "renderer must be { name, version }",
+        ]);
+    });
+});
+
+describe("result lines", () => {
+    const line = (overrides = {}, where = { project: "compact-mantine", attempt: 1 }) =>
+        resultLine(item(overrides), where);
+
+    it("is an item plus project, attempt and passed", () => {
+        expect(line()).toEqual({ ...item(), project: "compact-mantine", attempt: 1, passed: false });
+        expect(validateResultLine(line())).toEqual([]);
+        expect(validateResultLine(line({ status: "unchanged", capture: HASH_A }))).toEqual([]);
+    });
+
+    it("passes an unchanged snapshot, does not fail an excluded one, and fails every other status", () => {
+        const of = (status) => passed({ status });
+        expect(["unchanged", "excluded"].map(of)).toEqual([true, true]);
+        const failing = ["moved", "changed", "new", "unseeded", "removed", "unstable", "failed"];
+        expect(failing.map(of)).toEqual(failing.map(() => false));
+    });
+
+    it("refuses a line with a bad item with the item's own messages", () => {
+        const bad = { file: "../x.png", status: "approved", flaky: 1 };
+        const asItem = validateResults(results({ items: [item(bad)] }));
+        expect(asItem.length).toBeGreaterThan(0);
+        expect(validateResultLine(line(bad))).toEqual(asItem.map((m) => m.replace(/^items\[0\]/, "line")));
+    });
+
+    it("refuses a bad project, attempt or passed", () => {
+        expect(validateResultLine(null)).toEqual(["line must be an object"]);
+        expect(validateResultLine({ ...line(), project: "Bad" })).toEqual(["line.project must be a lowercase name"]);
+        expect(validateResultLine({ ...line(), attempt: 0 })).toEqual(["line.attempt must be a positive integer"]);
+        expect(validateResultLine({ ...line(), passed: "no" })).toEqual(["line.passed must be a boolean"]);
+        expect(validateResultLine({ ...line(), passed: true })).toEqual([
+            "line.passed must be false for a changed item",
+        ]);
+    });
+
+    it("reads a file of lines and names the first bad one", () => {
+        const good = JSON.stringify(line());
+        expect(parseResultLines(`${good}\n\n${good}\n`)).toHaveLength(2);
+        expect(() => parseResultLines(`${good}\n{`)).toThrow("result line 2 is not JSON");
+        expect(() => parseResultLines(`${good}\n${JSON.stringify({ ...line(), attempt: -1 })}`)).toThrow(
+            "result line 2: line.attempt must be a positive integer",
+        );
     });
 });
