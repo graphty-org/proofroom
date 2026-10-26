@@ -41,6 +41,7 @@ describe("row states", () => {
         expect(rows.get("local").kind).toBe("preview");
         expect(rows.get("master").kind).toBe("seed");
         expect(rows.get("master").branch).toBe("master at 6dfc21d");
+        expect(rows.get("master").title).toBe("Seed from master");
         expect(rows.get("local").source).toBe("this machine");
         expect(rows.get("3486").source).toBe("CI");
     });
@@ -55,6 +56,21 @@ describe("row states", () => {
         expect(rowOf(fiftyChanges()[0], { shares }).badges.map((b) => b.text)).toEqual([
             "shares 14 baselines with #3471",
         ]);
+    });
+
+    it("keeps a look-only change look only while a project still captures or failed", () => {
+        for (const problem of ["visual job still running", "capture failed"]) {
+            const r = rowOf(target(1, { lookOnly: true, projects: [project("p", { reviewable: 4, problem })] }));
+            expect([r.state, r.section, r.count]).toEqual(["look", "look", "Look only: 4 to view"]);
+        }
+    });
+
+    it("has nothing to review until its captures are in; failed stories are there to review", () => {
+        const ready = (id) => !rows.get(id).notReady;
+        expect(["3478", "3477", "3475"].map(ready)).toEqual([false, false, false]);
+        const failedJob = rowOf(target(1, { projects: [project("p", { reviewable: 4, problem: "capture failed" })] }));
+        expect([failedJob.state, failedJob.notReady]).toEqual(["failed", true]);
+        expect([rows.get("3476").state, ready("3476"), ready("3484")]).toEqual(["failed", true, true]);
     });
 
     it("offers Dismiss on a finished row until it is dismissed", () => {

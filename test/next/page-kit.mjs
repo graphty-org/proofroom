@@ -41,10 +41,10 @@ export const BROWSERS = { chromium, webkit };
  * @param {import("playwright").Browser} browser the browser
  * @param {{ targets?: object[], list?: object, rows?: (id: string, project: string) => object,
  *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string>,
- *     clock?: boolean }} [options]
+ *     clock?: boolean, ui?: "review" | "next", path?: string }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
- *     project's reviewable), the window, the address after #, local storage to start with, and
- *     whether the test controls the page's clock
+ *     project's reviewable), the window, the address after #, local storage to start with,
+ *     whether the test controls the page's clock, the server's page at /, and the path to open
  * @returns {Promise<{ page: import("playwright").Page, context: import("playwright").BrowserContext,
  *     close: () => Promise<void>, actions: object[],
  *     requests: string[], origin: string, setList: (answer: object) => void }>} the tab, how to
@@ -52,7 +52,7 @@ export const BROWSERS = { chromium, webkit };
  *     the list's next answer
  */
 export async function openNext(browser, options = {}) {
-    const s = await startApp(makeRepo(), { gh: fakeGh({}), token: TOKEN });
+    const s = await startApp(makeRepo(), { gh: fakeGh({}), token: TOKEN, ...(options.ui && { ui: options.ui }) });
     const context = await browser.newContext({ viewport: options.viewport ?? { width: 1440, height: 900 } });
     // Copy link writes to the clipboard: Chromium asks for the permission, WebKit has none to give.
     await context.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
@@ -105,7 +105,7 @@ export async function openNext(browser, options = {}) {
         await page.clock.install();
         await page.clock.resume();
     }
-    await page.goto(`${s.origin}/next/#${options.hash ?? `token=${TOKEN}`}`);
+    await page.goto(`${s.origin}${options.path ?? "/next/"}#${options.hash ?? `token=${TOKEN}`}`);
     return {
         page,
         context,

@@ -11,6 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startApp } from "../faults.mjs";
 import { makeRepo, onePr } from "../helpers.mjs";
 import { COVERS } from "./covers.mjs";
+import { NOW } from "./fixtures.mjs";
 import { TOKEN, fiftyChanges, listAnswer, message, openNext, project, rowsAnswer, target } from "./page-kit.mjs";
 
 let browser;
@@ -217,7 +218,7 @@ describe("with 50 changes", () => {
         // With Changes on its rail, the Snapshots header carries Next change [Shift+N].
         expect(await page.locator('#snaps-head [data-act="nextchange"]').innerText()).toBe("Next changeShift+N");
         await page.keyboard.press("Shift+KeyN");
-        await expect.poll(() => message(page)).toBe("Opened seed master: 12 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened seed Seed from master: 12 undecided.");
         await page.keyboard.press("Escape");
         await expect.poll(() => message(page)).toBe("Back to the changes.");
         // Back at the changes, the Changes header carries it.
@@ -563,4 +564,73 @@ describe("on the real server", () => {
 // Last, after every test above: each action listed for this file was pressed by one of them.
 it("pressed every action covers.mjs lists for this file", () => {
     expect([...COVERS["changes.page.test.mjs"]].filter((id) => !pressed.has(id))).toEqual([]);
+});
+
+describe("the page at / with --ui next", () => {
+    it("loads its styles and scripts and draws the changes, with nothing missing", async () => {
+        const missing = [];
+        t = await openNext(browser, { targets: fiftyChanges(), ui: "next", path: "/" });
+        t.page.on("response", (r) => r.status() === 404 && missing.push(new URL(r.url()).pathname));
+        await t.page.reload();
+        await t.page.locator(".chg").first().waitFor();
+        expect(await t.page.locator("#repo").innerText()).toBe("graphty-monorepo");
+        expect(missing).toEqual([]);
+    });
+});
+
+describe("while the server's first list loads", () => {
+    it("shows the step and the time in a box, not an empty list, then the changes", async () => {
+        const waiting = listAnswer(null, {
+            updatedAt: null,
+            refreshing: { step: "fetching branches", done: null, total: null, startedAt: NOW - 12000 },
+        });
+        const page = await open({ list: waiting });
+        await expect
+            .poll(() => page.locator("#wait-box").innerText())
+            .toMatch(/^Waiting for the code host\n+Fetching branches, \d+ s$/);
+        expect(await page.locator("#screens").isVisible()).toBe(false);
+        expect(await page.getByText("No changes yet").count()).toBe(0);
+        expect(await page.getByText("No captures yet.").count()).toBe(0);
+        expect(await page.locator("#srvstatus").innerText()).toBe("Loading...");
+        t.setList(listAnswer(fiftyChanges()));
+        await page.locator(".chg").first().waitFor();
+        expect(await page.locator("#wait-box").count()).toBe(0);
+    });
+});
+
+describe("a poll while a control has focus", () => {
+    it("keeps focus on the row menu the reader tabbed to, so Enter still opens the menu", async () => {
+        const page = await open({ targets: fiftyChanges(), clock: true });
+        await page.locator(".chg").first().waitFor();
+        const focused = () =>
+            page.evaluate(() => {
+                const a = globalThis.document.activeElement;
+                return `${a?.closest(".chg")?.dataset.chg ?? ""} ${a?.dataset.act ?? a?.id}`;
+            });
+        for (let i = 0; i < 20 && (await focused()) !== "3484 rowmenu"; i++) {
+            await page.keyboard.press("Tab");
+        }
+        expect(await focused()).toBe("3484 rowmenu");
+        const lists = () => t.requests.filter((r) => r.startsWith("/api/prs")).length;
+        const before = lists();
+        t.setList(listAnswer(fiftyChanges(), { updatedAt: NOW - 10000 }));
+        await page.clock.fastForward(16000);
+        await expect.poll(lists).toBe(before + 1);
+        // The poll's answer is drawn: the top bar says so.
+        await expect.poll(() => page.locator("#srvstatus").innerText()).toBe("Updated 10 s ago");
+        expect(await focused()).toBe("3484 rowmenu");
+        await page.keyboard.press("Enter");
+        await page.getByRole("menu").waitFor();
+        expect(await page.locator(".iline").count()).toBe(0);
+    });
+});
+
+describe("a change still capturing", () => {
+    it("opens to say there is nothing to review yet, loading none of its snapshots", async () => {
+        const page = await open({ targets: fiftyChanges() });
+        await page.locator('.chg[data-chg="3477"]').click();
+        await expect.poll(() => message(page)).toBe("#3477: Capturing on CI, 2 of 3 projects. Nothing to review yet.");
+        expect(t.requests.filter((r) => r.startsWith("/api/pr/3477/"))).toEqual([]);
+        expect(await page.locator(".iline").count()).toBe(0);
+    });
 });

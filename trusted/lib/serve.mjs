@@ -1718,7 +1718,8 @@ export function createApp({
                 next.set(
                     "master",
                     await getRun(gh, masterRun)
-                        .then((run) => build(info, run))
+                        // When CI last touched the run, as a pull request's "4 min ago".
+                        .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
                         .catch((err) => keptOr(info, err)),
                 );
             }

@@ -150,7 +150,7 @@ function summaryOf(c) {
             `${fmt(c.counts[s])} ${STATUS[s][0]}`,
         ),
     );
-    const ready = !["downloading", "capturing", "failed", "incomplete", "nothing"].includes(c.state);
+    const ready = !c.notReady && c.state !== "nothing";
     return el(
         "div",
         { class: "summary" },
@@ -159,7 +159,7 @@ function summaryOf(c) {
         el(
             "div",
             { class: "small muted" },
-            [`by ${c.author ?? "unknown"}`, `from ${c.source}`, `${c.ready} projects ready`, c.age]
+            [c.author && `by ${c.author}`, `from ${c.source}`, `${c.ready} projects ready`, c.age]
                 .filter(Boolean)
                 .join(", "),
         ),
@@ -319,12 +319,70 @@ function drawMsgButton() {
 
 /** Redraws everything that depends on the state, then the key hints. */
 function draw() {
+    const focus = focusedControl();
     drawTop();
-    drawChangesPane();
-    drawSnaps();
-    drawViewer();
-    drawMsgButton();
+    if (!drawWaiting()) {
+        drawChangesPane();
+        drawSnaps();
+        drawViewer();
+        drawMsgButton();
+    }
+    refocus(focus);
     settle();
+}
+
+// The control that has focus, by what it is (its action, zone, row and id), so a redraw that
+// replaces it can give focus to the new one: a poll never drops a control the reader tabbed to.
+function focusedControl() {
+    const f = /** @type {HTMLElement | null} */ (document.activeElement);
+    if (!f?.dataset?.act) {
+        return null;
+    }
+    return { node: f, act: f.dataset.act, zone: f.dataset.zone, id: f.id, where: rowKey(f) };
+}
+
+const rowKey = (n) => {
+    const row = n.closest("[data-chg], [data-snap], [data-sec]");
+    return row ? `${row.dataset.chg ?? ""}|${row.dataset.snap ?? ""}|${row.dataset.sec ?? ""}` : "";
+};
+
+function refocus(was) {
+    if (!was || was.node.isConnected) {
+        return;
+    }
+    const same = [...document.querySelectorAll(`[data-act="${CSS.escape(was.act)}"]`)].find(
+        (n) => n.dataset.zone === was.zone && n.id === was.id && rowKey(n) === was.where,
+    );
+    same?.focus({ preventScroll: true });
+}
+
+// Until the server's first list is in, a centered box says what it is doing and for how long
+// (design 10), in place of the panes: an empty list would read as "no changes".
+function drawWaiting() {
+    const waiting = !Array.isArray(app.list?.targets) && !$("token-box");
+    $("screens").hidden = waiting || Boolean($("token-box"));
+    if (!waiting) {
+        $("wait-box")?.remove();
+        return false;
+    }
+    const r = app.list?.refreshing;
+    // The server's step started on its clock; without one, the time since this page asked.
+    const since = r?.startedAt
+        ? (app.list.now ?? app.listAt) + (Date.now() - app.listAt) - r.startedAt
+        : Date.now() - app.bootAt;
+    const s = Math.max(0, Math.round(since / 1000));
+    const step = r?.step
+        ? `${r.step[0].toUpperCase()}${r.step.slice(1)}${r.total ? ` (${r.done ?? 0} of ${r.total})` : ""}`
+        : "Waiting for the review server";
+    const box = $("wait-box") ?? el("div", { class: "tokenbox", id: "wait-box", role: "status" });
+    box.replaceChildren(
+        el("b", {}, "Waiting for the code host"),
+        el("p", { class: "small" }, `${step}, ${s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}`),
+    );
+    if (!box.isConnected) {
+        $("screens").after(box);
+    }
+    return true;
 }
 
 // After a redraw: the key hints, and the controls on screen for the usage log.
@@ -472,7 +530,8 @@ app.openChange = async (id, { snap = null, quiet = false } = {}) => {
     // A change opened later supersedes any load still running: its change is no longer current.
     app.pendingId = null;
     let snaps = [];
-    if (c.total > 0) {
+    // A change not ready opens to say there is nothing to review yet (design 3.3).
+    if (c.total > 0 && !c.notReady) {
         // The picked row is current at once, so a key pressed while its snapshots load acts on it.
         app.pendingId = id;
         draw();
@@ -809,6 +868,7 @@ function askToken(refused) {
         runAction(app, "usetoken", {}, "key");
     });
     $("token-box")?.remove();
+    $("wait-box")?.remove();
     $("screens").hidden = true;
     $("screens").after(form);
     field.focus();
@@ -906,8 +966,10 @@ async function poll() {
             layout("changes");
         }
         draw();
-    } else {
+    } else if (Array.isArray(app.list?.targets)) {
         drawTop();
+    } else {
+        draw();
     }
 }
 
@@ -973,12 +1035,14 @@ async function boot() {
         // Today's page's link: written again in the new page's form, in place.
         history.replaceState(null, "", formatAddress({ ...wanted, token: currentToken() }));
     }
+    app.bootAt = Date.now();
     layout("changes");
     draw();
     while (!(await loadList())) {
         if (app.failed !== null) {
             break;
         }
+        draw();
         await new Promise((resolve) => setTimeout(resolve, 500));
     }
     draw();

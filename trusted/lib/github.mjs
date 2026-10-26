@@ -249,6 +249,7 @@ const toRun = (r) => ({
     conclusion: r.conclusion,
     url: r.html_url,
     headSha: r.head_sha,
+    updatedAt: r.updated_at ?? null,
 });
 
 /**

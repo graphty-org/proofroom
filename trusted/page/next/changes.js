@@ -66,7 +66,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         kind,
         pr: t.pr,
         label: t.pr !== null && !local ? `#${t.pr}` : kind,
-        title: t.title ?? "",
+        title: kind === "seed" ? `Seed from ${defaultBranch}` : (t.title ?? ""),
         branch:
             t.branch ??
             (t.pr === null && !local ? `${defaultBranch}${t.commit ? ` at ${t.commit.slice(0, 7)}` : ""}` : null),
@@ -93,8 +93,11 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         badges: [],
         stale: t.stale ?? 0,
     };
-    // The state, its mark and its words (design 3.5).
-    if (t.downloading || states.includes("downloading")) {
+    // The state, its mark and its words (design 3.5). A look-only change is look only whatever its
+    // projects' state: it is viewed, never decided.
+    if (row.lookOnly) {
+        Object.assign(row, { state: "look", mark: ["eye", "c-ink2"], count: `Look only: ${fmt(total)} to view` });
+    } else if (t.downloading || states.includes("downloading")) {
         const d = t.download ?? { done: 0, total: projects.length, bytesDone: 0 };
         Object.assign(row, {
             state: "downloading",
@@ -131,8 +134,6 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
             mark: ["failed", "c-failed"],
             count: `Capture failed: ${failedStories.map((p) => p.project).join(", ")}, ${plural(n, "story", "stories")}`,
         });
-    } else if (row.lookOnly) {
-        Object.assign(row, { state: "look", mark: ["eye", "c-ink2"], count: `Look only: ${fmt(total)} to view` });
     } else if (total === 0) {
         Object.assign(row, { state: "nothing", mark: null, count: "No differences" });
     } else if (undecided === 0 && (t.unpublished ?? 0) === 0) {
@@ -152,6 +153,9 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
     } else {
         Object.assign(row, { state: "review", mark: ["open", "c-new"], count: `${fmt(undecided)} undecided` });
     }
+    // Nothing to review until its captures are in: a project still downloading or capturing, or one
+    // whose capture failed or expired. A capture with failed stories has those stories to review.
+    row.notReady = ["downloading", "capturing", "incomplete"].includes(row.state) || states.includes("failed");
     row.dismissKey = `${t.id} ${row.runKey}`;
     row.dismissable = row.state === "finished" && !dismissed.has(row.dismissKey);
     row.section =
