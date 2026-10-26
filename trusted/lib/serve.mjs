@@ -969,13 +969,12 @@ export function createApp({
             }),
         );
         const file = stateFile(t);
-        writeJson(file, saved);
-        // What was just written is what the next read gets, unless the file changes again.
-        const stat = statSync(file, { throwIfNoEntry: false });
-        if (stat) {
-            savedStates.set(file, { stamp: stampOf(stat), saved });
-            patchIndex(t, was, saved, touched);
-        }
+        // What was just written is what the next read gets, unless the file changes again. The stamp
+        // is of the bytes written here: a write another process renames over them straight after
+        // has another, so the next read takes that one.
+        const stat = writeJson(file, saved);
+        savedStates.set(file, { stamp: stampOf(stat), saved });
+        patchIndex(t, was, saved, touched);
     };
 
     /**
@@ -4147,5 +4146,7 @@ export function createApp({
     };
     handler.serverId = serverId;
     handler.work = work;
+    // A target's decisions as the list shows them, by `<project>/<file>`: for the bench's lookup timing.
+    handler.decisionsOf = (id) => (targets.has(id) ? decisionsOf(targets.get(id)) : null);
     return handler;
 }

@@ -6,7 +6,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, get } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import * as filters from "../trusted/lib/filters.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import {
     capturedItems,
+    FIXTURE,
     FIXTURE_CONFIG,
     git,
     isolateGit,
@@ -24,6 +25,21 @@ import {
     onePr,
     seedTiles,
 } from "./helpers.mjs";
+
+// A step run right after the next rename onto `file`, by any app here: another process's write.
+const afterRename = vi.hoisted(() => ({ file: null, hook: null }));
+vi.mock("node:fs", async (importOriginal) => {
+    const fs = /** @type {typeof import("node:fs")} */ (await importOriginal());
+    const renameSync = (from, to) => {
+        fs.renameSync(from, to);
+        const hook = afterRename.hook;
+        if (hook && String(to) === afterRename.file) {
+            afterRename.hook = null;
+            hook(String(to), fs);
+        }
+    };
+    return { ...fs, default: { ...fs, renameSync }, renameSync };
+});
 
 // Counts the calls of the item index's builder and of the Look alike grouping, by any app here.
 vi.mock("../trusted/lib/filters.mjs", async (importOriginal) => {
@@ -130,35 +146,86 @@ const bigPr = (items) => (r) =>
     })(r);
 
 /**
- * The decisions a run shows, as the server worked them out before the index: each saved decision
- * whose item is found by a scan of the list, on the same image and baseline, and still decidable.
- * Kept here as the oracle the index must agree with.
+ * The decisions a run shows, as the server worked them out before the index: decisionsOf and
+ * addApprovedBefore as they were, with the target's state they read passed in. Kept here as the
+ * oracle the index must agree with.
  * @param {object[]} items the project's items
  * @param {Record<string, object>} saved the decisions file
+ * @param {Map<string, string | null>} published what the branch holds of the pull request's own
+ *     review records, `to` by baseline path
+ * @param {Map<string, object>} approved the images approved before, by `<path> <capture>`
  * @returns {Record<string, object>} the decisions by file
  */
-function scanned(items, saved) {
-    const mine = {};
-    for (const [k, { hash, base, ...d }] of Object.entries(saved)) {
-        const file = k.slice(PROJECT.length + 1);
-        const item = items.find((i) => i.file === file);
-        if (
-            k.startsWith(`${PROJECT}/`) &&
-            item &&
-            (item.capture ?? item.baseline ?? null) === hash &&
-            (base === undefined || base === (item.baseline ?? null)) &&
-            !decisionProblem(item, d.decision, d.reason ?? null)
-        ) {
-            mine[file] = d;
+function oldDecisions(items, saved, published, approved) {
+    const config = { baselines: FIXTURE_CONFIG.baselines };
+    const t = { projects: [{ project: PROJECT, results: { items } }], published };
+    const readState = () => saved;
+    const acceptable = () => true;
+    const imageHash = (item) => item.capture ?? item.baseline ?? null;
+    const itemOf = (t, key) => {
+        const at = key.indexOf("/");
+        const p = t.projects.find((x) => x.project === key.slice(0, at));
+        return p?.results?.items.find((i) => i.file === key.slice(at + 1));
+    };
+    const onBranch = (t, project, item, decision) => {
+        if (decision === "reject" || !t.published) {
+            return true;
         }
-    }
-    return mine;
+        const dir = `${config.baselines}/${project}`;
+        if (decision === "exclude") {
+            return (t.published.get(`${dir}/${item.id}.json`) ?? null) !== null;
+        }
+        const to = t.published.get(`${dir}/${item.file}`);
+        return to !== undefined && to === (item.status === "removed" ? null : item.capture);
+    };
+    const approvedBefore = (t, project, item) =>
+        ["changed", "new", "unseeded"].includes(item.status) && !item.from && item.capture && acceptable(t, project)
+            ? (approved.get(`${config.baselines}/${project}/${item.file} ${item.capture}`) ?? null)
+            : null;
+    const addApprovedBefore = (t, mine) => {
+        for (const p of t.projects) {
+            for (const item of p.results?.items ?? []) {
+                const k = `${p.project}/${item.file}`;
+                const before = mine.has(k) ? null : approvedBefore(t, p.project, item);
+                if (before) {
+                    const posted = t.published?.get(`${config.baselines}/${k}`) === item.capture;
+                    mine.set(k, {
+                        decision: "accept",
+                        reason: null,
+                        approvedBefore: before,
+                        ...(posted && { posted }),
+                    });
+                }
+            }
+        }
+    };
+    const decisionsOf = (t) => {
+        const mine = new Map();
+        for (const [k, { hash, base, ...d }] of Object.entries(readState(t))) {
+            const item = itemOf(t, k);
+            const project = k.slice(0, k.indexOf("/"));
+            if (
+                item &&
+                imageHash(item) === hash &&
+                (base === undefined || base === (item.baseline ?? null)) &&
+                !decisionProblem(item, d.decision, d.reason ?? null) &&
+                (d.decision === "reject" || acceptable(t, project))
+            ) {
+                const { posted, ...rest } = d;
+                mine.set(k, posted && !onBranch(t, project, item, d.decision) ? rest : d);
+            }
+        }
+        addApprovedBefore(t, mine);
+        return mine;
+    };
+    return Object.fromEntries([...decisionsOf(t)].map(([k, d]) => [k.slice(PROJECT.length + 1), d]));
 }
 
 /**
  * A decisions file over the items with every case the server tells apart: kept accepts and
  * rejects, a reject without a reason, another image, another baseline, one saved before the
- * baseline was kept, and a story the run does not have.
+ * baseline was kept, accepts and rejects an earlier Finish published, and a story the run does
+ * not have.
  * @param {object[]} items the items
  * @returns {Record<string, object>} the decisions file
  */
@@ -174,6 +241,8 @@ function mixedState(items) {
             { decision: "accept", reason: null, hash: "0".repeat(64), base: null },
             { decision: "accept", reason: null, hash, base: "1".repeat(64) },
             { decision: "accept", reason: null, hash, bulk: true },
+            { decision: "accept", reason: null, hash, base: null, posted: true },
+            { decision: "reject", reason: "posted", hash, base: null, posted: true },
             null,
         ];
         const d = cases[i % cases.length];
@@ -185,17 +254,120 @@ function mixedState(items) {
     return saved;
 }
 
+// The earlier approval on master (approvedBefore) and the pull request's own record (published).
+const APPROVAL = "visual-baselines/reviews/20261001T000000Z-pr77.json";
+const OWN_RECORD = "visual-baselines/reviews/20261002T000000Z-pr123.json";
+const pathOf = (item) => `${FIXTURE_CONFIG.baselines}/${PROJECT}/${item.file}`;
+
 describe("serve: the decision index", () => {
-    it("shows the same decisions at 3,000 stories as the scan of the list did", async () => {
+    it("shows the same decisions at 3,000 stories as the scan of the list did, after loads and writes", async () => {
+        const items = newItems(N);
+        const capture = readFileSync(join(FIXTURE, PROJECT, "badge--default.light.png"));
+        const r = makeRepo();
+        const commit = (branch, message, files) => {
+            git(r.repo, "checkout", "-q", branch);
+            for (const [path, data] of Object.entries(files)) {
+                mkdirSync(dirname(join(r.repo, path)), { recursive: true });
+                writeFileSync(join(r.repo, path), data);
+            }
+            // Only these files: the server's own folder is inside the working tree.
+            git(r.repo, "add", "--", ...Object.keys(files));
+            git(r.repo, "commit", "-q", "-m", message);
+            git(r.repo, "push", "-q", "origin", branch);
+            return git(r.repo, "rev-parse", "HEAD");
+        };
+        // Every 11th story's exact image was approved before, on master.
+        const approvedItems = items.filter((_, i) => i % 11 === 3);
+        const tip = commit("master", "an earlier approval", {
+            [APPROVAL]: JSON.stringify({
+                version: 1,
+                unproven: true,
+                pr: 77,
+                items: approvedItems.map((i) => ({ path: pathOf(i), from: null, to: i.capture, reason: null })),
+                reviewedAt: "2026-10-01T00:00:00.000Z",
+            }),
+        });
+        const approved = new Map(
+            approvedItems.map((i) => [
+                `${pathOf(i)} ${i.capture}`,
+                { pr: 77, commit: tip, record: APPROVAL, reviewedAt: "2026-10-01T00:00:00.000Z" },
+            ]),
+        );
+        // An earlier Finish of this pull request named some stories; the branch holds half of them.
+        const named = items.filter((_, i) => i % 97 === 0 || i % 97 === 50);
+        const held = named.filter((_, i) => i % 2 === 0);
+        commit("feature", "an earlier Finish", {
+            [OWN_RECORD]: JSON.stringify({
+                version: 1,
+                pr: 123,
+                items: named.map((i) => ({ path: pathOf(i), from: null, to: i.capture, reason: null })),
+                reviewedAt: "2026-10-02T00:00:00.000Z",
+            }),
+            ...Object.fromEntries(held.map((i) => [pathOf(i), capture])),
+        });
+        git(r.repo, "checkout", "-q", "master");
+        let published = new Map(held.map((i) => [pathOf(i), i.capture]));
+
+        const s = await start({ r, gh: bigPr(items) });
+        await s.api("GET", "/api/prs");
+        const file = join(s.tmp, "state/123.json");
+        writeFileSync(file, JSON.stringify(mixedState(items)));
+        const compare = async () => {
+            const { decisions } = (await s.api("GET", `/api/pr/123/${PROJECT}`)).body;
+            const want = oldDecisions(items, JSON.parse(readFileSync(file, "utf8")), published, approved);
+            expect(decisions).toEqual(want);
+            return want;
+        };
+        const first = await compare();
+        expect(Object.keys(first).length).toBeGreaterThan(1000);
+        const shown = Object.values(first);
+        expect(shown.filter((d) => d.posted && !d.approvedBefore).length).toBeGreaterThan(300);
+        expect(shown.filter((d) => d.decision === "accept" && d.posted && !d.approvedBefore).length).toBeGreaterThan(0);
+        expect(shown.filter((d) => d.approvedBefore).length).toBeGreaterThan(100);
+
+        // Writes: a published accept taken back, an approved-before image rejected, a new accept.
+        const decide = (item, decision, reason) =>
+            s.api("POST", "/api/decide", { id: "123", project: PROJECT, file: item.file, decision, reason });
+        const postedAccept = items.find((_, i) => i % 9 === 6 && (i % 97 === 0 || i % 97 === 50));
+        expect((await decide(postedAccept, null)).status).toBe(200);
+        expect((await decide(approvedItems[0], "reject", "not this time")).status).toBe(200);
+        expect((await decide(items.find((_, i) => i % 9 === 8), "accept")).status).toBe(200);
+        await compare();
+
+        // The branch stops holding what the earlier Finish published: the next load sees it.
+        commit("feature", "revert the earlier Finish", Object.fromEntries(held.map((i) => [pathOf(i), "reverted\n"])));
+        git(r.repo, "checkout", "-q", "master");
+        published = new Map();
+        await s.api("GET", "/api/prs");
+        const after = await compare();
+        expect(Object.values(after).filter((d) => d.decision === "accept" && d.posted)).toEqual([]);
+    });
+
+    it("reads a decision another process wrote straight after this server's write", async () => {
         const items = newItems(N);
         const s = await start({ gh: bigPr(items) });
         await s.api("GET", "/api/prs");
-        const saved = mixedState(items);
-        writeFileSync(join(s.tmp, "state/123.json"), JSON.stringify(saved));
+        const [a, b] = items;
+        const body = { id: "123", project: PROJECT, decision: "accept" };
+        await s.api("POST", "/api/decide", { ...body, file: a.file });
+        // Another tab's server renames its own write into place as soon as this one's rename ends.
+        const theirs = {
+            [`${PROJECT}/${a.file}`]: { decision: "accept", reason: null, hash: a.capture, base: null },
+            [`${PROJECT}/${b.file}`]: { decision: "reject", reason: "theirs", hash: b.capture, base: null },
+        };
+        afterRename.file = join(s.tmp, "state/123.json");
+        afterRename.hook = (to, fs) => {
+            fs.writeFileSync(`${to}.other`, JSON.stringify(theirs, null, 2));
+            fs.renameSync(`${to}.other`, to);
+        };
+        const c = items[2];
+        expect((await s.api("POST", "/api/decide", { ...body, file: c.file })).status).toBe(200);
+        expect(afterRename.hook).toBeNull();
         const { decisions } = (await s.api("GET", `/api/pr/123/${PROJECT}`)).body;
-        const want = scanned(items, saved);
-        expect(Object.keys(want).length).toBeGreaterThan(1000);
-        expect(decisions).toEqual(want);
+        expect(decisions).toEqual({
+            [a.file]: { decision: "accept", reason: null },
+            [b.file]: { decision: "reject", reason: "theirs" },
+        });
     });
 
     it("answers a decision with no scan of the list and no rebuild of the index", async () => {
