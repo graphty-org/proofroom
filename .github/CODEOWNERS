@@ -2,6 +2,7 @@
 # a change to any of these needs the owner's review.
 /trusted/gate.mjs @apowers313
 /trusted/lib/approval.mjs @apowers313
+/trusted/lib/change-approval.mjs @apowers313
 /trusted/lib/config.mjs @apowers313
 /trusted/page/passkey.js @apowers313
 /.github/ @apowers313
