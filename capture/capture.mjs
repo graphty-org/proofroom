@@ -52,11 +52,11 @@ import { validateResults } from "../trusted/lib/results.mjs";
 /* global document, requestAnimationFrame -- read only inside the page */
 
 /** The instant every page's clock starts at. It keeps running from there. */
-const CLOCK_START = "2026-01-01T12:00:00Z";
+export const CLOCK_START = "2026-01-01T12:00:00Z";
 
-const VIEWPORT = { width: 1200, height: 900 };
+export const VIEWPORT = { width: 1200, height: 900 };
 /** Device pixels per CSS pixel, as Chromatic captures; recorded in results.json as `scale`. */
-const SCALE = 2;
+export const SCALE = 2;
 const RENDER_TIMEOUT = 30_000;
 /**
  * Chromium's switches for every capture. `--disable-gpu-rasterization` draws the page's text and
@@ -188,7 +188,7 @@ const STORY_ID = /^[a-z0-9][a-z0-9-]*$/;
  * @param {string} dir the project's baselines directory
  * @returns {Promise<Map<string, string>>} the old id by new id; empty when there is no file
  */
-async function loadRenames(dir) {
+export async function loadRenames(dir) {
     const path = join(dir, RENAMES);
     let list;
     try {
@@ -218,7 +218,12 @@ async function loadRenames(dir) {
     return byTo;
 }
 
-async function pngsIn(dir) {
+/**
+ * The PNG files in a directory.
+ * @param {string} dir the directory
+ * @returns {Promise<string[]>} their names, sorted; empty when the directory does not exist
+ */
+export async function pngsIn(dir) {
     try {
         return (await readdir(dir)).filter((f) => f.endsWith(".png")).sort();
     } catch (e) {
@@ -496,7 +501,7 @@ export async function screenshotWholePage(page) {
  * (a monorepo that develops it), else the installed package's name and version.
  * @returns {string} a commit sha, or `@graphty/visual-review@<version>`
  */
-function toolVersion() {
+export function toolVersion() {
     const here = dirname(fileURLToPath(import.meta.url));
     const pkg = JSON.parse(readFileSync(join(here, "../package.json"), "utf8"));
     const installed = `${pkg.name}@${pkg.version}`;
@@ -510,7 +515,7 @@ function toolVersion() {
     }
 }
 
-const clip = (lines) => lines.slice(0, MAX_CONSOLE).map((l) => l.slice(0, MAX_LINE));
+export const clip = (lines) => lines.slice(0, MAX_CONSOLE).map((l) => l.slice(0, MAX_LINE));
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 1 << 30 }).trim();
 
@@ -522,7 +527,7 @@ const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer
  * with which build of this tool, so the review page can offer it for decisions before CI's lands.
  * @returns {Promise<object>} the commit, pull request and run fields of results.json, and `local`
  */
-async function provenance() {
+export async function provenance() {
     if (process.env.GITHUB_ACTIONS !== "true") {
         const diff = execFileSync("git", ["diff", "HEAD", "--binary"], { maxBuffer: 1 << 30 });
         const commit = git("rev-parse", "HEAD");
@@ -895,7 +900,7 @@ export async function capture({
     }
 }
 
-const EMPTY = {
+export const EMPTY = {
     flaky: false,
     baseline: null,
     capture: null,
@@ -906,9 +911,15 @@ const EMPTY = {
     console: [],
 };
 
-const BASELINE_NAME = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?\.png$/;
+export const BASELINE_NAME = /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?\.png$/;
 
-async function writeResults(out, results) {
+/**
+ * Writes results.json atomically, so a reader never sees half a file.
+ * @param {string} out the capture directory
+ * @param {object} results the results
+ * @returns {Promise<void>} once written
+ */
+export async function writeResults(out, results) {
     const tmp = join(out, "results.json.tmp");
     await writeFile(tmp, `${JSON.stringify(results, null, 2)}\n`);
     await rename(tmp, join(out, "results.json"));
