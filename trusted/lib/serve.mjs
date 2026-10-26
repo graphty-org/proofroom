@@ -1189,10 +1189,16 @@ export function createApp({
         const g = run.status === "completed" ? kept(run) : gh;
         const jobs = await visualJobs(g, run, run.attempt, names);
         // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
-        // gave none there (a CI app the filter misses), the jobs call this build makes anyway.
+        // gave none there (a CI app the filter misses), the jobs call this build makes anyway,
+        // whose job is still running while it has no conclusion.
         const ciOf = (name) =>
             info.visual?.[name] ??
-            (jobs[name] ? { status: jobs[name].status ?? "completed", conclusion: jobs[name].conclusion ?? null } : null);
+            (jobs[name]
+                ? {
+                      status: jobs[name].conclusion ? "completed" : "in_progress",
+                      conclusion: jobs[name].conclusion ?? null,
+                  }
+                : null);
         const others = [];
         // Each project's capture as its download lands; `partial` is the target listed while the
         // rest are still downloading, whose rows fill in one by one. `download` counts the
