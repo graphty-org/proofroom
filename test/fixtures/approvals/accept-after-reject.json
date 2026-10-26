@@ -1,0 +1,47 @@
+{
+    "description": "A later Finish accepts what an earlier one rejected.",
+    "expect": "pass",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "change-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": null,
+            "approvedAt": "2026-10-25T14:02:11Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "reject",
+                    "reason": "blurry"
+                }
+            ]
+        },
+        {
+            "version": 2,
+            "type": "change-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": "{id:0}",
+            "approvedAt": "2026-10-25T15:00:00Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}

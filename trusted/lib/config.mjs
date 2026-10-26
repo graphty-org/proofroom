@@ -35,7 +35,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
 /**
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
- * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, workDir: string,
+ * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, workDir: string,
  *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
@@ -71,8 +71,33 @@ export function normalizeConfig(input) {
         }
         out.ignoreBranches = raw.ignoreBranches;
     }
+    approvalSettings(raw, out, fail);
     out.projects = projectsSetting(raw.projects, fail);
     return out;
+}
+
+/**
+ * The optional approval settings, set only when the config names them (docs/approval-format.md):
+ * `approvalFormat`, the statements Finish writes and the gate reads ("change" or "tree"), and
+ * `repositoryId`, the id change statements name outside GitHub. The gate reads both from the
+ * base's config only.
+ * @param {any} raw the parsed config
+ * @param {any} out the settings being filled in
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function approvalSettings(raw, out, fail) {
+    if (raw.approvalFormat !== undefined) {
+        if (raw.approvalFormat !== "change" && raw.approvalFormat !== "tree") {
+            fail('approvalFormat must be "change" or "tree"');
+        }
+        out.approvalFormat = raw.approvalFormat;
+    }
+    if (raw.repositoryId !== undefined) {
+        if (typeof raw.repositoryId !== "string" || !/^\S+$/.test(raw.repositoryId)) {
+            fail("repositoryId must be a non-empty string without spaces, such as a random UUID");
+        }
+        out.repositoryId = raw.repositoryId;
+    }
 }
 
 /**

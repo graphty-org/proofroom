@@ -28,18 +28,25 @@
  * branch, and never for a project whose baselines the pull request changes. Anywhere else a marker
  * is a missing capture.
  *
- * It also fails when the baselines directory's git tree differs from the base's without the owner's
- * signed approval of exactly that tree: a file `<approvals>/<tree>.json` (the config's
- * `approvals`, outside the baselines directory, so adding it leaves the tree it signs alone) whose
- * statement names a commit X that is an ancestor of the head, the tree of the baselines directory at
- * X, and that tree equal to the head's (treeApprovalProblems). Baseline PNGs are Git LFS pointers,
- * which name each image's SHA-256, so the tree hash covers every pixel. Once
- * visual-review/passkeys.json on the base branch holds a key, the statement must carry a passkey
- * approval by one of the base branch's keys over exactly that statement (approval.mjs). Keys are
- * never read from the pull request, a pull request that would leave no key fails, and a change to
- * passkeys.json itself is merged by an administrator. The per-pull-request review records under
- * <baselines>/reviews/ are part of the tree like any file, and the gate gives them no other meaning.
- * Without that approval, committing the captured PNGs straight into the baselines directory would
+ * It also fails when a baseline file differs from the base without the owner's signed approval
+ * (approvalProblems; docs/approval-format.md is the contract). The way to pass is a change
+ * statement: a file under `<approvals>/<change>/` (the config's `approvals`, outside the baselines
+ * directory) that this change adds, naming this repository, the baselines directory, this change
+ * and a commit of this change's own history, whose newest decision for each altered file accepts
+ * exactly the base's hash to the head's (change-approval.mjs). In tree mode (the default, or
+ * `approvalFormat` "tree") a version 1 tree statement passes too: a
+ * file `<approvals>/<tree>.json`, added by this change, whose statement names a commit X that is
+ * an ancestor of the head, the tree of the baselines directory at X, and that tree equal to the
+ * head's (treeApprovalProblem). One already on the base never counts, so an earlier approved tree
+ * cannot come back without a review. Baseline PNGs are Git LFS pointers, which name each image's
+ * SHA-256, so a hash covers every pixel. Once visual-review/passkeys.json on the base branch holds
+ * a key, a statement must carry a passkey approval by one of the base branch's keys over exactly
+ * that statement (approval.mjs). Keys are never read from the pull request, a pull request that
+ * would leave no key fails, and a change to passkeys.json itself is merged by an administrator.
+ * Settings (`approvals`, `baselines`, `approvalFormat`, `repositoryId`) come from the base's config
+ * only. Statements and the old review records under <baselines>/reviews/ are append-only: a change
+ * that modifies or deletes one the base holds fails. The review records mean nothing else to the
+ * gate. Without that approval, committing the captured PNGs straight into the baselines directory would
  * turn the capture check green with no review at all.
  *
  * CI runs this file as the base branch has it, never the pull request's copy, so a pull request
@@ -50,21 +57,24 @@
  * `checking_base_sha`), not with the base branch, since a batch stacked on another holds that
  * batch's changes; a draft that names no such commit fails. Nothing else changes.
  *
- * Usage: proofroom gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> |
- * --queue-event <file>], or node gate.mjs with the same options. `--pr` is only reported. Standard library only (results.mjs, config.mjs and approval.mjs
- * have no dependencies), so it runs from a checkout of this package without an install.
+ * Usage: proofroom gate --captures <dir> --base <ref> [--head <ref>] [--change <id> | --pr <number>
+ * | --queue-event <file>], or node gate.mjs with the same options; `--pr N` means `--change pr:N`.
+ * Standard library only (results.mjs, config.mjs, approval.mjs and change-approval.mjs have no
+ * dependencies), so it runs from a checkout of this package without an install.
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { PASSKEYS_FILE, parsePasskeys, verifyApproval, verifyRecord } from "./lib/approval.mjs";
+import { changeApprovals, contentHash, gitIn } from "./lib/change-approval.mjs";
 import { CONFIG_FILE, loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { isSkipMarker, SKIPPED_FILE, validateResults } from "./lib/results.mjs";
+
+export { contentHash };
 
 const PASSING = new Set(["unchanged", "excluded"]);
 
@@ -305,21 +315,6 @@ export function earlierApprovalProblem(earlier, { path, to }, keys) {
     return keys ? verifyRecord(earlier, keys, { pr: earlier.pr ?? null }) : null;
 }
 
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-
-/**
- * The SHA-256 of the file a blob stands for. Baseline PNGs are Git LFS pointers in git, and a
- * pointer names its object's SHA-256 (`oid sha256:<hex>`), which is the PNG's own hash, so no
- * LFS object is ever downloaded to check a record. Any other blob is hashed as it is.
- * @param {Buffer} bytes the blob
- * @returns {string} the hex SHA-256 of the content
- */
-export function contentHash(bytes) {
-    const text = bytes.subarray(0, 200).toString("latin1");
-    const oid = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:([0-9a-f]{64})\n/.exec(text);
-    return oid ? oid[1] : sha256(bytes);
-}
-
 function parseOr(bytes) {
     try {
         return JSON.parse(bytes.toString("utf8"));
@@ -466,27 +461,123 @@ export function treeApprovalProblem(statement, { head, tree, baselines, keys, cw
  * @returns {string[]} one line per problem; empty when the baselines are approved
  */
 export function treeApprovalProblems({ base, head, cwd, baselines, approvals, keys }) {
-    const problems = [];
+    return [
+        ...passkeysProblems({ base, head, cwd, keys }),
+        ...treeProblems({ base, head, cwd, baselines, approvals, keys }),
+    ];
+}
+
+/**
+ * Once approvals are enforced, a change to passkeys.json fails: an administrator merges it.
+ * @param {{ base: string, head: string, cwd: string, keys: object[] | null }} at as in treeApprovalProblems
+ * @returns {string[]} the problem, if any
+ */
+function passkeysProblems({ base, head, cwd, keys }) {
     if (keys && gitOut(cwd, ["diff", "--name-only", base, head, "--", PASSKEYS_FILE]).toString("utf8").trim()) {
-        problems.push(
+        return [
             `${PASSKEYS_FILE}: changed; once a key is registered, adding or replacing one is merged by an administrator (the README, "Replacing the passkey")`,
-        );
+        ];
     }
+    return [];
+}
+
+/**
+ * The tree statement check: nothing when the baselines tree is the base's; otherwise
+ * `<approvals>/<tree>.json`, added by this change (one already on the base would restore an
+ * earlier approved tree with no review), must approve exactly the head's tree.
+ * @param {{ base: string, head: string, cwd: string, baselines: string, approvals: string,
+ *     keys: object[] | null }} at as in treeApprovalProblems
+ * @returns {string[]} one line per problem
+ */
+function treeProblems({ base, head, cwd, baselines, approvals, keys }) {
     const tree = treeAt(head, baselines, cwd);
     if (tree === treeAt(base, baselines, cwd)) {
-        return problems;
+        return [];
     }
     if (tree === null) {
-        return [...problems, `${baselines}/ is gone at ${head}, and no approval can sign that`];
+        return [`${baselines}/ is gone at ${head}, and no approval can sign that`];
     }
     const file = `${approvals}/${tree}.json`;
     const text = fileAt(head, file, cwd);
     const how = "review the changes with `proofroom serve` and Finish, which signs the tree";
     if (text === null) {
-        return [...problems, `${baselines}/ differs from the base (tree ${tree}), and no ${file} approves it: ${how}`];
+        return [`${baselines}/ differs from the base (tree ${tree}), and no ${file} approves it: ${how}`];
+    }
+    if (fileAt(base, file, cwd) !== null) {
+        return [
+            `${file}: already on the base, and a tree statement counts only when this change adds it, so an earlier approved tree cannot come back without a review; ${how}`,
+        ];
     }
     const why = treeApprovalProblem(parseOr(Buffer.from(text)), { head, tree, baselines, keys, cwd });
-    return why ? [...problems, `${file}: ${why}; ${how}`] : problems;
+    return why ? [`${file}: ${why}; ${how}`] : [];
+}
+
+/**
+ * Which approvals the gate reads: the base config's `approvalFormat`, else "tree", where tree
+ * statements and change statements both count, so the tree statements Finish writes keep passing.
+ * @param {{ approvalFormat?: "tree" | "change" }} config the base's config
+ * @returns {"tree" | "change"} the mode
+ */
+export function approvalMode(config) {
+    return config.approvalFormat ?? "tree";
+}
+
+/**
+ * The repository id change statements must name: `github:<GITHUB_REPOSITORY_ID>` on GitHub Actions
+ * (an id a rename or a transfer does not change, and no file of the change can set), else the base
+ * config's `repositoryId`; null when there is none.
+ * @param {{ repositoryId?: string }} config the base's config
+ * @param {Record<string, string | undefined>} [env] the environment
+ * @returns {string | null} the id
+ */
+export function repositoryOf(config, env = process.env) {
+    if (env.GITHUB_ACTIONS === "true") {
+        return env.GITHUB_REPOSITORY_ID ? `github:${env.GITHUB_REPOSITORY_ID}` : null;
+    }
+    return config.repositoryId ?? null;
+}
+
+/**
+ * What blocks the baselines at `head`: a change to passkeys.json once a key is registered; a
+ * change to a statement or review record the base holds; any added statement that fails its
+ * checks; and, when the baselines differ from the base, the lack of an approval of them. In tree
+ * mode a tree statement the change adds for exactly the head's tree approves them, and so do
+ * change statements covering every altered file; in change mode only change statements do, and a
+ * tree statement is refused.
+ * @param {object} input the work
+ * @param {string} input.base the base branch tip, or a merge-queue batch's base
+ * @param {string} input.head the commit being merged
+ * @param {string} input.cwd the repository
+ * @param {string} input.baselines the baselines directory
+ * @param {string} input.approvals the approvals directory
+ * @param {object[] | null} input.keys the base branch's keys, null while approvals are not enforced
+ * @param {"tree" | "change"} input.mode approvalMode
+ * @param {string[]} input.changes the changes gated (`pr:7`)
+ * @param {string | null} input.repository repositoryOf
+ * @returns {{ problems: string[], notices: string[] }} one line per problem (empty when the
+ *     baselines are approved), and what is only reported
+ */
+export function approvalProblems({ base, head, cwd, baselines, approvals, keys, mode, changes, repository }) {
+    const c = changeApprovals({ base, head, baselines, approvals, keys, repository, changes, git: gitIn(cwd) });
+    const problems = [...passkeysProblems({ base, head, cwd, keys }), ...c.history, ...c.statements];
+    let unapproved = [];
+    if (mode === "change") {
+        for (const file of c.treeFiles) {
+            problems.push(
+                `${file}: a version 1 tree statement, refused: this repository's approvals are change statements (approvalFormat "change"); Finish again`,
+            );
+        }
+        unapproved = c.coverage;
+    } else if (c.coverage.length > 0) {
+        const tree = treeProblems({ base, head, cwd, baselines, approvals, keys });
+        // With no change statement of its own, the change was finished the old way: say why its tree fails.
+        unapproved = tree.length === 0 ? [] : c.counted === 0 ? tree : c.coverage;
+    }
+    problems.push(...unapproved);
+    if (unapproved.length > 0 && unapproved === c.coverage && changes.length === 0) {
+        problems.push("the gate was run without --change (or --pr), so no change statement can count");
+    }
+    return { problems, notices: c.notices };
 }
 
 /**
@@ -598,20 +689,42 @@ function queueBaseOf(file) {
  * @param {string} at.diffBase what baseline changes are measured from
  * @param {string} at.head the head
  * @param {string} at.root the repository
- * @param {{ baselines: string, approvals: string }} at.config the base branch's config
- * @param {{ approvals: string }} at.headConfig the head's config
+ * @param {{ baselines: string, approvals: string, approvalFormat?: "tree" | "change", repositoryId?: string }} at.config the base branch's config
+ * @param {{ approvals: string, repositoryId?: string }} at.headConfig the head's config
+ * @param {string[]} at.changes the changes gated (`pr:7`)
  * @returns {string[]} the failing lines
  */
-function approvalLines({ base, diffBase, head, root, config, headConfig }) {
+function approvalLines({ base, diffBase, head, root, config, headConfig, changes }) {
     const { keys, problems } = approvalKeys(base, head, root);
     if (headConfig.approvals !== config.approvals) {
         problems.push(
             `this pull request moves the approvals directory from ${config.approvals} to ${headConfig.approvals}`,
         );
     }
+    if ((headConfig.repositoryId ?? null) !== (config.repositoryId ?? null)) {
+        problems.push(
+            `this pull request changes repositoryId from ${config.repositoryId ?? "none"} to ${headConfig.repositoryId ?? "none"}; a repository's id never changes`,
+        );
+    }
     const lines = problems.map((line) => `::error::passkey approval -- ${line}`);
     const { baselines, approvals } = config;
-    for (const line of treeApprovalProblems({ base: diffBase, head, cwd: root, baselines, approvals, keys })) {
+    const mode = approvalMode(config);
+    const repository = repositoryOf(config);
+    const found = approvalProblems({
+        base: diffBase,
+        head,
+        cwd: root,
+        baselines,
+        approvals,
+        keys,
+        mode,
+        changes,
+        repository,
+    });
+    for (const line of found.notices) {
+        console.log(`::notice::${line}`);
+    }
+    for (const line of found.problems) {
         lines.push(`::error::baselines not approved -- ${line}`);
     }
     for (const line of lines) {
@@ -620,18 +733,20 @@ function approvalLines({ base, diffBase, head, root, config, headConfig }) {
     return lines;
 }
 
-export const GATE_USAGE = `usage: proofroom gate --captures <dir> --base <ref> [--head <ref>] [--pr <number> | --queue-event <file>]
+export const GATE_USAGE = `usage: proofroom gate --captures <dir> --base <ref> [--head <ref>] [--change <id> | --pr <number> | --queue-event <file>]
 
-Fails (exit 1) while a pull request holds visual changes nobody accepted, or baselines whose
-tree the owner has not approved: when the baselines directory differs from the base, the head
-must hold the owner's approval of exactly its tree, made at an ancestor of the head. Once
-${PASSKEYS_FILE} on the base branch holds a key, that approval must carry the owner's passkey
-signature. Run it in CI after the capture jobs, on the pull request's merge commit.
+Fails (exit 1) while a change holds visual changes nobody accepted, or baselines nobody approved:
+every baseline file that differs from the base needs a change statement of this change accepting
+exactly that file, or (in tree mode) the change adds the approval of exactly the head's baselines
+tree. Once ${PASSKEYS_FILE} on the base branch holds a key, an approval must carry a passkey
+signature by one of its keys. Run it in CI after the capture jobs, on the change's merge commit
+(docs/approval-format.md).
 
   --captures <dir>  the downloaded visual-<project>-<attempt> artifacts of this run
   --base <ref>      the base branch tip (HEAD^1 on a pull request's merge commit)
-  --head <ref>      the pull request's checkout (default HEAD), with its history
-  --pr <number>     the pull request's number, reported only
+  --head <ref>      the change's checkout (default HEAD), with its history
+  --change <id>     the change being gated, as its statements name it (pr:3486, branch:feat/x)
+  --pr <number>     the same as --change pr:<number>
   --queue-event <file>  in a merge-queue run, the event file of the queue's draft pull request
                     (GITHUB_EVENT_PATH): baseline changes are compared with the batch's
                     checking_base_sha instead of --base`;
@@ -649,6 +764,7 @@ export function runGate(args) {
             base: { type: "string" },
             head: { type: "string", default: "HEAD" },
             pr: { type: "string" },
+            change: { type: "string" },
             "queue-event": { type: "string" },
             help: { type: "boolean", default: false },
         },
@@ -664,11 +780,13 @@ export function runGate(args) {
     // fails, Mergify rebuilds this one on a new base. The config, the seeded projects and the keys
     // are still read from --base.
     let queueBase = null;
+    let changes = pr === undefined ? [values.change].filter(Boolean) : [`pr:${pr}`];
     if (
         !values.captures ||
         !values.base ||
         (pr !== undefined && !(Number.isInteger(pr) && pr > 0)) ||
-        (pr !== undefined && queueEvent !== undefined)
+        [pr, values.change, queueEvent].filter((v) => v !== undefined).length > 1 ||
+        (values.change !== undefined && !/^[a-z][a-z0-9-]*:\S+$/.test(values.change))
     ) {
         console.error(GATE_USAGE);
         return 2;
@@ -678,6 +796,7 @@ export function runGate(args) {
         if (queueBase === null) {
             return 1;
         }
+        changes = queuePullRequests(JSON.parse(readFileSync(queueEvent, "utf8"))).map((n) => `pr:${n}`);
     }
     const root = repoRoot();
     const config = loadConfigAt(values.base, root);
@@ -695,7 +814,15 @@ export function runGate(args) {
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);
     }
-    const unrecorded = approvalLines({ base: values.base, diffBase, head: values.head, root, config, headConfig });
+    const unrecorded = approvalLines({
+        base: values.base,
+        diffBase,
+        head: values.head,
+        root,
+        config,
+        headConfig,
+        changes,
+    });
     for (const file of trustFilesChanged(diffBase, values.head, config.workflow, root)) {
         console.log(
             `::warning::this pull request changes ${file}, which decides what the visual gate accepts: review that change with care`,

@@ -1,0 +1,37 @@
+{
+    "description": "A story renamed: two entries, each checked for its own path.",
+    "expect": "pass",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": null,
+        "compact-mantine/card--renamed.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "change-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": null,
+            "approvedAt": "2026-10-25T14:02:11Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept",
+                    "movedTo": "compact-mantine/card--renamed.png"
+                },
+                {
+                    "path": "compact-mantine/card--renamed.png",
+                    "from": "{base:compact-mantine/card--renamed.png}",
+                    "to": "{head:compact-mantine/card--renamed.png}",
+                    "decision": "accept",
+                    "movedFrom": "compact-mantine/card--legacy.png"
+                }
+            ]
+        }
+    ]
+}

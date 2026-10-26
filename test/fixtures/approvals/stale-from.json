@@ -1,0 +1,29 @@
+{
+    "description": "The entry replaces another image than the base holds: stale.",
+    "expect": "fail",
+    "problem": "the default branch changed visual-baselines/compact-mantine/card--legacy.png after the review",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "change-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": null,
+            "approvedAt": "2026-10-25T14:02:11Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{hash:an older image}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}

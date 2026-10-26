@@ -1,0 +1,29 @@
+{
+    "description": "previous names a statement this change does not hold.",
+    "expect": "fail",
+    "problem": "names no statement of this change",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "change-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "approvedAt": "2026-10-25T14:02:11Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}

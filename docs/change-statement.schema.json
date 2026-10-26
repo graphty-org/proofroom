@@ -1,0 +1,100 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://github.com/graphty-org/proofroom/blob/main/docs/change-statement.schema.json",
+    "title": "proofroom change statement",
+    "description": "One Finish's decisions on one change, signed once by a reviewer's passkey. See docs/approval-format.md for where it is stored and how the gate reads it.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "version",
+        "type",
+        "repository",
+        "baselines",
+        "change",
+        "capturedHead",
+        "previous",
+        "approvedAt",
+        "entries"
+    ],
+    "properties": {
+        "version": { "const": 2 },
+        "type": { "const": "change-approval" },
+        "repository": {
+            "description": "The repository's id: github:<numeric repository id> on GitHub, else the config's repositoryId.",
+            "type": "string",
+            "minLength": 1
+        },
+        "baselines": {
+            "description": "The baselines directory the entries' paths are relative to.",
+            "type": "string",
+            "minLength": 1
+        },
+        "change": {
+            "description": "The change the decisions are for, as the code host names it: pr:3486, mr:212, branch:feat/x.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*:\\S+$"
+        },
+        "capturedHead": {
+            "description": "The change's own head commit whose capture the reviewer saw.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "previous": {
+            "description": "The id of this change's previous statement, null for the first, or the ids of every end of a fork this statement closes.",
+            "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/$defs/id" },
+                { "type": "array", "items": { "$ref": "#/$defs/id" }, "minItems": 2, "uniqueItems": true }
+            ]
+        },
+        "approvedAt": {
+            "description": "When the reviewer finished, in UTC. Informational: order is the previous chain's.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$"
+        },
+        "entries": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/entry" }
+        },
+        "approval": {
+            "description": "The WebAuthn assertion over the SHA-256 of the canonical JSON of every other field.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["credentialId", "authenticatorData", "clientDataJSON", "signature"],
+            "properties": {
+                "credentialId": { "$ref": "#/$defs/base64url" },
+                "authenticatorData": { "$ref": "#/$defs/base64url" },
+                "clientDataJSON": { "$ref": "#/$defs/base64url" },
+                "signature": { "$ref": "#/$defs/base64url" }
+            }
+        }
+    },
+    "$defs": {
+        "id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "hash": {
+            "description": "A file's SHA-256: the PNG's from its Git LFS pointer, or the bytes of any other file. Null: the file is absent.",
+            "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "null" }]
+        },
+        "path": {
+            "description": "A file inside the baselines directory, relative to it, not under reviews/.",
+            "type": "string",
+            "pattern": "^(?!/)(?!reviews/)(?!(.*/)?\\.\\.?(/|$))[^\\\\\\u0000]+$"
+        },
+        "base64url": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+        "entry": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "from", "to", "decision"],
+            "properties": {
+                "path": { "$ref": "#/$defs/path" },
+                "from": { "$ref": "#/$defs/hash" },
+                "to": { "$ref": "#/$defs/hash" },
+                "decision": { "enum": ["accept", "exclude", "reject"] },
+                "reason": { "type": "string" },
+                "movedTo": { "$ref": "#/$defs/path" },
+                "movedFrom": { "$ref": "#/$defs/path" }
+            },
+            "not": { "properties": { "from": { "type": "null" }, "to": { "type": "null" } } }
+        }
+    }
+}
