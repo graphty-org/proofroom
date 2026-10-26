@@ -227,7 +227,10 @@ describe("change statements in the gate", () => {
         git(r.repo, "merge", "-q", "--no-edit", "master");
         expect(check(r)).toEqual([NOT_REVIEWED]);
         // The alternate signature verifies, and gives the copy another id and place.
-        const approval = { ...landed.statement.approval, signature: otherSignature(landed.statement.approval.signature) };
+        const approval = {
+            ...landed.statement.approval,
+            signature: otherSignature(landed.statement.approval.signature),
+        };
         const highS = { ...landed.statement, approval };
         expect(verifyApproval(highS, [KEY.entry])).toBe(null);
         const highFile = statementPath(APPROVALS, highS);
