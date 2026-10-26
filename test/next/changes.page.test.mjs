@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startApp } from "../faults.mjs";
 import { makeRepo, onePr } from "../helpers.mjs";
 import { COVERS } from "./covers.mjs";
-import { TOKEN, fiftyChanges, listAnswer, message, openNext, project, target } from "./page-kit.mjs";
+import { TOKEN, fiftyChanges, listAnswer, message, openNext, project, rowsAnswer, target } from "./page-kit.mjs";
 
 let browser;
 let t = null;
@@ -423,6 +423,59 @@ describe("the top bar and the message line", () => {
     });
 });
 
+describe("a change opened while another loads", () => {
+    it("makes the change with nothing to review current, so Down and Enter act from it", async () => {
+        const page = await open({ targets: fiftyChanges() });
+        await page.locator(".chg").first().waitFor();
+        let release;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        await page.route("**/api/pr/3486/**", async (route) => {
+            await held;
+            await route.fulfill({ json: rowsAnswer("graphty-element", 3) });
+        });
+        await page.locator('.chg[data-chg="3486"]').click();
+        await expect.poll(() => currentRow(page)).toBe("3486");
+        // #3478 is still downloading: nothing to review, so it opens nothing.
+        await page.locator('.chg[data-chg="3478"]').click();
+        await expect.poll(() => message(page)).toMatch(/^#3478: .*Nothing to review yet\.$/);
+        const finished = page.waitForEvent("requestfinished", (r) => r.url().includes("/api/pr/3486/"));
+        release();
+        await finished;
+        expect(await currentRow(page)).toBe("3478");
+        const ids = await rowIds(page);
+        const below = ids[ids.indexOf("3478") + 1];
+        await page.locator("#chg-list").focus();
+        await page.keyboard.press("ArrowDown");
+        await expect.poll(() => currentRow(page)).toBe(below);
+        await page.keyboard.press("Enter");
+        await expect.poll(() => message(page)).toContain(`#${below}`);
+    });
+});
+
+describe("a poll the server refuses", () => {
+    it("keeps polling once the token is given again", async () => {
+        const page = await open({ targets: fiftyChanges(), clock: true });
+        await page.locator(".chg").first().waitFor();
+        const refuse = (route) => route.fulfill({ status: 401, json: { error: "token" } });
+        await page.route("**/api/prs*", refuse);
+        await page.route("**/api/session", refuse);
+        await page.clock.fastForward(15000);
+        await page.locator("#token-box").waitFor();
+        await page.unroute("**/api/prs*", refuse);
+        await page.unroute("**/api/session", refuse);
+        await page.locator("#token-field").fill(TOKEN);
+        const booted = page.waitForResponse((r) => r.url().includes("/api/prs") && r.status() === 200);
+        await page.keyboard.press("Enter");
+        await booted;
+        const lists = () => t.requests.filter((r) => r.startsWith("/api/prs")).length;
+        const before = lists();
+        await page.clock.fastForward(15000);
+        await expect.poll(lists).toBe(before + 1);
+    });
+});
+
 describe("the token box", () => {
     it("asks for the token, by Enter and by its Open button, and opens the page", async () => {
         const page = await open({ targets: fiftyChanges(), hash: "" });
@@ -493,7 +546,8 @@ describe("on the real server", () => {
             // One change: it opens by itself, its first undecided snapshot on the item line.
             await expect.poll(() => message(page)).toMatch(/^Opened #123 PR 123: \d+ undecided\.$/);
             expect(await page.locator(".iline").innerText()).toContain("#1");
-            expect(await page.locator("#repo").innerText()).toBe(r.repo.split("/").pop());
+            // The repository is named after origin (remote.git), not the checkout's folder.
+            expect(await page.locator("#repo").innerText()).toBe("remote");
             await page.keyboard.press("Escape");
             await expect.poll(() => page.locator(".chg.cur").innerText()).toContain("#123 PR 123");
             expect(await page.locator(".chg.cur").innerText()).toMatch(

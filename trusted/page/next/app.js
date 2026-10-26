@@ -469,6 +469,8 @@ app.openChange = async (id, { snap = null, quiet = false } = {}) => {
     }
     const seq = ++app.opening;
     app.curId = id;
+    // A change opened later supersedes any load still running: its change is no longer current.
+    app.pendingId = null;
     let snaps = [];
     if (c.total > 0) {
         // The picked row is current at once, so a key pressed while its snapshots load acts on it.
@@ -871,8 +873,9 @@ app.refresh = async () => {
     app.refreshing = true;
     drawTop();
     settle();
+    // A failed load leaves the old answer, still refreshing: stop there, the failure said once.
     await loadList("?refresh=1");
-    while (app.list?.refreshing) {
+    while (app.failed === null && app.list?.refreshing) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         await loadList();
     }
@@ -883,7 +886,16 @@ app.refresh = async () => {
     }
 };
 
+// One poll timer. It is set before each load, so a load that never settles (a refused token)
+// does not stop polling, and boot after a new token does not start a second loop.
+let pollTimer = null;
+function schedulePoll() {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, POLL_MS);
+}
+
 async function poll() {
+    schedulePoll();
     if (await loadList()) {
         if (app.openId && !app.change(app.openId)) {
             say(`${app.openId} is no longer listed: showing every change.`);
@@ -897,7 +909,6 @@ async function poll() {
     } else {
         drawTop();
     }
-    setTimeout(poll, POLL_MS);
 }
 
 // The state the address names: a change and a snapshot, opened once the list is in.
@@ -955,7 +966,6 @@ $("chg-find").addEventListener("input", () => {
     draw();
 });
 
-let booted = false;
 async function boot() {
     startUsage();
     const wanted = app.wanted;
@@ -983,14 +993,11 @@ async function boot() {
         draw();
         say(
             app.changes.length === 0
-                ? "Ready. The server checks GitHub every 2 minutes."
+                ? "Ready. The server checks the code host every 2 minutes."
                 : "Choose a change on the left: Up / Down move, Open [Enter] opens it.",
         );
     }
-    if (!booted) {
-        booted = true;
-        setTimeout(poll, POLL_MS);
-    }
+    schedulePoll();
 }
 
 logUsage("load", { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, page: "next" });

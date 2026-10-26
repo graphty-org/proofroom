@@ -372,6 +372,12 @@ someone else started it for you (an agent, a service manager), the commit carrie
 identity: the page names the key that will sign before every Finish and prints the command that
 starts the same server from your own shell.
 
+## Trying the new page
+
+The server also serves a new review page at `/next/`: put `next/` after the host and port of the
+address `proofroom serve` printed. It reads and writes the same decisions as today's page, so you
+can switch between them mid-review. See [docs/new-page.md](docs/new-page.md).
+
 ## The screens
 
 Every screen has the same frame. The header holds a breadcrumb: **Visual review** (the targets

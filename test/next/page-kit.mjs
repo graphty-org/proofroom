@@ -40,9 +40,11 @@ export const BROWSERS = { chromium, webkit };
  * A review server whose list and rows the test gives, and a tab of the new page on it.
  * @param {import("playwright").Browser} browser the browser
  * @param {{ targets?: object[], list?: object, rows?: (id: string, project: string) => object,
- *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string> }} [options]
+ *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string>,
+ *     clock?: boolean }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
- *     project's reviewable), the window, the address after #, and local storage to start with
+ *     project's reviewable), the window, the address after #, local storage to start with, and
+ *     whether the test controls the page's clock
  * @returns {Promise<{ page: import("playwright").Page, context: import("playwright").BrowserContext,
  *     close: () => Promise<void>, actions: object[],
  *     requests: string[], origin: string, setList: (answer: object) => void }>} the tab, how to
@@ -97,6 +99,11 @@ export async function openNext(browser, options = {}) {
                 globalThis.localStorage.setItem(k, v);
             }
         }, options.storage);
+    }
+    if (options.clock) {
+        // Time runs as usual, and a test can jump it ahead to the page's next timer.
+        await page.clock.install();
+        await page.clock.resume();
     }
     await page.goto(`${s.origin}/next/#${options.hash ?? `token=${TOKEN}`}`);
     return {

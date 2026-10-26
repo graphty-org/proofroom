@@ -313,6 +313,23 @@ async function heldAt(repo, tip, records) {
 }
 
 /**
+ * The repository's name: the last part of origin's URL, else the main checkout's folder. A
+ * server run from a worktree is named after the repository, not the worktree's folder.
+ * @param {string} repo the checkout the server runs in
+ * @returns {Promise<string>} the name
+ */
+export async function repositoryName(repo) {
+    const git = (args) => exec("git", args, { cwd: repo }).then((out) => out.trim());
+    const url = await git(["remote", "get-url", "origin"]).catch(() => "");
+    const fromUrl = url.split(/[/:]/).pop().replace(/\.git$/, "");
+    if (fromUrl) {
+        return fromUrl;
+    }
+    const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => "");
+    return common ? basename(dirname(common)) : basename(repo);
+}
+
+/**
  * Who Finish's commit will be signed by: the git configuration of the server's own environment.
  * An agent that starts the server passes on its GIT_CONFIG_* overrides, and with them its own
  * signing key, so the page shows this before every Finish, with where git found the key.
@@ -671,6 +688,7 @@ export function createApp({
     const stateDir = join(tmp, "state");
     const { projects, defaultBranch } = config;
     const names = Object.keys(projects);
+    const repository = repositoryName(repo);
     /** @type {Map<string, object>} targets by id: a pull request number, or "master" */
     let targets = new Map();
     // Each pull request branch's fetched tip, read once per refresh, and the review records at a
@@ -3031,8 +3049,8 @@ export function createApp({
                     inbox: summaries && !results ? inbox(summaries) : null,
                     warning: listWarnings.join("\n") || null,
                     defaultBranch,
-                    // The repository's name, for the new page's top bar: its checkout's folder.
-                    repository: basename(repo),
+                    // The repository's name, for the new page's top bar.
+                    repository: await repository,
                     updatedAt: refreshedAt || null,
                     now: Date.now(),
                     refreshing: progress,

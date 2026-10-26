@@ -87,7 +87,6 @@ export const ACTIONS = {
     copylink: { label: "Copy link", run: (app, ctx) => app.copyLink(ctx.id) },
     dismiss: {
         label: "Dismiss",
-        title: "Takes the finished mark off this row",
         run: (app, ctx) => app.dismiss(ctx.id),
     },
     joblog: { label: "Job log", run: (app, ctx) => app.jobLog(ctx.id) },

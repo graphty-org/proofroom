@@ -4,8 +4,6 @@
  * "4 min ago".
  */
 
-import { basename } from "node:path";
-
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startApp } from "./faults.mjs";
@@ -23,7 +21,8 @@ describe("the changes list answer", () => {
         s = await startApp(r, { gh: onePr()(r) });
         const { status, body } = await s.api("GET", "/api/prs");
         expect(status).toBe(200);
-        expect(body.repository).toBe(basename(r.repo));
+        // Named after origin (remote.git), not the checkout's folder.
+        expect(body.repository).toBe("remote");
         // The fake gh's run says "attempt 1" where GitHub gives an ISO time; it is passed on as given.
         expect(body.targets.map((t) => [t.id, t.readyAt])).toEqual([["123", "attempt 1"]]);
     });
