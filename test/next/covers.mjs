@@ -29,6 +29,7 @@ export const COVERS = {
         "closebox",
         "messages",
         "usetoken",
+        "retry",
     ],
     "keys.page.test.mjs": ["pane1", "pane2", "back", "openrow", "openchg", "nextchange", "chgfind"],
     "layout.page.test.mjs": ["pane1", "pane2", "back", "openrow", "pickrow"],

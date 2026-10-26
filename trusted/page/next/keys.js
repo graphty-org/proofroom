@@ -114,7 +114,7 @@ export function syncHints() {
 /**
  * Starts the key handler.
  * @param {any} app the page: `arrow(dir)` moves the current row, `escapeField(field)` handles Esc
- *     in a field, `say(text)` writes the message line
+ *     in a field, `closeMenu()` closes the open menu, `say(text)` writes the message line
  */
 export function startKeys(app) {
     document.addEventListener("keydown", (e) => {
@@ -133,7 +133,13 @@ export function startKeys(app) {
             return;
         }
         if (document.querySelector(".menu")) {
-            return; // the menu's own keys
+            // The menu's own keys stop at the menu; a key from outside it (focus moved on with
+            // Tab) still closes it with Esc, so Esc keeps its order: the menu, then Back.
+            if (e.key === "Escape") {
+                e.preventDefault();
+                app.closeMenu();
+            }
+            return;
         }
         // A button or link the reader focused with Tab takes Enter, as it shows.
         if (e.key === "Enter" && t.matches?.("button, a")) {

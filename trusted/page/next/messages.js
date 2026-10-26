@@ -3,8 +3,6 @@
  * message stays until the next one replaces it (never a timer); the last 20 are kept.
  */
 
-import { el } from "./ui.js";
-
 const kept = [];
 const KEEP = 20;
 
@@ -12,7 +10,8 @@ const KEEP = 20;
  * Writes a message on the line, and keeps it in the history.
  * @param {string} text what just happened
  * @param {"" | "err"} [kind] "err" for an error
- * @param {{ label: string, run: () => void }[]} [actions] buttons beside it (a Retry, an Undo), with no key box
+ * @param {HTMLElement[]} [actions] controls beside it (a Retry, an Undo), built from the action table
+ *     in the "msgline" zone, with no key box
  */
 export function say(text, kind = "", actions = []) {
     const at = new Date();
@@ -26,9 +25,7 @@ export function say(text, kind = "", actions = []) {
     t.textContent = text;
     t.className = `t ${kind}`;
     t.title = text;
-    document
-        .getElementById("msg-x")
-        .replaceChildren(...actions.map((a) => el("button", { type: "button", onclick: a.run }, a.label)));
+    document.getElementById("msg-x").replaceChildren(...actions);
 }
 
 /**

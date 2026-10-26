@@ -173,6 +173,26 @@ function summaryOf(c) {
     );
 }
 
+// The open change's title, a link to it on GitHub: pressed, it runs Open on GitHub (logged as that
+// action); the address stays on the link for copying and the browser's own menu.
+function titleLink(c, title) {
+    const a = control(app, "onhost", {
+        zone: "snaps-head",
+        tag: "a",
+        ctx: { id: c.id },
+        attrs: {
+            class: "grow ell",
+            href: c.url,
+            target: "_blank",
+            rel: "noreferrer",
+            title: `${title}: open on GitHub`,
+        },
+        children: [title],
+    });
+    a.addEventListener("click", (e) => e.preventDefault());
+    return a;
+}
+
 function drawSnaps() {
     const c = app.open();
     const [changesShown] = shownNow();
@@ -197,7 +217,7 @@ function drawSnaps() {
             app.changes.length === 0
                 ? el(
                       "div",
-                      { class: "summary" },
+                      { class: "summary nocap" },
                       el("div", { class: "title" }, "No captures yet."),
                       el(
                           "p",
@@ -216,19 +236,7 @@ function drawSnaps() {
         el(
             "div",
             { class: "h1" },
-            c.url
-                ? el(
-                      "a",
-                      {
-                          class: "grow ell",
-                          href: c.url,
-                          target: "_blank",
-                          rel: "noreferrer",
-                          title: `${title}: open on GitHub`,
-                      },
-                      title,
-                  )
-                : el("span", { class: "grow ell", title }, title),
+            c.url ? titleLink(c, title) : el("span", { class: "grow ell", title }, title),
             changesShown ? null : control(app, "nextchange", { zone: "snaps-head", attrs: { id: "snap-next-btn" } }),
             hide,
         ),
@@ -551,7 +559,7 @@ app.openChange = async (id, { snap = null, quiet = false } = {}) => {
             app.pendingId = null;
             draw();
             say(`${c.label} could not be opened: ${err.message}`, "err", [
-                { label: "Retry", run: () => app.openChange(id) },
+                control(app, "retry", { zone: "msgline", ctx: { run: () => app.openChange(id) } }),
             ]);
             return;
         }
@@ -763,6 +771,11 @@ document.addEventListener("pointerdown", (e) => {
     }
 });
 
+app.closeMenu = () => {
+    closeMenu();
+    restoreFocus();
+};
+
 app.sortMenu = (anchor) => {
     showMenu(
         anchor,
@@ -927,7 +940,7 @@ async function loadList(query = "?cached=1") {
     } catch (err) {
         app.failed = err.message;
         say(`The review server did not answer: ${err.message}`, "err", [
-            { label: "Retry", run: () => (arrived ? app.refresh() : firstLoad()) },
+            control(app, "retry", { zone: "msgline", ctx: { run: () => (arrived ? app.refresh() : firstLoad()) } }),
         ]);
         return false;
     }
@@ -965,6 +978,9 @@ function schedulePoll() {
 
 async function poll() {
     schedulePoll();
+    if (firstLoading) {
+        return; // the first load is still asking every half second
+    }
     if (!arrived) {
         await firstLoad();
     } else if (await loadList()) {
@@ -1057,8 +1073,17 @@ async function boot() {
 }
 
 // Until the first list is in, it is asked for every half second. A failed ask stops there, its
-// message and Retry left on screen; Retry and the next poll start this again.
-async function firstLoad() {
+// message and Retry left on screen; Retry and the next poll start this again. Only one runs at a
+// time: a Retry or poll while one runs joins it.
+let firstLoading = null;
+function firstLoad() {
+    firstLoading ??= loadFirst().finally(() => {
+        firstLoading = null;
+    });
+    return firstLoading;
+}
+
+async function loadFirst() {
     app.bootAt = Date.now();
     while (!(await loadList()) && app.failed === null) {
         draw();

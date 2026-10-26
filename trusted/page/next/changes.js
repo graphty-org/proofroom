@@ -350,7 +350,7 @@ export function drawChanges(app) {
         ? `${shownN} of ${rows.length} match`
         : `${rows.length} change${rows.length === 1 ? "" : "s"}`;
     if (rows.length === 0) {
-        list.replaceChildren(el("p", { class: "muted empty" }, "No changes yet"));
+        list.replaceChildren(el("p", { class: "muted nochg" }, "No changes yet"));
     } else {
         const out = [];
         if (rows.every((r) => r.section !== "needs")) {

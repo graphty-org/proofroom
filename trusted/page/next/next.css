@@ -562,6 +562,9 @@ body.held [data-act="openchg"] kbd {
     padding: 10px;
     margin: 0;
 }
+.nochg {
+    padding: 10px;
+}
 
 /* the Snapshots pane: line 1 of its header, the change's summary, and its rows as text */
 #snaps-head {
@@ -598,6 +601,15 @@ body.held [data-act="openchg"] kbd {
 .summary .title {
     font-size: 15px;
     font-weight: 700;
+}
+.summary.nocap {
+    padding: 12px;
+}
+.nocap .title {
+    font-size: 16px;
+}
+.nocap p {
+    margin: 0;
 }
 .ssum {
     display: flex;

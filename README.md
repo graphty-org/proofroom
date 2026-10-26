@@ -375,8 +375,8 @@ starts the same server from your own shell.
 ## Trying the new page
 
 The server also serves a new review page at `/next/`: put `next/` after the host and port of the
-address `proofroom serve` printed. It reads and writes the same decisions as today's page, so you
-can switch between them mid-review. See [docs/new-page.md](docs/new-page.md).
+address `proofroom serve` printed. It reads the same captures and decisions as today's page; for
+now, make decisions on today's page. See [docs/new-page.md](docs/new-page.md).
 
 ## The screens
 

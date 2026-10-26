@@ -563,11 +563,6 @@ describe("on the real server", () => {
     });
 });
 
-// Last, after every test above: each action listed for this file was pressed by one of them.
-it("pressed every action covers.mjs lists for this file", () => {
-    expect([...COVERS["changes.page.test.mjs"]].filter((id) => !pressed.has(id))).toEqual([]);
-});
-
 describe("the page at / with --ui next", () => {
     it("loads its styles and scripts and draws the changes, with nothing missing", async () => {
         const missing = [];
@@ -612,7 +607,48 @@ describe("when the server's first list fails", () => {
         await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
         await page.locator(".chg").first().waitFor();
         expect(await page.locator("#wait-box").count()).toBe(0);
-        expect(await message(page)).toBe("Choose a change on the left: Up / Down move, Open [Enter] opens it.");
+        expect(await message(page)).toBe("Choose a change on the left: Up / Down move, Open [Enter] opens it.");        // The Retry press is logged as an action, as every control's is.
+        await expect.poll(() => t.actions.filter((a) => a.a === "retry").length).toBe(1);
+    });
+});
+
+describe("while the first list is retried", () => {
+    it("asks from one loop at a time, however many polls come while the server still loads", async () => {
+        const waiting = listAnswer(null, {
+            updatedAt: null,
+            refreshing: { step: "fetching branches", done: null, total: null, startedAt: NOW - 12000 },
+        });
+        const page = await open({ list: waiting, failList: 1, clock: true });
+        await expect.poll(() => message(page)).toMatch(/^The review server did not answer: /);
+        await page.clock.pauseAt(Date.now() + 1000);
+        const asks = () => t.requests.filter((r) => r.startsWith("/api/prs")).length;
+        // Every ask the page started before this one has been seen once this one has.
+        let barriers = 0;
+        const seen = async () => {
+            const mark = `/api/usage-setting?barrier=${++barriers}`;
+            await page.evaluate((u) => globalThis.fetch(u), mark);
+            await expect.poll(() => t.requests.includes(mark)).toBe(true);
+            return asks();
+        };
+        await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
+        await expect.poll(asks).toBe(2);
+        // Three polls come while the first list is still loading.
+        for (let i = 0; i < 3; i++) {
+            await page.clock.runFor(15000);
+            await seen();
+        }
+        // One loop asks at most once per half second; each poll that started another would add one.
+        const from = await seen();
+        for (let i = 0; i < 10; i++) {
+            await page.clock.runFor(500);
+            await seen();
+        }
+        const steps = (await seen()) - from;
+        expect(steps).toBeGreaterThan(0);
+        expect(steps).toBeLessThanOrEqual(10);
+        t.setList(listAnswer(fiftyChanges()));
+        await page.clock.runFor(500);
+        await page.locator(".chg").first().waitFor();
     });
 });
 
@@ -651,4 +687,9 @@ describe("a change still capturing", () => {
         expect(t.requests.filter((r) => r.startsWith("/api/pr/3477/"))).toEqual([]);
         expect(await page.locator(".iline").count()).toBe(0);
     });
+});
+
+// Last, after every test above: each action listed for this file was pressed by one of them.
+it("pressed every action covers.mjs lists for this file", () => {
+    expect([...COVERS["changes.page.test.mjs"]].filter((id) => !pressed.has(id))).toEqual([]);
 });

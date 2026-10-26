@@ -197,6 +197,26 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await expect.poll(() => message(page)).toBe("Back to the changes.");
         });
 
+        it("closes a menu with Esc after Tab took focus out of it, then goes back", async () => {
+            const page = await open({});
+            await page.locator('.chg[data-chg="3486"]').click();
+            await page.locator(".iline").waitFor();
+            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe("Back to changes [Esc]");
+            await page.keyboard.press("Shift+Digit1");
+            await expect.poll(() => page.locator("#chg-find").isVisible()).toBe(true);
+            await page.getByRole("button", { name: /^Sort:/ }).click();
+            await page.getByRole("menu").waitFor();
+            await page.keyboard.press("Tab");
+            await expect
+                .poll(() => page.evaluate(() => globalThis.document.activeElement?.closest(".menu") === null))
+                .toBe(true);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => page.getByRole("menu").count()).toBe(0);
+            expect(await page.locator(".iline").count()).toBe(1);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toBe("Back to the changes.");
+        });
+
         it("does what the printed [Enter] says after a box closes", async () => {
             const page = await open({});
             await page.locator('.chg[data-chg="3484"] [data-act="rowmenu"]').click();

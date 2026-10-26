@@ -33,7 +33,8 @@ const NO_CHANGES = "No changes yet";
 
 /**
  * The actions, by id.
- * @type {Record<string, { label: string | ((app: any, ctx: any) => string), key?: string, title?: string,
+ * @type {Record<string, { label: string | ((app: any, ctx: any) => string), key?: string,
+ *     title?: string | ((app: any, ctx: any) => string),
  *     run: (app: any, ctx: any) => void, available?: (app: any, ctx: any) => true | string }>}
  */
 export const ACTIONS = {
@@ -101,6 +102,7 @@ export const ACTIONS = {
     back: {
         label: (app) => (app.level === 2 ? "Back to list" : "Back to changes"),
         key: "Esc",
+        title: (app) => `${app.level === 2 ? "Back to list" : "Back to changes"} [Esc]`,
         run: (app) => app.back(),
     },
     openrow: {
@@ -113,6 +115,8 @@ export const ACTIONS = {
 
     // Boxes and the message line.
     closebox: { label: "Close", key: "Esc", run: (app) => app.closeBox() },
+    // The message line's own button: Retry after a failed list or a failed open (ctx.run retries it).
+    retry: { label: "Retry", run: (app, ctx) => ctx.run() },
     messages: { label: "Messages", title: "The last 20 messages", run: (app) => app.messagesBox() },
     usetoken: { label: "Open", key: "Enter", run: (app) => app.submitToken() },
 };
@@ -196,7 +200,10 @@ export function control(
             "data-zone": zone,
             "data-key": key,
             "aria-disabled": ok === true ? null : "true",
-            title: ok === true ? (attrs.title ?? a.title ?? null) : ok,
+            title:
+                ok === true
+                    ? (attrs.title ?? (typeof a.title === "function" ? a.title(app, ctx) : a.title) ?? null)
+                    : ok,
             ...attrs,
             ...(ok !== true && { title: ok }),
         },
