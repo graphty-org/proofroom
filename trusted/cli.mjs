@@ -9,7 +9,7 @@
  * beyond Node's standard library and runs from a checkout without an install.
  */
 
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -31,28 +31,68 @@ visual-review.config.json afterwards: it starts with one Storybook built by
 
     capture: `usage: proofroom capture --project <id> --out <dir> [options]
 
-Captures every story of one built Storybook and writes results.json and the PNGs to review into
-<dir>. Exits 0 whatever it finds; non-zero only when the tool itself fails, including a baseline
-that is an LFS pointer (run \`git lfs pull\`).
+Screenshots every story of one built Storybook, once per snapshot, and judges nothing: each image
+goes into <dir> as it is taken, with one line per snapshot in <dir>/capture.ndjson. \`compare\`
+judges them. Exits 0 once every story was shot, whatever the images show; 2 when the tool fails.
 
   --project <id>          a project of visual-review.config.json
-  --out <dir>             where results.json and the PNGs go
+  --out <dir>             where the images and capture.ndjson go
+  --storybook <dir>       the built Storybook (default: the project's "storybook")
+  --baselines <dir>       where the story settings files are (default: <baselines>/<id> from the
+                          config); no baseline image is read
+  --workers <n>           browsers in parallel (default: the project's "workers")
+  --stories <prefix,...>  only the story ids starting with a prefix, for a quick local preview
+  --ndjson                also print each capture line on standard output, for \`compare --stdin\``,
+
+    run: `usage: proofroom run --project <id> --out <dir> [options]
+
+Captures one project and compares it in one process: each snapshot's result line is printed on
+standard output the moment it is shot and judged. Writes into <dir> what \`capture\` and
+\`compare\` write: the images to review, capture.ndjson, results.ndjson, results.json and the
+JUnit file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the tool failed.
+
+  --project <id>          a project of visual-review.config.json
+  --out <dir>             where everything goes
   --storybook <dir>       the built Storybook (default: the project's "storybook")
   --baselines <dir>       the baselines (default: <baselines>/<id> from the config)
   --workers <n>           browsers in parallel (default: the project's "workers")
   --reference <dir>       the default branch's capture (from \`reference\`): a story with no
                           baseline that looks as it does there is "unseeded", not "new"
-  --stories <prefix,...>  only the story ids starting with a prefix, for a quick local preview`,
+  --stories <prefix,...>  only the story ids starting with a prefix, for a quick local preview
+  --retries <n>           shoot a snapshot that did not pass again, up to n times (default 0);
+                          each shot is one attempt, and the last one is the snapshot's result
+  --junit <file>          the JUnit file (default: <dir>/junit.xml)
+  --no-fail               exit 0 when a snapshot did not pass; 2 still when the tool failed`,
 
     reference: `usage: proofroom reference --project <id> --out <dir>
 
 Downloads the default branch's newest complete capture of the project with gh into <dir> and
 prints its directory, or prints nothing when there is none. CI runs it before \`capture\`.`,
 
-    compare: `usage: proofroom compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa]
+    compare: `usage: proofroom compare --project <id> --captures <dir> [options]
+       proofroom compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa] [options]
 
-Compares every PNG in the two directories by name and prints one JSON line per file that is not
-unchanged, then a summary. Exits 1 when anything differs. For local use.`,
+Judges captured images against the baselines, one snapshot at a time, and prints each snapshot's
+result line on standard output as it is judged, appending it to <out>/results.ndjson. With
+--project, the images are a capture's (<dir>/capture.ndjson names them); without it, every PNG in
+<dir>, made by any tool, is matched to the baseline of the same file name. Once the whole capture
+is judged it reports every baseline nothing drew as removed and writes results.json and the JUnit
+file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the tool failed.
+
+  --project <id>          a project of visual-review.config.json
+  --captures <dir>        the images, and the capture's capture.ndjson
+  --baselines <dir>       the baselines (default with --project: <baselines>/<id> from the config)
+  --out <dir>             where results go (default: <captures>)
+  --stdin                 read the capture lines from standard input instead, judging each as it
+                          arrives: \`capture --ndjson | compare --stdin\` waits for no whole capture
+  --reference <dir>       the default branch's capture (from \`reference\`): a story with no
+                          baseline that looks as it does there is "unseeded", not "new"
+  --id <id>[.<mode>],...  judge only these snapshots; then no removed baseline, results.json or
+                          JUnit file is written
+  --junit <file>          the JUnit file (default: <out>/junit.xml)
+  --threshold <0..1>      without --project: how far a pixel may differ (default 0.063)
+  --include-aa            without --project: count anti-aliased pixels as changed
+  --no-fail               exit 0 when a snapshot did not pass; 2 still when the tool failed`,
 
     serve: `usage: PORT=<n> proofroom serve [--master-run <id>] [--results <dir>] [--previews <dir>]
 
@@ -141,6 +181,7 @@ Installs the Chromium, and on Linux the system libraries, that this package's Pl
 const COMMANDS = {
     init,
     capture,
+    run,
     reference,
     compare,
     parity,
@@ -161,13 +202,14 @@ Screenshots every story of your Storybooks in CI, compares them with baseline PN
 
 Commands:
   init             set up a repository: config, .gitattributes, GitHub Actions workflows
-  capture          screenshot one project's built Storybook and compare with its baselines
-  reference        download the default branch's newest capture (CI, before capture)
+  run              capture one project's built Storybook and compare it with its baselines (CI)
+  capture          screenshot one project's built Storybook, judging nothing
+  compare          judge captured images, from capture or any other tool, against the baselines
+  reference        download the default branch's newest capture (CI, before run)
   gate             fail a pull request that holds changes nobody accepted (CI)
   serve            the review page
   notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
-  compare          compare two directories of PNGs (local use)
   parity           compare two captures of the same commit byte for byte
   merge-results    combine the story tests' partial captures of one project
   junit            write a capture set's results as a JUnit XML file
@@ -187,40 +229,107 @@ async function settings() {
     return { root, config: loadConfig(root) };
 }
 
-async function capture(args) {
-    const { values } = parseArgs({
-        args,
-        options: {
-            project: { type: "string" },
-            out: { type: "string" },
-            storybook: { type: "string" },
-            baselines: { type: "string" },
-            workers: { type: "string" },
-            reference: { type: "string" },
-            stories: { type: "string" },
-        },
-    });
+/** @type {Record<string, { type: "string" }>} */
+const SHOOT_OPTIONS = {
+    project: { type: "string" },
+    out: { type: "string" },
+    storybook: { type: "string" },
+    baselines: { type: "string" },
+    workers: { type: "string" },
+    stories: { type: "string" },
+};
+
+/**
+ * What `capture` and `run` shoot, from their options and the config.
+ * @param {Record<string, any>} values the parsed options
+ * @param {string} help the command's usage, printed when an option is missing
+ * @returns {Promise<object | null>} capture()'s options, or null after printing the usage
+ */
+async function shootOptions(values, help) {
     const { root, config } = await settings();
     const project = Object.hasOwn(config.projects, values.project ?? "") ? config.projects[values.project] : undefined;
     const workers = Number(values.workers ?? project?.workers);
     if (!project || !values.out || !(Number.isInteger(workers) && workers > 0)) {
-        console.error(`${HELP.capture}\n\nprojects: ${Object.keys(config.projects).join(", ")}`);
-        return 2;
+        console.error(`${help}\n\nprojects: ${Object.keys(config.projects).join(", ")}`);
+        return null;
     }
-    // Playwright is capture's only dependency, so it loads only for this command.
-    const { capture: run } = await import("../capture/capture.mjs");
-    await run({
+    return {
         project: values.project,
         storybook: resolve(values.storybook ?? join(root, project.storybook)),
         baselines: resolve(values.baselines ?? join(root, config.baselines, values.project)),
         out: resolve(values.out),
         workers,
         waitFor: project.waitFor,
-        reference: values.reference ? resolve(values.reference) : null,
         stories: values.stories ? values.stories.split(",").filter(Boolean) : null,
         fontconfig: config.fontconfig ? join(root, config.fontconfig) : null,
+    };
+}
+
+/**
+ * Runs a command's work, turning a failure of the tool into exit code 2 with its message.
+ * @param {string} name the command
+ * @param {() => Promise<number>} work the work, resolving to the exit code
+ * @returns {Promise<number>} the exit code
+ */
+async function toolExit(name, work) {
+    try {
+        return await work();
+    } catch (err) {
+        console.error(`proofroom ${name}: ${err?.message ?? err}`);
+        return 2;
+    }
+}
+
+const printLine = (line) => console.log(JSON.stringify(line, (key, value) => (key === "bytes" ? undefined : value)));
+
+async function capture(args) {
+    const { values } = parseArgs({ args, options: { ...SHOOT_OPTIONS, ndjson: { type: "boolean", default: false } } });
+    const options = await shootOptions(values, HELP.capture);
+    if (!options) {
+        return 2;
+    }
+    // Playwright is capture's only dependency, so it loads only for the commands that shoot.
+    const { capture: shoot } = await import("../capture/capture.mjs");
+    return toolExit("capture", async () => {
+        for await (const line of shoot(options)) {
+            if (values.ndjson) {
+                printLine(line);
+            }
+        }
+        return 0;
     });
-    return 0;
+}
+
+async function run(args) {
+    const { values } = parseArgs({
+        args,
+        options: {
+            ...SHOOT_OPTIONS,
+            reference: { type: "string" },
+            retries: { type: "string" },
+            junit: { type: "string" },
+            "no-fail": { type: "boolean", default: false },
+        },
+    });
+    const retries = Number(values.retries ?? 0);
+    const options = await shootOptions(values, HELP.run);
+    if (!options || !(Number.isInteger(retries) && retries >= 0)) {
+        if (options) {
+            console.error(HELP.run);
+        }
+        return 2;
+    }
+    const { run: shootAndCompare } = await import("../capture/capture.mjs");
+    return toolExit("run", async () => {
+        const { passed } = await shootAndCompare({
+            ...options,
+            reference: values.reference ? resolve(values.reference) : null,
+            retries,
+            junit: resolve(values.junit ?? join(options.out, "junit.xml")),
+            print: printLine,
+        });
+        return passed || values["no-fail"] ? 0 : 1;
+    });
 }
 
 async function reference(args) {
@@ -451,42 +560,65 @@ async function compare(args) {
     const { values } = parseArgs({
         args,
         options: {
+            project: { type: "string" },
             baselines: { type: "string" },
             captures: { type: "string" },
+            out: { type: "string" },
+            stdin: { type: "boolean", default: false },
+            reference: { type: "string" },
+            id: { type: "string" },
+            junit: { type: "string" },
             threshold: { type: "string" },
             "include-aa": { type: "boolean", default: false },
+            "no-fail": { type: "boolean", default: false },
         },
     });
-    const { classify, DEFAULT_THRESHOLD, readBaseline } = await import("./lib/compare.mjs");
+    const { DEFAULT_THRESHOLD } = await import("./lib/compare.mjs");
+    const { captureLines, compareRun, imageLines, jsonLines } = await import("./lib/compare-run.mjs");
     const threshold = Number(values.threshold ?? DEFAULT_THRESHOLD);
-    if (!values.baselines || !values.captures || !(threshold >= 0 && threshold <= 1)) {
+    const plain = values.project === undefined;
+    if (!values.captures || !(threshold >= 0 && threshold <= 1) || (plain && (!values.baselines || values.stdin))) {
         console.error(HELP.compare);
         return 2;
     }
-    const pngs = async (dir) => (await readdir(dir)).filter((f) => f.endsWith(".png"));
-    const read = (dir, file, present) => {
-        if (!present.includes(file)) {
-            return null;
+    let baselines = values.baselines && resolve(values.baselines);
+    if (!plain) {
+        const { root, config } = await settings();
+        if (!Object.hasOwn(config.projects, values.project)) {
+            console.error(`${HELP.compare}\n\nprojects: ${Object.keys(config.projects).join(", ")}`);
+            return 2;
         }
-        const reader = dir === values.baselines ? readBaseline : readFile;
-        return reader(join(dir, file));
-    };
-    const [baselines, captures] = await Promise.all([pngs(values.baselines), pngs(values.captures)]);
-    const counts = {};
-    for (const file of [...new Set([...baselines, ...captures])].sort()) {
-        const item = classify({
-            baseline: await read(values.baselines, file, baselines),
-            first: await read(values.captures, file, captures),
-            threshold,
-            includeAA: values["include-aa"],
-        });
-        counts[item.status] = (counts[item.status] ?? 0) + 1;
-        if (item.status !== "unchanged") {
-            console.log(JSON.stringify({ file, ...item }));
-        }
+        baselines ??= resolve(join(root, config.baselines, values.project));
     }
-    console.log(JSON.stringify({ summary: counts }));
-    return Object.keys(counts).some((status) => status !== "unchanged") ? 1 : 0;
+    const captures = resolve(values.captures);
+    const out = resolve(values.out ?? captures);
+    // Images from any tool carry no project: their results are named "images".
+    const project = values.project ?? "images";
+    return toolExit("compare", async () => {
+        let lines;
+        if (plain) {
+            lines = imageLines({ project, captures, threshold, includeAA: values["include-aa"] });
+        } else {
+            lines = values.stdin ? jsonLines(process.stdin) : captureLines(captures);
+        }
+        const { passed, lines: judged } = await compareRun({
+            project,
+            baselines,
+            captures,
+            out,
+            lines,
+            reference: values.reference ? resolve(values.reference) : null,
+            ids: values.id ? new Set(values.id.split(",").filter(Boolean)) : null,
+            junit: resolve(values.junit ?? join(out, "junit.xml")),
+            print: printLine,
+        });
+        const counts = {};
+        for (const line of judged) {
+            counts[line.status] = (counts[line.status] ?? 0) + 1;
+        }
+        console.error(JSON.stringify({ project, summary: counts }));
+        return passed || values["no-fail"] ? 0 : 1;
+    });
 }
 
 async function parity(args) {
@@ -598,9 +730,7 @@ async function installBrowser() {
     try {
         pkg = createRequire(import.meta.url).resolve("playwright/package.json");
     } catch {
-        console.error(
-            "proofroom: playwright is not installed; add it to your devDependencies (npm i -D playwright)",
-        );
+        console.error("proofroom: playwright is not installed; add it to your devDependencies (npm i -D playwright)");
         return 1;
     }
     const cli = join(dirname(pkg), JSON.parse(await readFile(pkg, "utf8")).bin.playwright);
@@ -616,8 +746,8 @@ if (name === "--version" || name === "-v") {
     console.log(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version);
     process.exit(0);
 }
-const run = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
-if (run === undefined) {
+const command = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
+if (command === undefined) {
     console.error(`proofroom: unknown command "${name}"\n\n${MAIN_HELP}`);
     process.exit(2);
 }
@@ -627,7 +757,7 @@ if (rest.includes("--help") || rest.includes("-h")) {
     process.exit(0);
 }
 try {
-    process.exitCode = await run(rest);
+    process.exitCode = await command(rest);
 } catch (err) {
     // A bad option, a missing config or a failed git call: say what, without a stack.
     if (err?.code?.startsWith?.("ERR_PARSE_ARGS") || /visual-review\.config\.json|git repository/.test(err?.message)) {
