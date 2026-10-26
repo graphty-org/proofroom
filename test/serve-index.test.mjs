@@ -4,7 +4,7 @@
  * once per capture-set load, and JSON answers go gzipped to a client that takes them.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, get } from "node:http";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -14,7 +14,16 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { decisionProblem } from "../trusted/lib/accept.mjs";
 import * as filters from "../trusted/lib/filters.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { capturedItems, FIXTURE_CONFIG, isolateGit, keepTiles, makeRepo, onePr, seedTiles } from "./helpers.mjs";
+import {
+    capturedItems,
+    FIXTURE_CONFIG,
+    git,
+    isolateGit,
+    keepTiles,
+    makeRepo,
+    onePr,
+    seedTiles,
+} from "./helpers.mjs";
 
 // Counts the calls of the item index's builder and of the Look alike grouping, by any app here.
 vi.mock("../trusted/lib/filters.mjs", async (importOriginal) => {
@@ -50,10 +59,10 @@ beforeAll(async () => {
  * Starts the app on a random port, with the fixture's tiles made already.
  * @param {object} options passed to createApp, with `gh(r)` making the gh runner
  * @param {boolean} [options.tiles] false: without the tiles
+ * @param {object} [options.r] the repository (makeRepo); a new one when not given
  * @returns {Promise<object>} `api(method, path, body)`, `raw(path, encoding)`, the origin and tmp
  */
-async function start({ tiles: seed = true, ...options }) {
-    const r = makeRepo();
+async function start({ tiles: seed = true, r = makeRepo(), ...options }) {
     const tmp = join(r.repo, "tmp/visual-review");
     if (seed && tiles) {
         seedTiles(tiles, tmp);
@@ -196,17 +205,31 @@ describe("serve: the decision index", () => {
         await s.api("GET", `/api/pr/123/${PROJECT}`);
         vi.mocked(filters.itemsByFile).mockClear();
         const find = vi.spyOn(Array.prototype, "find");
+        // Every decision the server works out, saved or approved before, is counted: building the
+        // index works out one per item, a write only the one it wrote.
+        const worked = app.work.decisions;
         const body = { id: "123", project: PROJECT };
         for (const item of items.slice(0, 20)) {
             expect((await s.api("POST", "/api/decide", { ...body, file: item.file, decision: "accept" })).status).toBe(
                 200,
             );
         }
-        expect((await s.api("POST", "/api/decide", { ...body, file: items[0].file, decision: null })).status).toBe(200);
+        const undo = await s.api("POST", "/api/decide", { ...body, file: items[0].file, decision: null });
+        expect(undo.body).toEqual({ ok: true, unpublished: 19 });
         const scans = find.mock.contexts.filter((list) => Array.isArray(list) && list.length >= N).length;
         find.mockRestore();
         expect(scans).toBe(0);
         expect(filters.itemsByFile).not.toHaveBeenCalled();
+        expect(app.work.decisions - worked).toBe(21);
+        // The list then answers from the same index, with what was written.
+        const { decisions } = (await s.api("GET", `/api/pr/123/${PROJECT}`)).body;
+        expect(Object.keys(decisions).sort()).toEqual(
+            items
+                .slice(1, 20)
+                .map((i) => i.file)
+                .sort(),
+        );
+        expect(app.work.decisions - worked).toBe(21);
     });
 
     it("updates on every decision written, by this server or by another process", async () => {
@@ -251,6 +274,52 @@ describe("serve: the decision index", () => {
         }
         expect(filters.clusters).toHaveBeenCalledTimes(1);
         expect(filters.itemsByFile).not.toHaveBeenCalled();
+    });
+
+    it("leaves an image approved before out of Look alike, even once it is rejected", async () => {
+        const button = capturedItems().find((i) => i.file === "button--primary.dark.png");
+        const items = ["a", "b", "c"].map((name) => ({
+            ...button,
+            id: `look--${name}`,
+            file: `look--${name}.dark.png`,
+        }));
+        const r = makeRepo();
+        mkdirSync(join(r.repo, "visual-baselines/reviews"), { recursive: true });
+        writeFileSync(
+            join(r.repo, "visual-baselines/reviews/20261001T000000Z-pr77.json"),
+            JSON.stringify({
+                version: 1,
+                unproven: true,
+                pr: 77,
+                items: [
+                    {
+                        path: `visual-baselines/${PROJECT}/look--a.dark.png`,
+                        from: button.baseline,
+                        to: button.capture,
+                        reason: null,
+                    },
+                ],
+                reviewedAt: "2026-10-01T00:00:00.000Z",
+            }),
+        );
+        git(r.repo, "add", "-A");
+        git(r.repo, "commit", "-q", "-m", "an earlier approval");
+        git(r.repo, "push", "-q", "origin", "master");
+        const s = await start({ r, gh: bigPr(items) });
+        await s.api("GET", "/api/prs");
+        const list = async () => (await s.api("GET", `/api/pr/123/${PROJECT}`)).body;
+        const first = await list();
+        expect(first.decisions["look--a.dark.png"]).toMatchObject({ decision: "accept", approvedBefore: { pr: 77 } });
+        expect(first.clusters.map((c) => c.files)).toEqual([["look--b.dark.png", "look--c.dark.png"]]);
+        const body = { id: "123", project: PROJECT, file: "look--a.dark.png" };
+        const reject = await s.api("POST", "/api/decide", { ...body, decision: "reject", reason: "not this time" });
+        expect(reject.status).toBe(200);
+        const after = await list();
+        expect(after.decisions["look--a.dark.png"]).toEqual({ decision: "reject", reason: "not this time" });
+        expect(after.clusters.map((c) => c.files)).toEqual([["look--b.dark.png", "look--c.dark.png"]]);
+        // Its Undo brings back the accept approved before.
+        expect((await s.api("POST", "/api/decide", { ...body, decision: null })).status).toBe(200);
+        expect((await list()).decisions["look--a.dark.png"]).toMatchObject({ approvedBefore: { pr: 77 } });
     });
 });
 

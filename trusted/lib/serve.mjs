@@ -889,7 +889,7 @@ export function createApp({
         const stat = statSync(file, { throwIfNoEntry: false });
         if (!stat) {
             savedStates.delete(file);
-            return {};
+            return NO_DECISIONS;
         }
         const kept = savedStates.get(file);
         if (kept?.stamp === stampOf(stat)) {
@@ -899,6 +899,8 @@ export function createApp({
         savedStates.set(file, { stamp: stampOf(stat), saved });
         return saved;
     };
+    // No decisions file yet: one shared answer, so what was worked out from it is kept (decisionsOf).
+    const NO_DECISIONS = Object.freeze({});
     /** Each decisions file as last read or written, by path, with its stampOf when it was. */
     const savedStates = new Map();
     const stampOf = (stat) => `${stat.mtimeMs} ${stat.size} ${stat.ino}`;
@@ -938,14 +940,41 @@ export function createApp({
      * @param {(saved: Record<string, object>) => void} change edits the decisions in place
      */
     const update = (t, change) => {
-        const saved = Object.fromEntries(Object.entries(readState(t)).map(([k, d]) => [k, { ...d }]));
-        change(saved);
+        const was = readState(t);
+        const saved = /** @type {Record<string | symbol, object>} */ ({ ...was });
+        // The keys `change` reads or writes: only their decisions are worked out again. A decision
+        // is copied before `change` can edit it, so what readState shares is never changed.
+        const touched = new Set();
+        change(
+            new Proxy(saved, {
+                get(o, k) {
+                    if (typeof k === "string" && !touched.has(k)) {
+                        touched.add(k);
+                        if (Object.hasOwn(o, k)) {
+                            o[k] = { ...o[k] };
+                        }
+                    }
+                    return o[k];
+                },
+                set(o, k, v) {
+                    touched.add(String(k));
+                    o[k] = v;
+                    return true;
+                },
+                deleteProperty(o, k) {
+                    touched.add(String(k));
+                    delete o[k];
+                    return true;
+                },
+            }),
+        );
         const file = stateFile(t);
         writeJson(file, saved);
         // What was just written is what the next read gets, unless the file changes again.
         const stat = statSync(file, { throwIfNoEntry: false });
         if (stat) {
             savedStates.set(file, { stamp: stampOf(stat), saved });
+            patchIndex(t, was, saved, touched);
         }
     };
 
@@ -979,51 +1008,126 @@ export function createApp({
      * baseline are both unchanged keeps its decision, and one whose baseline moved comes back
      * undecided. An accept or exclusion an earlier Finish published counts as published (`posted`)
      * only while the branch still holds it: after its commit is reverted, Finish publishes it again.
+     * An undecided item whose exact image was approved before shows as accepted (`approvedBefore`).
+     * The answer is shared: callers never change it.
      * @param {object} t the target
      * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true,
      *     approvedBefore?: object }>}
      *     by `<project>/<file>`
      */
-    const decisionsOf = (t) => {
-        const mine = new Map();
-        for (const [k, { hash, base, ...d }] of Object.entries(readState(t))) {
-            const item = itemOf(t, k);
-            const project = k.slice(0, k.indexOf("/"));
+    const decisionsOf = (t) => indexOf(t).mine;
+    // The unpublished count, so the page's Finish button stays current: the length of
+    // finishList(t).list, kept beside the decisions instead of counted.
+    const unpublishedOf = (t) => indexOf(t).unpublished;
+
+    /**
+     * Each target's decisions (decisionsOf) with what they were worked out from: the decisions file
+     * as read, the capture sets, the images approved before and what the branch holds. They are
+     * worked out once per load or change of the file; a decision this server writes changes only
+     * its own entry (patchIndex).
+     * @type {WeakMap<object, { saved: object, sets: [string, object][], approved: Map<string, object>,
+     *     published: Map<string, string | null> | null | undefined, pr: number | null, local: boolean,
+     *     mine: Map<string, object>, unpublished: number }>}
+     */
+    const decisionIndex = new WeakMap();
+    // Counted work, read by the tests: each decision worked out (decisionAt).
+    const work = { decisions: 0 };
+    // Whether an index entry still answers for `t` with the decisions file `saved`.
+    const indexFits = (index, t, saved) =>
+        index.saved === saved &&
+        index.approved === approved &&
+        index.published === t.published &&
+        index.pr === t.pr &&
+        index.local === (t.local === true) &&
+        index.sets.length === t.projects.length &&
+        t.projects.every((p, i) => index.sets[i][0] === p.project && index.sets[i][1] === p.results);
+    const indexOf = (t) => {
+        const saved = readState(t);
+        const kept = decisionIndex.get(t);
+        if (kept && indexFits(kept, t, saved)) {
+            return kept;
+        }
+        const index = {
+            saved,
+            sets: t.projects.map((p) => [p.project, p.results]),
+            approved,
+            published: t.published,
+            pr: t.pr,
+            local: t.local === true,
+            mine: new Map(),
+            unpublished: 0,
+        };
+        for (const [k, d] of Object.entries(saved)) {
+            setDecision(index, k, decisionAt(t, k, d));
+        }
+        for (const p of t.projects) {
+            for (const item of p.results?.items ?? []) {
+                const k = `${p.project}/${item.file}`;
+                if (!Object.hasOwn(saved, k)) {
+                    setDecision(index, k, decisionAt(t, k, undefined));
+                }
+            }
+        }
+        decisionIndex.set(t, index);
+        return index;
+    };
+    const setDecision = (index, k, d) => {
+        const old = index.mine.get(k);
+        if (old) {
+            index.unpublished -= old.posted ? 0 : 1;
+            index.mine.delete(k);
+        }
+        if (d) {
+            index.mine.set(k, d);
+            index.unpublished += d.posted ? 0 : 1;
+        }
+    };
+    // After a write: the decisions of the keys written, worked out again, when the index was current.
+    const patchIndex = (t, was, saved, touched) => {
+        const index = decisionIndex.get(t);
+        if (!index || !indexFits(index, t, was)) {
+            return;
+        }
+        index.saved = saved;
+        for (const k of touched) {
+            setDecision(index, k, decisionAt(t, k, saved[k]));
+        }
+    };
+    /**
+     * One key's decision as decisionsOf shows it: its saved decision when that still applies, else
+     * an accept when its exact image was approved before, else none.
+     * @param {object} t the target
+     * @param {string} k `<project>/<file>`
+     * @param {object | undefined} saved its saved decision
+     * @returns {object | null} the decision
+     */
+    const decisionAt = (t, k, saved) => {
+        work.decisions++;
+        const item = itemOf(t, k);
+        if (!item) {
+            return null;
+        }
+        const project = k.slice(0, k.indexOf("/"));
+        if (saved) {
+            const { hash, base, ...d } = saved;
             if (
-                item &&
                 imageHash(item) === hash &&
                 (base === undefined || base === (item.baseline ?? null)) &&
                 !decisionProblem(item, d.decision, d.reason ?? null) &&
                 (d.decision === "reject" || acceptable(t, project))
             ) {
                 const { posted, ...rest } = d;
-                mine.set(k, posted && !onBranch(t, project, item, d.decision) ? rest : d);
+                return posted && !onBranch(t, project, item, d.decision) ? rest : d;
             }
         }
-        addApprovedBefore(t, mine);
-        return mine;
-    };
-
-    // Adds an accept to `mine` for each undecided item whose exact image was approved before.
-    const addApprovedBefore = (t, mine) => {
-        for (const p of t.projects) {
-            for (const item of p.results?.items ?? []) {
-                const k = `${p.project}/${item.file}`;
-                const before = mine.has(k) ? null : approvedBefore(t, p.project, item);
-                if (before) {
-                    // Published once the branch's own record takes the file to this image.
-                    const posted = t.published?.get(`${config.baselines}/${k}`) === item.capture;
-                    mine.set(k, {
-                        decision: "accept",
-                        reason: null,
-                        approvedBefore: before,
-                        ...(posted && { posted }),
-                    });
-                }
-            }
+        const before = approvedBefore(t, project, item);
+        if (!before) {
+            return null;
         }
+        // Published once the branch's own record takes the file to this image.
+        const posted = t.published?.get(`${config.baselines}/${k}`) === item.capture;
+        return { decision: "accept", reason: null, approvedBefore: before, ...(posted && { posted }) };
     };
-
     /**
      * The earlier approval of exactly this image for this story, when the item can be accepted on
      * it: a change, a new story or one with no baseline yet, never a rename or a removal.
@@ -2923,28 +3027,21 @@ export function createApp({
         return [200, { undone: files.length, files, unpublished: unpublishedOf(t) }];
     };
 
-    // The unpublished count after a write, so the page's Finish button stays current: the length
-    // of finishList(t).list, counted without sorting or hashing it.
-    const unpublishedOf = (t) => {
-        let n = 0;
-        for (const d of decisionsOf(t).values()) {
-            n += d.posted ? 0 : 1;
-        }
-        return n;
-    };
-
     /**
      * Each capture set's Look alike groups, with what they were computed from: they depend on the
      * images, the known noise and the images approved before, never on the decisions, so they are
      * computed once per load (and again only when a refresh replaces the noise or the approvals),
      * not once per list request.
-     * @type {WeakMap<object, { t: object, files: string[] | null, noise: Map<string, object>,
+     * They depend on nothing else of the target than whether the pull request touches the
+     * project's package (known noise) and whether it can be accepted (approved before), so pages
+     * on two runs that share a capture set share its groups.
+     * @type {WeakMap<object, { quiet: boolean, ok: boolean, noise: Map<string, object>,
      *     approved: Map<string, object>, grouped: ReturnType<typeof clusters> }>}
      */
     const lookAlikes = new WeakMap();
     /**
      * A project's Look alike groups. They leave out what has a group of its own: known noise and
-     * approved before.
+     * approved before, whatever the item's decision.
      * @param {object} t the target
      * @param {string} name the project
      * @param {object} results its results.json
@@ -2952,14 +3049,16 @@ export function createApp({
      * @returns {ReturnType<typeof clusters>} the groups
      */
     const lookAlike = (t, name, results, shown) => {
+        const quiet = untouched(t, name);
+        const ok = acceptable(t, name);
         const kept = lookAlikes.get(results);
-        if (kept?.t === t && kept.files === t.changedFiles && kept.noise === noise && kept.approved === approved) {
+        if (kept?.quiet === quiet && kept.ok === ok && kept.noise === noise && kept.approved === approved) {
             return kept.grouped;
         }
         const grouped = clusters(
             shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !approvedBefore(t, name, i)),
         );
-        lookAlikes.set(results, { t, files: t.changedFiles, noise, approved, grouped });
+        lookAlikes.set(results, { quiet, ok, noise, approved, grouped });
         return grouped;
     };
 
@@ -4047,5 +4146,6 @@ export function createApp({
         }
     };
     handler.serverId = serverId;
+    handler.work = work;
     return handler;
 }
