@@ -21,7 +21,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -271,11 +271,16 @@ export function message(fresh, url) {
  * Writes a JSON file through a sibling renamed into place.
  * @param {string} file the file
  * @param {unknown} value what to write
+ * @returns {import("node:fs").Stats} the written file's stat, taken before the rename (which keeps
+ *     its inode, size and modification time), so it describes these bytes even when another
+ *     process renames its own write over the file straight after
  */
 export function writeJson(file, value) {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(`${file}.tmp`, JSON.stringify(value, null, 2));
+    const stat = statSync(`${file}.tmp`);
     renameSync(`${file}.tmp`, file);
+    return stat;
 }
 
 const readJson = (file) => {

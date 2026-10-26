@@ -101,6 +101,7 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { gzipSync } from "node:zlib";
 
 import { contentHash } from "../gate.mjs";
 
@@ -136,7 +137,7 @@ import {
     visualJobs,
 } from "./github.mjs";
 import { CONFIG_FILE } from "./config.mjs";
-import { approvalIndex, clusters, isNoise, knownNoise, observations } from "./filters.mjs";
+import { approvalIndex, clusters, isNoise, itemsByFile, knownNoise, observations } from "./filters.mjs";
 import { coupledGroups, inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { autoKind, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
@@ -168,6 +169,21 @@ const NEXT_TYPES = {
     svg: "image/svg+xml",
     png: "image/png",
 };
+// A JSON answer at least this long goes gzipped to a client that accepts it; below it, the header
+// costs about what gzip saves. Images are compressed already and are never gzipped again.
+const GZIP_FROM = 1024;
+/**
+ * Whether a request's Accept-Encoding takes gzip: listed, and not with `q=0`.
+ * @param {string | string[] | undefined} header the header
+ * @returns {boolean} whether it does
+ */
+const acceptsGzip = (header) =>
+    String(header ?? "")
+        .split(",")
+        .some((part) => {
+            const [name, ...params] = part.split(";").map((x) => x.trim().toLowerCase());
+            return name === "gzip" && !params.some((x) => /^q=0(?:\.0*)?$/.test(x));
+        });
 const HEADERS = {
     "content-security-policy":
         "default-src 'self'; img-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -843,10 +859,27 @@ export function createApp({
     const busy = (t) => finishing && job?.target === t.id;
     const BUSY = "a Finish is running on this target: wait for it to end";
 
+    /**
+     * Each capture set's items by file name, built when the set loads (a results object is never
+     * changed after that), so a decision finds its item without a scan of the list.
+     * @type {WeakMap<object, Map<string, object>>}
+     */
+    const itemIndex = new WeakMap();
+    const itemIn = (results, file) => {
+        if (!results) {
+            return undefined;
+        }
+        let index = itemIndex.get(results);
+        if (!index) {
+            index = itemsByFile(results.items);
+            itemIndex.set(results, index);
+        }
+        return index.get(file);
+    };
     const itemOf = (t, key) => {
         const at = key.indexOf("/");
         const p = t.projects.find((x) => x.project === key.slice(0, at));
-        return p?.results?.items.find((i) => i.file === key.slice(at + 1));
+        return itemIn(p?.results, key.slice(at + 1));
     };
     const stateFile = (t) => join(stateDir, `${t.id}.json`);
     const warned = new Set();
@@ -861,13 +894,35 @@ export function createApp({
      * A target's saved decisions by `<project>/<file>`, each with the hash of the image it was
      * taken on and of the baseline it was compared with (`base`); `bulk` marks an accept from Accept all that was never opened one by one, `posted`
      * a reject an earlier Finish already commented. A file that is not a decisions file is moved
-     * aside, never overwritten, so the owner can still recover what it held.
+     * aside, never overwritten, so the owner can still recover what it held. The file is the source
+     * of truth: what was read is kept and used again only while the file's modification time, size
+     * and inode are unchanged, so a decision another tab or process wrote is read at once. The
+     * answer is shared: callers never change it (update changes a copy).
      * @param {object} t the target
-     * @returns {Record<string, { decision: string, reason: string | null, hash: string | null,
-     *     base?: string | null, bulk?: true, posted?: true }>} the decisions
+     * @returns {Readonly<Record<string, { decision: string, reason: string | null, hash: string | null,
+     *     base?: string | null, bulk?: true, posted?: true }>>} the decisions
      */
     const readState = (t) => {
         const file = stateFile(t);
+        const stat = statSync(file, { throwIfNoEntry: false });
+        if (!stat) {
+            savedStates.delete(file);
+            return NO_DECISIONS;
+        }
+        const kept = savedStates.get(file);
+        if (kept?.stamp === stampOf(stat)) {
+            return kept.saved;
+        }
+        const saved = parseState(t, file);
+        savedStates.set(file, { stamp: stampOf(stat), saved });
+        return saved;
+    };
+    // No decisions file yet: one shared answer, so what was worked out from it is kept (decisionsOf).
+    const NO_DECISIONS = Object.freeze({});
+    /** Each decisions file as last read or written, by path, with its stampOf when it was. */
+    const savedStates = new Map();
+    const stampOf = (stat) => `${stat.mtimeMs} ${stat.size} ${stat.ino}`;
+    const parseState = (t, file) => {
         let saved;
         try {
             saved = JSON.parse(readFileSync(file, "utf8"));
@@ -903,9 +958,41 @@ export function createApp({
      * @param {(saved: Record<string, object>) => void} change edits the decisions in place
      */
     const update = (t, change) => {
-        const saved = readState(t);
-        change(saved);
-        writeJson(stateFile(t), saved);
+        const was = readState(t);
+        const saved = /** @type {Record<string | symbol, object>} */ ({ ...was });
+        // The keys `change` reads or writes: only their decisions are worked out again. A decision
+        // is copied before `change` can edit it, so what readState shares is never changed.
+        const touched = new Set();
+        change(
+            new Proxy(saved, {
+                get(o, k) {
+                    if (typeof k === "string" && !touched.has(k)) {
+                        touched.add(k);
+                        if (Object.hasOwn(o, k)) {
+                            o[k] = { ...o[k] };
+                        }
+                    }
+                    return o[k];
+                },
+                set(o, k, v) {
+                    touched.add(String(k));
+                    o[k] = v;
+                    return true;
+                },
+                deleteProperty(o, k) {
+                    touched.add(String(k));
+                    delete o[k];
+                    return true;
+                },
+            }),
+        );
+        const file = stateFile(t);
+        // What was just written is what the next read gets, unless the file changes again. The stamp
+        // is of the bytes written here: a write another process renames over them straight after
+        // has another, so the next read takes that one.
+        const stat = writeJson(file, saved);
+        savedStates.set(file, { stamp: stampOf(stat), saved });
+        patchIndex(t, was, saved, touched);
     };
 
     /**
@@ -938,51 +1025,126 @@ export function createApp({
      * baseline are both unchanged keeps its decision, and one whose baseline moved comes back
      * undecided. An accept or exclusion an earlier Finish published counts as published (`posted`)
      * only while the branch still holds it: after its commit is reverted, Finish publishes it again.
+     * An undecided item whose exact image was approved before shows as accepted (`approvedBefore`).
+     * The answer is shared: callers never change it.
      * @param {object} t the target
      * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true,
      *     approvedBefore?: object }>}
      *     by `<project>/<file>`
      */
-    const decisionsOf = (t) => {
-        const mine = new Map();
-        for (const [k, { hash, base, ...d }] of Object.entries(readState(t))) {
-            const item = itemOf(t, k);
-            const project = k.slice(0, k.indexOf("/"));
+    const decisionsOf = (t) => indexOf(t).mine;
+    // The unpublished count, so the page's Finish button stays current: the length of
+    // finishList(t).list, kept beside the decisions instead of counted.
+    const unpublishedOf = (t) => indexOf(t).unpublished;
+
+    /**
+     * Each target's decisions (decisionsOf) with what they were worked out from: the decisions file
+     * as read, the capture sets, the images approved before and what the branch holds. They are
+     * worked out once per load or change of the file; a decision this server writes changes only
+     * its own entry (patchIndex).
+     * @type {WeakMap<object, { saved: object, sets: [string, object][], approved: Map<string, object>,
+     *     published: Map<string, string | null> | null | undefined, pr: number | null, local: boolean,
+     *     mine: Map<string, object>, unpublished: number }>}
+     */
+    const decisionIndex = new WeakMap();
+    // Counted work, read by the tests: each decision worked out (decisionAt).
+    const work = { decisions: 0 };
+    // Whether an index entry still answers for `t` with the decisions file `saved`.
+    const indexFits = (index, t, saved) =>
+        index.saved === saved &&
+        index.approved === approved &&
+        index.published === t.published &&
+        index.pr === t.pr &&
+        index.local === (t.local === true) &&
+        index.sets.length === t.projects.length &&
+        t.projects.every((p, i) => index.sets[i][0] === p.project && index.sets[i][1] === p.results);
+    const indexOf = (t) => {
+        const saved = readState(t);
+        const kept = decisionIndex.get(t);
+        if (kept && indexFits(kept, t, saved)) {
+            return kept;
+        }
+        const index = {
+            saved,
+            sets: t.projects.map((p) => [p.project, p.results]),
+            approved,
+            published: t.published,
+            pr: t.pr,
+            local: t.local === true,
+            mine: new Map(),
+            unpublished: 0,
+        };
+        for (const [k, d] of Object.entries(saved)) {
+            setDecision(index, k, decisionAt(t, k, d));
+        }
+        for (const p of t.projects) {
+            for (const item of p.results?.items ?? []) {
+                const k = `${p.project}/${item.file}`;
+                if (!Object.hasOwn(saved, k)) {
+                    setDecision(index, k, decisionAt(t, k, undefined));
+                }
+            }
+        }
+        decisionIndex.set(t, index);
+        return index;
+    };
+    const setDecision = (index, k, d) => {
+        const old = index.mine.get(k);
+        if (old) {
+            index.unpublished -= old.posted ? 0 : 1;
+            index.mine.delete(k);
+        }
+        if (d) {
+            index.mine.set(k, d);
+            index.unpublished += d.posted ? 0 : 1;
+        }
+    };
+    // After a write: the decisions of the keys written, worked out again, when the index was current.
+    const patchIndex = (t, was, saved, touched) => {
+        const index = decisionIndex.get(t);
+        if (!index || !indexFits(index, t, was)) {
+            return;
+        }
+        index.saved = saved;
+        for (const k of touched) {
+            setDecision(index, k, decisionAt(t, k, saved[k]));
+        }
+    };
+    /**
+     * One key's decision as decisionsOf shows it: its saved decision when that still applies, else
+     * an accept when its exact image was approved before, else none.
+     * @param {object} t the target
+     * @param {string} k `<project>/<file>`
+     * @param {object | undefined} saved its saved decision
+     * @returns {object | null} the decision
+     */
+    const decisionAt = (t, k, saved) => {
+        work.decisions++;
+        const item = itemOf(t, k);
+        if (!item) {
+            return null;
+        }
+        const project = k.slice(0, k.indexOf("/"));
+        if (saved) {
+            const { hash, base, ...d } = saved;
             if (
-                item &&
                 imageHash(item) === hash &&
                 (base === undefined || base === (item.baseline ?? null)) &&
                 !decisionProblem(item, d.decision, d.reason ?? null) &&
                 (d.decision === "reject" || acceptable(t, project))
             ) {
                 const { posted, ...rest } = d;
-                mine.set(k, posted && !onBranch(t, project, item, d.decision) ? rest : d);
+                return posted && !onBranch(t, project, item, d.decision) ? rest : d;
             }
         }
-        addApprovedBefore(t, mine);
-        return mine;
-    };
-
-    // Adds an accept to `mine` for each undecided item whose exact image was approved before.
-    const addApprovedBefore = (t, mine) => {
-        for (const p of t.projects) {
-            for (const item of p.results?.items ?? []) {
-                const k = `${p.project}/${item.file}`;
-                const before = mine.has(k) ? null : approvedBefore(t, p.project, item);
-                if (before) {
-                    // Published once the branch's own record takes the file to this image.
-                    const posted = t.published?.get(`${config.baselines}/${k}`) === item.capture;
-                    mine.set(k, {
-                        decision: "accept",
-                        reason: null,
-                        approvedBefore: before,
-                        ...(posted && { posted }),
-                    });
-                }
-            }
+        const before = approvedBefore(t, project, item);
+        if (!before) {
+            return null;
         }
+        // Published once the branch's own record takes the file to this image.
+        const posted = t.published?.get(`${config.baselines}/${k}`) === item.capture;
+        return { decision: "accept", reason: null, approvedBefore: before, ...(posted && { posted }) };
     };
-
     /**
      * The earlier approval of exactly this image for this story, when the item can be accepted on
      * it: a change, a new story or one with no baseline yet, never a rename or a removal.
@@ -1162,6 +1324,7 @@ export function createApp({
             forgetImages(dir);
         }
         if (loaded.results) {
+            itemIndex.set(loaded.results, itemsByFile(loaded.results.items));
             indexImages(dir, loaded.results);
             prewarm(dir, loaded.results);
         }
@@ -2885,8 +3048,40 @@ export function createApp({
         return [200, { undone: files.length, files, unpublished: unpublishedOf(t) }];
     };
 
-    // The unpublished count after a write, so the page's Finish button stays current.
-    const unpublishedOf = (t) => finishList(t).list.length;
+    /**
+     * Each capture set's Look alike groups, with what they were computed from: they depend on the
+     * images, the known noise and the images approved before, never on the decisions, so they are
+     * computed once per load (and again only when a refresh replaces the noise or the approvals),
+     * not once per list request.
+     * They depend on nothing else of the target than whether the pull request touches the
+     * project's package (known noise) and whether it can be accepted (approved before), so pages
+     * on two runs that share a capture set share its groups.
+     * @type {WeakMap<object, { quiet: boolean, ok: boolean, noise: Map<string, object>,
+     *     approved: Map<string, object>, grouped: ReturnType<typeof clusters> }>}
+     */
+    const lookAlikes = new WeakMap();
+    /**
+     * A project's Look alike groups. They leave out what has a group of its own: known noise and
+     * approved before, whatever the item's decision.
+     * @param {object} t the target
+     * @param {string} name the project
+     * @param {object} results its results.json
+     * @param {object[]} shown its items as the list shows them, `noise` marked
+     * @returns {ReturnType<typeof clusters>} the groups
+     */
+    const lookAlike = (t, name, results, shown) => {
+        const quiet = untouched(t, name);
+        const ok = acceptable(t, name);
+        const kept = lookAlikes.get(results);
+        if (kept?.quiet === quiet && kept.ok === ok && kept.noise === noise && kept.approved === approved) {
+            return kept.grouped;
+        }
+        const grouped = clusters(
+            shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !approvedBefore(t, name, i)),
+        );
+        lookAlikes.set(results, { quiet, ok, noise, approved, grouped });
+        return grouped;
+    };
 
     /**
      * Where a target's image is on this disk, by results.json.
@@ -2903,7 +3098,7 @@ export function createApp({
         if (!t) {
             return gone(id, run);
         }
-        const item = p?.results.items.find((i) => i.file === file);
+        const item = itemIn(p?.results, file);
         // A failed item has no image in the artifact: capture keeps no copy of its baseline.
         const hash = item && item.status !== "failed" && { capture: item.capture, baseline: item.baseline }[kind];
         if (!hash) {
@@ -3112,10 +3307,7 @@ export function createApp({
                 };
             });
             const decided = new Map(mine.map(([k, v]) => [k.slice(prefix.length), v]));
-            // The clusters leave out what has a group of its own: known noise and approved before.
-            const grouped = clusters(
-                shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !decided.get(i.file)?.approvedBefore),
-            );
+            const grouped = lookAlike(t, name, p.results, shown);
             const since = query?.get("since");
             const earlier = typeof since === "string" && since !== runKey(t) ? held.get(`${id} ${since}`) : null;
             return [
@@ -3205,7 +3397,7 @@ export function createApp({
             if (!t) {
                 return gone(String(body.id), body.run);
             }
-            const item = p?.results.items.find((i) => i.file === body.file);
+            const item = itemIn(p?.results, body.file);
             if (!item) {
                 return [404, { error: "no such item" }];
             }
@@ -3357,7 +3549,7 @@ export function createApp({
         // An Undo there undoes only the same decision; one decided otherwise is listed in `failed`.
         "POST /api/decide-group": async (_, body) => {
             const { t, p } = await projectOf(String(body.id), body.project);
-            const item = p?.results.items.find((i) => i.file === body.file);
+            const item = itemIn(p?.results, body.file);
             const key = `${body.project}/${body.file}`;
             const before = t && item ? decisionsOf(t).get(key) : undefined;
             const [status, answer] = await call("POST /api/decide", body);
@@ -3836,9 +4028,21 @@ export function createApp({
     }`;
 
     function send(res, status, body, type = "application/json", headers = {}) {
-        const data = type === "application/json" ? JSON.stringify(body) : body;
-        res.writeHead(status, { ...HEADERS, "content-type": type, ...headers });
-        res.end(data);
+        if (type !== "application/json") {
+            res.writeHead(status, { ...HEADERS, "content-type": type, ...headers });
+            res.end(body);
+            return;
+        }
+        const data = JSON.stringify(body) ?? "";
+        const gzip = Buffer.byteLength(data) >= GZIP_FROM && acceptsGzip(res.req?.headers["accept-encoding"]);
+        res.writeHead(status, {
+            ...HEADERS,
+            "content-type": type,
+            vary: "accept-encoding",
+            ...(gzip && { "content-encoding": "gzip" }),
+            ...headers,
+        });
+        res.end(gzip ? gzipSync(data) : data);
     }
 
     async function readBody(req) {
@@ -3965,5 +4169,8 @@ export function createApp({
         }
     };
     handler.serverId = serverId;
+    handler.work = work;
+    // A target's decisions as the list shows them, by `<project>/<file>`: for the bench's lookup timing.
+    handler.decisionsOf = (id) => (targets.has(id) ? decisionsOf(targets.get(id)) : null);
     return handler;
 }

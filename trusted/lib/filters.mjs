@@ -222,8 +222,14 @@ export function clusters(items) {
     const bySignature = new Map();
     for (const item of items) {
         const s = signature(item);
-        if (s !== null) {
-            bySignature.set(s, [...(bySignature.get(s) ?? []), item]);
+        if (s === null) {
+            continue;
+        }
+        const members = bySignature.get(s);
+        if (members) {
+            members.push(item);
+        } else {
+            bySignature.set(s, [item]);
         }
     }
     const found = [];
@@ -252,3 +258,10 @@ export function clusters(items) {
     const clustered = new Set(out.flatMap((c) => c.files));
     return { clusters: out, outliers: items.filter((i) => !clustered.has(i.file)).map((i) => i.file) };
 }
+
+/**
+ * A capture set's items by file name, so one item is found without a scan of the list.
+ * @param {object[]} items results.json items
+ * @returns {Map<string, object>} the item by `file`
+ */
+export const itemsByFile = (items) => new Map(items.map((i) => [i.file, i]));
