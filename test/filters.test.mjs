@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { approvalIndex, clusters, isNoise, knownNoise, observations, signature } from "../trusted/lib/filters.mjs";
+import { approvalIndex, clusters, signature } from "../trusted/lib/filters.mjs";
 import { FIXTURE } from "./helpers.mjs";
 import { approve, makeKey } from "./passkey-vectors.mjs";
 
@@ -79,50 +79,6 @@ describe("grouped review", () => {
             ["c.png", "d.png"],
         ]);
         expect(outliers).toEqual(["e.png", "f.png"]);
-    });
-});
-
-describe("known capture noise", () => {
-    const target = (pr, changedFiles, items, local = null) => ({
-        pr,
-        runId: pr * 10,
-        changedFiles,
-        projects: [{ project: "web", results: { local, items } }],
-    });
-    const packageOf = () => "packages/web";
-    const item = (capture, baseline = "b") => ({ file: "x.png", status: "changed", capture, baseline });
-
-    it("needs two pull requests that touch none of the story's package", () => {
-        const one = observations(target(1, ["docs/a.md"], [item("c")]), packageOf);
-        expect(one).toEqual([{ key: "web/x.png", pr: 1, run: 10, baseline: "b", capture: "c", untouched: true }]);
-        expect(knownNoise(one).size).toBe(0);
-        // A pull request that changes the package explains its own change: it is no proof.
-        const touched = observations(target(2, ["packages/web/src/x.ts"], [item("d")]), packageOf);
-        expect(knownNoise([...one, ...touched]).size).toBe(0);
-        const two = observations(target(3, ["README.md"], [item("e")]), packageOf);
-        expect(knownNoise([...one, ...touched, ...two]).get("web/x.png")).toEqual({
-            prs: [1, 3],
-            why: "untouched",
-            hashes: ["c", "e"],
-        });
-    });
-
-    it("counts a capture that flips between the same two images", () => {
-        const a = observations(target(1, ["packages/web/a.ts"], [item("y", "x")]), packageOf);
-        const b = observations(target(2, ["packages/web/b.ts"], [item("x", "y")]), packageOf);
-        const noise = knownNoise([...a, ...b]).get("web/x.png");
-        expect(noise).toMatchObject({ prs: [1, 2], why: "flip-flop" });
-        // Labeled on a pull request that touches the package only for that same flip.
-        expect(isNoise(noise, { baseline: "x", capture: "y" }, false)).toBe(true);
-        expect(isNoise(noise, { baseline: "x", capture: "z" }, false)).toBe(false);
-        expect(isNoise(noise, { baseline: "x", capture: "z" }, true)).toBe(true);
-        expect(isNoise(undefined, { baseline: "x", capture: "y" }, true)).toBe(false);
-    });
-
-    it("takes no evidence from a local preview, a seed or a target whose changed files are unknown", () => {
-        expect(observations(target(1, [], [item("c")], { describe: "local" }), packageOf)).toEqual([]);
-        expect(observations({ ...target(1, [], [item("c")]), pr: null }, packageOf)).toEqual([]);
-        expect(observations(target(1, null, [item("c")]), packageOf)).toEqual([]);
     });
 });
 

@@ -465,17 +465,15 @@ export async function keepTiles({ origin, token, tmp }, id) {
     const target = (await (await get("/api/prs")).json()).targets.find((t) => String(t.id) === String(id));
     // The projects the run captured (the config can name more).
     for (const { project } of target.projects.filter((p) => p.problem === null)) {
-        const { items } = await (await get(`/api/pr/${id}/${project}`)).json();
-        const at = (route, kind, file) => [route, id, project, kind, file].map(encodeURIComponent).join("/");
-        // As the server makes them in advance (prewarm in serve.mjs): what needs a decision.
+        const { items } = await (await get(`/api/pr/${id}/${project}?rows=1`)).json();
+        // As the server makes them in advance (prewarm in serve.mjs): what needs a decision. One
+        // picture of a changed pair makes all of its kinds.
         await Promise.all(
             items
                 .filter((i) => i.status !== "unchanged" && i.status !== "failed")
                 .flatMap((i) => [
-                    get(`/api/${at("thumb", i.capture ? "capture" : "baseline", i.file)}`),
-                    ...(i.baseline && i.capture && i.baseline !== i.capture
-                        ? [get(`/api/${at("spot", "both", i.file)}`)]
-                        : []),
+                    get(`/api/pic/${i.pic}-plain`),
+                    ...(i.baseline && i.capture && i.baseline !== i.capture ? [get(`/api/pic/${i.pic}-spot`)] : []),
                 ]),
         );
     }

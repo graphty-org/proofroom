@@ -247,11 +247,6 @@ describe("serve: pull requests", () => {
         const command = [process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(out)}, "sent")`];
         expect(await notifyOnce({ stateDir: join(s.tmp, "state"), command, gap: 0 })).toEqual([]);
         expect(existsSync(out)).toBe(false);
-        // A failed item has no image in the artifact: asking for one is "no such image", never a
-        // damaged download that throws the capture away.
-        const img = await s.api("GET", "/api/img/123/compact-mantine/baseline/menu--open.png");
-        expect(img.status).toBe(404);
-        expect(JSON.stringify(img.body)).not.toContain("damaged");
         expect((await s.api("GET", "/api/pr/123/compact-mantine")).status).toBe(200);
     });
 
@@ -474,65 +469,17 @@ describe("serve: coupled pull requests", () => {
         expect(g.images - g.distinct).toBe(g.images / 2 - 1);
     });
 
-    it("applies a decision and an Undo to the members showing the same image, and only them", async () => {
+    it("decides each member on its own: there are no group decision routes", async () => {
         const s = await start({ fakes: coupled });
         await s.api("GET", "/api/prs");
-        const decide = (file, decision, extra = {}) =>
-            s.api("POST", "/api/decide-group", {
-                id: "123",
-                project: "compact-mantine",
-                file,
-                decision,
-                reason: null,
-                ...extra,
-            });
-        const one = await decide("button--primary.dark.png", "accept");
-        expect(one.body).toMatchObject({ ok: true, also: [124], failed: [] });
-        // Decided while reviewing #123: #124's Finish counts it as not opened there.
-        expect((await decisions(s, "124"))["button--primary.dark.png"]).toMatchObject({
-            decision: "accept",
-            bulk: true,
-        });
-        // A different capture on #124: decided on #123 only.
-        expect((await decide("slider--sizes.png", "accept")).body.also).toEqual([]);
-        expect((await decisions(s, "124"))["slider--sizes.png"]).toBeUndefined();
-        // #124 decided otherwise: never reversed, and said so.
-        await s.api("POST", "/api/decide", {
-            id: "124",
-            project: "compact-mantine",
-            file: "badge--default.light.png",
-            decision: "reject",
-            reason: "no",
-        });
-        const clash = await decide("badge--default.light.png", "accept");
-        expect(clash.body.failed).toEqual([{ pr: 124, error: expect.stringContaining("already rejected") }]);
-        // Undo goes to #124 only where it holds the same decision.
-        expect((await decide("button--primary.dark.png", null)).body.also).toEqual([124]);
-        expect((await decide("badge--default.light.png", null)).body.also).toEqual([]);
-        expect(await decisions(s, "124")).toEqual({
-            "badge--default.light.png": expect.objectContaining({ decision: "reject" }),
-        });
-        // Plain /api/decide never touches the group.
-        await s.api("POST", "/api/decide", {
-            id: "123",
-            project: "compact-mantine",
-            file: "button--primary.dark.png",
-            decision: "accept",
-            reason: null,
-        });
+        const body = { id: "123", project: "compact-mantine", file: "button--primary.dark.png", decision: "accept" };
+        expect((await s.api("POST", "/api/decide-group", body)).status).toBe(404);
+        expect((await s.api("POST", "/api/accept-all-group", { id: "123", project: "compact-mantine" })).status).toBe(
+            404,
+        );
+        expect((await s.api("POST", "/api/decide", { ...body, reason: null })).status).toBe(200);
         expect((await decisions(s, "124"))["button--primary.dark.png"]).toBeUndefined();
-        const log = readFileSync(join(s.tmp, "state/groups.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
-        expect(log[0]).toMatchObject({ group: [123, 124], pr: 123, action: "decide", decision: "accept", also: [124] });
-    });
-
-    it("accepts all on the members showing the same images", async () => {
-        const s = await start({ fakes: coupled });
-        await s.api("GET", "/api/prs");
-        const { body } = await s.api("POST", "/api/accept-all-group", { id: "123", project: "compact-mantine" });
-        expect(body.also).toEqual([124]);
-        const theirs = await decisions(s, "124");
-        expect(Object.keys(theirs).sort()).toEqual(body.files.filter((f) => f !== "slider--sizes.png").sort());
-        expect(body.files).toContain("slider--sizes.png");
+        expect(existsSync(join(s.tmp, "state/groups.jsonl"))).toBe(false);
     });
 });
 
@@ -930,14 +877,17 @@ describe("serve: candidates", () => {
 });
 
 describe("serve: images", () => {
-    it("serves a capture and a baseline whose hashes match results.json", async () => {
+    const CM = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
+    const hashOf = (file, kind) => CM.find((i) => i.file === file)[kind];
+
+    it("serves a capture and a baseline by the hash results.json gives", async () => {
         const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
-        const cap = await s.api("GET", "/api/img/123/compact-mantine/capture/button--primary.dark.png");
+        const cap = await s.api("GET", `/api/blob/${hashOf("button--primary.dark.png", "capture")}`);
         expect(cap.status).toBe(200);
         expect(cap.type).toBe("image/png");
         expect(cap.body.equals(readFileSync(join(FIXTURE, "compact-mantine/button--primary.dark.png")))).toBe(true);
-        const base = await s.api("GET", "/api/img/123/compact-mantine/baseline/card--legacy.png");
+        const base = await s.api("GET", `/api/blob/${hashOf("card--legacy.png", "baseline")}`);
         expect(base.status).toBe(200);
     });
 
@@ -945,18 +895,11 @@ describe("serve: images", () => {
         const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
         for (const path of ["..%2Fresults.json", "..%2F..%2F..%2Fpackage.json", "results.json", "%2Fetc%2Fpasswd"]) {
-            expect((await s.api("GET", `/api/img/123/compact-mantine/capture/${path}`)).status).toBe(404);
+            expect((await s.api("GET", `/api/blob/${path}`)).status).toBe(404);
         }
         const raw = await new Promise((resolve) => {
             const port = new URL(s.origin).port;
-            request(
-                {
-                    port,
-                    path: "/api/img/123/compact-mantine/capture/../../../etc/passwd",
-                    headers: { "x-review-token": TOKEN },
-                },
-                resolve,
-            ).end();
+            request({ port, path: "/api/blob/../../../etc/passwd", headers: { "x-review-token": TOKEN } }, resolve).end();
         });
         expect(raw.statusCode).toBe(404);
     });
@@ -964,10 +907,10 @@ describe("serve: images", () => {
     it("names a target that is not listed any more by its number, or by the default branch", async () => {
         const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
-        const pr = await s.api("GET", "/api/img/999/compact-mantine/capture/button--primary.dark.png");
+        const pr = await s.api("GET", "/api/pr/999/compact-mantine");
         expect(pr.status).toBe(404);
         expect(pr.body.error).toBe("#999 is not listed any more (closed, or it could not be loaded): reload the list");
-        const master = await s.api("GET", "/api/img/master/compact-mantine/capture/button--primary.dark.png");
+        const master = await s.api("GET", "/api/pr/master/compact-mantine");
         expect(master.status).toBe(404);
         expect(master.body.error).toBe(
             "master is not listed any more (closed, or it could not be loaded): reload the list",
@@ -981,8 +924,17 @@ describe("serve: images", () => {
         expect(body.targets[0].runAttempt).toBe(1);
         writeFileSync(join(dir, "badge--default.light.png"), "tampered");
         writeFileSync(join(dir, "baselines/card--legacy.png"), "tampered");
-        expect((await s.api("GET", "/api/img/123/compact-mantine/capture/badge--default.light.png")).status).toBe(409);
-        expect((await s.api("GET", "/api/img/123/compact-mantine/baseline/card--legacy.png")).status).toBe(409);
+        expect((await s.api("GET", `/api/blob/${hashOf("badge--default.light.png", "capture")}`)).status).toBe(409);
+        expect((await s.api("GET", `/api/blob/${hashOf("card--legacy.png", "baseline")}`)).status).toBe(409);
+    });
+
+    it("has no route that names an image by its change and file", async () => {
+        const s = await start({ fakes: onePrFakes() });
+        await s.api("GET", "/api/prs");
+        for (const route of ["img", "thumb", "spot"]) {
+            const at = `/api/${route}/123/compact-mantine/capture/button--primary.dark.png`;
+            expect((await s.api("GET", at)).status, route).toBe(404);
+        }
     });
 });
 
@@ -1032,7 +984,11 @@ describe("serve: renamed stories", () => {
         expect(cm.counts.moved).toBe(1);
         expect(cm.reviewable).toBe(6);
         const capture = readFileSync(join(FIXTURE, "compact-mantine/slider--sizes.png"));
-        const base = await s.api("GET", "/api/img/123/compact-mantine/baseline/slider--sizes.png");
+        const moved = (await s.api("GET", "/api/pr/123/compact-mantine")).body.items.find(
+            (i) => i.file === "slider--sizes.png",
+        );
+        expect(moved.baseline).toBe(moved.capture);
+        const base = await s.api("GET", `/api/blob/${moved.baseline}`);
         expect(base.status).toBe(200);
         expect(base.body.equals(capture)).toBe(true);
         const decide = { id: "123", project: "compact-mantine", file: "slider--sizes.png", decision: "accept" };
@@ -1373,9 +1329,10 @@ describe("serve: local results", () => {
         expect(body.targets[0]).toMatchObject({ id: "local", local: true, pr: null, branch: null });
         expect(body.targets[0].title).toMatch(/^local preview of /);
         expect(body.targets[0].lookOnly).toBe(true);
-        expect((await s.api("GET", "/api/img/local/compact-mantine/capture/button--primary.dark.png")).status).toBe(
-            200,
+        const button = (await s.api("GET", "/api/pr/local/compact-mantine")).body.items.find(
+            (i) => i.file === "button--primary.dark.png",
         );
+        expect((await s.api("GET", `/api/blob/${button.capture}`)).status).toBe(200);
     });
 
     it("takes no decision and no Finish on a local preview", async () => {
@@ -2067,7 +2024,7 @@ describe("serve: safe filters", () => {
         expect((await withFork()).decision).toBeNull();
     });
 
-    it("labels a story that changed on two pull requests touching nothing of its package, and lists it", async () => {
+    it("labels no story as capture noise, however often it changed on pull requests touching nothing of its package", async () => {
         const s = await start({
             fakes: (r) =>
                 fakeAdapters({
@@ -2086,19 +2043,11 @@ describe("serve: safe filters", () => {
         });
         await s.api("GET", "/api/prs");
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
-        const noisy = body.items.filter((i) => i.noise).map((i) => [i.file, i.noise]);
-        expect(noisy).toEqual([
-            ["button--primary.dark.png", { prs: [123, 124], why: "untouched" }],
-            ["slider--sizes.png", { prs: [123, 124], why: "untouched" }],
-        ]);
-        // Labeled, never decided for the owner.
+        expect(body.items.filter((i) => "noise" in i)).toEqual([]);
         expect(body.decisions).toEqual({});
-        const listed = (await s.api("GET", "/api/noise")).body.stories.map((n) => `${n.project}/${n.file}`);
-        expect(listed).toEqual(["compact-mantine/button--primary.dark.png", "compact-mantine/slider--sizes.png"]);
-        const kept = JSON.parse(readFileSync(join(s.tmp, "state/known-noise.json"), "utf8"));
-        expect(kept.stories).toHaveLength(2);
-        // Known noise has its own group, so no cluster holds it.
-        expect(body.clusters).toEqual([]);
+        expect((await s.api("GET", "/api/noise")).status).toBe(404);
+        expect(existsSync(join(s.tmp, "state/known-noise.json"))).toBe(false);
+        expect(existsSync(join(s.tmp, "state/noise-evidence.json"))).toBe(false);
     });
 
     it("decides a cluster's members as one, each stored as its own decision", async () => {
@@ -2258,23 +2207,25 @@ describe("serve: what the page waits on", () => {
         const thumbs = () => (existsSync(join(s.tmp, "thumbs")) ? readdirSync(join(s.tmp, "thumbs")) : []);
         await until(() => thumbs().filter((f) => f.endsWith(".png")).length === 6);
         expect(thumbs().filter((f) => f.endsWith(".tmp"))).toEqual([]);
-        const thumb = await s.api("GET", "/api/thumb/123/compact-mantine/capture/button--primary.dark.png");
+        const rows = (await s.api("GET", "/api/pr/123/compact-mantine?rows=1")).body.items;
+        const pic = rows.find((i) => i.file === "button--primary.dark.png").pic;
+        const thumb = await s.api("GET", `/api/pic/${pic}-plain`);
         expect(thumb.type).toBe("image/png");
         expect(PNG.sync.read(thumb.body).width).toBeLessThanOrEqual(400);
         expect(thumbs()).toHaveLength(6);
-        expect((await s.api("GET", "/api/thumb/123/compact-mantine/capture/nope.png")).status).toBe(404);
+        expect((await s.api("GET", `/api/pic/${"0".repeat(64)}-${"1".repeat(64)}-0.1-0-plain`)).status).toBe(404);
     });
 
     it("settles idle() once every tile made in advance is on disk, so no work outlives the server", async () => {
         const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
         await app.idle();
-        // Six thumbnails and three changed pairs of five pictures: nothing is still being made.
+        // Six thumbnails and three changed pairs of three pictures: nothing is still being made.
         expect(readdirSync(join(s.tmp, "thumbs")).filter((f) => f.endsWith(".png"))).toHaveLength(6);
-        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(15);
+        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(9);
     });
 
-    it("makes each changed item's spotlit and zoomed tiles once, kept by both images and the diff's settings", async () => {
+    it("makes each changed item's spotlit and row pictures once, kept by both images and the diff's settings", async () => {
         const s = await start({ fakes: onePrFakes(), tiles: false });
         await s.api("GET", "/api/prs");
         const spots = () =>
@@ -2283,40 +2234,35 @@ describe("serve: what the page waits on", () => {
                       .filter((f) => f.endsWith(".png"))
                       .sort()
                 : [];
-        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), five pictures
-        // each beside the capture's thumbnail.
-        await until(() => spots().length === 15);
-        const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
-        const button = body.items.find((i) => i.file === "button--primary.dark.png");
-        expect(spots()).toContain(`${button.baseline}-${button.capture}-0.063-0-both.png`);
+        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three
+        // pictures each beside the capture's thumbnail.
+        await until(() => spots().length === 9);
+        const rows = (await s.api("GET", "/api/pr/123/compact-mantine?rows=1")).body.items;
+        const pic = (file) => rows.find((i) => i.file === file).pic;
+        const button = rows.find((i) => i.file === "button--primary.dark.png");
         expect(spots().filter((f) => f.startsWith(`${button.baseline}-${button.capture}-`))).toEqual(
-            ["both", "row-plain", "row-spot", "spot", "zoom"].map(
-                (k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`,
-            ),
+            ["row-plain", "row-spot", "spot"].map((k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`),
         );
-        const tiles = {};
-        for (const kind of ["spot", "zoom", "both"]) {
-            const tile = await s.api("GET", `/api/spot/123/compact-mantine/${kind}/button--primary.dark.png`);
-            expect(tile.type).toBe("image/png");
-            tiles[kind] = PNG.sync.read(tile.body);
-            // The page's tile size: 400 pixels across, the capture's shape.
-            expect([tiles[kind].width, tiles[kind].height]).toEqual([400, 250]);
-        }
+        const tile = await s.api("GET", `/api/pic/${pic("button--primary.dark.png")}-spot`);
+        expect(tile.type).toBe("image/png");
+        const spot = PNG.sync.read(tile.body);
+        // The list's picture size: 400 pixels across, the capture's shape.
+        expect([spot.width, spot.height]).toEqual([400, 250]);
         // The changed area [160, 80, 40, 40] is lit; a corner far from it is dimmed, not cropped.
         const at = (png, x, y) => [...png.data.slice((y * png.width + x) * 4, (y * png.width + x) * 4 + 4)];
-        const plain = PNG.sync.read(
-            (await s.api("GET", "/api/thumb/123/compact-mantine/capture/button--primary.dark.png")).body,
-        );
-        expect(at(tiles.spot, 2, 2)[3]).toBeGreaterThanOrEqual(190);
-        expect(at(tiles.spot, 2, 2).slice(0, 3)).not.toEqual(at(plain, 1, 1).slice(0, 3));
-        expect(tiles.zoom.data.equals(tiles.both.data)).toBe(false);
-        expect(spots()).toHaveLength(15);
+        const plain = PNG.sync.read((await s.api("GET", `/api/pic/${pic("button--primary.dark.png")}-plain`)).body);
+        expect(at(spot, 2, 2)[3]).toBeGreaterThanOrEqual(190);
+        expect(at(spot, 2, 2).slice(0, 3)).not.toEqual(at(plain, 1, 1).slice(0, 3));
+        expect(spots()).toHaveLength(9);
         // A slider of another height is padded, as the page pads it.
-        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/slider--sizes.png")).status).toBe(200);
-        // An unchanged story and a new one have no change to light; an unknown kind is no tile.
-        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/input--default.png")).status).toBe(404);
-        expect((await s.api("GET", "/api/spot/123/compact-mantine/both/badge--default.light.png")).status).toBe(404);
-        expect((await s.api("GET", "/api/spot/123/compact-mantine/blur/button--primary.dark.png")).status).toBe(404);
+        expect((await s.api("GET", `/api/pic/${pic("slider--sizes.png")}-spot`)).status).toBe(200);
+        // An unchanged story and a new one have no change to light; an unknown or retired kind is
+        // no picture.
+        expect((await s.api("GET", `/api/pic/${pic("input--default.png")}-spot`)).status).toBe(404);
+        expect((await s.api("GET", `/api/pic/${pic("badge--default.light.png")}-spot`)).status).toBe(404);
+        for (const kind of ["blur", "zoom", "both"]) {
+            expect((await s.api("GET", `/api/pic/${pic("button--primary.dark.png")}-${kind}`)).status, kind).toBe(404);
+        }
     });
 
     it("states what Finish would do, and refuses a Finish whose decisions changed since", async () => {
@@ -3354,12 +3300,12 @@ describe("serve: against the default branch", () => {
         expect(byFile["button--primary.dark.png"]).toMatchObject({ status: "changed" });
         expect(byFile["button--primary.dark.png"].vsBase).toBeUndefined();
         for (const file of ["input--default.png", "card--legacy.png"]) {
-            const img = await s.api("GET", `/api/img/123/compact-mantine/baseline/${file}`);
+            const img = await s.api("GET", `/api/blob/${master(file)}`);
             expect(img.status).toBe(200);
             expect(sha256(img.body)).toBe(master(file));
         }
         // The capture of an unchanged item is not in the artifact: it is the branch's baseline.
-        const capture = await s.api("GET", "/api/img/123/compact-mantine/capture/input--default.png");
+        const capture = await s.api("GET", `/api/blob/${sha256(badge)}`);
         expect(sha256(capture.body)).toBe(sha256(badge));
         // Both are decided like any other change, and count as undecided until they are.
         const summary = (await s.api("GET", "/api/target/123")).body;
@@ -3435,7 +3381,7 @@ describe("serve: against the default branch", () => {
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine");
         const item = body.items.find((i) => i.file === "input--default.png");
         expect(item).toMatchObject({ status: "changed", baseline: master, capture: sha256(badge), vsBase: true });
-        const capture = await s.api("GET", "/api/img/123/compact-mantine/capture/input--default.png");
+        const capture = await s.api("GET", `/api/blob/${sha256(badge)}`);
         expect(sha256(capture.body)).toBe(sha256(badge));
     });
 });

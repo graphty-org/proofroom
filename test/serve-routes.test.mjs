@@ -511,9 +511,7 @@ describe("serve: a run a page has open", () => {
         expect(many(pinned.body.items).map((i) => i.capture)).toEqual(Array(10).fill(BADGE));
         expect(pinned.body.target).toMatchObject({ runId: 1000, newerRun: { runId: 1001, runAttempt: 1 } });
         expect((await s.api("GET", "/api/target/123?run=1000-1")).body.newerRun).toMatchObject({ runId: 1001 });
-        // Its images too, and its downloads stay on disk.
-        const thumb = await s.api("GET", "/api/thumb/123/compact-mantine/capture/many--story-0.light.png?run=1000-1");
-        expect(thumb.status).toBe(200);
+        // Its downloads stay on disk, so its images (asked for by their hash) stay too.
         expect(existsSync(join(s.tmp, "1000-1"))).toBe(true);
         // Loading run 1001 keeps the seven decisions whose image is the same, and names the three that are not.
         const newer = await s.api("GET", "/api/pr/123/compact-mantine?run=1001-1&since=1000-1");

@@ -36,6 +36,10 @@ const CONFIG = { ...FIXTURE_CONFIG, projects: { "graphty-element": FIXTURE_CONFI
 // Bytes added to each downloaded project, so a change's images dwarf the few bytes the list
 // files change by between two walks.
 const PAD = 200000;
+// The image of graph--basic every change's capture holds, by its hash.
+const BASIC = JSON.parse(readFileSync("test/fixtures/results/graphty-element/results.json", "utf8")).items.find(
+    (i) => i.file === "graph--basic.png",
+).capture;
 
 const servers = [];
 afterEach(async () => {
@@ -240,8 +244,9 @@ describe("the disk budget", () => {
         }
         expect(by(after, "2").projects[0].decided).toBe(1);
         expect(after.disk.used).toBeLessThanOrEqual(budget * 1e9);
-        // An evicted change's images answer that they are not on disk, and never count as damaged.
-        expect((await s.api("GET", "/api/img/2/graphty-element/capture/graph--basic.png")).status).toBe(410);
+        // An evicted change's images are no longer served from its copy, which never counts as
+        // damaged: #3, kept, holds the same image and serves it.
+        expect((await s.api("GET", `/api/blob/${BASIC}`)).status).toBe(200);
         expect(existsSync(join(runDir(tmp, 1002, "graphty-element"), "results.json"))).toBe(true);
         // A refresh never downloads an evicted change again on its own.
         const asked = fake.downloads.get(1002);
@@ -298,7 +303,7 @@ describe("the disk budget", () => {
         const t = (await s.api("GET", "/api/prs?cached=1")).body.targets.find((x) => x.id === "2");
         expect(t.evicted).toBeNull();
         expect(t.projects[0].decided).toBe(1);
-        expect((await s.api("GET", "/api/img/2/graphty-element/capture/graph--basic.png")).status).toBe(200);
+        expect((await s.api("GET", `/api/blob/${BASIC}`)).status).toBe(200);
     });
 
     it("downloads an evicted change again whichever project the page asks about", async () => {
@@ -383,7 +388,7 @@ describe("the disk budget", () => {
         for (let i = 0; i < 5; i++) {
             await s.api("GET", "/api/prs?cached=1");
             await s.api("GET", "/api/pr/2/graphty-element?rows=1");
-            await s.api("GET", "/api/img/2/graphty-element/capture/graph--basic.png");
+            await s.api("GET", `/api/blob/${BASIC}`);
         }
         await s.app.idle();
         expect(walks.roots.length).toBe(1);

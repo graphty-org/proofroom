@@ -14,7 +14,7 @@ import { createApp } from "../trusted/lib/serve.mjs";
 import { autoKind, createPool, PAIR_KINDS, pictures, thumbnail } from "../trusted/lib/thumbs.mjs";
 import { ROW, rowCrop } from "../trusted/page/spot.js";
 import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
-import { capturedItems, copyFixture, FIXTURE_CONFIG, job, makeRepo, until } from "./helpers.mjs";
+import { capturedItems, copyFixture, FIXTURE, FIXTURE_CONFIG, job, makeRepo, until } from "./helpers.mjs";
 
 // Every read of the areas file, by any app in this file.
 const areasReads = vi.hoisted(() => ({ count: 0 }));
@@ -30,6 +30,12 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const TOKEN = "t".repeat(43);
+// A compact-mantine item of the fixture's picture of one kind, by the name the list gives it.
+const CM_ITEMS = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items;
+const pic = (file, kind) => {
+    const i = CM_ITEMS.find((x) => x.file === file);
+    return `/api/pic/${i.baseline ?? "none"}-${i.capture ?? "none"}-${i.threshold}-${i.includeAA ? 1 : 0}-${kind}`;
+};
 const SHAPE = ROW[0] / ROW[1];
 
 /**
@@ -199,7 +205,7 @@ describe("the picture job", () => {
             const p = PNG.sync.read(made.images[k]);
             return [p.width, p.height];
         };
-        for (const k of ["spot", "zoom", "both", "plain"]) {
+        for (const k of ["spot", "plain"]) {
             expect(size(k)).toEqual([400, 300]);
         }
         expect(size("row-plain")).toEqual(ROW);
@@ -289,10 +295,10 @@ describe("serve: the picture queue", () => {
         ]);
         // The pairs are each one job, the new and the removed snapshot one image each.
         expect(fake.started.map((j) => "baseline" in j)).toEqual([true, true, true, false, false, true]);
-        // Every kind each needs is on disk, and nothing more: five pictures per pair beside the
+        // Every kind each needs is on disk, and nothing more: three pictures per pair beside the
         // thumbnails, one per item.
         const spots = readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"));
-        expect(spots).toHaveLength(4 * 5);
+        expect(spots).toHaveLength(4 * 3);
         expect(readdirSync(join(s.tmp, "thumbs")).filter((f) => f.endsWith(".png"))).toHaveLength(5);
         const badge = capturedItems().find((i) => i.file === "badge--default.light.png");
         expect(spots.some((f) => f.includes(badge.capture))).toBe(false);
@@ -355,12 +361,12 @@ describe("serve: the picture queue", () => {
         // One job per item to decide: three pairs and two single images in compact-mantine, one in
         // graphty-element.
         expect(first.started).toHaveLength(6);
-        const auto = await s.api("GET", "/api/spot/123/compact-mantine/auto/button--primary.dark.png");
+        const auto = await s.api("GET", pic("button--primary.dark.png", "auto"));
         expect(auto.status).toBe(200);
         // A 320 x 200 capture: its row crop is the whole width, under twice Fit, so Auto is spotlit.
-        const spot = await s.api("GET", "/api/spot/123/compact-mantine/spot/button--primary.dark.png");
+        const spot = await s.api("GET", pic("button--primary.dark.png", "spot"));
         expect(auto.body.equals(spot.body)).toBe(true);
-        const row = await s.api("GET", "/api/spot/123/compact-mantine/row-spot/button--primary.dark.png");
+        const row = await s.api("GET", pic("button--primary.dark.png", "row-spot"));
         const drawn = PNG.sync.read(row.body);
         expect([drawn.width, drawn.height]).toEqual(ROW);
         const lines = readFileSync(join(s.tmp, "spots", "areas.jsonl"), "utf8")
@@ -384,7 +390,7 @@ describe("serve: the picture queue", () => {
         for (let i = 0; i < 3; i++) {
             expect((await t.api("GET", "/api/pr/123/compact-mantine")).status).toBe(200);
         }
-        const restarted = await t.api("GET", "/api/spot/123/compact-mantine/auto/button--primary.dark.png");
+        const restarted = await t.api("GET", pic("button--primary.dark.png", "auto"));
         expect(restarted.body.equals(spot.body)).toBe(true);
         await t.app.idle();
         // Nothing made again, and no areas file read for any list or picture request.
@@ -410,7 +416,7 @@ describe("serve: the picture queue", () => {
         await t.api("GET", "/api/prs");
         await t.app.idle();
         expect(again.started).toHaveLength(0);
-        const auto = await t.api("GET", "/api/spot/123/compact-mantine/auto/button--primary.dark.png");
+        const auto = await t.api("GET", pic("button--primary.dark.png", "auto"));
         expect(auto.status).toBe(200);
         expect(again.started.map((j) => basename(j.label))).toEqual(["button--primary.dark.png"]);
         expect(existsSync(join(s.tmp, "spots", "areas.jsonl"))).toBe(true);
@@ -425,7 +431,7 @@ describe("serve: the picture queue", () => {
             tmp: s.tmp,
         });
         await u.api("GET", "/api/prs");
-        const shown = await u.api("GET", "/api/spot/123/compact-mantine/auto/button--primary.dark.png");
+        const shown = await u.api("GET", pic("button--primary.dark.png", "auto"));
         expect(shown.status).toBe(200);
         expect(shown.body.equals(auto.body)).toBe(true);
         await u.app.idle();
@@ -439,7 +445,7 @@ describe("serve: the picture queue", () => {
         await s.api("GET", "/api/prs");
         await until(() => fake.started.length === 1);
         // The slider's advance job is queued behind the button's, which is held.
-        const asked = s.api("GET", "/api/spot/123/compact-mantine/spot/slider--sizes.png");
+        const asked = s.api("GET", pic("slider--sizes.png", "spot"));
         await until(() => fake.asked.includes("now"));
         fake.release();
         expect((await asked).status).toBe(200);
@@ -452,11 +458,13 @@ describe("serve: the picture queue", () => {
         const s = await start({ fakes: onePrFakes(), pictures: fakePool().pool });
         await s.api("GET", "/api/prs");
         for (const path of [
-            "blur/button--primary.dark.png",
-            "auto/badge--default.light.png",
-            "row-spot/input--default.png",
+            pic("button--primary.dark.png", "blur"),
+            pic("button--primary.dark.png", "zoom"),
+            pic("button--primary.dark.png", "both"),
+            pic("badge--default.light.png", "auto"),
+            pic("input--default.png", "row-spot"),
         ]) {
-            expect((await s.api("GET", `/api/spot/123/compact-mantine/${path}`)).status).toBe(404);
+            expect((await s.api("GET", path)).status, path).toBe(404);
         }
     });
 });
