@@ -70,5 +70,12 @@ prompt only from a press). Stop while it waits ends the run there.
 
 A run of the default branch, opened with `proofroom serve --master-run <run id>`, shows as a
 **seed** row, "Seed from master". Finish on it works the same way, except that it pushes a branch
-`visual/seed-<date>` with the accepted baselines and opens its pull request, and rejects open one
+of the run's own with the accepted baselines and opens its pull request, and rejects open one
 issue instead of a comment.
+
+With change statements (`"approvalFormat": "change"`), a seed's Finish signs one seed statement for
+that pull request, so it opens the pull request first: the summary sheet names it under **Opened
+first**, and you touch your passkey after. If you cancel the touch, the message line says the pull
+request is open with the images and no approval; it cannot merge, and pressing Finish again signs
+it. A later Finish of the same run adds to the same pull request. See "Seed statements" in
+[the approval format](approval-format.md).

@@ -52,11 +52,11 @@ once. It lists every decision of that Finish.
 
 | Field             | Meaning                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`, `type` | Always `2` and `"change-approval"`.                                                                                                                                                                                                                                                                                                                                     |
+| `version`, `type` | Always `2`; `"change-approval"`, or `"seed-approval"` for a seed statement (see "Seed statements"). A reader refuses any other type.                                                                                                                                                                                                                                    |
 | `repository`      | The repository's id (see "Repository" below).                                                                                                                                                                                                                                                                                                                           |
 | `baselines`       | The baselines directory the entries' paths are relative to.                                                                                                                                                                                                                                                                                                             |
 | `change`          | The change, as the code host names it: `pr:3486`, `mr:212`, `branch:feat/x`.                                                                                                                                                                                                                                                                                            |
-| `capturedHead`    | The change's own head commit whose capture the reviewer saw; never a merge commit CI built.                                                                                                                                                                                                                                                                             |
+| `capturedHead`    | The commit whose capture the reviewer saw: the change's own head (never a merge commit CI built), or for a seed statement the default branch commit captured.                                                                                                                                                                                                           |
 | `previous`        | `null` for the change's first statement; otherwise the id of the one before it, or an array of ids when it closes a fork (see "Order").                                                                                                                                                                                                                                 |
 | `approvedAt`      | When the reviewer finished, in UTC. It names the file; it never decides order.                                                                                                                                                                                                                                                                                          |
 | `entries`         | One per decided file: `path` (relative to the baselines directory), `from` (the hash the reviewer was shown on the default branch's side, null when absent), `to` (the hash decided, null for a deletion), `decision` (`accept`, `exclude` or `reject`), an optional `reason`, and `movedTo` / `movedFrom` for the two halves of a rename. A path appears at most once. |
@@ -116,7 +116,12 @@ On the merge result against the base:
    once the base holds a key, and so does one that would leave no key. While the base holds no
    key, no signature is checked: that is how a repository registers its first key.
 3. **History is append-only.** A change that modifies or deletes a file the base holds under the
-   approvals directory or under `<baselines>/reviews/` fails, naming the file.
+   approvals directory or under `<baselines>/reviews/` fails, naming the file. The same holds
+   inside the change: when a later commit of the change deletes, modifies or renames a statement
+   an earlier commit of it added (a `git revert` of a Finish commit, say), the gate fails, naming
+   the statement and the commit. Only rewriting the branch's history (a force-push, which the code
+   host shows on the pull request) can drop a statement. A statement that never verified against
+   the base's keys, such as one committed unsigned before the first key landed, may be removed.
 4. **What the change alters**: every file under the baselines directory whose content differs
    between the base and the merge result, `reviews/` left out. When there is none, the approval
    check passes.
@@ -128,8 +133,9 @@ On the merge result against the base:
     - A statement that names another change is not counted (the gate prints a notice). A change
       started from another open change's branch therefore Finishes its own decisions on that
       change's files until it lands.
-    - A statement of this change must have a `capturedHead` that is in the change's history and not
-      on the base. One whose signed content (everything but `approval`) matches a statement that
+    - A change statement of this change must have a `capturedHead` that is in the change's history
+      and not on the base. A seed statement's `capturedHead` must be on the base: its reviewer saw
+      a capture of the default branch. So neither kind can stand in for the other. One whose signed content (everything but `approval`) matches a statement that
       ever existed in the default branch's history fails: a landed statement never counts again,
       whether kept under its name, copied under another, or signed again.
 6. **Order**: a change's statements form one chain through `previous`. Newer means later in the
@@ -155,8 +161,8 @@ The gate never reuses an image hash approved elsewhere. Removing a key voids eve
 signed that has not landed; landed baselines are never checked again.
 
 What the signature does not prove: that the reviewer looked at every image. And a change's author
-can delete a statement from their own unmerged branch, dropping a later reject; the deletion shows
-in the change's diff.
+can drop a later reject from their own unmerged branch only by rewriting its history, which the
+code host shows as a force-push.
 
 The command:
 
@@ -229,6 +235,17 @@ Two kinds of commit do not count: Finish's own commit, recognized by what it cha
 statement, and only the baseline files that statement's entries name), never by who made it; and a
 merge that adds nothing of its own, such as a clean merge of the default branch.
 
+A change none of whose commits counts has no contributors, its opener included. A seed pull request
+(see "Seed statements") is such a change: Finish opens it as the reviewer, but it brings no code,
+since its images are drawn by code already on the default branch. Any commit of its own, pushed by
+anyone, makes the opener and that commit's people contributors again.
+
+`"forbid"` assumes your required checks are strict (a pull request must be up to date with the
+default branch before it merges). Without strict checks, two pull requests that each passed against
+an older default branch can merge and together draw an image nobody approved; a key holder whose
+code drew it can then seed it with their own key, and `"forbid"` does not stop that. A repository
+first adopting proofroom also seeds code its own reviewers may have written.
+
 The policy fails closed. With it on, the gate fails when:
 
 - any key in the base's `visual-review/passkeys.json` has no `identity`, since a key without one
@@ -283,8 +300,8 @@ A statement committed unsigned, while the default branch held no key, fails the 
 there. The next Finish of that change removes it and signs a new statement of what it decides, so
 decide again every snapshot the unsigned statement held.
 
-A capture of the default branch (a seed) cannot be approved with a change statement: in change
-mode, Finish refuses it. Accept those snapshots on a pull request's capture instead.
+A capture of the default branch itself (a seed) is approved with a seed statement: see "Seed
+statements" below.
 
 Two Finishes of one change can race: each builds its commit on the branch tip it fetched, and the
 first push wins. When a push is refused, Finish fetches the branch again and:
@@ -301,6 +318,97 @@ first push wins. When a push is refused, Finish fetches the branch again and:
 The repository's id (see "Repository") must be known when Finish writes a change statement: on
 GitHub it is read from GitHub, elsewhere it is the default branch's `repositoryId`, and without one
 Finish refuses.
+
+## Seed statements
+
+Seeding approves snapshots from a capture of the default branch itself: the first baselines of a
+project, or new images over existing ones. A change statement cannot do that, because the commit
+the reviewer saw is already on the base. A seed statement is a change statement with
+`"type": "seed-approval"`:
+
+```json
+{
+    "version": 2,
+    "type": "seed-approval",
+    "repository": "github:123456789",
+    "baselines": "visual-baselines",
+    "change": "pr:3512",
+    "capturedHead": "<the default branch commit the run captured>",
+    "previous": null,
+    "approvedAt": "2026-10-27T09:14:02Z",
+    "entries": [
+        { "path": "app/button--primary.dark.png", "from": null, "to": "<hash>", "decision": "accept" },
+        { "path": "app/card--wide.light.png", "from": "<hash>", "to": "<hash>", "decision": "accept" },
+        {
+            "path": "app/spinner--loading.light.png",
+            "from": null,
+            "to": "<hash>",
+            "decision": "reject",
+            "reason": "caught mid-animation"
+        }
+    ],
+    "approval": { "...": "..." }
+}
+```
+
+- `change` is the seed's own pull request, so a seed statement counts in no other change: merging
+  a seed branch into another pull request brings statements that change does not count. On a
+  code host without pull requests (plain git) it is `branch:<the seed branch>`.
+- `capturedHead` is the default branch commit the run captured, and `from` in each entry is that
+  commit's baseline (null for a snapshot with none).
+- The signature covers `type`, so a seed statement can never be read as a change statement or the
+  other way round.
+
+The gate checks a seed statement exactly as a change statement, except that its `capturedHead`
+must be on the base ("did not review a capture of the default branch" otherwise). Everything else
+holds unchanged:
+
+- A landed seed statement never counts again, kept under its own name, copied under another, or
+  signed again.
+- An entry counts only when its `from` is the base's hash now, so a seed of an old commit, or one
+  finished before the default branch accepted a newer image, is stale for every file the default
+  branch changed since, and only for those.
+- The capture check still requires the merged code to draw exactly the approved image.
+
+On the default branch the gate does not run on the statement: once the seed's pull request merges,
+its baselines are the base of every later change.
+
+### How Finish writes a seed
+
+Finish puts a seed on a branch of its own, started at the captured commit, and opens that branch's
+pull request into the default branch. The branch is named by run and made unguessable:
+`visual/seed-<date>-<first 12 hex of the captured commit>-<32 random hex>`, or
+`visual/approve-<commit>-<32 random hex>` for a candidate. The review server records the branch it
+created for each run in `.visual-review/seed-branches.json` (the config's `workDir`) and only ever
+reuses that exact name.
+
+The statement must sign `pr:N`, so a seed Finish opens the pull request before it asks for your
+passkey: it pushes the accepted baselines alone, opens the pull request, then asks for the touch and
+replaces that commit with one that also holds the statement. If you cancel the touch, the pull
+request stays open holding the images and no statement: the gate fails it as "not reviewed", so it
+cannot merge, and the next Finish of that run replaces the commit and signs, with one touch.
+
+A later Finish of the same run (or candidate) goes on the same branch as one more commit, its
+statement chained after the last one. Before it does, Finish checks the branch on the code host:
+the pull request is still open, it comes from this repository (not a fork), and every commit since
+the captured commit is a Finish commit of this seed. If a check fails, Finish refuses, names the
+commit or the reason, and closes that pull request, since it may carry your earlier signed accept;
+Finish again to start a fresh seed branch.
+
+Before Finish opens a fresh seed branch, it closes every open pull request whose statements carry
+the same captured commit, so an older seed of the same run cannot stay green holding an accept you
+have since rejected. On a code host that cannot close pull requests, Finish refuses, naming the old
+branch, until you close or delete it.
+
+The seed's pull request can also be reviewed like any pull request once CI captures it: that
+Finish writes a change statement for `pr:N`, chained after the seed statement, and the newest
+decision for each file wins.
+
+**On plain git** a seed is protected only as far as push access is. Nothing makes a branch name
+unrepeatable there: anyone who can push can recreate a deleted seed branch from the captured
+commit and add one of its statements (an early accept, without the later reject), and it counts.
+To retire an abandoned plain-git seed for good, remove the key that signed it; a repository that
+needs more uses a code host with pull requests.
 
 ### Moving a repository to change statements
 
