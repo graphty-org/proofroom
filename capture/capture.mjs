@@ -589,9 +589,10 @@ function imagesInPage() {
  * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @param {number} x in CSS px
  * @param {number} y in CSS px
+ * @param {boolean} [settle] whether to wait for what came into view; not when nothing is shot after it
  * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
  */
-async function scrollFrame(frame, x, y) {
+async function scrollFrame(frame, x, y, settle = true) {
     const at = await frame.evaluate(
         ([left, top]) => {
             globalThis.scrollTo(left, top);
@@ -620,31 +621,48 @@ async function scrollFrame(frame, x, y) {
         },
         [x, y],
     );
-    await frame.evaluate(imagesInPage);
-    await twoFrames(frame);
+    if (settle) {
+        await frame.evaluate(imagesInPage);
+        await twoFrames(frame);
+    }
     return at;
 }
 
 /**
- * The stitched picture as Chromium's own screenshot encodes it, so its bytes are what
- * capture.mjs's one full-page screenshot holds: shown 1:1 in a page of its own size and shot. A
- * picture taller than one screenshot is encoded as capture.mjs stitches its slices.
- * @param {import("playwright").Page} page vitest's page, whose context opens the new page
- * @param {PNG} image the stitched picture, at SCALE device px per CSS px
- * @param {{ width: number, height: number }} size in CSS px
+ * The tiles stitched into one picture, encoded as Chromium's own screenshot encodes it, so its bytes
+ * are what capture.mjs's one full-page screenshot holds: each tile is shown 1:1 where it belongs in a
+ * page of the picture's size, and that page is shot. Chromium decodes the tiles and stitches them,
+ * so this process never decodes or encodes a PNG: at four workers, pngjs doing that work on the one
+ * Node thread every worker shares made each story about twice as slow. A picture taller than one
+ * screenshot is stitched with pngjs instead, as capture.mjs stitches its slices.
+ * @param {import("playwright").Page} page the page whose context opens the new page (vitest's page, in a story test)
+ * @param {{ png: Buffer, left: number, top: number, width: number, height: number }[]} tiles each tile's PNG at SCALE
+ *     device px per CSS px, and where it goes in CSS px
+ * @param {{ width: number, height: number }} size the picture's size in CSS px
  * @returns {Promise<Buffer>} the PNG
  */
-async function encodeAsChromium(page, image, size) {
-    const png = PNG.sync.write(image, { filterType: 4 });
-    if (image.height > MAX_SHOT_HEIGHT) {
-        return png;
+async function stitchAsChromium(page, tiles, size) {
+    if (size.height * SCALE > MAX_SHOT_HEIGHT) {
+        const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+        for (const t of tiles) {
+            const tile = PNG.sync.read(t.png);
+            PNG.bitblt(tile, out, 0, 0, t.width * SCALE, t.height * SCALE, t.left * SCALE, t.top * SCALE);
+        }
+        return PNG.sync.write(out, { filterType: 4 });
     }
     const shown = await page.context().newPage();
     try {
         await shown.setViewportSize(size);
+        const imgs = tiles.map(
+            (t) =>
+                `<img style="left:${t.left}px;top:${t.top}px;width:${t.width}px;height:${t.height}px" ` +
+                `src="data:image/png;base64,${t.png.toString("base64")}">`,
+        );
         await shown.setContent(
-            `<style>html,body{margin:0}img{display:block;width:${size.width}px;height:${size.height}px}</style>` +
-                `<img src="data:image/png;base64,${png.toString("base64")}">`,
+            // The body holds the picture's size: absolute images give it none, and a page whose
+            // viewport did not take the size (a story test's) is shot to its document's size.
+            `<style>html,body{margin:0}body{position:relative;width:${size.width}px;height:${size.height}px}` +
+                `img{display:block;position:absolute}</style>${imgs.join("")}`,
         );
         await shown.evaluate(imagesInPage);
         return await shown.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
@@ -728,8 +746,7 @@ export function pinFixedInPage(undo) {
  * @returns {Promise<Buffer>} the PNG
  */
 async function shootTiles(page, frame, size, vp) {
-    const view = { x: 0, y: 0, ...vp };
-    const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+    const tiles = [];
     try {
         // Inside the try, so a failure still puts every style back (an undo of nothing does nothing).
         await frame.evaluate(pinFixedInPage, false);
@@ -746,20 +763,23 @@ async function shootTiles(page, frame, size, vp) {
                     Math.max(0, Math.min(left, size.width - vp.width)),
                     Math.max(0, Math.min(top, size.height - vp.height)),
                 );
-                const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
                 const [x, y] = [left - at.x, top - at.y];
                 w = Math.min(vp.width - x, size.width - left);
                 h = Math.min(vp.height - y, size.height - top);
+                // Only the part of the viewport this tile adds: the last row of tiles often adds a few
+                // rows, and a whole-viewport shot of it was most of a tile's cost for nothing.
                 if (w > 0 && h > 0) {
-                    PNG.bitblt(tile, out, x * SCALE, y * SCALE, w * SCALE, h * SCALE, left * SCALE, top * SCALE);
+                    const png = await page.screenshot({ ...SHOT, clip: { x, y, width: w, height: h } });
+                    tiles.push({ png, left, top, width: w, height: h });
                 }
             }
         }
     } finally {
-        await scrollFrame(frame, 0, 0);
+        // Back where the story was; the next screenshot (screenshotWholePage's) waits for its own frames.
+        await scrollFrame(frame, 0, 0, false);
         await frame.evaluate(pinFixedInPage, true);
     }
-    return encodeAsChromium(page, out, size);
+    return stitchAsChromium(page, tiles, size);
 }
 
 /**

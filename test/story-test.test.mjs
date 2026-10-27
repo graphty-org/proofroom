@@ -40,6 +40,17 @@ describe("story tests' visual step", () => {
         expect([shot.width, shot.height]).toEqual([2400, 1810]);
         const gray = (y) => shot.data[y * 2400 * 4];
         expect([gray(0), gray(1799), gray(1800), gray(1809)]).toEqual([10, 10, 20, 20]);
+        // The second tile is shot only for the 5 rows it adds, and Chromium stitches the tiles, so this
+        // process never decodes or encodes a PNG: that work, on the one Node thread all four capture
+        // workers share, made the graph-io-fidelity capture twice as slow (#3980).
+        const viewport = { x: 0, y: 0, width: 1200, height: 900 };
+        expect(ctx.clips).toEqual([
+            viewport,
+            { x: 0, y: 895, width: 1200, height: 5 },
+            viewport,
+            { ...viewport, y: 895, height: 5 },
+        ]);
+        expect(ctx.pages.map((html) => html.match(/<img /g).length)).toEqual([2, 2]);
     });
 
     // 1,063 CSS px tall, as graphty's CompactOverview Size Specifications: the window scrolls
@@ -55,8 +66,9 @@ describe("story tests' visual step", () => {
     ])("scrolls the body by what the window could not when $name", async ({ windowMax, short }) => {
         const out = tempDir("story-test-out-");
         const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
-        // Short, a third tile finds the frame where the second left it, and nothing more to copy.
-        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800), ...(short ? [png(30, 2400, 1800)] : [])];
+        // Short, a third tile would find the frame where the second left it, and nothing more to
+        // copy: it is never shot.
+        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800)];
         const ctx = context([...tiles, ...tiles], { width: 1200, height: 1063 });
         const frame = await ctx.frame();
         const measured = frame.evaluate;
