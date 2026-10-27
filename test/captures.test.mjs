@@ -6,7 +6,7 @@
  * capture reviewed and finished onto the branch.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -14,14 +14,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { validateResults as oldValidate } from "./fixtures/old-gate/trusted/lib/results.mjs";
 import { run as runCapture } from "../capture/capture.mjs";
 import { captureProcesses } from "../trusted/lib/captures.mjs";
-import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
 import { fakeAdapters } from "./fakes/adapters.mjs";
 import { startApp } from "./faults.mjs";
 import { git, tempDir, until } from "./helpers.mjs";
+import { captureRepo, STORIES } from "./capture-repo.mjs";
 import { countingServer, storybook } from "./stand-in-storybook.mjs";
-
-const STORIES = ["demo--plain", "demo--small", "demo--broken"];
-const REPO_ID = "1b7e4c2a-9d3f-4e8a-b6c1-2f0a9e8d7c65";
 
 let counter;
 const servers = [];
@@ -39,49 +36,6 @@ afterEach(async () => {
         await s.close();
     }
 });
-
-/**
- * A repository with one project, demo, whose built Storybook (the stand-in) is committed: its
- * default branch main, and the branch feat/x checked out with a commit of its own. Baselines are
- * Git LFS files, and Finish writes change statements.
- * @param {{ captureCommand?: string, sbServer?: string }} [o] the config's captureCommand, and the
- *     server the stand-in Storybook's stories ask (a hanging one keeps a story loading)
- * @returns {{ repo: string, config: object, main: string, head: string, mark: string }} it, its
- *     config, main's and feat/x's commits, and the file a wrapper script appends to
- */
-function captureRepo({ captureCommand, sbServer = counter.url } = {}) {
-    const repo = tempDir("vr-capture-repo-");
-    const mark = join(tempDir("vr-capture-mark-"), "wrapped.txt");
-    const run = (...args) => git(repo, ...args);
-    run("init", "-q", "-b", "main");
-    run("config", "user.name", "Owner");
-    run("config", "user.email", "owner@example.com");
-    run("config", "core.hooksPath", "/dev/null");
-    run("lfs", "install", "--local", "--skip-repo");
-    const raw = {
-        defaultBranch: "main",
-        workDir: "tmp/visual-review",
-        approvalFormat: "change",
-        repositoryId: REPO_ID,
-        ...(captureCommand && { captureCommand }),
-        projects: { demo: { storybook: "storybook-static", workers: 2 } },
-    };
-    writeFileSync(join(repo, CONFIG_FILE), JSON.stringify(raw, null, 4));
-    writeFileSync(join(repo, ".gitignore"), "tmp/\n");
-    writeFileSync(join(repo, ".gitattributes"), "visual-baselines/**/*.png filter=lfs diff=lfs merge=lfs -text\n");
-    writeFileSync(join(repo, "wrap.sh"), `echo "$*" >> ${JSON.stringify(mark)}\nexec "$@"\n`);
-    storybook(sbServer, join(repo, "storybook-static"), STORIES);
-    mkdirSync(join(repo, "visual-baselines/demo"), { recursive: true });
-    writeFileSync(join(repo, "visual-baselines/demo/.keep"), "");
-    run("add", "-A");
-    run("commit", "-q", "-m", "init");
-    const main = run("rev-parse", "HEAD");
-    run("checkout", "-q", "-b", "feat/x");
-    writeFileSync(join(repo, "feature.txt"), "x\n");
-    run("add", "-A");
-    run("commit", "-q", "-m", "feature");
-    return { repo, config: normalizeConfig(raw), main, head: run("rev-parse", "HEAD"), mark };
-}
 
 /**
  * A review server on a capture repository.
@@ -160,7 +114,7 @@ describe("run's progress file", () => {
 
 describe("a capture from the page", () => {
     it("captures the clean working tree as its branch through the wrapper, queues a second, and lists both", async () => {
-        const r = captureRepo({ captureCommand: "sh wrap.sh" });
+        const r = captureRepo(counter.url, { captureCommand: "sh wrap.sh" });
         const s = await serve(r);
         const first = await s.api("POST", "/api/captures", { what: { kind: "tree" } });
         expect(first.status, JSON.stringify(first.body)).toBe(202);
@@ -174,27 +128,35 @@ describe("a capture from the page", () => {
         expect(list.queued[0].what.label).toBe("branch main");
         const one = await ended(s, first.body.id);
         expect(one.state, one.error).toBe("done");
-        expect(one.progress).toEqual([
-            expect.objectContaining({ project: "demo", done: 3, total: 3, failures: 1 }),
-        ]);
+        expect(one.progress).toEqual([expect.objectContaining({ project: "demo", done: 3, total: 3, failures: 1 })]);
         expect(one.done).toBe(3);
         expect(one.log.lines).toContain("[demo] failed demo--broken.png: story render errored");
         // Each request answers the log since a line: the next poll gets only what came after.
-        expect((await s.api("GET", `/api/captures/${first.body.id}?since=${one.log.from + one.log.lines.length}`)).body.log.lines).toEqual([]);
+        expect(
+            (await s.api("GET", `/api/captures/${first.body.id}?since=${one.log.from + one.log.lines.length}`)).body.log
+                .lines,
+        ).toEqual([]);
         expect((await ended(s, second.body.id)).state).toBe("done");
         // Both ran through the config's captureCommand, one project each.
         expect(readFileSync(r.mark, "utf8").trim().split("\n")).toHaveLength(2);
         const t = await listed(s, "branch-feat%2Fx");
-        expect(t).toMatchObject({ localBranch: true, lookOnly: false, branch: "feat/x", title: "Capture of working tree" });
+        expect(t).toMatchObject({
+            localBranch: true,
+            lookOnly: false,
+            branch: "feat/x",
+            title: "Capture of working tree",
+        });
         expect(t.projects[0].counts).toMatchObject({ new: 2, failed: 1 });
         expect((await listed(s, "branch-main")).title).toBe("Capture of branch main");
         // Its capture is of the branch's head, with nothing uncommitted.
-        const results = JSON.parse(readFileSync(join(r.repo, "tmp/visual-review/local/branch/feat%2Fx/demo/results.json"), "utf8"));
+        const results = JSON.parse(
+            readFileSync(join(r.repo, "tmp/visual-review/local/branch/feat%2Fx/demo/results.json"), "utf8"),
+        );
         expect(results.commit).toBe(r.head);
     });
 
     it("is reviewed and finished onto its local branch, which then holds the accepted baselines", async () => {
-        const r = captureRepo();
+        const r = captureRepo(counter.url);
         const s = await serve(r);
         const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "feat/x" } });
         expect(started.status, JSON.stringify(started.body)).toBe(202);
@@ -202,7 +164,13 @@ describe("a capture from the page", () => {
         const id = "branch-feat%2Fx";
         await listed(s, id);
         for (const file of ["demo--plain.png", "demo--small.png"]) {
-            const res = await s.api("POST", "/api/decide", { id, project: "demo", file, decision: "accept", reason: null });
+            const res = await s.api("POST", "/api/decide", {
+                id,
+                project: "demo",
+                file,
+                decision: "accept",
+                reason: null,
+            });
             expect(res.status, JSON.stringify(res.body)).toBe(200);
         }
         const prepared = await s.api("POST", "/api/finish-prepare", { id });
@@ -220,17 +188,30 @@ describe("a capture from the page", () => {
         expect(git(r.repo, "rev-parse", `${job.result.commit}^`)).toBe(r.head);
         expect(job.result.pending).toBe(true);
         const files = git(r.repo, "ls-tree", "-r", "--name-only", "feat/x").split("\n");
-        expect(files).toEqual(expect.arrayContaining(["visual-baselines/demo/demo--plain.png", "visual-baselines/demo/demo--small.png"]));
+        expect(files).toEqual(
+            expect.arrayContaining(["visual-baselines/demo/demo--plain.png", "visual-baselines/demo/demo--small.png"]),
+        );
         expect(files.some((f) => f.startsWith("visual-review-approvals/branch-feat-x/"))).toBe(true);
         expect(git(r.repo, "status", "--porcelain")).toBe("");
         // An image in the checkout, a Git LFS pointer in the commit.
-        expect(readFileSync(join(r.repo, "visual-baselines/demo/demo--plain.png")).subarray(1, 4).toString()).toBe("PNG");
+        expect(readFileSync(join(r.repo, "visual-baselines/demo/demo--plain.png")).subarray(1, 4).toString()).toBe(
+            "PNG",
+        );
         expect(git(r.repo, "show", "feat/x:visual-baselines/demo/demo--plain.png")).toContain("git-lfs");
-        expect(git(r.repo, "log", "-1", "--format=%s", "feat/x")).toBe("test: accept visual baselines for branch feat/x");
+        expect(git(r.repo, "log", "-1", "--format=%s", "feat/x")).toBe(
+            "test: accept visual baselines for branch feat/x",
+        );
+        // With no upstream to push to, the change says so.
+        let t;
+        await until(async () => {
+            t = (await s.api("GET", "/api/prs?refresh=1")).body.targets?.find((x) => x.id === id);
+            return t?.unpushed;
+        });
+        expect(t.unpushed).toBe(true);
     });
 
     it("captures a dirty working tree to look at only", async () => {
-        const r = captureRepo();
+        const r = captureRepo(counter.url);
         writeFileSync(join(r.repo, "feature.txt"), "changed, not committed\n");
         const s = await serve(r);
         const started = await s.api("POST", "/api/captures", { what: { kind: "tree" } });
@@ -250,7 +231,7 @@ describe("a capture from the page", () => {
     });
 
     it("captures a story prefix to look at only", async () => {
-        const r = captureRepo();
+        const r = captureRepo(counter.url);
         const s = await serve(r);
         const started = await s.api("POST", "/api/captures", {
             what: { kind: "branch", branch: "main" },
@@ -263,12 +244,16 @@ describe("a capture from the page", () => {
 
     it("refuses a capture whose branch moved while it ran", async () => {
         // The wrapper moves main to feat/x's head as the capture of main starts.
-        const r = captureRepo({ captureCommand: "git update-ref refs/heads/main refs/heads/feat/x && exec" });
+        const r = captureRepo(counter.url, {
+            captureCommand: "git update-ref refs/heads/main refs/heads/feat/x && exec",
+        });
         const s = await serve(r);
         const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "main" } });
         const c = await ended(s, started.body.id);
         expect(c.state).toBe("failed");
-        expect(c.error).toMatch(/^the commit moved while it was captured \(main is at [0-9a-f]{10} now\): capture it again$/);
+        expect(c.error).toMatch(
+            /^the commit moved while it was captured \(main is at [0-9a-f]{10} now\): capture it again$/,
+        );
         expect(existsSync(join(r.repo, "tmp/visual-review/local/branch/main/demo/results.json"))).toBe(false);
     });
 
@@ -277,7 +262,7 @@ describe("a capture from the page", () => {
         const hang = createServer(() => {});
         await new Promise((resolve) => hang.listen(0, "127.0.0.1", resolve));
         try {
-            const r = captureRepo({ sbServer: `http://127.0.0.1:${hang.address().port}/` });
+            const r = captureRepo(`http://127.0.0.1:${hang.address().port}/`);
             const s = await serve(r);
             const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "main" } });
             const id = started.body.id;
@@ -308,7 +293,7 @@ describe("a change from the code host", () => {
      * @returns {Promise<{ r: any, s: any, head: string }>} it, its server, and #7's head
      */
     async function withChange(o) {
-        const r = captureRepo(o);
+        const r = captureRepo(counter.url, o);
         git(r.repo, "checkout", "-q", "-b", "theirs", r.main);
         writeFileSync(join(r.repo, "theirs.txt"), "y\n");
         git(r.repo, "add", "-A");
@@ -329,13 +314,19 @@ describe("a change from the code host", () => {
         const ask = (body) => s.api("POST", "/api/captures", { what: { kind: "change", number: 7, head }, ...body });
         expect((await ask({ confirmed: true })).status).toBe(403);
         const { s: s2, head: h2 } = await withChange({ captureCommand: "exec" });
-        const ask2 = (what, body) => s2.api("POST", "/api/captures", { what: { kind: "change", number: 7, ...what }, ...body });
+        const ask2 = (what, body) =>
+            s2.api("POST", "/api/captures", { what: { kind: "change", number: 7, ...what }, ...body });
         const unconfirmed = await ask2({ head: h2 });
         expect(unconfirmed.status).toBe(428);
         expect(unconfirmed.body.error).toBe("capturing #7 here builds and runs its code: confirm it first");
         expect((await ask2({ head: "0".repeat(40) }, { confirmed: true })).status).toBe(409);
         // Writes keep the origin check.
-        const foreign = await s2.api("POST", "/api/captures", { what: { kind: "tree" } }, { origin: "https://evil.example" });
+        const foreign = await s2.api(
+            "POST",
+            "/api/captures",
+            { what: { kind: "tree" } },
+            { origin: "https://evil.example" },
+        );
         expect(foreign.status).toBe(403);
         // CI is not offered by this capture store.
         expect((await ask2({ head: h2 }, { confirmed: true, where: "ci" })).status).toBe(409);
@@ -358,5 +349,14 @@ describe("a change from the code host", () => {
         const t = await listed(s, "7");
         expect(t.projects[0]).toMatchObject({ preview: true });
         expect(t.lookOnly).toBe(false);
+    });
+
+    it("a local branch the change is open from, at its head, is captured as the change's preview, unasked", async () => {
+        const { s } = await withChange();
+        const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "theirs" } });
+        expect(started.status, JSON.stringify(started.body)).toBe(202);
+        expect(started.body.target).toBe("7");
+        expect((await ended(s, started.body.id)).state).toBe("done");
+        expect((await listed(s, "7")).projects[0]).toMatchObject({ preview: true });
     });
 });

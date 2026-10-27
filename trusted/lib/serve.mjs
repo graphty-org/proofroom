@@ -1895,11 +1895,15 @@ export function createApp({
             capture: { id: status.capture ?? null, label: status.label ?? null },
         });
         for (const c of branchCaptures(previews)) {
+            // A Finish moved the branch past its capture, and the branch has nowhere to push to.
+            const tip = await gitIn(["rev-parse", "--verify", "-q", `refs/heads/${c.branch}`]).catch(() => "");
+            const upstream = await gitIn(["config", `branch.${c.branch}.merge`]).catch(() => "");
             out.push({
                 id: branchTargetId(c.branch),
                 pr: null,
                 localBranch: true,
                 branch: c.branch,
+                unpushed: upstream === "" && tip !== "" && tip !== c.status.head,
                 ...common(c.status),
                 projects: await listed(c.dir, c.status),
             });
@@ -2638,6 +2642,8 @@ export function createApp({
             local: t.local === true,
             // A local branch's capture made from the page, finished onto the branch.
             localBranch: t.localBranch === true,
+            // Its Finish committed onto a branch with no upstream: the commit is on this machine only.
+            unpushed: t.unpushed === true,
             // The page's capture it came from, and why one is look only.
             capture: t.capture ?? null,
             look: t.look ?? null,
@@ -2650,6 +2656,8 @@ export function createApp({
             runAttempt: t.runAttempt,
             runUrl: t.runUrl,
             commit: t.commit,
+            // The change's head as the code host lists it: what a capture of it here must be of.
+            head: t.head ?? null,
             headSha: t.headSha,
             author: t.author ?? null,
             readyAt: t.readyAt ?? null,
@@ -3754,6 +3762,8 @@ export function createApp({
             why: "your capture store cannot start CI jobs",
         },
         changeHere: Boolean(config.captureCommand),
+        projects: names,
+        now: Date.now(),
         hostName: host.vocabulary?.hostName ?? "the code host",
     });
     const routes = {

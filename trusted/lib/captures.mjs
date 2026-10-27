@@ -97,7 +97,11 @@ export function branchCaptures(previews) {
         return [];
     }
     return names
-        .map((n) => ({ branch: decodeURIComponent(n), dir: join(root, n), status: readJson(join(root, n, "status.json")) }))
+        .map((n) => ({
+            branch: decodeURIComponent(n),
+            dir: join(root, n),
+            status: readJson(join(root, n, "status.json")),
+        }))
         .filter((c) => c.status?.state === "done" && c.status.branch === c.branch);
 }
 
@@ -147,7 +151,11 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
     if (Array.isArray(saved?.jobs)) {
         jobs = saved.jobs.map((j) =>
             j.state === "running" || j.state === "queued"
-                ? { ...j, state: "failed", error: "the review server stopped while this capture was waiting or running" }
+                ? {
+                      ...j,
+                      state: "failed",
+                      error: "the review server stopped while this capture was waiting or running",
+                  }
                 : j,
         );
     }
@@ -244,8 +252,15 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
     }
 
     async function branchPlan(branch) {
-        const ok = branch !== "" && (await git(["check-ref-format", "--branch", branch]).then(() => true, () => false));
-        const head = ok ? await git(["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`]).catch(() => "") : "";
+        const ok =
+            branch !== "" &&
+            (await git(["check-ref-format", "--branch", branch]).then(
+                () => true,
+                () => false,
+            ));
+        const head = ok
+            ? await git(["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`]).catch(() => "")
+            : "";
         if (!head) {
             throw new CaptureRefused(404, `no local branch ${branch}`);
         }
@@ -283,12 +298,16 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
         if (!(await haveCommit(change.head))) {
             await git(["fetch", "-q", "--no-write-fetch-head", "origin", `refs/pull/${number}/head`]).catch(() => {});
             if (!(await haveCommit(change.head))) {
-                throw new CaptureRefused(409, `the head of #${number} (${change.head.slice(0, 10)}) is not fetched here`);
+                throw new CaptureRefused(
+                    409,
+                    `the head of #${number} (${change.head.slice(0, 10)}) is not fetched here`,
+                );
             }
         }
         return {
             kind: "change",
             label: `#${number} ${change.title}`,
+            title: change.title,
             number,
             branch: change.branch,
             head: change.head,
@@ -304,7 +323,9 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
             return { kind: given, ref: target, label: config.defaultBranch };
         }
         const sha = typeof given === "object" && given !== null ? String(given.commit ?? "") : "";
-        const commit = SHA.test(sha) ? await git(["rev-parse", "--verify", "-q", `${sha}^{commit}`]).catch(() => "") : "";
+        const commit = SHA.test(sha)
+            ? await git(["rev-parse", "--verify", "-q", `${sha}^{commit}`]).catch(() => "")
+            : "";
         if (!commit) {
             throw new CaptureRefused(400, "baselines must be target, default or { commit: <sha> } of a commit here");
         }
@@ -314,14 +335,23 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
     // The default branch as this repository has it: origin's, else the local branch.
     async function defaultRef() {
         for (const ref of [`refs/remotes/origin/${config.defaultBranch}`, `refs/heads/${config.defaultBranch}`]) {
-            if (await git(["rev-parse", "--verify", "-q", ref]).then(() => true, () => false)) {
+            if (
+                await git(["rev-parse", "--verify", "-q", ref]).then(
+                    () => true,
+                    () => false,
+                )
+            ) {
                 return ref;
             }
         }
         throw new CaptureRefused(409, `no ${config.defaultBranch} here to take the baselines from`);
     }
 
-    const haveCommit = (sha) => git(["cat-file", "-e", `${sha}^{commit}`]).then(() => true, () => false);
+    const haveCommit = (sha) =>
+        git(["cat-file", "-e", `${sha}^{commit}`]).then(
+            () => true,
+            () => false,
+        );
 
     // The working tree's changed files, leaving out the work directory.
     async function changedFiles() {
@@ -362,7 +392,14 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
               : branchFolder(previews, p.branch);
         const j = {
             id,
-            what: { kind: p.kind, label: p.label, branch: p.branch ?? null, number: p.number ?? null, author: p.author ?? null },
+            what: {
+                kind: p.kind,
+                label: p.label,
+                title: p.title ?? null,
+                branch: p.branch ?? null,
+                number: p.number ?? null,
+                author: p.author ?? null,
+            },
             head: p.head,
             inPlace: p.inPlace,
             decidable: p.decidable,
@@ -487,7 +524,9 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
                 if (j.stories) {
                     args.push("--stories", j.stories.join(","));
                 }
-                const wrapped = config.captureCommand ? ["sh", "-c", `${config.captureCommand} "$@"`, "proofroom", ...args] : args;
+                const wrapped = config.captureCommand
+                    ? ["sh", "-c", `${config.captureCommand} "$@"`, "proofroom", ...args]
+                    : args;
                 await runChild(j, name, wrapped, checkout, true);
             }
             if (j.cancelling) {
@@ -590,7 +629,11 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
                 } else if (code === 0) {
                     resolve(null);
                 } else {
-                    reject(new Error(`${results ? "the capture" : "the build"} of ${name} ${signal ? `was stopped (${signal})` : `exited with ${code}`}`));
+                    reject(
+                        new Error(
+                            `${results ? "the capture" : "the build"} of ${name} ${signal ? `was stopped (${signal})` : `exited with ${code}`}`,
+                        ),
+                    );
                 }
             });
         });
@@ -598,7 +641,9 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
 
     // A change's capture names the change and its head, as a preview of it.
     const previewEnv = (j) =>
-        j.decidable === "change" ? { VISUAL_REVIEW_PREVIEW_PR: String(j.what.number), VISUAL_REVIEW_PREVIEW_HEAD: j.head } : {};
+        j.decidable === "change"
+            ? { VISUAL_REVIEW_PREVIEW_PR: String(j.what.number), VISUAL_REVIEW_PREVIEW_HEAD: j.head }
+            : {};
 
     const resultText = (name, line) => {
         try {
@@ -701,7 +746,10 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
             const all = [...jobs].reverse();
             return {
                 running: all.filter((j) => j.state === "running").map(row),
-                queued: all.filter((j) => j.state === "queued").reverse().map(row),
+                queued: all
+                    .filter((j) => j.state === "queued")
+                    .reverse()
+                    .map(row),
                 finished: all.filter((j) => !["running", "queued"].includes(j.state)).map(row),
             };
         },
