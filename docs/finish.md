@@ -1,8 +1,7 @@
-# Finish on the new page
+# Finish
 
 Finish publishes your decisions on a change: it commits the accepted and excluded images to the
-change's branch, posts the rejects, and sets the commit status. On the new page (`/next/`) it
-works over the same server as today's page, with the same decisions and the same approvals.
+change's branch, posts the rejects, and sets the commit status.
 
 ## Finish one change
 

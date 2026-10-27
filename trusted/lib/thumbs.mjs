@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { PNG } from "pngjs";
 
-import { cropOf, dimmed, grow, regions, ROW, rowCrop } from "../page/spot.js";
+import { dimmed, grow, regions, ROW, rowCrop } from "../page/spot.js";
 import { paddedPair } from "./compare.mjs";
 import { MAX_AREAS } from "./results.mjs";
 
@@ -92,12 +92,11 @@ function average(src, [x0, x1], [y0, y1], out, o) {
 }
 
 /**
- * What a changed pair's job makes, the first one naming the job: Spotlight all alone, Zoom to
- * changes alone and both (today's page), the row's zoomed pictures plain and spotlit, and the
- * capture's plain thumbnail. A snapshot with one image (new, no baseline yet, removed, moved) has
+ * What a changed pair's job makes, the first one naming the job: the spotlit picture, the row's
+ * zoomed pictures plain and spotlit, and the capture's plain thumbnail. A snapshot with one image (new, no baseline yet, removed, moved) has
  * no spotlight and makes only `plain`.
  */
-export const PAIR_KINDS = ["spot", "zoom", "both", "row-plain", "row-spot", "plain"];
+export const PAIR_KINDS = ["spot", "row-plain", "row-spot", "plain"];
 
 /** The kinds the picture route answers: PAIR_KINDS, and `auto`, which autoKind resolves. */
 export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
@@ -111,10 +110,9 @@ export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 export const autoKind = (facts) => (facts.areas > 0 && facts.zoom >= 2 ? "row-spot" : "spot");
 
 /**
- * One job's pictures, as the page draws them (spotThumb in page/review.js), as RGBA pixels. For a
- * pair: decoded once, both padded top-left to the larger size as the page pads them, compared, the
- * changed pixels grown by GROW, and every kind of PAIR_KINDS made from that, with what the row
- * needs to know about its areas. The server encodes them as PNG (`pictures`); `run` as WebP, in
+ * One job's pictures, as RGBA pixels. For a pair: decoded once, both padded top-left to the
+ * larger size as the page pads them, compared, the changed pixels grown by GROW, and every kind of
+ * PAIR_KINDS made from that, with what the row needs to know about its areas. The server encodes them as PNG (`pictures`); `run` as WebP, in
  * capture's Chromium.
  * @param {{ image: Uint8Array } | { baseline: Uint8Array, capture: Uint8Array, threshold: number,
  *     includeAA: boolean }} job one image, or a pair with pixelmatch's options as the item has them
@@ -132,7 +130,6 @@ export function pictureParts(job) {
     // At most as many areas as compare writes into results.json, so a row's facts are the same
     // whichever made them.
     const boxes = regions(grown, width, height).slice(0, MAX_AREAS);
-    const near = cropOf(boxes, width, height);
     const { crop, zoom } = rowCrop(boxes, width, height);
     const whole = [0, 0, width, height];
     const plain = { width, height, data: pb };
@@ -141,8 +138,6 @@ export function pictureParts(job) {
     return {
         images: {
             spot: tile(lit, whole),
-            zoom: tile(plain, near),
-            both: tile(lit, near),
             "row-plain": tile(plain, crop, ROW[1]),
             "row-spot": tile(lit, crop, ROW[1]),
             // The capture's own thumbnail, unpadded: the same file a thumbnail of it alone would be.

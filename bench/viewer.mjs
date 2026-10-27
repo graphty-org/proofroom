@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
-import { listAnswer, project, rowsAnswer, target } from "../test/next/fixtures.mjs";
+import { listAnswer, project, rowsAnswer, target } from "../test/page/fixtures.mjs";
 
 const presses = Number(process.argv[2] ?? "20");
 const ROOT = fileURLToPath(new URL("../trusted/", import.meta.url));
@@ -27,8 +27,7 @@ const fileOf = (path) => {
     if (path.startsWith("/viewer/")) {
         return `page${path}`;
     }
-    const name = path.replace(/^\/next\/?/, "") || "index.html";
-    return `page/next/${name}`;
+    return `page/${path.slice(1) || "index.html"}`;
 };
 const server = createServer(async (req, res) => {
     const file = fileOf(new URL(req.url, "http://x").pathname);
@@ -104,7 +103,7 @@ const settled = () =>
     );
 const keyOf = (n) => `graphty-element/${rows.items[n - 1].file}`;
 
-await page.goto(`${origin}/next/#token=bench&change=9000`);
+await page.goto(`${origin}/#token=bench&change=9000`);
 await (await drawnAt(keyOf(1))).jsonValue();
 await settled();
 

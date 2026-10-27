@@ -1,0 +1,1846 @@
+/*
+ * The review page: the top bar, the Review screen's three panes with their rails,
+ * the levels and their Back and Open buttons, the message line, the address, and the changes pane.
+ * Plain ES modules, no framework and no build step. Every control comes from the action table
+ * (actions.js); every text that came from a pull request is set as text.
+ *
+ * Opening a change shows its snapshot list (list.js) and the current snapshot in the viewer
+ * (viewer.js); the decisions, the selection and Undo are decide.js, select.js and undo.js. Around
+ * them: Settings (settings.js), the Keys sheet (keys-sheet.js), the messages, the offline state and
+ * the tab title. The Baselines tab shows the Baselines screen (baselines.js). The Captures screen
+ * (captures.js) and the New capture sheet (new-capture.js) start and follow captures on this machine.
+ */
+
+import { ACTIONS, control, runAction, syncAvailability } from "./actions.js";
+import { formatAddress, parseAddress, snapParts } from "./address.js";
+import {
+    api,
+    currentToken,
+    logControls,
+    logUsage,
+    offlineSince,
+    startUsage,
+    useToken,
+    whenConnection,
+    whenRefused,
+} from "./api.js";
+import { installBaselines } from "./baselines.js";
+import { allCaptures, busy, drawCaptures } from "./captures.js";
+import { installDecide } from "./decide.js";
+import { installFinish } from "./finish.js";
+import {
+    SORTS,
+    captureRowOf,
+    changeOf,
+    drawChanges,
+    nextNeeding,
+    sectionsOf,
+    SECTIONS,
+    sharesOf,
+    walkOrder,
+} from "./changes.js";
+import { keysSheet } from "./keys-sheet.js";
+import { startKeys, syncHints } from "./keys.js";
+import {
+    clearFind,
+    drawList,
+    findBox,
+    findEnter,
+    findTyped,
+    groupItems,
+    jumpTo,
+    keepCurrentShown,
+    layoutOf,
+    listItems,
+    listState,
+    moreItems,
+    openList,
+    pictureItems,
+    rendererBlocked,
+    scrollToCurrent,
+    setGrouping,
+    setPictures,
+    setShow,
+    showItems,
+    snapsOf,
+    toggleGroup,
+    updateRow,
+    viewItems,
+    visibleRows,
+} from "./list.js";
+import { ORDER, STATUS, mark } from "./marks.js";
+import { history as messageHistory, hostCan, hostWho, say, sayAgain, wordsOf } from "./messages.js";
+import { applyPanes, keepFloor, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
+import {
+    applyTheme,
+    cancelPasskey,
+    createPasskey,
+    setHighlight,
+    setLetters,
+    setTheme,
+    settingsSheet,
+    startRegistration,
+} from "./settings.js";
+import { el, fmt, ic, kb, megabytes } from "./ui.js";
+import { installSelect } from "./select.js";
+import { installUndo } from "./undo.js";
+import { confirmChange, newCapture, sheetBack } from "./new-capture.js";
+import { createViewer } from "./viewer.js";
+
+const $ = (id) => document.getElementById(id);
+const POLL_MS = 15000;
+// While a capture on this machine waits or runs, or the Captures screen is shown: as Finish is followed.
+const CAPTURE_POLL_MS = 1000;
+const CHOOSE_HINT = "Choose a change on the left: Up / Down move, Open [Enter] opens it.";
+// How long a capture that failed or was cancelled stays a row of the changes pane.
+const FAILED_ROW_MS = 24 * 3600000;
+const DISMISSED_KEY = "proofroom:dismissed";
+
+const REVIEWABLE = ORDER;
+
+applyTheme();
+
+// A time of day as the reader's clock shows it: "14:02".
+const clock = (ms) => {
+    const at = new Date(ms);
+    return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+};
+
+// The finished rows dismissed in this browser; null on the first visit, when there are none yet.
+const loadDismissed = () => {
+    try {
+        const kept = localStorage.getItem(DISMISSED_KEY);
+        return kept === null ? null : new Set(JSON.parse(kept));
+    } catch {
+        return null;
+    }
+};
+
+const saveDismissed = () => {
+    try {
+        localStorage.setItem(DISMISSED_KEY, JSON.stringify([...app.dismissed]));
+    } catch {
+        // Dismissed for this visit only.
+    }
+};
+
+const app = {
+    list: null, // the last GET /api/prs answer
+    listAt: 0, // when it came, on this browser's clock
+    changes: [], // the changes rows (changes.js changeOf)
+    sort: "needs",
+    secOpen: new Set(SECTIONS.filter((s) => s[2]).map((s) => s[0])),
+    curId: null, // the current changes row
+    pendingId: null, // the change being opened, current while its snapshots load
+    reopenId: null, // an evicted change clicked, opened once the list shows its images back
+    openId: null, // the open change
+    snaps: [], // the open change's snapshots (list.js snapsOf)
+    snap: null, // the current snapshot, "<project>/<file>"
+    lv: listState(), // the snapshot list's choices and what it drew
+    loadedRun: null, // the run the open change's rows came from, "<run id>-<attempt>"
+    level: 0,
+    focusPane: "changes",
+    dismissed: loadDismissed(),
+    refreshing: false,
+    failed: null, // why the last list request failed
+    wanted: parseAddress(location.hash), // what the address asks for, until the list is loaded
+    opening: 0, // bumped by each change opened: a superseded load stops there
+    menu: null,
+    opened: new Set(), // the snapshots the viewer showed: a bulk accept says how many were never opened
+    endCard: false, // the end card shows in place of the image
+    screen: "review", // the screen shown: "review", "baselines" or "captures"
+    captures: null, // the last GET /api/captures answer (or the list's copy of it)
+    capturesAt: 0, // when it came, on this browser's clock
+    capCur: null, // the capture the Captures screen shows
+    capOpen: null, // its progress and log: { id, progress, lines, next }
+    capSheet: null, // the New capture sheet while it is open
+
+    logUsage,
+    say,
+    sayAgain,
+    offline: () => offlineSince() !== null,
+    change: (id) => app.changes.find((c) => c.id === id) ?? null,
+    open: () => app.change(app.openId),
+    currentChangeId: () => app.pendingId ?? (app.level === 0 ? (app.curId ?? app.openId) : app.openId),
+    findText: () => $("chg-find").value,
+    sectionOpen: (k) => app.secOpen.has(k),
+    sortLabel: () => SORTS[app.sort],
+    holds: () => app.openId !== null && app.snap !== null,
+    at: () => ({ width: innerWidth, open: app.openId !== null, holds: app.holds() }),
+};
+
+// ---------------------------------------------------------------- drawing
+
+function drawTop() {
+    $("repo").textContent = app.list?.repository ?? "";
+    const tab = (name) =>
+        control(app, `screen-${name}`, { zone: "top", attrs: { "aria-current": app.screen === name ? "page" : null } });
+    $("tabs").replaceChildren(tab("review"), tab("baselines"), tab("captures"));
+    $("newcap-slot").replaceChildren(control(app, "newcap", { zone: "top" }));
+    const trouble = app.failed !== null || Boolean(app.list?.error) || app.offline();
+    $("status-slot").replaceChildren(
+        control(app, "refresh", {
+            zone: "top",
+            attrs: {
+                class: `status ${trouble ? "trouble" : ""}`,
+                id: "srvstatus",
+                ...(app.offline() && { title: `${offlineText(true)} Click to retry.` }),
+            },
+            children: [
+                app.refreshing ? ic("spin") : trouble ? ic("offline") : null,
+                el("span", { class: "ell" }, app.statusText()),
+            ],
+        }),
+    );
+    // Finish, with a change open: always in this place, so it is found without searching (design 2.2).
+    $("frame-slot").replaceChildren(
+        control(app, "keys", { zone: "top" }),
+        control(app, "settings", { zone: "top" }),
+        ...(app.openId !== null
+            ? [control(app, "finish", { zone: "top", attrs: { class: "primary", id: "finish" } })]
+            : []),
+    );
+}
+
+// The offline sentence (design 10): the message line's joins its last two clauses with a
+// semicolon, the status's tooltip with a period.
+function offlineText(tooltip = false) {
+    const head = "Offline: the server is unreachable.";
+    if (!app.listAt) {
+        return `${head} Decisions cannot be saved.`;
+    }
+    return `${head} Showing what was loaded at ${clock(app.listAt)}${tooltip ? ". D" : "; d"}ecisions cannot be saved.`;
+}
+
+app.statusText = () => {
+    if (app.refreshing) {
+        return "Refreshing...";
+    }
+    if (app.offline()) {
+        return `Offline since ${clock(offlineSince())}`;
+    }
+    if (app.failed !== null) {
+        return "Server not answering";
+    }
+    if (app.list?.error) {
+        return `${wordsOf(app.list).hostName} not answering`;
+    }
+    if (!app.list?.updatedAt) {
+        return "Loading...";
+    }
+    // On the server's clock, as the rows' ages are: its time when the list came, plus the time since.
+    const now = (app.list.now ?? app.listAt) + (Date.now() - app.listAt);
+    const s = Math.max(0, Math.round((now - app.list.updatedAt) / 1000));
+    return s < 5 ? "Updated just now" : s < 60 ? `Updated ${s} s ago` : `Updated ${Math.floor(s / 60)} min ago`;
+};
+
+function drawChangesPane() {
+    const needs = app.changes.filter((c) => c.section === "needs").length;
+    $("rail-c").replaceWith(
+        control(app, "pane1", {
+            zone: "changes-head",
+            ctx: { rail: true },
+            attrs: { id: "rail-c", class: "railbar", title: "Show Changes (Shift+1)" },
+            children: [
+                el("span", { class: "count" }, String(app.changes.length === 1 ? 1 : needs || "")),
+                el("span", { class: "vt" }, "Changes"),
+                kb("Shift+1"),
+            ],
+        }),
+    );
+    $("hide-c").replaceChildren(control(app, "pane1", { zone: "changes-head" }));
+    $("chg-next").replaceChildren(control(app, "nextchange", { zone: "changes-head", attrs: { id: "chg-next-btn" } }));
+    $("chg-sort").replaceChildren(control(app, "chgsort", { zone: "changes-head", attrs: { class: "small" } }));
+    drawChanges(app);
+}
+
+// The empty Review screen's words: where captures come from, and that one can be made now.
+const noCapturesYet = (w) =>
+    `${w.ciName ? `Captures made by ${w.ciName} appear here on their own once a ${w.changeNoun} runs its visual job. Or capture` : "Capture"} the working tree on this machine now.`;
+
+// The summary of a change, in the Snapshots pane while no change is open.
+function summaryOf(c) {
+    const statuses = REVIEWABLE.filter((s) => c.counts[s] > 0).map((s) =>
+        el("span", { class: "st" }, mark(STATUS[s].shape, STATUS[s].cls), `${fmt(c.counts[s])} ${STATUS[s].word}`),
+    );
+    const ready = !c.notReady && c.state !== "nothing";
+    return el(
+        "div",
+        { class: "summary" },
+        el("div", { class: "title" }, `${c.num}${c.title}`),
+        el("div", { class: "small" }, el("span", { class: "tag" }, c.tag), " ", c.branch ?? ""),
+        el(
+            "div",
+            { class: "small muted" },
+            [c.author && `by ${c.author}`, `from ${c.source}`, `${c.ready} projects ready`, c.age]
+                .filter(Boolean)
+                .join(", "),
+        ),
+        ready
+            ? [
+                  el("div", { class: "small" }, `${fmt(c.undecided)} undecided of ${fmt(c.total)}`),
+                  el("div", { class: "ssum" }, statuses),
+              ]
+            : el("div", { class: "small" }, c.count),
+        el("div", {}, control(app, "summaryopen", { zone: "snaps-head", ctx: { id: c.id } })),
+    );
+}
+
+// The open change's title, a link to it on the code host: pressed, it runs Open on <host> (logged as that
+// action); the address stays on the link for copying and the browser's own menu.
+function titleLink(c, title) {
+    const a = control(app, "onhost", {
+        zone: "snaps-head",
+        tag: "a",
+        ctx: { id: c.id },
+        attrs: {
+            class: "grow ell",
+            href: c.url,
+            target: "_blank",
+            rel: "noreferrer",
+            title: `${title}: open on ${wordsOf(app.list).hostName}`,
+        },
+        children: [title],
+    });
+    a.addEventListener("click", (e) => e.preventDefault());
+    return a;
+}
+
+function drawSnaps() {
+    const c = app.open();
+    const [changesShown] = shownNow();
+    $("rail-s").replaceWith(
+        control(app, "pane2", {
+            zone: "snaps-head",
+            ctx: { rail: true },
+            attrs: { id: "rail-s", class: "railbar", title: "Show Snapshots (Shift+2)" },
+            children: [
+                el("span", { class: "count" }, c ? fmt(app.snaps.filter((s) => !s.decision).length) : ""),
+                el("span", { class: "vt" }, "Snapshots"),
+                kb("Shift+2"),
+            ],
+        }),
+    );
+    const hide = control(app, "pane2", { zone: "snaps-head" });
+    const list = $("snap-list");
+    if (!c || app.snaps.length === 0) {
+        $("snap-banner").hidden = true;
+        $("snap-renderer").hidden = true;
+        $("snap-stale").hidden = true;
+        list.hidden = false;
+        $("snaps").classList.remove("nopics");
+        app.lv.built = null;
+    }
+    if (!c) {
+        $("snaps-head").replaceChildren(el("div", { class: "h1" }, el("span", { class: "grow" }, "Change"), hide));
+        const cur = app.change(app.curId);
+        list.replaceChildren(
+            app.changes.length === 0
+                ? el(
+                      "div",
+                      { class: "summary nocap" },
+                      el("div", { class: "title" }, "No captures yet."),
+                      el("p", { class: "small" }, noCapturesYet(wordsOf(app.list))),
+                      el(
+                          "div",
+                          { id: "summary-newcap" },
+                          control(app, "newcap", { zone: "snaps-head", attrs: { class: "primary" } }),
+                      ),
+                  )
+                : cur
+                  ? summaryOf(cur)
+                  : el("p", { class: "muted empty" }, "Choose a change on the left."),
+        );
+        return;
+    }
+    const title = `${c.num}${c.title}`;
+    const h1 = el(
+        "div",
+        { class: "h1" },
+        c.url && hostCan(app.list, "openChange") ? titleLink(c, title) : el("span", { class: "grow ell", title }, title),
+        changesShown ? null : control(app, "nextchange", { zone: "snaps-head", attrs: { id: "snap-next-btn" } }),
+        hide,
+    );
+    if (app.snaps.length === 0) {
+        $("snaps-head").replaceChildren(h1);
+        list.replaceChildren(el("p", { class: "muted empty" }, `${c.count}. Nothing to review yet.`));
+        return;
+    }
+    drawList(app, h1);
+}
+
+function drawViewer() {
+    const v = $("viewer");
+    const c = app.open();
+    const s = c ? app.snaps.find((x) => x.key === app.snap) : null;
+    if (c && rendererBlocked(app)) {
+        // The list's banner says what to do; nothing here to act on.
+        app.viewer.stop();
+        v.replaceChildren(
+            el(
+                "div",
+                { class: "stage" },
+                el(
+                    "div",
+                    { class: "emptyv" },
+                    el("p", {}, el("b", {}, "Renderer changed")),
+                    el(
+                        "p",
+                        {},
+                        "The snapshot list says what to do: show the changes anyway, or capture the baselines again.",
+                    ),
+                ),
+            ),
+        );
+        return;
+    }
+    if (s) {
+        app.viewer.draw(s);
+        return;
+    }
+    app.viewer.stop();
+    if (app.changes.length === 0 && !c) {
+        v.replaceChildren();
+        return;
+    }
+    if (!c) {
+        v.replaceChildren(
+            el(
+                "div",
+                { class: "stage" },
+                el(
+                    "div",
+                    { class: "emptyv" },
+                    el("p", {}, el("b", {}, "Choose a change on the left")),
+                    el(
+                        "p",
+                        {},
+                        "Up and Down move through the changes; the current row's Open button and Next change print their keys.",
+                    ),
+                ),
+            ),
+        );
+        return;
+    }
+    if (app.snaps.length > 0) {
+        // Show or Find hides every row: nothing for a key to act on.
+        v.replaceChildren(
+            el("div", { class: "iline" }, app.level >= 1 ? control(app, "back", { zone: "iline" }) : null),
+            el("div", { class: "stage" }, el("div", { class: "emptyv" }, el("p", {}, "Nothing shown here."))),
+        );
+        return;
+    }
+    v.replaceChildren(
+        el(
+            "div",
+            { class: "stage" },
+            el("div", { class: "emptyv" }, el("p", {}, `${c.count}. Nothing to review yet.`)),
+        ),
+    );
+}
+
+function drawMsgButton() {
+    $("msg-btn").replaceChildren(control(app, "messages", { zone: "msgline" }));
+}
+
+/** Redraws everything that depends on the state, then the key hints. */
+function draw() {
+    const focus = focusedControl();
+    drawTop();
+    const waiting = drawWaiting();
+    $("scr-captures").hidden = waiting || app.screen !== "captures";
+    if (!waiting) {
+        $("screens").hidden = app.screen === "captures";
+        if (app.screen === "baselines") {
+            app.baselines.draw(false);
+        } else if (app.screen === "captures") {
+            drawCaptures(app);
+        } else {
+            drawChangesPane();
+            drawSnaps();
+            drawViewer();
+        }
+        drawMsgButton();
+    }
+    refocus(focus);
+    settle();
+}
+
+// The control that has focus, by what it is (its action, zone, row and id), so a redraw that
+// replaces it can give focus to the new one: a poll never drops a control the reader tabbed to.
+function focusedControl() {
+    const f = /** @type {HTMLElement | null} */ (document.activeElement);
+    if (!f?.dataset?.act) {
+        return null;
+    }
+    return { node: f, act: f.dataset.act, zone: f.dataset.zone, id: f.id, where: rowKey(f) };
+}
+
+const rowKey = (n) => {
+    const row = n.closest("[data-chg], [data-snap], [data-sec]");
+    return row ? `${row.dataset.chg ?? ""}|${row.dataset.snap ?? ""}|${row.dataset.sec ?? ""}` : "";
+};
+
+function refocus(was) {
+    if (!was || was.node.isConnected) {
+        return;
+    }
+    const same = [...document.querySelectorAll(`[data-act="${CSS.escape(was.act)}"]`)].find(
+        (n) => n.dataset.zone === was.zone && n.id === was.id && rowKey(n) === was.where,
+    );
+    same?.focus({ preventScroll: true });
+}
+
+// Until the server's first list is in, a centered box says what it is doing and for how long
+// (design 10), in place of the panes: an empty list would read as "no changes".
+function drawWaiting() {
+    const waiting = !Array.isArray(app.list?.targets) && !$("token-box");
+    $("screens").hidden = waiting || Boolean($("token-box"));
+    if (!waiting) {
+        $("wait-box")?.remove();
+        return false;
+    }
+    const r = app.list?.refreshing;
+    // The server's step started on its clock; without one, the time since this page asked.
+    const since = r?.startedAt
+        ? (app.list.now ?? app.listAt) + (Date.now() - app.listAt) - r.startedAt
+        : Date.now() - app.bootAt;
+    const s = Math.max(0, Math.round(since / 1000));
+    const step =
+        app.failed !== null
+            ? "The review server did not answer."
+            : r?.step
+              ? `${r.step[0].toUpperCase()}${r.step.slice(1)}${r.total ? ` (${r.done ?? 0} of ${r.total})` : ""}`
+              : "Waiting for the review server";
+    const box = $("wait-box") ?? el("div", { class: "tokenbox", id: "wait-box", role: "status" });
+    box.replaceChildren(
+        el("b", {}, "Waiting for the code host"),
+        el(
+            "p",
+            { class: "small" },
+            app.failed !== null ? step : `${step}, ${s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`}`,
+        ),
+    );
+    if (!box.isConnected) {
+        $("screens").after(box);
+    }
+    return true;
+}
+
+// After a redraw: the key hints, and the controls on screen for the usage log.
+function settle() {
+    syncHints();
+    logControls(document.querySelectorAll("[data-act]"));
+}
+app.settle = settle;
+
+// ---------------------------------------------------------------- the address
+
+function writeAddress(push) {
+    const open = app.openId !== null;
+    const lv = app.lv;
+    const hash = formatAddress({
+        token: currentToken(),
+        change: app.openId,
+        snap: open ? app.snap : null,
+        show: open && lv.show !== "undecided" ? lv.show : null,
+        group: open && lv.chosen ? lv.grouping : null,
+    });
+    if (hash !== location.hash && !(hash === "#" && location.hash === "")) {
+        history[push ? "pushState" : "replaceState"](null, "", hash);
+    }
+}
+
+app.writeAddress = writeAddress;
+
+// ---------------------------------------------------------------- panes and levels
+
+function layout(prefer) {
+    const c = app.open();
+    const count = app.snaps.length;
+    const shown = layoutFor({
+        level: app.level,
+        count,
+        ...app.at(),
+        remembered: remembered(app.level, count),
+        prefer,
+    });
+    applyPanes(shown, { ...app.at(), open: c !== null });
+}
+
+app.togglePane = (id) => {
+    const count = app.snaps.length;
+    const before = shownNow();
+    const { shown, moved } = togglePane(before, id, app.at());
+    applyPanes(shown, app.at());
+    remember(app.level, count, shown);
+    const name = id === "changes" ? "Changes" : "Snapshots";
+    const other = id === "changes" ? "Snapshots" : "Changes";
+    const i = id === "changes" ? 0 : 1;
+    say(
+        shown[i]
+            ? `${name} shown.${moved ? ` ${other} moved to its rail so the viewer keeps 800 px.` : ""}`
+            : `${name} hidden: its rail or ${id === "changes" ? "Shift+1" : "Shift+2"} brings it back.`,
+    );
+    draw();
+};
+
+app.back = () => {
+    if (app.level === 2) {
+        app.level = 1;
+        layout("snaps");
+        draw();
+        scrollToCurrent();
+        app.focusPane = "snaps";
+        $("snap-list").focus({ preventScroll: true });
+        say("Back to the list.");
+    } else if (app.level === 1) {
+        app.level = 0;
+        app.curId = app.openId;
+        layout("changes");
+        draw();
+        app.focusPane = "changes";
+        $("chg-list").focus({ preventScroll: true });
+        say("Back to the changes.");
+    }
+};
+
+app.openSnapshot = () => {
+    if (app.level !== 1 || !twoLevels(app.snaps.length, innerWidth) || !app.snap) {
+        return;
+    }
+    app.level = 2;
+    layout("snaps");
+    draw();
+    app.focusPane = "viewer";
+    $("viewer").focus({ preventScroll: true });
+};
+
+app.pickSnapshot = (key) => {
+    app.snap = key;
+    app.endCard = false;
+    if (app.level === 2) {
+        app.level = 1;
+    }
+    app.focusPane = "snaps";
+    writeAddress(false);
+    draw();
+};
+
+// ---------------------------------------------------------------- changes
+
+app.pickChange = (id) => {
+    if (id === app.openId && app.level >= 1) {
+        applyPanes([false, shownNow()[1]], app.at());
+        draw();
+        return;
+    }
+    app.openChange(id);
+};
+
+// The open change's snapshots, from each ready project's list, of the run the list names now (or
+// `run`, with how many of the run `since` decisions still apply).
+async function loadSnaps(c, seq, { run = null, since = null } = {}) {
+    const t = app.list.targets.find((x) => x.id === c.id);
+    const at = run ?? (t.runId === null || t.runId === undefined ? null : `${t.runId}-${t.runAttempt}`);
+    const answers = [];
+    for (const p of t.projects.filter((x) => x.problem === null && !x.downloading && x.reviewable > 0)) {
+        const q = new URLSearchParams({ rows: "1", ...(at && { run: at }), ...(since && { since }) });
+        const answer = await api(`/api/pr/${encodeURIComponent(c.id)}/${encodeURIComponent(p.project)}?${q}`);
+        if (seq !== app.opening) {
+            return null;
+        }
+        answers.push({ ...answer, project: p.project });
+    }
+    return { ...snapsOf(answers, REVIEWABLE), run: at, carried: answers.map((a) => a.carried).filter(Boolean) };
+}
+
+app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
+    const c = app.change(id);
+    if (!c) {
+        return;
+    }
+    app.reopenId = null;
+    if (c.evicted !== null) {
+        await fetchAgain(c);
+        return;
+    }
+    const seq = ++app.opening;
+    app.curId = id;
+    // A change opened later supersedes any load still running: its change is no longer current.
+    app.pendingId = null;
+    let model = { snaps: [], clusters: new Map(), run: null };
+    // A change not ready opens to say there is nothing to review yet (design 3.3).
+    if (c.total > 0 && !c.notReady) {
+        // The picked row is current at once, so a key pressed while its snapshots load acts on it.
+        app.pendingId = id;
+        draw();
+        try {
+            model = await loadSnaps(c, seq);
+        } catch (err) {
+            if (seq !== app.opening) {
+                return;
+            }
+            app.pendingId = null;
+            draw();
+            say(`${c.label} could not be opened: ${err.message}`, "err", [
+                control(app, "retry", { zone: "msgline", ctx: { run: () => app.openChange(id) } }),
+            ]);
+            return;
+        }
+        if (model === null) {
+            return;
+        }
+        app.pendingId = null;
+    }
+    app.openId = id;
+    app.snaps = model.snaps;
+    app.loadedRun = model.run;
+    app.sel.clear();
+    app.anchor = null;
+    app.endCard = false;
+    app.clearSteps();
+    const snaps = model.snaps;
+    if (snaps.length === 0) {
+        // Nothing to review yet: the changes stay in front.
+        app.snap = null;
+        app.level = 0;
+        layout("changes");
+        writeAddress(true);
+        draw();
+        if (!quiet) {
+            say(`${c.label}: ${c.count}. Nothing to review yet.`);
+        }
+        return;
+    }
+    openList(app, model, view);
+    const shown = visibleRows(app);
+    const wanted = snap && snaps.find((s) => s.key === snap);
+    app.snap = (wanted ?? shown.find((s) => !s.decision) ?? shown[0] ?? null)?.key ?? null;
+    if (wanted) {
+        keepCurrentShown(app);
+    }
+    app.level = 1;
+    layout("snaps");
+    if (rendererBlocked(app) && !shownNow()[1]) {
+        // The renderer banner lives in the list, so the list shows even for a small change.
+        applyPanes(keepFloor([shownNow()[0], true], { ...app.at(), prefer: "snaps" }), app.at());
+    }
+    writeAddress(true);
+    $("snap-list").scrollTop = 0;
+    draw();
+    scrollToCurrent();
+    app.focusPane = shownNow()[1] ? "snaps" : "viewer";
+    (shownNow()[1] ? $("snap-list") : $("viewer")).focus({ preventScroll: true });
+    if (snap && !wanted) {
+        const parts = snapParts(snap);
+        say(`${parts?.file ?? snap} is not in this capture any more: showing the first undecided snapshot.`);
+    } else if (!quiet) {
+        say(`Opened ${c.label} ${c.title}: ${fmt(snaps.filter((s) => !s.decision).length)} undecided.`);
+    }
+};
+
+// Opening a change the disk budget evicted: the server downloads its images again (asked once,
+// by its first project), its row shows the download, and it opens once they are in.
+async function fetchAgain(c) {
+    const t = app.list.targets.find((x) => x.id === c.id);
+    try {
+        await api(`/api/pr/${encodeURIComponent(c.id)}/${encodeURIComponent(t.projects[0].project)}?rows=1`);
+    } catch (err) {
+        say(`${c.label} could not be opened: ${err.message}`, "err", [
+            control(app, "retry", { zone: "msgline", ctx: { run: () => app.openChange(c.id) } }),
+        ]);
+        return;
+    }
+    say(`Downloading the images of ${c.label} again (${megabytes(c.evicted)}).`);
+    app.reopenId = c.id;
+    await loadList();
+    draw();
+}
+
+app.nextChange = () => {
+    const n = nextNeeding(app.changes, app.sort, app.openId);
+    if (!n) {
+        say("No other change needs you.");
+        return;
+    }
+    app.openChange(n.id);
+};
+
+app.setSort = (key) => {
+    app.sort = key;
+    say(`Sorted: ${SORTS[key]}.`);
+    draw();
+};
+
+app.toggleSection = (key) => {
+    if (app.secOpen.has(key)) {
+        app.secOpen.delete(key);
+    } else {
+        app.secOpen.add(key);
+    }
+    draw();
+};
+
+// Find [/]: the box in the pane the reader is in (the key goes to the box that prints it).
+app.focusFind = (box) => {
+    const f = box ?? $("chg-find");
+    app.focusPane = f.id === "chg-find" ? "changes" : "snaps";
+    f.focus();
+    syncHints();
+};
+
+app.dismiss = (id) => {
+    const c = app.change(id);
+    app.dismissed.add(c.dismissKey);
+    saveDismissed();
+    rebuild();
+    draw();
+};
+
+app.jobLog = (id) => {
+    const c = app.change(id);
+    if (c.capId !== null) {
+        app.showCaptures(c.capId);
+        return;
+    }
+    window.open(c.logUrl, "_blank", "noopener");
+};
+
+app.openOnHost = (id) => {
+    window.open(app.change(id).url, "_blank", "noopener");
+};
+
+app.copyLink = async (id) => {
+    const link = `${location.origin}${location.pathname}${formatAddress({ token: currentToken(), change: id })}`;
+    try {
+        await navigator.clipboard.writeText(link);
+        say(`Link copied: ${app.change(id).label}. It carries your session token: it opens this change on any device.`);
+    } catch (err) {
+        say(`The link could not be copied: ${err.message}`, "err");
+    }
+};
+
+// Up and Down: in the changes, the current row; in the snapshot rows, the current snapshot.
+app.arrow = (d) => {
+    if (app.screen === "baselines") {
+        return app.baselines.arrow(d);
+    }
+    if (app.screen === "captures") {
+        const all = allCaptures(app.captures);
+        const at = all.findIndex((c) => c.id === app.capCur);
+        const next = all[Math.max(0, Math.min(all.length - 1, at + d))];
+        if (next) {
+            app.pickCapture(next.id);
+        }
+        return next !== undefined;
+    }
+    if (app.focusPane === "changes" || app.level === 0) {
+        const order = walkOrder(app);
+        if (order.length === 0) {
+            return false;
+        }
+        const at = order.findIndex((r) => r.id === app.currentChangeId());
+        const next = order[Math.max(0, Math.min(order.length - 1, at < 0 ? 0 : at + d))];
+        app.curId = next.id;
+        app.level = 0;
+        draw();
+        document.querySelector(".chg.cur")?.scrollIntoView({ block: "nearest" });
+        return true;
+    }
+    return app.stepSnap(d);
+};
+
+// Previous and Next (and Up and Down in the list): every row Show and Find keep, collapsed groups'
+// too; a row in a collapsed group opens it.
+app.stepSnap = (d) => {
+    const rows = layoutOf(app.lv, app.snaps).groups.flatMap((g) => g.rows);
+    if (rows.length > 0) {
+        const at = rows.findIndex((s) => s.key === app.snap);
+        jumpTo(app, rows[Math.max(0, Math.min(rows.length - 1, at < 0 ? 0 : at + d))].n);
+        app.endCard = false;
+        writeAddress(false);
+        draw();
+        scrollToCurrent();
+        return true;
+    }
+    return false;
+};
+
+// A snapshot made current by a decision (the next undecided one, the one an Undo took back): a row
+// in a collapsed group opens it, and the row is scrolled into view.
+app.stepTo = (key) => {
+    const s = app.snaps.find((x) => x.key === key);
+    if (s) {
+        jumpTo(app, s.n);
+        writeAddress(false);
+        draw();
+        scrollToCurrent();
+    }
+};
+
+// A snapshot's whole item (its console and earlier attempts, which the list's rows leave out):
+// one request per project of the loaded run, kept until another run is loaded.
+const fullItems = new Map();
+app.fullItem = (s) => {
+    const at = `${app.loadedRun}|${s.project}`;
+    if (!fullItems.has(at)) {
+        const q = app.loadedRun ? `?${new URLSearchParams({ run: app.loadedRun })}` : "";
+        const asked = api(`/api/pr/${encodeURIComponent(app.openId)}/${encodeURIComponent(s.project)}${q}`).then(
+            (answer) => new Map(answer.items.map((i) => [i.file, i])),
+        );
+        asked.catch(() => fullItems.delete(at));
+        fullItems.set(at, asked);
+    }
+    return fullItems.get(at).then((byFile) => byFile.get(s.file) ?? null);
+};
+
+// Esc in a field: the first clears its text and stays; the second leaves it for its list.
+app.escapeField = (f) => {
+    const list = f.closest(".pane")?.querySelector(".list") ?? $("chg-list");
+    if (f.value) {
+        f.value = "";
+        if (f.id === "snap-find") {
+            clearFind(app);
+        } else if (f.id === "bl-find") {
+            app.baselines.clearFind();
+        } else {
+            draw();
+        }
+        f.focus();
+    } else {
+        f.blur();
+        list.focus({ preventScroll: true });
+    }
+    syncHints();
+};
+
+// ---------------------------------------------------------------- menus and boxes
+
+// Focus never stays on the button that opened a menu or box: it returns to the current row of
+// the pane the reader was in (design 8.1.8).
+function restoreFocus() {
+    if (app.screen === "baselines") {
+        app.baselines.focus();
+        return;
+    }
+    const [changesShown, snapsShown] = shownNow();
+    if (app.focusPane === "changes" && changesShown) {
+        $("chg-list").focus({ preventScroll: true });
+    } else if (app.focusPane !== "viewer" && snapsShown) {
+        $("snap-list").focus({ preventScroll: true });
+    } else {
+        $("viewer").focus({ preventScroll: true });
+    }
+    syncHints();
+}
+
+function closeMenu() {
+    app.menu?.remove();
+    app.menu = null;
+}
+
+// A menu of items from the action table, for the page or the screen that stands for it (`owner`);
+// an item `{ head }` is a heading and `{ sep: true }` a rule.
+function showMenu(anchor, items, owner = app) {
+    closeMenu();
+    const m = el("div", { class: "menu", role: "menu", tabindex: "-1" });
+    for (const it of items) {
+        if (it.sep || it.head) {
+            m.append(it.sep ? el("div", { class: "sep", role: "separator" }) : el("div", { class: "mh" }, it.head));
+            continue;
+        }
+        const node = control(owner, it.id, {
+            zone: "menu",
+            tag: "div",
+            ctx: it.ctx ?? {},
+            attrs: {
+                class: "mi",
+                role: it.checked === undefined ? "menuitem" : it.check ? "menuitemcheckbox" : "menuitemradio",
+                tabindex: "-1",
+                "aria-checked": it.checked === undefined ? null : String(it.checked),
+            },
+            children: [
+                el("span", { class: "tick" }, it.checked ? ic("accept") : null),
+                it.mark ? mark(it.mark[0], it.mark[1]) : null,
+                el("span", {}, it.label),
+                // A menu item prints its key in its right column (design 8.1.1).
+                (it.key ?? ACTIONS[it.id].key) ? el("span", { class: "mk" }) : null,
+                (it.key ?? ACTIONS[it.id].key) ? kb(it.key ?? ACTIONS[it.id].key) : null,
+            ],
+        });
+        node.addEventListener("click", () => {
+            // An item that opened another menu (More > Layout) leaves that one open.
+            if (app.menu !== m) {
+                return;
+            }
+            closeMenu();
+            // An item that opened a box (Reject 5...) leaves focus in it.
+            if (!document.querySelector("dialog[open]") && !$("popbox")) {
+                restoreFocus();
+            }
+        });
+        m.append(node);
+    }
+    document.body.append(m);
+    const r = anchor.getBoundingClientRect();
+    m.style.top = `${Math.min(r.bottom + 4, innerHeight - m.offsetHeight - 8)}px`;
+    m.style.left = `${Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8))}px`;
+    app.menu = m;
+    const nodes = [...m.querySelectorAll(".mi")];
+    let at = -1;
+    m.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            at = (at + (e.key === "ArrowDown" ? 1 : -1) + nodes.length) % nodes.length;
+            nodes[at].focus();
+        } else if (e.key === "Enter" && at >= 0) {
+            e.preventDefault();
+            nodes[at].click();
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            closeMenu();
+            restoreFocus();
+        }
+    });
+    m.focus();
+    syncHints();
+}
+
+document.addEventListener("pointerdown", (e) => {
+    if (app.menu && !app.menu.contains(/** @type {Node} */ (e.target))) {
+        closeMenu();
+        syncHints();
+    }
+});
+
+app.closeMenu = () => {
+    closeMenu();
+    restoreFocus();
+};
+
+app.sortMenu = (anchor) => {
+    showMenu(
+        anchor,
+        Object.entries(SORTS).map(([k, label]) => ({ id: `sort-${k}`, label, checked: app.sort === k })),
+    );
+};
+
+app.showMenu = showMenu;
+app.listMenu = (name, anchor) => {
+    const items = {
+        show: showItems,
+        group: groupItems,
+        pics: pictureItems,
+        list: listItems,
+        view: viewItems,
+        more: moreItems,
+    };
+    showMenu(anchor, items[name](app));
+};
+app.setShow = (k) => setShow(app, k);
+app.setShowStatus = (k) => setShow(app, app.lv.show === k ? "undecided" : k);
+app.setGrouping = (k) => setGrouping(app, k);
+app.setPictures = (change) => setPictures(app, change);
+app.toggleGroup = (key, open) => toggleGroup(app, key, open);
+app.clearFind = () => {
+    clearFind(app);
+    findBox().focus();
+    syncHints();
+};
+
+// The list menu's Copy link: this change at the current snapshot.
+app.copyListLink = async () => {
+    const link = `${location.origin}${location.pathname}${formatAddress({ token: currentToken(), change: app.openId, snap: app.snap })}`;
+    try {
+        await navigator.clipboard.writeText(link);
+        say("Link copied: it opens this snapshot of this change, and carries your session token.");
+    } catch (err) {
+        say(`The link could not be copied: ${err.message}`, "err");
+    }
+};
+
+// The list menu's Download the comparison report (JUnit): the open change's run, saved as a file.
+app.downloadJunit = async () => {
+    const c = app.open();
+    const q = app.loadedRun ? `?${new URLSearchParams({ run: app.loadedRun })}` : "";
+    let res;
+    try {
+        res = await fetch(`/api/junit/${encodeURIComponent(app.openId)}${q}`, { credentials: "same-origin" });
+    } catch (err) {
+        say(`The comparison report could not be downloaded: ${err.message}`, "err");
+        return;
+    }
+    if (!res.ok) {
+        const why = await res.json().then((b) => b.error, () => `HTTP ${res.status}`);
+        say(`The comparison report could not be downloaded: ${why}`, "err");
+        return;
+    }
+    const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "junit.xml";
+    const href = URL.createObjectURL(await res.blob());
+    const a = el("a", { href, download: name, hidden: true });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+    say(`Downloaded the comparison report of ${c.label}: ${name}.`);
+};
+
+// The renderer banner's Show the changes anyway: the rows of this change, whatever drew them.
+app.showRendererChanges = () => {
+    app.lv.rendererAnyway = true;
+    draw();
+    say("Showing the changes made under a different renderer. Every image may differ.");
+};
+
+// A row picture that failed, asked for again.
+app.retryPicture = (key) => {
+    const s = app.snaps.find((x) => x.key === key);
+    if (s) {
+        s.retried = (s.retried ?? 0) + 1;
+        updateRow(app, key);
+    }
+};
+
+// "A newer capture of this change is ready. Load it": its rows, with the decisions that still apply.
+app.loadNewer = async () => {
+    const c = app.open();
+    const n = app.lv.newer;
+    if (!c || !n) {
+        return;
+    }
+    const seq = ++app.opening;
+    let model;
+    try {
+        model = await loadSnaps(c, seq, { run: n.run, since: app.loadedRun });
+    } catch (err) {
+        say(`The newer capture could not be loaded: ${err.message}`, "err", [
+            control(app, "retry", { zone: "msgline", ctx: { run: () => app.loadNewer() } }),
+        ]);
+        return;
+    }
+    if (model === null) {
+        return;
+    }
+    const keep = app.snap;
+    app.snaps = model.snaps;
+    app.loadedRun = model.run;
+    app.sel.clear();
+    app.clearSteps();
+    app.lv.version = (app.lv.version ?? 0) + 1;
+    openList(app, model, { show: app.lv.show, group: app.lv.chosen ? app.lv.grouping : null, find: app.lv.find });
+    app.snap = model.snaps.some((s) => s.key === keep) ? keep : null;
+    keepCurrentShown(app);
+    writeAddress(false);
+    draw();
+    scrollToCurrent();
+    const kept = model.carried.reduce((k, x) => k + x.kept, 0);
+    const lost = model.carried.reduce((k, x) => k + x.lost.length, 0);
+    say(
+        `Loaded the capture at ${n.sha ? n.sha.slice(0, 7) : n.run}: ${kept} decision${kept === 1 ? "" : "s"} kept (their images are unchanged), ${lost} no longer appl${lost === 1 ? "ies and is" : "y and are"} undecided again.`,
+    );
+};
+
+app.rowMenu = (id, anchor) => {
+    const c = app.change(id);
+    showMenu(anchor, [
+        // A code host that cannot open changes (plain git) has no page to open them on.
+        ...(c.url && hostCan(app.list, "openChange")
+            ? [{ id: "onhost", label: `Open on ${wordsOf(app.list).hostName}`, ctx: { id } }]
+            : []),
+        { id: "about", label: "About this change", ctx: { id } },
+        { id: "capagain", label: "Capture again...", ctx: { id } },
+        // On every change: anything but a pull request shows it unavailable, saying why.
+        { id: "updatefrom", label: `Update from ${app.list?.defaultBranch ?? "master"}...`, ctx: { id } },
+        { id: "copylink", label: "Copy link", ctx: { id } },
+    ]);
+};
+
+function openBox(title, ...body) {
+    openSheet("", title, ...body);
+}
+
+// A box with a class of its own: Settings and the Keys sheet are as wide as the design draws them.
+function openSheet(kind, title, ...body) {
+    const d = /** @type {HTMLDialogElement} */ ($("dlg"));
+    d.className = kind;
+    d.replaceChildren(
+        el("h3", {}, title),
+        ...body,
+        el("div", { class: "foot" }, control(app, "closebox", { zone: "box" })),
+    );
+    d.showModal();
+    syncHints();
+}
+
+$("dlg").addEventListener("close", restoreFocus);
+app.openBox = openBox;
+
+app.closeBox = () => {
+    /** @type {HTMLDialogElement} */ ($("dlg")).close();
+    restoreFocus();
+};
+
+app.aboutChange = async (id) => {
+    const c = app.change(id);
+    const head = `${c.num}${c.title}`;
+    const facts = el(
+        "p",
+        { class: "small muted" },
+        [c.branch, c.author && `by ${c.author}`].filter(Boolean).join(", "),
+    );
+    if (!c.hostChange || c.capId !== null || !hostCan(app.list, "describe")) {
+        openBox(head, facts);
+        return;
+    }
+    const body = el("div", { class: "body" }, "Loading the description...");
+    openBox(head, facts, body);
+    try {
+        const ctx = await api(`/api/pr-context/${encodeURIComponent(id)}`);
+        body.replaceChildren(
+            el("p", {}, ctx.body || "No description."),
+            ...ctx.comments.map((m) =>
+                el(
+                    "div",
+                    {},
+                    el("b", {}, `${m.author ?? "unknown"}, ${String(m.at ?? "").slice(0, 10)}`),
+                    el("p", {}, m.body),
+                ),
+            ),
+        );
+    } catch (err) {
+        body.textContent = `The description could not be read: ${err.message}`;
+    }
+};
+
+app.messagesBox = () => {
+    const kept = messageHistory();
+    openBox(
+        "Messages",
+        kept.length === 0
+            ? el("p", { class: "muted" }, "No messages yet.")
+            : el(
+                  "ul",
+                  { class: "small" },
+                  kept.map((m) => el("li", { class: m.kind === "err" ? "c-failed" : null }, `${m.at} ${m.text}`)),
+              ),
+    );
+};
+
+app.draw = draw;
+app.openBox = openBox;
+app.openSheet = openSheet;
+app.keysSheet = () => keysSheet(app);
+app.settingsSheet = () => settingsSheet(app);
+app.setLetters = (on) => setLetters(app, on);
+app.setHighlight = (c) => setHighlight(app, c);
+app.setTheme = (t) => setTheme(app, t);
+app.startRegistration = (row) => startRegistration(app, row);
+app.createPasskey = (ctx) => createPasskey(app, ctx);
+app.cancelPasskey = (ctx) => cancelPasskey(app, ctx);
+
+// A press of a control that writes, while the server is unreachable: nothing sent, nothing queued.
+app.notSaved = () => {
+    say("Not saved: the server is unreachable. Nothing was queued.", "err", [
+        control(app, "retry", { zone: "msgline", ctx: { run: () => app.refresh() } }),
+    ]);
+};
+
+// The server stopped answering, or answers again: every control that writes follows.
+whenConnection(() => {
+    if (!app.offline()) {
+        app.failed = null;
+        say("Back online: decisions are saved again.");
+    }
+    draw();
+    syncAvailability(app, $("dlg")); // an open box is not drawn again
+});
+
+app.showReview = () => {
+    const was = app.screen;
+    showScreen("review");
+    draw();
+    if (was !== "review") {
+        restoreFocus();
+    }
+};
+
+// Makes `name` the shown screen; the other screens' viewers stop.
+function showScreen(name) {
+    app.screen = name;
+    document.body.dataset.screen = name;
+    if (name !== "review") {
+        app.viewer.stop();
+    }
+    if (name !== "baselines") {
+        app.baselines.viewer.stop();
+    }
+}
+
+app.showBaselines = () => {
+    showScreen("baselines");
+    $("scr-captures").hidden = true;
+    $("screens").hidden = false;
+    drawTop();
+    app.baselines.show();
+};
+
+// ---------------------------------------------------------------- captures on this machine
+
+app.capNow = () => (app.captures?.now ?? Date.now()) + (Date.now() - (app.capturesAt || Date.now()));
+
+app.showCaptures = (id = null) => {
+    showScreen("captures");
+    if (id !== null) {
+        app.capCur = id;
+    }
+    // The Review screen's hint does not apply here.
+    if ($("msg-t").textContent === CHOOSE_HINT) {
+        $("msg-t").textContent = "";
+    }
+    draw();
+    $("cap-rows").focus({ preventScroll: true });
+    pollCaptures();
+};
+
+app.pickCapture = (id) => {
+    app.capCur = id;
+    draw();
+    document.querySelector(".caprow.cur")?.scrollIntoView({ block: "nearest" });
+    pollCaptures();
+};
+
+app.newCapture = (prefill = null) => newCapture(app, prefill);
+app.captureSheetBack = () => sheetBack(app);
+
+app.captureAgain = (ctx) => {
+    if (ctx.id !== undefined) {
+        app.newCapture(app.change(ctx.id));
+        return;
+    }
+    const c = allCaptures(app.captures).find((x) => x.id === ctx.cap);
+    app.newCapture(
+        c
+            ? captureRowOf(c, {
+                  now: app.capNow(),
+                  words: wordsOf(app.list),
+                  status: app.captures?.ci?.status !== false,
+              })
+            : null,
+    );
+};
+
+// A box holding a form of its own (the New capture sheet and its second step); Esc runs `onEsc`
+// when given, and closes the box otherwise.
+app.openForm = (form, onEsc = null) => {
+    const d = /** @type {HTMLDialogElement} */ ($("dlg"));
+    d.className = "newcap";
+    d.replaceChildren(form);
+    d.oncancel = onEsc
+        ? (e) => {
+              e.preventDefault();
+              onEsc();
+          }
+        : null;
+    if (!d.open) {
+        d.showModal();
+        d.addEventListener("close", () => (d.oncancel = null), { once: true });
+    }
+    syncHints();
+};
+
+app.startCapture = async (confirmed) => {
+    const sheet = app.capSheet;
+    if (!sheet) {
+        return;
+    }
+    const req = sheet.request();
+    const { what, where } = req.body;
+    if (what.kind === "change" && !req.change) {
+        say(`New capture: choose a ${wordsOf(app.list).changeNoun} first.`, "err");
+        return;
+    }
+    if (what.kind === "change" && where === "here" && !confirmed) {
+        confirmChange(app, req);
+        return;
+    }
+    let answer;
+    try {
+        answer = await api("/api/captures", { ...req.body, confirmed });
+    } catch (err) {
+        // A local branch that is someone else's open change: asked once more, naming its author.
+        if (err.status === 428 && err.body?.change && !confirmed) {
+            confirmChange(app, { ...req, change: err.body.change });
+            return;
+        }
+        say(`The capture of ${req.label} did not start: ${err.message}`, "err");
+        return;
+    }
+    app.capSheet = null;
+    /** @type {HTMLDialogElement} */ ($("dlg")).close();
+    if (app.screen === "captures") {
+        app.capCur = answer.id;
+    }
+    await pollCaptures();
+    const on = where === "ci" ? `on ${wordsOf(app.list).ciName ?? "CI"}` : "on this machine";
+    say(`Capture of ${req.label} started ${on}. Its row is in Changes, under Capturing.`);
+};
+
+app.cancelCapture = async (id) => {
+    const c = allCaptures(app.captures).find((x) => x.id === id);
+    try {
+        await api(`/api/captures/${id}/cancel`, {});
+    } catch (err) {
+        say(`The capture could not be cancelled: ${err.message}`, "err");
+        return;
+    }
+    say(`Capture of ${c?.what.label ?? id} cancelled.`);
+    await pollCaptures();
+};
+
+app.reviewCapture = async (id) => {
+    const c = allCaptures(app.captures).find((x) => x.id === id);
+    if (!c) {
+        return;
+    }
+    if (!app.change(c.target)) {
+        await reloadAfterCaptures();
+    }
+    showScreen("review");
+    if (!app.change(c.target)) {
+        draw();
+        say(`${c.what.label}: its capture is not listed: it was replaced by a newer one, or removed.`, "err");
+        return;
+    }
+    await app.openChange(c.target);
+};
+
+// The open capture's progress and the log lines since the last ones the page has.
+async function loadCapture(id) {
+    const had = app.capOpen?.id === id ? app.capOpen : null;
+    const d = await api(`/api/captures/${id}?since=${had?.next ?? 0}`);
+    const lines = [...(had?.lines ?? []), ...d.log.lines].slice(-500);
+    app.capOpen = { id, progress: d.progress, lines, next: d.log.from + d.log.lines.length };
+}
+
+// The captures, asked again: once a second while one waits or runs, or the Captures screen is shown.
+let capTimer = null;
+let capAsking = null;
+function scheduleCaptures() {
+    clearTimeout(capTimer);
+    if (allCaptures(app.captures).some(busy) || app.screen === "captures") {
+        capTimer = setTimeout(pollCaptures, CAPTURE_POLL_MS);
+    }
+}
+
+function pollCaptures() {
+    capAsking ??= askCaptures().finally(() => {
+        capAsking = null;
+        scheduleCaptures();
+    });
+    return capAsking;
+}
+
+async function askCaptures() {
+    const had = app.captures;
+    const before = new Map(allCaptures(had).map((c) => [c.id, c]));
+    try {
+        // Once the page has the list, only what changes: the captures waiting or running, and how
+        // the ones it saw waiting or running ended.
+        const watch = allCaptures(had).filter(busy).map((c) => c.id);
+        const got = await api(had ? `/api/captures?watch=${watch.join(",")}` : "/api/captures");
+        const kept = (had?.finished ?? []).filter((c) => !got.finished.some((x) => x.id === c.id));
+        app.captures = had ? { ...got, finished: [...got.finished, ...kept] } : got;
+        app.capturesAt = Date.now();
+        if (app.screen === "captures" && app.capCur !== null) {
+            await loadCapture(app.capCur);
+        }
+    } catch {
+        return; // the list's own poll says the server is unreachable
+    }
+    const ended = allCaptures(app.captures).filter((c) => before.has(c.id) && busy(before.get(c.id)) && !busy(c));
+    if (app.list) {
+        rebuild();
+    }
+    if (ended.length > 0) {
+        await reloadAfterCaptures();
+        for (const c of ended) {
+            const where = c.state === "done" ? `finished: ${c.look ? "look only" : "ready to review"}` : c.state;
+            say(`Capture of ${c.what.label} ${where}.`, c.state === "failed" ? "err" : "");
+        }
+        // The open change was the capture's row: open what it made.
+        const opened = ended.find((c) => app.openId === `capture-${c.id}` && c.target !== app.openId);
+        if (opened && app.change(opened.target)) {
+            await app.openChange(opened.target, { quiet: true });
+        }
+    }
+    draw();
+}
+
+// After a capture ended: the list as the server has it once its refresh that lists the capture ends.
+async function reloadAfterCaptures() {
+    await loadList("?refresh=1");
+    while (app.failed === null && app.list?.refreshing) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await loadList();
+    }
+}
+
+// ---------------------------------------------------------------- the token box
+
+function askToken(refused) {
+    // A refused token leaves the address, so the page never shows it and a reload does not try it again.
+    if (refused && new URLSearchParams(location.hash.slice(1)).has("token")) {
+        history.replaceState(null, "", formatAddress({ ...parseAddress(location.hash), token: null }));
+    }
+    const field = el("input", {
+        type: "password",
+        id: "token-field",
+        autocomplete: "off",
+        "aria-label": "Session token",
+    });
+    const error = el(
+        "p",
+        { class: "error", role: "alert" },
+        refused ? "The review server did not accept that token: paste it again." : "",
+    );
+    const form = el(
+        "form",
+        { class: "tokenbox", id: "token-box" },
+        el("label", { for: "token-field" }, "Open the link the server printed, or paste its token"),
+        field,
+        error,
+        el("div", {}, control(app, "usetoken", { zone: "box", attrs: { class: "primary" } })),
+    );
+    // Enter in the field submits the form: the box's default button, as it shows.
+    form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        runAction(app, "usetoken", {}, "key");
+    });
+    $("token-box")?.remove();
+    $("wait-box")?.remove();
+    $("screens").hidden = true;
+    $("screens").after(form);
+    field.focus();
+    syncHints();
+}
+
+app.submitToken = () => {
+    const field = /** @type {HTMLInputElement} */ ($("token-field"));
+    if (!useToken(field.value)) {
+        document.querySelector("#token-box .error").textContent = "Paste the token or the URL first.";
+        return;
+    }
+    $("token-box").remove();
+    $("screens").hidden = false;
+    // A first load the refused token stopped never settles (api): a new one starts.
+    firstLoading = null;
+    boot();
+};
+
+whenRefused((refused) => askToken(refused));
+
+// ---------------------------------------------------------------- the list
+
+app.rebuild = () => rebuild();
+function rebuild() {
+    const l = app.list;
+    const words = wordsOf(l);
+    const shares = sharesOf(l.inbox?.groups, words);
+    app.changes = (l.targets ?? []).map((t) =>
+        app.withFinish(
+            changeOf(t, {
+                defaultBranch: l.defaultBranch ?? "master",
+                now: l.now ?? Date.now(),
+                shares,
+                dismissed: app.dismissed ?? new Set(),
+                words,
+            }),
+        ),
+    );
+    // The page's captures that wait, run, or failed in the last day: rows of their own.
+    const now = app.capNow();
+    for (const c of allCaptures(app.captures)) {
+        if (busy(c) || (["failed", "cancelled"].includes(c.state) && now - (c.endedAt ?? 0) < FAILED_ROW_MS)) {
+            app.changes.push(captureRowOf(c, { now, words, status: app.captures?.ci?.status !== false }));
+        }
+    }
+    if (app.dismissed === null) {
+        // A first visit: the changes finished before it are not news, so only later finishes offer
+        // Dismiss.
+        app.dismissed = new Set(app.changes.filter((r) => r.dismissable).map((r) => r.dismissKey));
+        for (const r of app.changes) {
+            r.dismissable = false;
+        }
+        saveDismissed();
+    }
+}
+
+// The list, asked again. A failure says so once: while the server stays unreachable a poll says
+// nothing more, and a Retry or Refresh the reader pressed says it is still unreachable.
+async function loadList(query = "?cached=1", asked = false) {
+    const wasOffline = app.offline();
+    try {
+        // The open change is named, so the server keeps its images on disk while it stays open.
+        const open = app.openId ? `&open=${encodeURIComponent(app.openId)}` : "";
+        app.list = await api(`/api/prs${query}${open}`);
+        app.listAt = Date.now();
+        app.failed = null;
+        // The list's copy of the captures, unless the captures' own poll is newer.
+        if (app.list.captures && app.listAt >= app.capturesAt) {
+            app.captures = app.list.captures;
+            app.capturesAt = app.listAt;
+        }
+    } catch (err) {
+        app.failed = err.message;
+        const retry = [
+            control(app, "retry", { zone: "msgline", ctx: { run: () => (arrived ? app.refresh() : firstLoad()) } }),
+        ];
+        if (!arrived || !app.offline()) {
+            say(`The review server did not answer: ${err.message}`, "err", retry);
+        } else if (!wasOffline) {
+            say(offlineText(), "err", retry);
+        } else if (asked) {
+            say("Still unreachable.", "err", retry);
+        }
+        return false;
+    }
+    if (app.list.targets === null) {
+        return false; // the first load is still running
+    }
+    rebuild();
+    reopen();
+    scheduleCaptures();
+    return true;
+}
+
+// The list asked again without a word on the message line (after a Finish).
+app.reload = () => loadList();
+
+// The evicted change the reader clicked, opened once the list shows its images back.
+function reopen() {
+    const c = app.reopenId && app.change(app.reopenId);
+    if (c && (c.evicted !== null || c.state === "downloading")) {
+        return;
+    }
+    app.reopenId = null;
+    if (c && c.state !== "deleted") {
+        app.openChange(c.id);
+    }
+}
+
+app.refresh = async () => {
+    app.refreshing = true;
+    drawTop();
+    settle();
+    // A failed load leaves the old answer, still refreshing: stop there, the failure said once.
+    await loadList("?refresh=1", true);
+    while (app.failed === null && app.list?.refreshing) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await loadList();
+    }
+    app.refreshing = false;
+    draw();
+    if (app.failed === null) {
+        say(
+            app.list?.error ? `${hostWho(app.list)} did not answer: ${app.list.error}` : "Refreshed.",
+            app.list?.error ? "err" : "",
+        );
+    }
+};
+
+// One poll timer. It is set before each load, so a load that never settles (a refused token)
+// does not stop polling, and boot after a new token does not start a second loop.
+let pollTimer = null;
+function schedulePoll() {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, POLL_MS);
+}
+
+async function poll() {
+    schedulePoll();
+    if (firstLoading) {
+        return; // the first load is still asking every half second
+    }
+    if (!arrived) {
+        await firstLoad();
+    } else if (await loadList()) {
+        noticeNewer();
+        if (app.openId && !app.change(app.openId)) {
+            say(`${app.openId} is no longer listed: showing every change.`);
+            app.openId = null;
+            app.snaps = [];
+            app.snap = null;
+            app.level = 0;
+            layout("changes");
+        }
+        draw();
+    } else if (Array.isArray(app.list?.targets)) {
+        drawTop();
+    } else {
+        draw();
+    }
+}
+
+// A newer run of the open change: offered by the list's banner, never swapped in under the reader.
+function noticeNewer() {
+    const t = app.openId && app.list.targets.find((x) => x.id === app.openId);
+    if (!t || t.runId === null || t.runId === undefined || app.loadedRun === null || app.snaps.length === 0) {
+        return;
+    }
+    const run = `${t.runId}-${t.runAttempt}`;
+    if (run !== app.loadedRun && app.lv.newer?.run !== run) {
+        app.lv.newer = { run, sha: t.headSha ?? t.commit ?? null };
+        say(`A newer capture of ${app.open().label} is ready: Load it, at the top of the list, shows it.`);
+    }
+}
+
+// The state the address names: a change and a snapshot, opened once the list is in.
+async function follow(wanted) {
+    if (wanted.change) {
+        if (app.change(wanted.change)) {
+            if (wanted.change !== app.openId || wanted.snap !== app.snap) {
+                await app.openChange(wanted.change, {
+                    snap: wanted.snap,
+                    quiet: wanted.old,
+                    view: { show: wanted.show, group: wanted.group, find: wanted.find },
+                });
+            }
+        } else {
+            say(`${wanted.change} is no longer listed: showing every change.`);
+        }
+        return;
+    }
+    if (app.openId !== null) {
+        app.openId = null;
+        app.snaps = [];
+        app.snap = null;
+        app.level = 0;
+        layout("changes");
+        draw();
+    }
+}
+
+addEventListener("popstate", () => follow(parseAddress(location.hash)));
+addEventListener("resize", () => {
+    if (app.screen === "baselines") {
+        app.baselines.layout();
+        draw();
+        return;
+    }
+    // A two-level change that becomes one level drops to the one level, the list shown.
+    if (app.level === 2 && !twoLevels(app.snaps.length, innerWidth)) {
+        app.level = 1;
+        say("The window is 1400 px or wider: the list is shown beside the viewer.");
+    }
+    layout(shownNow()[1] ? "snaps" : "changes");
+    draw();
+});
+// In a two-level change, a click in the viewer means viewing.
+document.addEventListener("mousedown", (e) => {
+    const t = /** @type {Element} */ (e.target);
+    if (t.closest?.("#stage") && app.level === 1 && twoLevels(app.snaps.length, innerWidth) && app.snap) {
+        app.openSnapshot();
+    }
+});
+document.addEventListener("focusin", (e) => {
+    const t = /** @type {Element} */ (e.target);
+    if (t.closest?.("#changes")) {
+        app.focusPane = "changes";
+    } else if (t.closest?.("#snaps")) {
+        app.focusPane = "snaps";
+    } else if (t.closest?.("#viewer")) {
+        app.focusPane = "viewer";
+    } else if (t.closest?.(".bl")) {
+        app.focusPane = "baselines";
+    }
+    document.body.dataset.pane = app.focusPane;
+    syncHints();
+});
+document.addEventListener("focusout", () => queueMicrotask(syncHints));
+$("chg-find").addEventListener("input", () => {
+    draw();
+});
+findBox().addEventListener("input", () => findTyped(app));
+findBox().addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        findEnter(app);
+    }
+});
+
+// Whether the first list is in and the page has opened where the reader starts.
+let arrived = false;
+
+async function boot() {
+    startUsage();
+    const wanted = app.wanted;
+    if (wanted.old) {
+        // A link of the page before 1.0.0: written again in the page's form, in place.
+        history.replaceState(null, "", formatAddress({ ...wanted, token: currentToken() }));
+    }
+    arrived = false;
+    layout("changes");
+    draw();
+    await firstLoad();
+    schedulePoll();
+    app.resumeUpdate();
+}
+
+// Until the first list is in, it is asked for every half second. A failed ask stops there, its
+// message and Retry left on screen; Retry and the next poll start this again. Only one runs at a
+// time: a Retry or poll while one runs joins it.
+let firstLoading = null;
+function firstLoad() {
+    firstLoading ??= loadFirst().finally(() => {
+        firstLoading = null;
+    });
+    return firstLoading;
+}
+
+async function loadFirst() {
+    app.bootAt = Date.now();
+    while (!(await loadList()) && app.failed === null) {
+        draw();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    draw();
+    if (app.failed !== null || arrived) {
+        return;
+    }
+    arrived = true;
+    const wanted = app.wanted;
+    if (wanted.change) {
+        await follow(wanted);
+    } else if (app.changes.length === 1) {
+        // One change: the page opens straight into it.
+        await app.openChange(app.changes[0].id);
+    } else {
+        const first = sectionsOf(app.changes, app.sort).get("needs")[0] ?? walkOrder(app)[0];
+        app.curId = first?.id ?? null;
+        draw();
+        say(
+            app.changes.length === 0
+                ? "Ready. The server checks the code host every 2 minutes."
+                : CHOOSE_HINT,
+        );
+    }
+}
+
+app.runAction = (id, ctx, via) => runAction(app, id, ctx, via);
+installSelect(app);
+installUndo(app);
+installDecide(app);
+installFinish(app);
+app.viewer = createViewer(app);
+app.baselines = installBaselines(app);
+app.holdSpace = (on) => (app.screen === "baselines" ? app.baselines.viewer : app.viewer).holdSpace(on);
+
+logUsage("load", { w: innerWidth, h: innerHeight, dpr: devicePixelRatio });
+startKeys(app);
+if (currentToken()) {
+    boot();
+} else {
+    askToken(false);
+}

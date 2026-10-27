@@ -18,7 +18,7 @@ import { CONFIG, isolateGit, makeRepo } from "./helpers.mjs";
 
 const TOKEN = "k".repeat(43);
 
-const LABEL = "Paste the session token (or the full URL serve printed)";
+const LABEL = "Session token";
 
 let browser;
 let server;
@@ -93,21 +93,19 @@ afterEach(async () => {
 
 const field = () => page.getByLabel(LABEL);
 const stored = () => page.evaluate(() => globalThis.localStorage.getItem("visual-review:token"));
-const loaded = () => page.getByRole("button", { name: "Review", exact: true }).first().waitFor();
+const loaded = (p = page) => p.locator("#chg-list .chg").first().waitFor();
 
 async function paste(text) {
     await field().fill(text);
-    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await page.locator('#token-box [data-act="usetoken"]').click();
 }
 
 describe("review page: the session token", () => {
-    it("asks for the token when it has none, with a labelled field and touch-sized controls", async () => {
+    it("asks for the token when it has none, in a labelled password field", async () => {
         await page.goto(`${origin}/`);
         await field().waitFor();
         expect(await field().getAttribute("type")).toBe("password");
-        for (const control of [field(), page.getByRole("button", { name: "Open", exact: true })]) {
-            expect((await control.boundingBox()).height).toBeGreaterThanOrEqual(44);
-        }
+        await page.getByText("Open the link the server printed, or paste its token").waitFor();
     });
 
     it("loads once the token is pasted, and keeps it for the next visit", async () => {
@@ -130,7 +128,7 @@ describe("review page: the session token", () => {
         const wrong = "w".repeat(43);
         await page.goto(`${origin}/`);
         await paste(wrong);
-        await expect.poll(() => page.locator("#token-error").textContent()).toMatch(/did not accept/);
+        await expect.poll(() => page.locator("#token-box .error").textContent()).toMatch(/did not accept/);
         await field().waitFor();
         expect(await field().inputValue()).toBe("");
         expect(await stored()).toBeNull();
@@ -138,7 +136,7 @@ describe("review page: the session token", () => {
         // A wrong token in the address is refused the same way, and leaves the address.
         await page.goto("about:blank");
         await page.goto(`${origin}/#token=${wrong}`);
-        await expect.poll(() => page.locator("#token-error").textContent()).toMatch(/did not accept/);
+        await expect.poll(() => page.locator("#token-box .error").textContent()).toMatch(/did not accept/);
         expect(page.url()).not.toContain(wrong);
         await paste(TOKEN);
         await loaded();
@@ -229,7 +227,7 @@ describe("review page: the session cookie", () => {
         fixed.swap({ token: NEW, serverId: "fixed" });
         expect(await status(page, "/api/prs?cached=1")).toBe(401);
         await page.reload();
-        await expect.poll(() => page.locator("#token-error").textContent()).toMatch(/did not accept/);
+        await expect.poll(() => page.locator("#token-box .error").textContent()).toMatch(/did not accept/);
         await paste(NEW);
         await loaded();
     });
@@ -241,14 +239,14 @@ describe("review page: the session cookie", () => {
         await loaded();
         const other = await context.newPage();
         await other.goto(`${second.origin}/#token=${"z".repeat(43)}`);
-        await other.getByRole("button", { name: "Review", exact: true }).first().waitFor();
+        await loaded(other);
         expect((await page.context().cookies()).map((c) => c.name)).toHaveLength(2);
         // Back on the first, by its own cookie only: it is still signed in, and so is the second.
         answered = [];
         await page.reload();
         await loaded();
         await other.reload();
-        await other.getByRole("button", { name: "Review", exact: true }).first().waitFor();
+        await loaded(other);
         expect(answered.filter((a) => a.status === 401)).toEqual([]);
         expect(await status(page, "/api/prs?cached=1")).toBe(200);
         expect(await status(other, "/api/prs?cached=1")).toBe(200);

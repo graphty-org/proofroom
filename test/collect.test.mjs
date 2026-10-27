@@ -147,13 +147,10 @@ describe("collect", () => {
             ["same.png", "unchanged", 0],
         ]);
         expect(readFileSync(join(into, "junit.xml"), "utf8")).toMatch(/<testcase name="flip"[^>]*>\s*<flakyFailure/);
-        // The old name still runs it, until 1.0.0.
-        const old = await cli(
-            ["merge-results", ...args, "--whole"],
-            repoDir,
-        );
-        expect(old.status).toBe(0);
-        expect(JSON.parse(old.stdout)).toEqual({ project: "app", items: 3, complete: true });
+        // The name before 1.0.0 is gone: an unknown command.
+        const old = await cli(["merge-results", ...args, "--whole"], repoDir);
+        expect(old.status).toBe(2);
+        expect(old.stderr).toContain('unknown command "merge-results"');
     });
 
     it("checks an openCapture() plan: a planned snapshot with no result is refused, a filter reports nothing removed", async () => {

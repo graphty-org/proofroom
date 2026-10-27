@@ -1,7 +1,7 @@
 /*
  * The review page's pictures and images in Chromium, counted at the server: each is asked for once
- * by its content-addressed address and then answered by the browser's cache, so showing a list or
- * an item again asks the server for nothing.
+ * by its content-addressed address and then answered by the browser's cache, so showing a change's
+ * list again asks the server for nothing, and a list screen stays within its network budget.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -33,7 +33,8 @@ beforeAll(async () => {
 });
 afterAll(() => browser?.close());
 afterEach(async () => {
-    await page?.close();
+    await page?.context().close();
+    page = null;
     await s?.close();
     s = null;
 });
@@ -89,12 +90,12 @@ function snapshots(w, count) {
 
 /**
  * Serves `w` as pull request #123, counting what the server answers under /api/pic and /api/blob,
- * and opens the page on its targets screen.
+ * and opens a tab of the page, not yet on any address.
  * @param {object} r the repository
  * @param {object} w the fake GitHub
  * @param {{ width: number, height: number }} viewport the tab's size
  */
-async function open(r, w, viewport) {
+async function serve(r, w, viewport) {
     s = await startApp(r, { gh: w.gh, token: TOKEN });
     answered = [];
     s.server.on("request", (req, res) => {
@@ -109,34 +110,46 @@ async function open(r, w, viewport) {
         };
         res.on("finish", () => answered.push({ path: req.url, status: res.statusCode, bytes }));
     });
-    // Not interceptedPage: Playwright turns the browser's cache off while it intercepts requests.
-    page = await browser.newPage({ viewport });
+    // Not a page that intercepts every request: Playwright turns the browser's cache off then.
+    const context = await browser.newContext({ viewport });
+    page = await context.newPage();
     page.setDefaultTimeout(0);
-    await page.goto(`${s.origin}/#token=${TOKEN}`);
 }
 
-// Opens the first project with something to review, from the targets screen.
-async function review() {
-    await page.getByRole("button", { name: "Review", exact: true }).first().click();
-    await page.locator(".component, .cluster").first().waitFor();
+// Opens change #123 at one compact-mantine snapshot, and waits for its rows: a small change opens
+// with its Snapshots pane as a rail, shown with its key.
+async function visit(file) {
+    await page.goto(`${s.origin}/#token=${TOKEN}&change=123&snap=${encodeURIComponent(`compact-mantine/${file}`)}`);
+    await page.locator("#snap-list .srow.cur").waitFor({ state: "attached" });
+    if ((await page.locator("#snaps").getAttribute("class")).includes("rail")) {
+        await page.keyboard.press("Shift+Digit2");
+    }
+    await page.locator("#snap-list .srow").first().waitFor();
 }
 
-// Every tile on the screen shows its picture; resolves to how many tiles were given one, and how
-// many are on the screen. Tiles load as they come into view, so the rest are not asked for yet.
+// Every row on the list's screen that has a picture (a story that did not render has none) shows
+// it; resolves to how many rows were given one, and how many of those are on the screen. Rows draw
+// their pictures as they come near the screen.
 const shownOnScreen = async () => {
     const shown = await page.waitForFunction(() => {
-        const tiles = [...globalThis.document.querySelectorAll(".tile")];
-        const onScreen = tiles.filter((t) => {
-            const box = t.getBoundingClientRect();
-            return t.checkVisibility() && box.bottom > 0 && box.top < globalThis.innerHeight;
+        const list = globalThis.document.getElementById("snap-list").getBoundingClientRect();
+        const rows = [...globalThis.document.querySelectorAll("#snap-list .srow")].filter((row) =>
+            row.querySelector(".pic img"),
+        );
+        const onScreen = rows.filter((row) => {
+            const box = row.getBoundingClientRect();
+            return box.height > 0 && box.bottom > list.top && box.top < list.bottom;
         });
-        const ready = onScreen.every((t) => {
-            const img = t.querySelector("img");
-            return img && !img.hidden && img.complete && img.naturalWidth > 0;
+        const ready = onScreen.every((row) => {
+            const img = row.querySelector(".pic img");
+            return img.complete && img.naturalWidth > 0;
         });
         return (
             onScreen.length > 0 &&
-            ready && { given: tiles.filter((t) => t.querySelector("img[src]")).length, onScreen: onScreen.length }
+            ready && {
+                given: rows.length,
+                onScreen: onScreen.length,
+            }
         );
     });
     return shown.jsonValue();
@@ -144,46 +157,26 @@ const shownOnScreen = async () => {
 
 const pictures = () => answered.filter((a) => a.path.startsWith("/api/pic/"));
 const images = () => answered.filter((a) => a.path.startsWith("/api/blob/"));
+const current = () => page.locator("#snap-list .srow.cur").getAttribute("data-snap");
 
 describe("review page: pictures and images by their content", () => {
-    it("asks once for each tile's picture, and for none when the list is shown again", async () => {
+    it("asks once for each row's picture, and for none when the list is shown again", async () => {
         const r = makeRepo();
         const w = world(r);
-        const dir = tempDir("vr-pictures-");
-        const items = [];
-        const files = {};
-        for (let n = 0; n < 30; n++) {
-            // Four stories a component: each component is one row of tiles.
-            const id = `c${Math.floor(n / 4)}--s${n}`;
-            const file = `${id}.png`;
-            const [a, b] = [png(n, false), png(n, true)];
-            writeFileSync(join(dir, `a${n}.png`), a);
-            writeFileSync(join(dir, `b${n}.png`), b);
-            items.push({ ...BUTTON, id, mode: null, file, baseline: sha256(a), capture: sha256(b) });
-            files[file] = join(dir, `b${n}.png`);
-            files[`baselines/${file}`] = join(dir, `a${n}.png`);
-        }
-        w.data.results["visual-compact-mantine-1"] = { items, expected: items.length };
-        w.data.files["visual-compact-mantine-1"] = files;
-        // Tall enough for 30 rows of tiles.
-        await open(r, w, { width: 1000, height: 9000 });
-        await review();
-        // The 30 changes look alike, so they show as one group: show each as its own tile.
-        await page.locator("#group-similar").click();
-        await expect.poll(() => page.locator("#group-similar").getAttribute("aria-pressed")).toBe("false");
+        snapshots(w, 30);
+        // Tall enough for 30 rows.
+        await serve(r, w, { width: 1440, height: 4000 });
+        await visit("c0--s0.png");
         const { given, onScreen } = await shownOnScreen();
-        // Every tile on the screen asked once for its picture, and no more were asked.
+        // Every row on the screen asked once for its picture, and no more were asked.
         expect(onScreen).toBeGreaterThanOrEqual(30);
         expect(given).toBe(onScreen);
         const first = pictures();
         expect(first.map((a) => a.status)).toEqual(Array(given).fill(200));
         expect(new Set(first.map((a) => a.path)).size).toBe(given);
-        // The full images are fetched only for a story.
-        expect(images()).toEqual([]);
-        // Back to the targets, and the same list again: the browser has every picture.
-        await page.locator("#home").click();
-        await page.locator(".card").first().waitFor();
-        await review();
+        // The same list again: the browser has every picture.
+        await page.goto("about:blank");
+        await visit("c0--s0.png");
         expect(await shownOnScreen()).toEqual({ given, onScreen });
         expect(pictures()).toEqual(first);
     });
@@ -194,61 +187,59 @@ describe("review page: pictures and images by their content", () => {
             const r = makeRepo();
             const w = world(r);
             snapshots(w, count);
-            await open(r, w, { width: 1000, height: 800 });
-            await review();
-            await page.locator("#group-similar").click();
-            await expect.poll(() => page.locator("#group-similar").getAttribute("aria-pressed")).toBe("false");
+            await serve(r, w, { width: 1440, height: 900 });
+            await visit("c0--s0.png");
             const { onScreen } = await shownOnScreen();
-            // The tiles on the screen, and the few the page started on as they came near: each asked
-            // for once, in at most 0.6 MB, and nowhere near all of them.
+            // The rows on the screen, and the few the page started on as they came near: each asked
+            // for once, in at most 0.6 MB, and at most 30 of them.
             expect(onScreen).toBeGreaterThan(0);
             expect(pictures().length).toBeGreaterThanOrEqual(onScreen);
-            expect(pictures().length).toBeLessThan(30);
+            expect(pictures().length).toBeLessThanOrEqual(30);
             expect(new Set(pictures().map((p) => p.path)).size).toBe(pictures().length);
             expect(pictures().reduce((sum, p) => sum + p.bytes, 0)).toBeLessThanOrEqual(600_000);
-            expect(images()).toEqual([]);
         },
     );
 
-    it("signs in again for no failed picture while the cookie is known good, but on a tap to retry", async () => {
+    it("signs in again for no failed picture, and asks for a picture again on Retry", async () => {
         const r = makeRepo();
         const w = world(r);
-        snapshots(w, 60);
-        await open(r, w, { width: 1000, height: 2400 });
+        snapshots(w, 20);
+        await serve(r, w, { width: 1440, height: 2400 });
         const posts = [];
         page.on("request", (req) => req.url().endsWith("/api/session") && posts.push(req.method()));
-        await page.route("**/api/pic/**", (route) => route.fulfill({ status: 404, body: "{}" }));
-        await review();
-        await page.locator("#group-similar").click();
-        await expect.poll(() => page.locator("#group-similar").getAttribute("aria-pressed")).toBe("false");
-        // Every tile asked for has failed: many more than load at once.
-        await page.waitForFunction(() => globalThis.document.querySelectorAll(".tile[data-failed]").length > 12);
-        // The list's own requests showed the cookie good, so no failed tile signs in again.
-        expect(posts).toEqual([]);
-        // A tap to retry checks it once, as after a server restart.
-        await page.locator(".tile[data-failed]").first().click();
-        await expect.poll(() => posts).toEqual(["POST"]);
+        const failing = (route) => route.fulfill({ status: 404, body: "{}" });
+        await page.route("**/api/pic/**", failing);
+        await visit("c0--s0.png");
+        // Every row asked for has failed and offers Retry.
+        const retry = page.locator("#snap-list .srow .pic").getByRole("button", { name: "Retry" });
+        await expect.poll(() => retry.count()).toBeGreaterThan(12);
+        // Only the page's first sign-in: the list's own requests showed the cookie good.
+        expect(posts).toEqual(["POST"]);
+        const asked = [];
+        page.on("request", (req) => req.url().includes("/api/pic/") && asked.push(new URL(req.url()).search));
+        await page.unroute("**/api/pic/**", failing);
+        await retry.first().click();
+        await expect.poll(() => page.locator("#snap-list .srow .pic.ready").count()).toBe(1);
+        expect(asked).toEqual(["?try=1"]);
+        expect(posts).toEqual(["POST"]);
     });
 
-    it("sends at most 0.1 MB of pictures for a list of a few snapshots, and each image of an item once", async () => {
+    it("sends at most 0.1 MB of pictures for a list of a few snapshots, and each image of a snapshot once", async () => {
         const r = makeRepo();
-        // Tall enough for every tile.
-        await open(r, world(r), { width: 1000, height: 2400 });
-        await review();
-        // The five stories to decide that have an image.
-        expect(await shownOnScreen()).toEqual({ given: 5, onScreen: 5 });
-        expect(pictures()).toHaveLength(5);
+        // Tall enough for every row.
+        await serve(r, world(r), { width: 1440, height: 2400 });
+        await visit(BUTTON.file);
+        const { given } = await shownOnScreen();
+        expect(pictures()).toHaveLength(given);
         expect(pictures().reduce((sum, a) => sum + a.bytes, 0)).toBeLessThanOrEqual(100_000);
-        // Item 2 (the changed button), on to item 3 and back: its two images were asked for once.
-        await page.locator("#find").fill("2");
-        await page.locator("#find").press("Enter");
-        await page.locator('#stage img[alt^="new image of"]').waitFor();
-        await page.keyboard.press("k");
-        await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#3");
-        await page.locator('#stage img[alt^="new image of slider"]').waitFor();
-        await page.keyboard.press("j");
-        await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#2");
-        await page.locator('#stage img[alt^="new image of button"]').waitFor();
+        // The changed button, on to the next snapshot and back: its two images were asked for once.
+        await expect.poll(current).toBe(`compact-mantine/${BUTTON.file}`);
+        await page.locator("#stage img").first().waitFor();
+        await page.keyboard.press("ArrowRight");
+        await expect.poll(current).not.toBe(`compact-mantine/${BUTTON.file}`);
+        await page.keyboard.press("ArrowLeft");
+        await expect.poll(current).toBe(`compact-mantine/${BUTTON.file}`);
+        await page.locator("#stage img").first().waitFor();
         const button = images().filter((a) => [BUTTON.baseline, BUTTON.capture].some((h) => a.path.endsWith(h)));
         expect(button.map((a) => a.path).sort()).toEqual(
             [`/api/blob/${BUTTON.baseline}`, `/api/blob/${BUTTON.capture}`].sort(),

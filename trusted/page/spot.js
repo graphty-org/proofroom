@@ -101,27 +101,6 @@ export function dimmed(px, grown) {
     return out;
 }
 
-/**
- * The grid's Zoom to changes: the part of a w x h image to show, cropped toward the changed
- * boxes. The crop keeps the image's shape and shows at least a quarter of each side; with no
- * boxes, it shows all of the image.
- * @param {number[][]} boxes what regions() returns
- * @param {number} w the image's width
- * @param {number} h its height
- * @returns {number[]} [x, y, width, height], fractions allowed
- */
-export function cropOf(boxes, w, h) {
-    const all = boxes.length > 0 ? boxes : [[0, 0, w, h]];
-    const x0 = Math.min(...all.map((b) => b[0]));
-    const y0 = Math.min(...all.map((b) => b[1]));
-    const x1 = Math.max(...all.map((b) => b[0] + b[2]));
-    const y1 = Math.max(...all.map((b) => b[1] + b[3]));
-    const f = Math.min(1, Math.max(0.25, (2 * (x1 - x0)) / w, (2 * (y1 - y0)) / h));
-    const [cw, ch] = [w * f, h * f];
-    const clamp = (v, max) => Math.min(Math.max(0, v), max);
-    return [clamp((x0 + x1) / 2 - cw / 2, w - cw), clamp((y0 + y1) / 2 - ch / 2, h - ch), cw, ch];
-}
-
 // A row's zoomed picture: its shape (400 x 156 pixels), and the smallest part of an image it shows,
 // so a crop never goes past one image pixel per screen pixel at the row's largest size.
 export const ROW = [400, 156];

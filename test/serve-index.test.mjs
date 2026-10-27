@@ -519,7 +519,7 @@ describe("serve: compressed answers", () => {
             gunzipSync((await s.raw(`/api/pr/123/${PROJECT}`, "gzip")).bytes).toString("utf8"),
         );
         const badge = items.find((i) => i.file === "badge--default.light.png");
-        const image = await s.raw(`/api/img/123/${PROJECT}/capture/${badge.file}`, "gzip");
+        const image = await s.raw(`/api/blob/${badge.capture}`, "gzip");
         expect(image.headers["content-type"]).toBe("image/png");
         expect(image.headers["content-encoding"]).toBeUndefined();
         expect(image.bytes.subarray(1, 4).toString("latin1")).toBe("PNG");

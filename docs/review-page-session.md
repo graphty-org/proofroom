@@ -51,10 +51,11 @@ curl -H "x-review-token: $TOKEN" https://review.example:4800/api/prs
 
 ## Images and pictures
 
-The page asks for an image by its hash (`/api/blob/<sha256>`) and for a picture (a thumbnail, a
-spotlit or zoomed tile) by both images' hashes, the comparison's settings and its kind
+The page asks for an image by its hash (`/api/blob/<sha256>`) and for a picture (a list row's
+picture, plain, spotlit or zoomed to the change) by both images' hashes, the comparison's settings
+and its kind
 (`/api/pic/<baseline>-<capture>-<threshold>-<includeAA>-<kind>`, with `none` for a missing side).
 An address names its content, so the server sends it with
 `cache-control: private, max-age=31536000, immutable` and the browser asks for it once: showing a
-list or a story again fetches nothing. An image is still served only when its bytes hash to the
+list or a snapshot again fetches nothing. An image is still served only when its bytes hash to the
 hash `results.json` gives. JSON answers are never cached.

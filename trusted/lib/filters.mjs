@@ -9,9 +9,6 @@
  *   or the owner signed a baselines tree that holds it (accept.mjs treeSignedRecords), a statement
  *   only when its signature verifies (accept.mjs earlierApprovalsAt), and the owner's Finish
  *   sheet lists every such accept before the owner signs the baselines with it.
- * - **Known capture noise.** A story whose capture changed on two pull requests that touch none of
- *   its package's files, or that flips between the same two images, is flaky. It is labeled, never
- *   accepted: the owner still decides, but can decide the group at once.
  * - **Grouped review.** Changed items with the same signature (where the change is, how large,
  *   what kind) form a cluster the owner can decide as one; the rest are outliers, shown first.
  */
@@ -224,76 +221,6 @@ function keep(index, key, a) {
         index.set(key, a);
     }
 }
-
-/**
- * What one target's capture says about capture noise: one observation per changed item.
- * @param {{ pr: number | null, runId: number | null, changedFiles?: string[] | null,
- *     projects: { project: string, results: object | null }[] }} t the target
- * @param {(project: string) => string} packageOf the directory of a project's package
- * @returns {{ key: string, pr: number, run: number, baseline: string, capture: string,
- *     untouched: boolean }[]} the observations; `untouched` when the pull request changes no file
- *     of the project's package
- */
-export function observations(t, packageOf) {
-    if (t.pr === null || !t.runId || !Array.isArray(t.changedFiles)) {
-        return [];
-    }
-    const out = [];
-    for (const p of t.projects) {
-        const dir = `${packageOf(p.project)}/`;
-        const untouched = !t.changedFiles.some((f) => f.startsWith(dir));
-        // A local preview is not CI's capture: its bytes can differ for reasons of its own.
-        for (const i of p.results?.local ? [] : (p.results?.items ?? [])) {
-            if (i.status === "changed" && !i.from) {
-                const key = `${p.project}/${i.file}`;
-                out.push({ key, pr: t.pr, run: t.runId, baseline: i.baseline, capture: i.capture, untouched });
-            }
-        }
-    }
-    return out;
-}
-
-/**
- * The stories proven to be capture noise, from every observation kept.
- * @param {ReturnType<typeof observations>} evidence the observations, of every run seen
- * @returns {Map<string, { prs: number[], why: "untouched" | "flip-flop", hashes: string[] }>} by
- *     `<project>/<file>`: changed on two or more pull requests that touch none of its package, or
- *     captured as A over baseline B and as B over baseline A
- */
-export function knownNoise(evidence) {
-    const byKey = new Map();
-    for (const o of evidence) {
-        byKey.set(o.key, [...(byKey.get(o.key) ?? []), o]);
-    }
-    const out = new Map();
-    for (const [key, seen] of byKey) {
-        const untouched = [...new Set(seen.filter((o) => o.untouched).map((o) => o.pr))].sort((a, b) => a - b);
-        const pairs = new Set(seen.map((o) => `${o.baseline} ${o.capture}`));
-        const flips = seen.filter((o) => pairs.has(`${o.capture} ${o.baseline}`));
-        if (untouched.length >= 2) {
-            const hashes = [...new Set(seen.filter((o) => o.untouched).map((o) => o.capture))];
-            out.set(key, { prs: untouched, why: "untouched", hashes });
-        } else if (flips.length > 0) {
-            const prs = [...new Set(flips.map((o) => o.pr))].sort((a, b) => a - b);
-            out.set(key, { prs, why: "flip-flop", hashes: [flips[0].baseline, flips[0].capture] });
-        }
-    }
-    return out;
-}
-
-/**
- * Whether one item of a target is known noise there: the story is known noise, and this change
- * cannot be the pull request's own doing (it touches none of the package's files), or it is the
- * same flip between two images seen before.
- * @param {{ prs: number[], why: string, hashes: string[] } | undefined} noise the story's entry
- * @param {{ baseline: string | null, capture: string | null }} item the item
- * @param {boolean} untouched whether this pull request changes no file of the package
- * @returns {boolean} whether to label it known noise
- */
-export const isNoise = (noise, item, untouched) =>
-    Boolean(noise) &&
-    (untouched ||
-        (noise.why === "flip-flop" && noise.hashes.includes(item.baseline) && noise.hashes.includes(item.capture)));
 
 /** Fewer changed pixels than this is a speck: anti-aliasing or a sub-pixel shift. */
 const SPECK = 50;

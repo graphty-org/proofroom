@@ -1,6 +1,6 @@
 {
     "name": "proofroom",
-    "version": "0.9.0",
+    "version": "1.0.0",
     "description": "Self-hosted visual review of Storybook stories: capture in GitHub Actions, keep the baselines in git (Git LFS), accept or reject each change in a local page, and gate pull requests",
     "author": "Adam Powers <apowers@ato.ms>",
     "license": "MIT",
@@ -31,7 +31,9 @@
         "trusted/",
         "capture/",
         "templates/",
+        "docs/",
         "README.md",
+        "CHANGELOG.md",
         "LICENSE"
     ],
     "engines": {

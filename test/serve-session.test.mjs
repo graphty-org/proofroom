@@ -141,7 +141,7 @@ describe("serve: images and pictures by their content", () => {
 
     it("serves every kind of a changed pair's picture by its name, immutable", async () => {
         const s = await start();
-        for (const kind of ["plain", "spot", "zoom", "both", "row-plain", "row-spot", "auto"]) {
+        for (const kind of ["plain", "spot", "row-plain", "row-spot", "auto"]) {
             const res = await s.get(`/api/pic/${picName(BUTTON, kind)}`, { "x-review-token": TOKEN });
             expect([kind, res.status, res.headers.get("cache-control")]).toEqual([kind, 200, IMMUTABLE]);
             expect(res.headers.get("content-type")).toBe("image/png");

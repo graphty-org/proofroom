@@ -495,7 +495,7 @@ describe("refreshing the targets", () => {
         await s.api("GET", "/api/prs");
         let last;
         for (let i = 0; i < 20; i++) {
-            last = await s.api("GET", "/api/img/123/compact-mantine/capture/button--primary.dark.png");
+            last = await s.api("GET", "/api/pr/123/compact-mantine");
         }
         expect(w.data.calls.filter((c) => c === "api graphql").length).toBeLessThanOrEqual(3);
         expect(last.body.error).not.toMatch(/^no such/);

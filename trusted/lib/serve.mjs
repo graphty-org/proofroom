@@ -61,13 +61,13 @@
  * whose captures are still downloading is listed with `downloading: true` and its progress, and
  * rebuilt in the cache when they land; `GET /api/pr/...` of a project still downloading answers
  * 202 and moves its download to the front of the queue. What GitHub says about a finished run
- * (its jobs and artifacts) is asked once and kept beside its downloads. Grid tiles load
- * thumbnails (`GET /api/thumb/...`) and a changed item's other pictures (`GET /api/spot/...`:
- * spotlit, zoomed toward its change, the row's zoomed pictures, or `auto`), made in child
- * processes as soon as a capture lands and kept on disk: one job per item, every kind of a changed
- * pair from one decode, queued in list order (component, then number), the change just opened
- * first. Each pair's row crop, zoom and area count are kept in memory and appended to one file,
- * `<tmp>/spots/areas.jsonl`, read once at start. A capture `run` made arrives with each item's
+ * (its jobs and artifacts) is asked once and kept beside its downloads. The page loads each image
+ * (`GET /api/blob/<hash>`) and each picture of an item (`GET /api/pic/<name>`, its kind `spot`,
+ * `row-plain`, `row-spot`, `plain` or `auto`), made in child processes as soon as a capture lands
+ * and kept on disk: one job per item, every kind of a changed pair from one decode, queued in list
+ * order (component, then number), the change just opened first. Each pair's row crop, zoom and
+ * area count are kept in memory and appended to one file, `<tmp>/spots/areas.jsonl`, read once at
+ * start. A capture `run` made arrives with each item's
  * pictures (its `pictures`, WebP files beside its images) and changed areas (`areas`): those are
  * served as they are and no job is made for them. `GET /api/junit/<id>` answers a change's
  * comparison report as a JUnit file to save.
@@ -76,18 +76,9 @@
  * same story and mode, in a review record or a change statement on the default branch or an open
  * pull request's branch, counts as accepted ("approved before", never saved in the decisions
  * file, and replaced by any decision the owner takes on it), and Finish names that record or
- * statement in the new record. Every refresh adds what the captures show about capture noise to
- * `<tmp>/state/noise-evidence.json` and writes the stories proven noisy to
- * `<tmp>/state/known-noise.json` (also `GET /api/noise`); they are labeled, never accepted. `GET
- * /api/pr` groups each project's changed items into clusters the page can decide as one.
- * `GET /api/pr-context/<id>` answers a pull request's title, description and comments (untrusted
- * text), asked from GitHub once per head.
- *
- * Coupled pull requests (inbox.mjs coupledGroups) change the same baseline files. POST
- * /api/decide-group and /api/accept-all-group do what /api/decide and /api/accept-all do, then the
- * same on every other member of the target's group whose item shows the same image against the
- * same baseline, so the owner reviews a shared image once. Each call is logged to
- * `<tmp>/state/groups.jsonl`, to count approvals per group.
+ * statement in the new record. `GET /api/pr` groups each project's changed items into clusters
+ * the page can decide as one. `GET /api/pr-context/<id>` answers a pull request's title,
+ * description and comments (untrusted text), asked from GitHub once per head.
  */
 
 import { execFile, spawn } from "node:child_process";
@@ -146,43 +137,29 @@ import {
     approvalIndex,
     baselineWriters,
     clusters,
-    isNoise,
     itemsByFile,
-    knownNoise,
-    observations,
 } from "./filters.mjs";
-import { coupledGroups, inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
+import { inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { junitXml } from "./junit.mjs";
 import { autoKind, factsOf, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
 import { USAGE_FILE } from "./usage.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const STATIC = {
-    "/": ["../page/index.html", "text/html; charset=utf-8"],
-    "/review.js": ["../page/review.js", "text/javascript; charset=utf-8"],
-    "/review.css": ["../page/review.css", "text/css; charset=utf-8"],
-    "/pixelmatch.mjs": ["../vendor/pixelmatch.mjs", "text/javascript; charset=utf-8"],
-    "/spot.js": ["../page/spot.js", "text/javascript; charset=utf-8"],
-    "/passkey.js": ["../page/passkey.js", "text/javascript; charset=utf-8"],
-    "/viewer/stage.js": ["../page/viewer/stage.js", "text/javascript; charset=utf-8"],
-    "/viewer/diff-worker.js": ["../page/viewer/diff-worker.js", "text/javascript; charset=utf-8"],
-    "/viewer/prefetch.js": ["../page/viewer/prefetch.js", "text/javascript; charset=utf-8"],
-    "/manifest.webmanifest": ["../page/manifest.webmanifest", "application/manifest+json"],
-    "/icon.svg": ["../page/icon.svg", "image/svg+xml"],
-    "/icon.png": ["../page/icon.png", "image/png"],
-};
-// The new page's folder, served at /next/: any file in it whose name is plain (no path), by its
-// extension's type.
-const NEXT_DIR = "../page/next";
-const NEXT_FILE = /^[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png)$/;
-const NEXT_TYPES = {
+// The page's files: its folder's files whose name is plain (no path), by their extension's type,
+// its viewer's, and the diff library its worker imports.
+const PAGE_DIR = "../page";
+const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
+const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
     js: "text/javascript; charset=utf-8",
+    mjs: "text/javascript; charset=utf-8",
     css: "text/css; charset=utf-8",
     svg: "image/svg+xml",
     png: "image/png",
+    webmanifest: "application/manifest+json",
 };
+const VENDOR = { "pixelmatch.mjs": "../vendor/pixelmatch.mjs" };
 // A JSON answer at least this long goes gzipped to a client that accepts it; below it, the header
 // costs about what gzip saves. Images are compressed already and are never gzipped again.
 const GZIP_FROM = 1024;
@@ -245,9 +222,7 @@ const SAME_SITE = new Set(["same-origin", "none"]);
 const WRITES = new Set([
     "baselines-download",
     "decide",
-    "decide-group",
     "accept-all",
-    "accept-all-group",
     "finish",
     "finish-prepare",
     "passkey-challenge",
@@ -735,8 +710,6 @@ async function loadResults(dir, name) {
  * @param {import("./thumbs.mjs").Pool} [options.pictures] the queue the pictures are made in (a
  *     test's fake records the order they start in)
  * @param {string} [options.serverId] what names this server's session cookie; random per start
- * @param {"review" | "next"} [options.ui] the page served at /: today's ("review", the default) or the
- *     new one ("next"), which is served at /next/ either way
  * @param {number} [options.ciEvery] the least time, in milliseconds, between two asks of a CI
  *     capture's state (captures.mjs)
  * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string, stopCaptures: () => void }}
@@ -762,7 +735,6 @@ export function createApp({
     retryDelays,
     pictures = pool,
     serverId = randomBytes(8).toString("hex"),
-    ui = "review",
     ciEvery,
 }) {
     const stateDir = join(tmp, "state");
@@ -849,10 +821,6 @@ export function createApp({
     let writers = new Map();
     /** This repository's id on GitHub (`github:<id>`) once GitHub gave it; null when it is not there. */
     let githubId;
-    /** The stories proven to be capture noise, by `<project>/<file>` (filters.mjs knownNoise). */
-    let noise = new Map();
-    const evidenceFile = join(stateDir, "noise-evidence.json");
-    const noiseFile = join(stateDir, "known-noise.json");
     /** Pull request context by `<pr> <head>`, and the reviewer's login, each asked once. */
     const contexts = new Map();
     let reviewer = null;
@@ -1407,66 +1375,6 @@ export function createApp({
         }
         return (main && addedIn.get(blob)) || sha;
     }
-
-    /**
-     * The directory of a project's package: its Storybook directory's parent.
-     * @param {string} name the project
-     * @returns {string} the directory, relative to the repository
-     */
-    const packageOf = (name) => dirname(projects[name]?.storybook ?? name);
-    // Whether a target's pull request changes no file of a project's package.
-    const untouched = (t, name) =>
-        Array.isArray(t.changedFiles) && !t.changedFiles.some((f) => f.startsWith(`${packageOf(name)}/`));
-
-    /**
-     * Adds what these targets' captures show about capture noise to the evidence kept on disk,
-     * and writes the stories it proves noisy where `GET /api/noise` and githerd read them.
-     * ponytail: keeps the newest 20,000 observations; a real store if that ever forgets too soon.
-     * @param {object[]} list the targets
-     */
-    function recordNoise(list) {
-        let evidence = [];
-        try {
-            evidence = JSON.parse(readFileSync(evidenceFile, "utf8"));
-        } catch (err) {
-            // None kept yet, or not JSON: start again. A file that cannot be read is kept as it
-            // is, never overwritten with this refresh's evidence alone.
-            if (err.code && err.code !== "ENOENT") {
-                const warning = `could not read the capture noise evidence (${evidenceFile}): ${err.message}`;
-                console.error(`proofroom: ${warning}`);
-                listWarnings.push(warning);
-                return;
-            }
-        }
-        const id = (o) => `${o.key} ${o.pr} ${o.baseline} ${o.capture}`;
-        const have = new Set(evidence.map(id));
-        for (const t of list) {
-            for (const o of observations(t, packageOf)) {
-                if (!have.has(id(o))) {
-                    have.add(id(o));
-                    evidence.push(o);
-                }
-            }
-        }
-        evidence = evidence.slice(-20000);
-        noise = knownNoise(evidence);
-        try {
-            writeJson(evidenceFile, evidence);
-            writeJson(noiseFile, noiseReport());
-        } catch (err) {
-            const warning = `could not keep the capture noise evidence (${noiseFile} is not current): ${err.message}`;
-            console.error(`proofroom: ${warning}`);
-            listWarnings.push(warning);
-        }
-    }
-    const noiseReport = () => ({
-        at: Date.now(),
-        stories: [...noise].map(([key, n]) => ({
-            project: key.slice(0, key.indexOf("/")),
-            file: key.slice(key.indexOf("/") + 1),
-            ...n,
-        })),
-    });
 
     // `problem` is what CI said (the job failed, or no artifact); results.json can add its own. A
     // pull request's capture (`vsBase`) is also compared with the default branch's baselines.
@@ -2153,7 +2061,6 @@ export function createApp({
         if (!results) {
             step("reading earlier approvals");
             await readApprovals([...next.values()]);
-            recordNoise([...next.values()]);
         }
         signer = await signingIdentity(repo);
         await republish(next, seen);
@@ -2873,45 +2780,6 @@ export function createApp({
     const couplings = () =>
         new Map([...targets.values()].filter((t) => t.pr !== null && !t.local).map((t) => [t.id, couplingOf(t)]));
 
-    /**
-     * The coupled group `t` is in, and for an item of it, the other members whose item of the same
-     * file shows the same image against the same baseline.
-     * @param {object} t the target
-     * @returns {{ prs: number[], sharing: (project: string, item: object) => object[] }} the group's
-     *     pull requests (none: not in a group) and the members sharing an item
-     */
-    const groupOf = (t) => {
-        const c = couplings();
-        const group = coupledGroups(
-            [...targets.values()].filter((x) => c.has(x.id)).map((x) => ({ ...x, ...c.get(x.id) })),
-        ).find((g) => g.ids.includes(t.id));
-        const others = (group?.ids ?? []).filter((id) => id !== t.id).map((id) => targets.get(id));
-        const sharing = (project, item) =>
-            others.filter((o) => {
-                const same = itemOf(o, `${project}/${item.file}`);
-                return (
-                    same && imageHash(same) === imageHash(item) && (same.baseline ?? null) === (item.baseline ?? null)
-                );
-            });
-        return { prs: group?.prs ?? [], sharing };
-    };
-
-    /**
-     * Keeps one line per group decision, so approvals per coupled group can be counted.
-     * @param {object} entry what was decided, on which pull requests
-     */
-    const logGroup = (entry) => {
-        if (entry.group.length === 0) {
-            return;
-        }
-        try {
-            mkdirSync(join(tmp, "state"), { recursive: true });
-            appendFileSync(join(tmp, "state", "groups.jsonl"), `${JSON.stringify({ at: Date.now(), ...entry })}\n`);
-        } catch (err) {
-            warnOnce(`could not log a group decision: ${err.message}`);
-        }
-    };
-
     // A local capture (--results, or any capture not made by CI) is only looked at: no decision is
     // taken on it and it has no Finish. The exception is a preview of this pull request's head
     // (tools/visual-preview.sh): Finish accepts it, and the gate checks CI's capture against the
@@ -3611,7 +3479,6 @@ export function createApp({
         "changedPixels",
         "reason",
         "reReview",
-        "noise",
     ];
     const rowOf = (item) => {
         const row = Object.fromEntries(ROW_FIELDS.filter((k) => item[k] !== undefined).map((k) => [k, item[k]]));
@@ -3681,62 +3548,33 @@ export function createApp({
 
     /**
      * Each capture set's Look alike groups, with what they were computed from: they depend on the
-     * images, the known noise and the images approved before, never on the decisions, so they are
-     * computed once per load (and again only when a refresh replaces the noise or the approvals),
-     * not once per list request.
-     * They depend on nothing else of the target than whether the pull request touches the
-     * project's package (known noise) and whether it can be accepted (approved before), so pages
-     * on two runs that share a capture set share its groups.
-     * @type {WeakMap<object, { quiet: boolean, ok: boolean, noise: Map<string, object>,
-     *     approved: Map<string, object>, grouped: ReturnType<typeof clusters> }>}
+     * images and the images approved before, never on the decisions, so they are computed once per
+     * load (and again only when a refresh replaces the approvals), not once per list request.
+     * They depend on nothing else of the target than whether it can be accepted (approved before),
+     * so pages on two runs that share a capture set share its groups.
+     * @type {WeakMap<object, { ok: boolean, approved: Map<string, object>,
+     *     grouped: ReturnType<typeof clusters> }>}
      */
     const lookAlikes = new WeakMap();
     /**
-     * A project's Look alike groups. They leave out what has a group of its own: known noise and
-     * approved before, whatever the item's decision.
+     * A project's Look alike groups. They leave out what has a group of its own, approved before,
+     * whatever the item's decision.
      * @param {object} t the target
      * @param {string} name the project
      * @param {object} results its results.json
-     * @param {object[]} shown its items as the list shows them, `noise` marked
+     * @param {object[]} shown its items as the list shows them
      * @returns {ReturnType<typeof clusters>} the groups
      */
     const lookAlike = (t, name, results, shown) => {
-        const quiet = untouched(t, name);
         const ok = acceptable(t, name);
         const kept = lookAlikes.get(results);
-        if (kept?.quiet === quiet && kept.ok === ok && kept.noise === noise && kept.approved === approved) {
+        if (kept?.ok === ok && kept.approved === approved) {
             return kept.grouped;
         }
-        const grouped = clusters(
-            shown.filter((i) => REVIEWABLE.has(i.status) && !i.noise && !approvedBefore(t, name, i)),
-        );
-        lookAlikes.set(results, { quiet, ok, noise, approved, grouped });
+        const grouped = clusters(shown.filter((i) => REVIEWABLE.has(i.status) && !approvedBefore(t, name, i)));
+        lookAlikes.set(results, { ok, approved, grouped });
         return grouped;
     };
-
-    /**
-     * Where a target's image is on this disk, by results.json.
-     * @param {string} id the target
-     * @param {string} name the project
-     * @param {string} kind "capture" or "baseline"
-     * @param {string} file the image's file name
-     * @param {string | null} [run] the run the page loaded (targetAt)
-     * @returns {Promise<Array<unknown> | { path: string, hash: string, file: string, dir: string, item: any }>}
-     *     where the image is, or the answer to send instead
-     */
-    async function imageOf(id, name, kind, file, run = null) {
-        const { t, p } = await projectOf(id, name, run);
-        if (!t) {
-            return gone(id, run);
-        }
-        const item = itemIn(p?.results, file);
-        // A failed item has no image in the artifact: capture keeps no copy of its baseline.
-        const hash = item && item.status !== "failed" && { capture: item.capture, baseline: item.baseline }[kind];
-        if (!hash) {
-            return [404, { error: "no such image" }];
-        }
-        return { ...whereOf(p.dir, item, kind), item };
-    }
 
     /**
      * Where an item's image is in its capture's directory.
@@ -4177,17 +4015,6 @@ export function createApp({
         return [200, { fetched: paths.length }];
     }
 
-    /**
-     * Runs a write route from another route, as the router would.
-     * @param {string} route the route
-     * @param {object} body its body
-     * @returns {Promise<[number, { error?: string, files?: string[], accepted?: number }]>} its status
-     *     and answer
-     */
-    const call = async (route, body) => {
-        const [status, answer] = await routes[route]([], body);
-        return [/** @type {number} */ (status), /** @type {{ error?: string, files?: string[] }} */ (answer)];
-    };
     // The page's captures, and what the New capture sheet says about where they can run: CI only
     // when the capture store can start a job and the capturing workflow takes requests, a change
     // from the code host here only through the config's captureCommand.
@@ -4233,9 +4060,9 @@ export function createApp({
                     inbox: summaries && !results ? inbox(summaries) : null,
                     warning: listWarnings.join("\n") || null,
                     defaultBranch,
-                    // The baselines folder, where the new page's Details finds a story's settings file.
+                    // The baselines folder, where the page's Details finds a story's settings file.
                     baselines: config.baselines,
-                    // The repository's name, for the new page's top bar.
+                    // The repository's name, for the page's top bar.
                     repository: await repository,
                     // The adapters in use: the code host's words for its changes, and the
                     // optional functions each lacks, whose buttons the page hides.
@@ -4339,15 +4166,9 @@ export function createApp({
             const { items, ...meta } = p.results;
             const prefix = `${name}/`;
             const mine = [...decisionsOf(t)].filter(([k]) => k.startsWith(prefix));
-            const quiet = untouched(t, name);
             const shown = items.map((i) => {
                 const to = t.earlier.get(`${config.baselines}/${name}/${i.file}`);
-                const n = noise.get(`${prefix}${i.file}`);
-                return {
-                    ...i,
-                    ...(to !== undefined && to !== i.baseline && { reReview: true }),
-                    ...(isNoise(n, i, quiet) && { noise: { prs: n.prs, why: n.why } }),
-                };
+                return { ...i, ...(to !== undefined && to !== i.baseline && { reReview: true }) };
             });
             const decided = new Map(mine.map(([k, v]) => [k.slice(prefix.length), v]));
             const grouped = lookAlike(t, name, p.results, shown);
@@ -4367,8 +4188,6 @@ export function createApp({
                 },
             ];
         },
-        // The stories proven to be capture noise, for filing fixes.
-        "GET /api/noise": async () => [200, noiseReport()],
         // A pull request's title, description and comments: untrusted text, shown as text.
         "GET /api/pr-context": async ([id]) => {
             const t = await targetOf(id);
@@ -4414,38 +4233,6 @@ export function createApp({
                 "application/xml; charset=utf-8",
                 { "content-disposition": `attachment; filename="${name}"` },
             ];
-        },
-        "GET /api/img": async ([id, name, kind, file], _, query) => {
-            const where = await imageOf(id, name, kind, file, query?.get("run"));
-            return Array.isArray(where) ? where : readImage(where);
-        },
-        // The same image scaled down for a grid tile, made once and kept by the image's hash.
-        "GET /api/thumb": async ([id, name, kind, file], _, query) => {
-            const where = await imageOf(id, name, kind, file, query?.get("run"));
-            if (Array.isArray(where)) {
-                return where;
-            }
-            return thumbOf(where, true);
-        },
-        // A changed item's picture of one kind of PICTURE_KINDS: spotlit ("spot"), cropped toward
-        // its change ("zoom") or both; the row's zoomed pictures ("row-plain", "row-spot"); the
-        // capture's thumbnail ("plain"); or "auto", what Zoom Auto shows.
-        "GET /api/spot": async ([id, name, kind, file], _, query) => {
-            if (!PICTURE_KINDS.includes(kind)) {
-                return [404, { error: "no such tile" }];
-            }
-            const a = await imageOf(id, name, "baseline", file, query?.get("run"));
-            if (Array.isArray(a)) {
-                return a;
-            }
-            const b = await imageOf(id, name, "capture", file, query?.get("run"));
-            if (Array.isArray(b)) {
-                return b;
-            }
-            if (a.hash === b.hash) {
-                return [404, { error: "nothing changed" }];
-            }
-            return spotOf(a, b, b.item, kind, "now");
         },
         // An image results.json names, by its hash; and a picture, by its content-addressed name.
         "GET /api/blob": async ([hash]) => {
@@ -4636,88 +4423,6 @@ export function createApp({
                 }
             });
             return [200, { accepted: files.length, files, unpublished: unpublishedOf(t) }];
-        },
-        // /api/decide, then the same decision on the coupled pull requests showing the same image.
-        // An Undo there undoes only the same decision; one decided otherwise is listed in `failed`.
-        "POST /api/decide-group": async (_, body) => {
-            const { t, p } = await projectOf(String(body.id), body.project);
-            const item = itemIn(p?.results, body.file);
-            const key = `${body.project}/${body.file}`;
-            const before = t && item ? decisionsOf(t).get(key) : undefined;
-            const [status, answer] = await call("POST /api/decide", body);
-            if (status !== 200 || body.opened === true) {
-                return [status, answer];
-            }
-            const group = groupOf(t);
-            const also = [];
-            const failed = [];
-            for (const o of group.sharing(body.project, item)) {
-                const theirs = decisionsOf(o).get(key);
-                if (body.decision === null && theirs?.decision !== (before?.decision ?? null)) {
-                    continue;
-                }
-                const [s, a] = await call("POST /api/decide", { ...body, id: o.id, hash: imageHash(item) });
-                if (s === 200) {
-                    // Decided here, not opened there: its Finish counts it as not opened, as Accept all.
-                    if (!theirs && body.decision !== null) {
-                        update(o, (saved) => {
-                            if (saved[key]) {
-                                saved[key].bulk = true;
-                            }
-                        });
-                    }
-                    also.push(o.pr);
-                } else {
-                    failed.push({ pr: o.pr, error: a.error });
-                }
-            }
-            logGroup({ group: group.prs, pr: t.pr, action: "decide", decision: body.decision, files: 1, also });
-            return [200, { ...answer, also, failed }];
-        },
-        // /api/accept-all, then the same accepts on the coupled pull requests showing the same images.
-        "POST /api/accept-all-group": async (_, body) => {
-            const [status, answer] = await call("POST /api/accept-all", body);
-            if (status !== 200) {
-                return [status, answer];
-            }
-            const { t } = await projectOf(String(body.id), body.project);
-            const group = groupOf(t);
-            const saved = readState(t);
-            // Each member with the capture it had when it was found sharing an image: its accept-all
-            // is refused if a refresh replaced that capture meanwhile.
-            const byMember = new Map();
-            for (const file of answer.files) {
-                // What was accepted here, not what the capture shows now: it may have been replaced.
-                const d = saved[`${body.project}/${file}`];
-                if (!d) {
-                    continue;
-                }
-                for (const o of group.sharing(body.project, { file, capture: d.hash, baseline: d.base })) {
-                    const m = byMember.get(o.id) ?? { o, runId: o.runId, runAttempt: o.runAttempt, files: [] };
-                    m.files.push(file);
-                    byMember.set(o.id, m);
-                }
-            }
-            const also = [];
-            const failed = [];
-            for (const { o, runId, runAttempt, files } of byMember.values()) {
-                const [s, a] = await call("POST /api/accept-all", {
-                    id: o.id,
-                    project: body.project,
-                    decision: body.decision,
-                    reason: body.reason,
-                    files,
-                    runId,
-                    runAttempt,
-                });
-                if (s === 200) {
-                    also.push(o.pr);
-                } else {
-                    failed.push({ pr: o.pr, error: a.error });
-                }
-            }
-            logGroup({ group: group.prs, pr: t.pr, action: "accept-all", files: answer.files.length, also });
-            return [200, { ...answer, also, failed }];
         },
         "GET /api/passkeys": async () => {
             const { main, pending } = await knownKeys();
@@ -5219,23 +4924,17 @@ export function createApp({
         setInterval(() => refresh().catch(failed("background")), POLL).unref();
     }
 
-    // The page's own files: GET only, and only those it names, and the files of the new page's
-    // folder at /next/. With `ui` "next", the new page is also the page at /.
+    // The page's own files: GET only, and only those of its folder. /next/, where the page was
+    // before 1.0.0, sends its links to the same place at /.
     async function sendStatic(req, res, pathname) {
-        if (req.method === "GET" && pathname === "/next") {
-            return send(res, 301, "", "text/plain; charset=utf-8", { location: "/next/" });
+        if (req.method === "GET" && (pathname === "/next" || pathname === "/next/")) {
+            return send(res, 301, "", "text/plain; charset=utf-8", { location: "/" });
         }
-        const page = ui === "next" && pathname === "/" ? "/next/" : pathname;
-        const name = page === "/next/" ? "index.html" : page.startsWith("/next/") ? page.slice(6) : null;
-        if (req.method === "GET" && name !== null && NEXT_FILE.test(name)) {
-            const body = await readFile(join(HERE, NEXT_DIR, name)).catch(() => null);
-            if (body) {
-                return send(res, 200, body, NEXT_TYPES[name.split(".").pop()]);
-            }
-        }
-        const entry = req.method === "GET" && Object.hasOwn(STATIC, page) ? STATIC[page] : null;
-        return entry
-            ? send(res, 200, await readFile(join(HERE, entry[0])), entry[1])
+        const name = pathname === "/" ? "index.html" : pathname.slice(1);
+        const path = Object.hasOwn(VENDOR, name) ? VENDOR[name] : PAGE_FILE.test(name) ? join(PAGE_DIR, name) : null;
+        const body = req.method === "GET" && path ? await readFile(join(HERE, path)).catch(() => null) : null;
+        return body
+            ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()])
             : send(res, 404, { error: "not found" });
     }
 

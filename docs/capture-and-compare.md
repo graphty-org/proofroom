@@ -64,7 +64,7 @@ snapshot flaky; a flaky-test tool reading the JUnit file can. Keep N low: a real
 attempt, and each attempt costs one more shot.
 
 To have your own test runner report and retry each snapshot instead, see
-[Each snapshot as a test in your runner](../README.md#each-snapshot-as-a-test-in-your-runner).
+[Each snapshot as a test in your runner](test-runners.md).
 
 ## `capture`
 
@@ -123,7 +123,7 @@ Each changed snapshot's result carries its changed areas (`areas`). `results.jso
 capture's `renderer`, and, given `--reference`, that capture's renderer as `baselineRenderer`: the
 browser the default branch's captures, and so its baselines, were drawn with. When the two differ,
 the review page says so before it shows any change (see
-[The renderer banner](new-page.md#the-renderer-banner)). The comparison is with the reference
+[The renderer banner](the-screens.md#a-capture-made-with-another-browser)). The comparison is with the reference
 capture, not with whatever drew the baselines: once the default branch captures with a new browser,
 its pull requests compare like with like and show no banner, even when its baselines were drawn
 before the change. So capture the baselines again in the pull request that changes the browser,

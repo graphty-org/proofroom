@@ -100,7 +100,7 @@ file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the tool fa
   --include-aa            without --project: count anti-aliased pixels as changed
   --no-fail               exit 0 when a snapshot did not pass; 2 still when the tool failed`,
 
-    serve: `usage: PORT=<n> proofroom serve [--candidate next|<id>] [--results <dir>] [--previews <dir>] [--ui next]
+    serve: `usage: PORT=<n> proofroom serve [--candidate next|<id>] [--results <dir>] [--previews <dir>]
 
 Serves the review page on $PORT, bound to $HOST (default localhost). With $HTTPS_CERT_PATH and
 $HTTPS_KEY_PATH set it serves HTTPS; without them, plain HTTP, and then only on a loopback HOST.
@@ -122,8 +122,7 @@ The URL to open, with its session token, is printed at every start.
                      preview script writes them; default: the config's workDir/local in the main
                      checkout of this repository, so every worktree's server finds them. A complete
                      preview of a pull request's head is reviewed and finished like CI's capture
-                     until CI's lands; the gate still checks CI's capture against what you accept
-  --ui next          serve the new review page at / (it is always at /next/)`,
+                     until CI's lands; the gate still checks CI's capture against what you accept`,
 
     parity: `usage: proofroom parity --project <id> <first> <second>
 
@@ -148,7 +147,7 @@ test it ran, and for openCapture()'s directories, every openCapture() was closed
 snapshot it listed has a result; then every baseline no snapshot drew is reported removed (not
 after openCapture() with a stories filter). A directory with neither cannot say its run finished:
 pass --whole once the runner has run every snapshot to the end. Exits 1, writing it incomplete,
-otherwise. \`merge-results\` is another name for it, until 1.0.0.
+otherwise.
 
   --project <id>     a project of visual-review.config.json
   --out <dir>        where the capture goes
@@ -164,7 +163,8 @@ file, one test case per snapshot, for CI systems and flaky-test tools. A snapsho
 when its capture is the approved baseline; changed, moved, new, no baseline yet and removed are
 failures typed by status, a story that could not be shot is an error with its reason and console,
 and an excluded story is skipped. Exits 0 once the file is written, whatever the snapshots' results;
-2 when results.json is missing or invalid.`,
+2 when results.json is missing or invalid. \`run\`, \`compare\` and \`collect\` write this file
+themselves; this command is for a capture set that has none (one made by an older version).`,
 
     gate: null, // gate.mjs's own usage
 
@@ -219,7 +219,6 @@ const COMMANDS = {
     compare,
     parity,
     collect: collectCommand,
-    "merge-results": collectCommand,
     junit,
     serve,
     gate,
@@ -251,7 +250,7 @@ Commands:
   install-browser  install the Chromium capture uses
 
 \`proofroom <command> --help\` describes each command. Documentation:
-https://graphty.app/docs/visual-review/`;
+https://github.com/graphty-org/proofroom#readme`;
 
 /**
  * The repository and its config, loaded only by the commands that need them.
@@ -440,14 +439,12 @@ async function serve(args) {
             candidate: { type: "string" },
             results: { type: "string" },
             previews: { type: "string" },
-            ui: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
     const { next, masterRun } = runOption(values);
     const https = Boolean(HTTPS_CERT_PATH && HTTPS_KEY_PATH);
-    const ui = values.ui ?? "review";
-    if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun)) || !["review", "next"].includes(ui)) {
+    if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun))) {
         console.error(HELP.serve);
         return 2;
     }
@@ -499,7 +496,6 @@ async function serve(args) {
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,
-        ui: /** @type {"review" | "next"} */ (ui),
         // What the owner types to run this server from their own shell, so Finish signs with
         // their key rather than the environment of whoever started it (an agent, say).
         startCommand:

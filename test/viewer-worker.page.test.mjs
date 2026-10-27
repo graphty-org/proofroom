@@ -1,8 +1,7 @@
 /*
  * The viewer's modules in Chromium: the diff worked out in a worker gives the same changed pixels
- * as on the page's thread; moving on to a snapshot whose diff was worked out ahead draws it with no
- * new diff, and only the worker imports pixelmatch. Also the server side: the viewer's files,
- * the new page's folder at /next/, and `serve --ui next`.
+ * as on the page's thread, and only the worker imports pixelmatch. Also the server side: the page's files at /,
+ * and /next/, where the page was before 1.0.0, sent to /.
  */
 
 import { spawnSync } from "node:child_process";
@@ -69,46 +68,47 @@ async function serve(options = {}) {
 }
 
 describe("the server", () => {
-    it("serves the viewer's modules and the new page's folder at /next/", async () => {
+    it("serves the page at /, its folder's plain file names, and sends /next/ to /", async () => {
         await serve();
         const get = (path) => fetch(`${s.origin}${path}`, { redirect: "manual" });
-        for (const path of ["/viewer/stage.js", "/viewer/diff-worker.js", "/viewer/prefetch.js"]) {
+        for (const path of ["/viewer/stage.js", "/viewer/diff-worker.js", "/viewer/prefetch.js", "/app.js"]) {
             const res = await get(path);
             expect(res.status).toBe(200);
             expect(res.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
         }
-        const next = await get("/next/");
-        expect(next.status).toBe(200);
-        expect(next.headers.get("content-type")).toBe("text/html; charset=utf-8");
-        expect(await (await get("/next/index.html")).text()).toBe(await next.text());
-        const bare = await get("/next");
-        expect(bare.status).toBe(301);
-        expect(bare.headers.get("location")).toBe("/next/");
-        // Today's page stays the page at /, and the folder serves only its own plain file names.
-        expect(await (await get("/")).text()).toContain('src="review.js"');
+        const root = await get("/");
+        expect(root.status).toBe(200);
+        expect(root.headers.get("content-type")).toBe("text/html; charset=utf-8");
+        const html = await root.text();
+        expect(html).toContain('src="/app.js"');
+        expect(await (await get("/index.html")).text()).toBe(html);
+        expect((await get("/manifest.webmanifest")).headers.get("content-type")).toBe("application/manifest+json");
+        // Where the page was before 1.0.0: a link posted then opens the page at /.
+        for (const path of ["/next", "/next/"]) {
+            const old = await get(path);
+            expect(old.status, path).toBe(301);
+            expect(old.headers.get("location"), path).toBe("/");
+        }
+        // The page before 1.0.0 is gone, and the folder serves only its own plain file names.
         for (const path of [
-            "/next/missing.js",
-            "/next/%2e%2e%2freview.js",
-            "/next/sub/index.html",
-            "/next/.hidden.js",
+            "/review.js",
+            "/review.css",
+            "/missing.js",
+            "/%2e%2e%2fgate.mjs",
+            "/sub/index.html",
+            "/.hidden.js",
         ]) {
             expect((await get(path)).status, path).toBe(404);
         }
     });
 
-    it("serves the new page at / with ui next", async () => {
-        await serve({ ui: "next" });
-        const root = await fetch(`${s.origin}/`);
-        expect(await root.text()).toBe(await (await fetch(`${s.origin}/next/`)).text());
-    });
-
-    it("refuses an unknown --ui before starting", () => {
-        const run = spawnSync(process.execPath, [CLI, "serve", "--ui", "old"], {
+    it("has no --ui option: there is one page", () => {
+        const run = spawnSync(process.execPath, [CLI, "serve", "--ui", "next"], {
             env: { ...process.env, PORT: "1" },
             encoding: "utf8",
         });
         expect(run.status).toBe(2);
-        expect(run.stderr).toContain("--ui next");
+        expect(run.stderr).toContain("Unknown option '--ui'");
     });
 });
 
@@ -123,7 +123,7 @@ describe("the diff worker", () => {
                 body: readFileSync(join(CM, decodeURIComponent(new URL(route.request().url()).pathname.slice(9)))),
             }),
         );
-        await page.goto(`${s.origin}/next/`);
+        await page.goto(`${s.origin}/`);
         await expose(["/viewer/stage.js", "/pixelmatch.mjs", "/spot.js"]);
         for (const [a, b, changed] of PAIRS) {
             const got = await page.evaluate(
@@ -180,101 +180,7 @@ describe("the diff worker", () => {
     });
 });
 
-describe("prefetch", () => {
-    it("draws the next snapshot after K with no new diff", async () => {
-        await serve();
-        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
-        page.setDefaultTimeout(0);
-        await page.goto(`${s.origin}/#token=${TOKEN}`);
-        await page.getByRole("button", { name: "Review", exact: true }).first().click();
-        await page.locator(".component").first().waitFor();
-        // The page's own copy of the module: the same address, so the same counts.
-        await expose(["/viewer/stage.js"]);
-        const counts = () => page.evaluate(() => ({ ...globalThis.modules["/viewer/stage.js"].diffCounts }));
-        // Item #2 (button--primary.dark, changed) from the grid's Find: a cold open, one diff.
-        await page.locator("#find").fill("2");
-        await page.keyboard.press("Enter");
-        await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#2");
-        await expect.poll(() => page.locator("#box-count").textContent()).toBe("1 of 1");
-        expect((await counts()).waited).toBe(1);
-        // Its next one, slider--sizes, is worked out ahead: wait until the worker has answered all.
-        await page.waitForFunction(() => {
-            const { diffCounts } = globalThis.modules["/viewer/stage.js"];
-            return diffCounts.done === diffCounts.worker && diffCounts.worker >= 2;
-        });
-        const before = await counts();
-        await page.keyboard.press("k");
-        await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#3");
-        await expect.poll(() => page.locator("#stage").getAttribute("data-file")).toBe("slider--sizes.png");
-        await expect.poll(() => page.locator("#box-count").textContent()).toMatch(/^1 of \d+$/);
-        // Highlight draws from the same diff: still none waited for.
-        await page.keyboard.press("h");
-        await page.locator("#stage .diffmark").first().waitFor();
-        expect((await counts()).waited).toBe(before.waited);
-    });
-
-    it("with Focus on, counts a cold open once and draws the next snapshot after K with no new diff", async () => {
-        await serve();
-        // One browser profile for two visits, so the second keeps the first one's options.
-        const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
-        const visit = async () => {
-            page = await context.newPage();
-            page.setDefaultTimeout(0);
-            await page.goto(`${s.origin}/#token=${TOKEN}`);
-            await expose(["/viewer/stage.js"]);
-            await page.getByRole("button", { name: "Review", exact: true }).first().click();
-            await page.locator(".component").first().waitFor();
-            await page.locator("#find").fill("2");
-            await page.keyboard.press("Enter");
-            await expect.poll(() => page.locator(".itemline .number").textContent()).toBe("#2");
-        };
-        try {
-            await visit();
-            // Focus on (O), kept for the next visit: there #2 opens cold with it on.
-            await page.keyboard.press("o");
-            await expect
-                .poll(() =>
-                    page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:options")).focus),
-                )
-                .toBe(true);
-            await page.close();
-            await visit();
-            const counts = () => page.evaluate(() => ({ ...globalThis.modules["/viewer/stage.js"].diffCounts }));
-            await expect.poll(() => page.locator("#box-count").textContent()).toBe("1 of 1");
-            expect((await counts()).waited).toBe(1);
-            await page.waitForFunction(() => {
-                const { diffCounts } = globalThis.modules["/viewer/stage.js"];
-                return diffCounts.done === diffCounts.worker && diffCounts.worker >= 2;
-            });
-            await page.keyboard.press("k");
-            await expect.poll(() => page.locator("#stage").getAttribute("data-file")).toBe("slider--sizes.png");
-            await expect.poll(() => page.locator("#box-count").textContent()).toMatch(/^1 of \d+$/);
-            expect((await counts()).waited).toBe(1);
-        } finally {
-            await context.close();
-            page = null;
-        }
-    });
-
-    it("shows the error when the worker cannot start, and starts it again for the next diff", async () => {
-        await serve();
-        page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
-        page.setDefaultTimeout(0);
-        await page.route("**/viewer/diff-worker.js", (route) => route.fulfill({ status: 500, body: "" }));
-        await page.goto(`${s.origin}/#token=${TOKEN}`);
-        await page.getByRole("button", { name: "Review", exact: true }).first().click();
-        await page.locator(".component").first().waitFor();
-        await page.locator("#find").fill("2");
-        await page.keyboard.press("Enter");
-        await page.keyboard.press("h");
-        const failed = page.locator("#stage .failed");
-        await expect.poll(() => failed.first().textContent()).toContain("the changed pixels could not be worked out");
-        await page.unroute("**/viewer/diff-worker.js");
-        await failed.first().getByRole("button", { name: "Retry" }).click();
-        await page.locator("#stage .diffmark").first().waitFor();
-        expect(await failed.count()).toBe(0);
-    });
-
+describe("the page's thread", () => {
     it("leaves no diff code on the page's thread: only the worker imports pixelmatch", () => {
         const PAGE = new URL("../trusted/page/", import.meta.url).pathname;
         const importers = readdirSync(PAGE, { recursive: true })
