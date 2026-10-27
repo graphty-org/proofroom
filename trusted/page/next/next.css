@@ -556,22 +556,22 @@ body.held [data-zone="end"] kbd {
     color: var(--ink-2);
 }
 .chg .l2 button,
-.chg .l1 button,
-.chg .l2 a {
+.chg .l1 button {
     min-height: 24px;
     height: 24px;
     padding: 0 6px;
     font-size: 11px;
     flex: none;
 }
+/* A finished row's links give way before its count does: the count is the row's state. */
 .chg .l2 a {
-    display: inline-flex;
-    align-items: center;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
     color: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--surface);
-    text-decoration: none;
 }
 .chg .cnt {
     font-size: 12px;

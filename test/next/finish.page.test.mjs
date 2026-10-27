@@ -83,7 +83,8 @@ const rows = (id, name) => {
 
 // The server's Finish jobs, made of plain data: POST /api/finish starts one, and each status ask
 // moves it one step on, so how far it is depends on how many times the page asked, never on time.
-// A held change's job stops at "committing" until released; a failing one ends with its error.
+// A held change's job stops at "committing" until released; a failing one ends with its error,
+// once: its next Finish succeeds.
 const STEPS = ["checking", "writing 2 files", "committing", "uploading images to LFS (1 of 2 done)", "pushing"];
 function jobs({ hold = [], fail = {} } = {}) {
     const held = new Set(hold);
@@ -106,6 +107,7 @@ function jobs({ hold = [], fail = {} } = {}) {
                     Object.assign(j, { running: false, step: null });
                     if (fail[j.target]) {
                         j.error = fail[j.target];
+                        delete fail[j.target];
                     } else {
                         j.result = { commit: `c0ffee${j.target}`, rejects: 0 };
                     }
@@ -130,7 +132,15 @@ async function open(options = {}, browser = "chromium") {
 
 const sheet = (page) => page.locator("dialog.finish[open]");
 const rowOf = (page, id) => page.locator(`.chg[data-chg="${id}"]`);
-const countOf = (page, id) => rowOf(page, id).locator(".cnt").innerText();
+// A row's count, or null while the row is not shown (its section closed): read as it is, never
+// waited for, so a poll on it ends. WebKit ends the text with a line break after its icon.
+const countOf = (page, id) =>
+    page.evaluate(
+        (sel) => globalThis.document.querySelector(sel)?.innerText.trim() ?? null,
+        `.chg[data-chg="${id}"] .cnt`,
+    );
+// A finished change moves to Nothing to decide, which starts closed: its header opens it.
+const openNothing = (page) => page.locator('.sec[data-sec="nothing"][aria-expanded="false"]').click();
 const posts = (path) => t.posts.filter((p) => p.path === path);
 // What a control shows, its key boxes as "[key]".
 const shows = (loc) =>
@@ -244,6 +254,10 @@ describe("the summary sheet", () => {
         );
         await s.locator("summary", { hasText: "The reasons" }).click();
         expect(await s.locator("details li").innerText()).toBe("graphty-element/x.png: Text is clipped");
+        // Cancel by pointer: the sheet closes, nothing sent.
+        await s.getByRole("button", { name: "Cancel" }).click();
+        await s.waitFor({ state: "detached" });
+        expect(posts("/api/finish")).toEqual([]);
     });
 
     it("refuses when decisions changed in another tab, and shows the new counts", async () => {
@@ -280,6 +294,7 @@ describe("the summary sheet", () => {
             .toBe("Decisions changed since this sheet opened: check the summary again.");
         expect(await sheet(page).innerText()).toContain("Will commit: 6 accepted");
         await page.keyboard.press("Enter");
+        await openNothing(page);
         await expect.poll(() => countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
         expect(posts("/api/finish").map((p) => p.body.digest)).toEqual([`digest-${A}`, "digest-new"]);
     });
@@ -306,6 +321,7 @@ describe("Finish... and Finish all", () => {
         await sheet(page).waitFor();
         expect(await sheet(page).locator(".warnbox").count()).toBe(0);
         await page.keyboard.press("Enter");
+        await openNothing(page);
         await expect.poll(() => countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
         // The change was never opened: none of its rows were asked for.
         expect(t.requests.filter((r) => r.startsWith(`/api/pr/${A}/`))).toEqual([]);
@@ -341,6 +357,7 @@ describe("Finish... and Finish all", () => {
         expect(await page.locator('.sechead [data-act="stopfinish"]').innerText()).toBe("Stop");
         j.release(A);
 
+        await openNothing(page);
         await expect.poll(() => countOf(page, C)).toMatch(/^Finished \d\d:\d\d$/);
         expect(await countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
         expect(await countOf(page, B)).toBe("Finish failed");
@@ -373,6 +390,7 @@ describe("Finish... and Finish all", () => {
         expect(await message(page)).toBe("Stopping after the change that is finishing now.");
         j.release(A);
         await expect.poll(() => message(page)).toBe("Finish all stopped. 1 change returned to Decided, not finished.");
+        await openNothing(page);
         expect(await countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
         expect(await countOf(page, B)).toBe("3 decided, not finished");
         expect(posts("/api/finish").map((p) => p.body.id)).toEqual([A]);
@@ -388,6 +406,7 @@ describe("Finish... and Finish all", () => {
         await expect.poll(() => rowOf(page, A).locator(".steps").innerText()).toBe("Step 3 of 8: commit");
         expect(await countOf(page, A)).toBe("Finishing");
         j.release(A);
+        await openNothing(page);
         await expect.poll(() => countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
         expect(posts("/api/finish")).toEqual([]);
     });
@@ -551,7 +570,8 @@ describe("on the review server", () => {
             await expect.poll(() => message(page)).toMatch(/^Finished seed at \d\d:\d\d\./);
             expect(posted.filter((p) => p.path === "repos/{owner}/{repo}/pulls")).toHaveLength(1);
             const day = new Date().toISOString().slice(0, 10);
-            expect(git(r.remote, "show", "--name-only", "--format=", `visual/seed-${day}`)).toContain(
+            // The branch, from the captured commit, holds the accepted baseline (and its approval).
+            expect(git(r.remote, "diff", "--name-only", r.master, `visual/seed-${day}`)).toContain(
                 "compact-mantine/badge--default.light.png",
             );
         } finally {

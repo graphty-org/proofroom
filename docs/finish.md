@@ -36,8 +36,9 @@ the sheet refuses, opens again with the new counts, and says why.
 Finish runs on the server. The change's row shows where it is, "Step 3 of 6: commit", and you can
 keep reviewing other changes. Reloading the page shows the running Finish again.
 
-- **Finished**: the row reads "Finished 14:02, signed" with links to the commit (and to the
-  comment when rejects were posted), **Dismiss**, and **Next change [Shift+N]**.
+- **Finished**: the row moves to Nothing to decide and reads "Finished 14:02, signed", with links
+  to the commit (and to the comment when rejects were posted) and **Dismiss**. The message line
+  offers **Next change**, as does the changes pane's header [Shift+N].
 - **Failed**: every decision is kept. The row reads "Finish failed" (its tooltip and the message
   line say which step failed and why) and offers **Retry**, which opens the sheet again. A
   cancelled passkey says "Passkey cancelled: nothing was changed."

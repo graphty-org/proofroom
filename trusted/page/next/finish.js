@@ -181,7 +181,6 @@ export function installFinish(app) {
                 count: `Finished ${d.at}${d.signed ? ", signed" : ""}`,
                 links: d.links,
                 dismissable: true,
-                justFinished: true,
                 section: r.section === "decided" ? "nothing" : r.section,
             };
         }
@@ -247,7 +246,11 @@ export function installFinish(app) {
         sheet = { list: ids, items };
         const d = /** @type {HTMLDialogElement} */ ($("dlg"));
         d.className = ids.length > 1 ? "finish many" : "finish";
-        d.replaceChildren(...(ids.length > 1 ? manyBody(items) : oneBody(items[0], notice)), ...sheetFoot(items));
+        d.replaceChildren(
+            ...[ids.length > 1 ? manyBody(items) : oneBody(items[0], notice), sheetFoot(items)]
+                .flat(Infinity)
+                .filter((k) => k !== null && k !== undefined && k !== false),
+        );
         d.showModal();
         /** @type {HTMLElement} */ (d.querySelector('[data-act="finishgo"]')).focus();
         app.settle();
@@ -703,9 +706,6 @@ export function installFinish(app) {
         }
         for (const l of r.links ?? []) {
             out.push(el("a", { href: l.href, target: "_blank", rel: "noreferrer" }, l.text));
-        }
-        if (r.justFinished) {
-            out.push(control(app, "nextchange", { zone: "rows" }));
         }
         return out;
     };
