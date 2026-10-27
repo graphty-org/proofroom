@@ -164,7 +164,10 @@ export function buildRepo() {
     put(join(repo, "README.md"), "test\n");
     // Tree statements, as graphty-monorepo writes them: the suites written before change
     // statements run as they did (finish-change.test.mjs covers the other format).
-    put(join(repo, CONFIG_FILE), `${JSON.stringify({ ...JSON.parse(CONFIG_TEXT), approvalFormat: "tree" }, null, 4)}\n`);
+    put(
+        join(repo, CONFIG_FILE),
+        `${JSON.stringify({ ...JSON.parse(CONFIG_TEXT), approvalFormat: "tree" }, null, 4)}\n`,
+    );
     for (const file of ["button--primary.dark.png", "card--legacy.png", "tooltip--hover.png"]) {
         cpSync(join(FIXTURE, "compact-mantine/baselines", file), join(repo, "visual-baselines/compact-mantine", file));
     }
@@ -420,33 +423,6 @@ export const capturedItems = () =>
     JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8")).items.filter(
         (i) => i.status !== "failed",
     );
-
-/**
- * The fixture as pull request #123, with slider--sizes renamed from old-slider--sizes and looking
- * exactly as that old id's baseline: a moved item, whose baseline is its own capture's bytes.
- * @param {object} r the repository
- * @param {object[]} [extra] more items for compact-mantine's results.json
- * @returns {Function} the gh runner
- */
-export const withMoved = (r, extra = []) => {
-    const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
-    const items = fixture.items.map((i) =>
-        i.file === "slider--sizes.png"
-            ? {
-                  ...i,
-                  status: "moved",
-                  from: "old-slider--sizes",
-                  baseline: i.capture,
-                  baselineSize: i.size,
-                  changedPixels: 0,
-                  bbox: null,
-              }
-            : i,
-    );
-    items.push(...extra);
-    const at = { commit: r.head, headSha: r.head };
-    return onePr({ results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at } })(r);
-};
 
 /**
  * A new tab whose request interception is on for its whole life, so a `page.route` holds the very

@@ -13,7 +13,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../trusted/lib/serve.mjs";
 import { autoKind, createPool, PAIR_KINDS, pictures, thumbnail } from "../trusted/lib/thumbs.mjs";
 import { ROW, rowCrop } from "../trusted/page/spot.js";
-import { capturedItems, copyFixture, fakeGh, FIXTURE_CONFIG, job, makeRepo, onePr, until } from "./helpers.mjs";
+import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
+import { capturedItems, copyFixture, FIXTURE_CONFIG, job, makeRepo, until } from "./helpers.mjs";
 
 // Every read of the areas file, by any app in this file.
 const areasReads = vi.hoisted(() => ({ count: 0 }));
@@ -91,7 +92,15 @@ async function start({ tmp, ...options }) {
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
     const at = tmp ?? join(repo, "tmp/visual-review");
-    box.app = createApp({ repo, tmp: at, config: FIXTURE_CONFIG, token: TOKEN, origin, ...options, gh: options.gh(r) });
+    box.app = createApp({
+        repo,
+        tmp: at,
+        config: FIXTURE_CONFIG,
+        token: TOKEN,
+        origin,
+        ...options,
+        ...(options.fakes ? options.fakes(r) : { gh: options.gh(r) }),
+    });
     servers.push({ server, app: box.app });
     const api = async (method, path) => {
         const res = await fetch(`${origin}${path}`, { method, headers: { "x-review-token": TOKEN, origin } });
@@ -262,7 +271,7 @@ describe("serve: the picture queue", () => {
         const r = makeRepo();
         const s = await start({
             ...r,
-            gh: () => async () => "",
+            fakes: () => fakeAdapters(),
             results: preview(join(r.dir, "local")),
             pictures: fake.pool,
         });
@@ -293,8 +302,8 @@ describe("serve: the picture queue", () => {
         const OTHER = "5".repeat(40);
         // #124 has the same images with other diff settings: pictures of its own.
         const theirs = capturedItems().map((i) => ({ ...i, threshold: 0.07 }));
-        const gh = (r) =>
-            fakeGh({
+        const fakes = (r) =>
+            fakeAdapters({
                 prs: [
                     { number: 123, head: r.head, branch: "feature" },
                     { number: 124, head: OTHER, branch: "other" },
@@ -317,7 +326,7 @@ describe("serve: the picture queue", () => {
             });
         const fake = fakePool();
         fake.hold();
-        const s = await start({ gh, pictures: fake.pool });
+        const s = await start({ fakes, pictures: fake.pool });
         await s.api("GET", "/api/prs");
         await until(() => fake.started.length === 1);
         const opened = (j) => j.label.startsWith(join(s.tmp, "1001-"));
@@ -340,7 +349,7 @@ describe("serve: the picture queue", () => {
 
     it("answers Zoom Auto from what the job found, and a restart reads the areas from one file, never per list", async () => {
         const first = fakePool();
-        const s = await start({ gh: onePr(), pictures: first.pool });
+        const s = await start({ fakes: onePrFakes(), pictures: first.pool });
         await s.api("GET", "/api/prs");
         await s.app.idle();
         // One job per item to decide: three pairs and two single images in compact-mantine, one in
@@ -366,7 +375,7 @@ describe("serve: the picture queue", () => {
             repo: s.repo,
             remote: s.remote,
             head: s.head,
-            gh: onePr(),
+            fakes: onePrFakes(),
             pictures: again.pool,
             tmp: s.tmp,
         });
@@ -385,7 +394,7 @@ describe("serve: the picture queue", () => {
 
     it("makes a pair's pictures again for Auto when the areas file was lost", async () => {
         const first = fakePool();
-        const s = await start({ gh: onePr(), pictures: first.pool });
+        const s = await start({ fakes: onePrFakes(), pictures: first.pool });
         await s.api("GET", "/api/prs");
         await s.app.idle();
         writeFileSync(join(s.tmp, "spots", "areas.jsonl"), "{cut");
@@ -394,7 +403,7 @@ describe("serve: the picture queue", () => {
             repo: s.repo,
             remote: s.remote,
             head: s.head,
-            gh: onePr(),
+            fakes: onePrFakes(),
             pictures: again.pool,
             tmp: s.tmp,
         });
@@ -411,7 +420,7 @@ describe("serve: the picture queue", () => {
             repo: s.repo,
             remote: s.remote,
             head: s.head,
-            gh: onePr(),
+            fakes: onePrFakes(),
             pictures: third.pool,
             tmp: s.tmp,
         });
@@ -426,7 +435,7 @@ describe("serve: the picture queue", () => {
     it("makes a pair asked for now while it waits in the advance queue once, not twice", async () => {
         const fake = fakePool();
         fake.hold();
-        const s = await start({ gh: onePr(), pictures: fake.pool });
+        const s = await start({ fakes: onePrFakes(), pictures: fake.pool });
         await s.api("GET", "/api/prs");
         await until(() => fake.started.length === 1);
         // The slider's advance job is queued behind the button's, which is held.
@@ -440,7 +449,7 @@ describe("serve: the picture queue", () => {
     });
 
     it("answers no picture for an unknown kind or a snapshot with nothing to light", async () => {
-        const s = await start({ gh: onePr(), pictures: fakePool().pool });
+        const s = await start({ fakes: onePrFakes(), pictures: fakePool().pool });
         await s.api("GET", "/api/prs");
         for (const path of [
             "blur/button--primary.dark.png",

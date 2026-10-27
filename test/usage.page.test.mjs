@@ -12,7 +12,8 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
-import { CONFIG, interceptedPage, isolateGit, makeRepo, onePr } from "./helpers.mjs";
+import { onePrFakes } from "./fakes/adapters.mjs";
+import { CONFIG, interceptedPage, isolateGit, makeRepo } from "./helpers.mjs";
 
 const TOKEN = "u".repeat(43);
 const REASON = "secret reason words";
@@ -51,7 +52,7 @@ async function open(usage) {
         token: TOKEN,
         origin,
         startCommand: "serve",
-        gh: onePr()(r),
+        ...onePrFakes()(r),
     });
     server.on("request", app);
     page = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });

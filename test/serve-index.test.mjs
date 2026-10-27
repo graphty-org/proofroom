@@ -14,17 +14,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { decisionProblem } from "../trusted/lib/accept.mjs";
 import * as filters from "../trusted/lib/filters.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import {
-    capturedItems,
-    FIXTURE,
-    FIXTURE_CONFIG,
-    git,
-    isolateGit,
-    keepTiles,
-    makeRepo,
-    onePr,
-    seedTiles,
-} from "./helpers.mjs";
+import { onePrFakes } from "./fakes/adapters.mjs";
+import { capturedItems, FIXTURE, FIXTURE_CONFIG, git, isolateGit, keepTiles, makeRepo, seedTiles } from "./helpers.mjs";
 
 // A step run right after the next rename onto `file`, by any app here: another process's write.
 const afterRename = vi.hoisted(() => ({ file: null, hook: null }));
@@ -63,7 +54,7 @@ afterEach(async () => {
 let tiles = null;
 beforeAll(async () => {
     isolateGit();
-    const s = await start({ gh: onePr(), tiles: false });
+    const s = await start({ fakes: onePrFakes(), tiles: false });
     tiles = await keepTiles({ ...s, token: TOKEN }, 123);
     await new Promise((resolve) => server.close(() => resolve()));
     await app.idle();
@@ -94,7 +85,7 @@ async function start({ tiles: seed = true, r = makeRepo(), ...options }) {
         token: TOKEN,
         origin,
         ...options,
-        gh: options.gh(r),
+        ...(options.fakes ? options.fakes(r) : { gh: options.gh(r) }),
     });
     app = box.app;
     const api = async (method, path, body) => {
@@ -133,7 +124,7 @@ function newItems(n) {
 }
 
 const bigPr = (items) => (r) =>
-    onePr({
+    onePrFakes({
         results: {
             "visual-compact-mantine-1": {
                 commit: r.head,
@@ -308,7 +299,7 @@ describe("serve: the decision index", () => {
         git(r.repo, "checkout", "-q", "master");
         let published = new Map(held.map((i) => [pathOf(i), i.capture]));
 
-        const s = await start({ r, gh: bigPr(items) });
+        const s = await start({ r, fakes: bigPr(items) });
         await s.api("GET", "/api/prs");
         const file = join(s.tmp, "state/123.json");
         writeFileSync(file, JSON.stringify(mixedState(items)));
@@ -331,7 +322,14 @@ describe("serve: the decision index", () => {
         const postedAccept = items.find((_, i) => i % 9 === 6 && (i % 97 === 0 || i % 97 === 50));
         expect((await decide(postedAccept, null)).status).toBe(200);
         expect((await decide(approvedItems[0], "reject", "not this time")).status).toBe(200);
-        expect((await decide(items.find((_, i) => i % 9 === 8), "accept")).status).toBe(200);
+        expect(
+            (
+                await decide(
+                    items.find((_, i) => i % 9 === 8),
+                    "accept",
+                )
+            ).status,
+        ).toBe(200);
         await compare();
 
         // The branch stops holding what the earlier Finish published: the next load sees it.
@@ -345,7 +343,7 @@ describe("serve: the decision index", () => {
 
     it("reads a decision another process wrote straight after this server's write", async () => {
         const items = newItems(N);
-        const s = await start({ gh: bigPr(items) });
+        const s = await start({ fakes: bigPr(items) });
         await s.api("GET", "/api/prs");
         const [a, b] = items;
         const body = { id: "123", project: PROJECT, decision: "accept" };
@@ -372,7 +370,7 @@ describe("serve: the decision index", () => {
 
     it("answers a decision with no scan of the list and no rebuild of the index", async () => {
         const items = newItems(N);
-        const s = await start({ gh: bigPr(items) });
+        const s = await start({ fakes: bigPr(items) });
         await s.api("GET", "/api/prs");
         await s.api("GET", `/api/pr/123/${PROJECT}`);
         vi.mocked(filters.itemsByFile).mockClear();
@@ -406,7 +404,7 @@ describe("serve: the decision index", () => {
 
     it("updates on every decision written, by this server or by another process", async () => {
         const items = newItems(N);
-        const s = await start({ gh: bigPr(items) });
+        const s = await start({ fakes: bigPr(items) });
         await s.api("GET", "/api/prs");
         const body = { id: "123", project: PROJECT };
         const [a, b, c] = items;
@@ -432,7 +430,7 @@ describe("serve: the decision index", () => {
     it("builds the index and groups Look alike once per capture-set load, never per list request", async () => {
         const items = newItems(N);
         vi.mocked(filters.itemsByFile).mockClear();
-        const s = await start({ gh: bigPr(items) });
+        const s = await start({ fakes: bigPr(items) });
         await s.api("GET", "/api/prs");
         // One index per capture set loaded: the big one, and graphty-element's.
         expect(vi.mocked(filters.itemsByFile).mock.calls.filter(([given]) => given.length >= N)).toHaveLength(1);
@@ -477,7 +475,7 @@ describe("serve: the decision index", () => {
         git(r.repo, "add", "-A");
         git(r.repo, "commit", "-q", "-m", "an earlier approval");
         git(r.repo, "push", "-q", "origin", "master");
-        const s = await start({ r, gh: bigPr(items) });
+        const s = await start({ r, fakes: bigPr(items) });
         await s.api("GET", "/api/prs");
         const list = async () => (await s.api("GET", `/api/pr/123/${PROJECT}`)).body;
         const first = await list();
@@ -497,7 +495,7 @@ describe("serve: the decision index", () => {
 
 describe("serve: compressed answers", () => {
     it("gzips a JSON answer for a client that takes it, and it decodes to the same JSON", async () => {
-        const s = await start({ gh: bigPr(newItems(N)) });
+        const s = await start({ fakes: bigPr(newItems(N)) });
         await s.api("GET", "/api/prs");
         const path = `/api/pr/123/${PROJECT}?rows=1`;
         const plain = await s.raw(path);
@@ -513,7 +511,7 @@ describe("serve: compressed answers", () => {
     });
 
     it("sends plain JSON when gzip is refused, and never gzips an image", async () => {
-        const s = await start({ gh: onePr() });
+        const s = await start({ fakes: onePrFakes() });
         const list = await s.raw("/api/prs", "gzip;q=0, identity");
         expect(list.headers["content-encoding"]).toBeUndefined();
         expect(JSON.parse(list.bytes.toString("utf8")).targets).toBeDefined();
