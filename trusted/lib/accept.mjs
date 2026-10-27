@@ -183,7 +183,7 @@ export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, l
 
 /**
  * The subject of a commit or pull request that accepts on the default branch: a seed, or the
- * approval of a candidate (a full run the promotion waits on; serve's `candidates`).
+ * approval of a candidate (a default branch run waiting for its screenshots' approval; serve's `candidates`).
  * @param {string} prefix the config's commitPrefix
  * @param {string | null} candidate the candidate's commit, or null for a seed
  * @returns {string} the subject

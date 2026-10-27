@@ -206,8 +206,6 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
     const excluded = new Set();
     // Shots of each snapshot in the story test running now, for `retries`.
     const shots = new Map();
-    // Each story's test, as its JUnit report names it, so a quarantine entry can be matched to its items.
-    const tests = new Map();
     const settings = async (id, chromatic) => storySettings({ chromatic }, await loadSettings(baselines, id));
     const judge = (id, mode, s, more) =>
         compareSnapshot({
@@ -242,16 +240,12 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
          * What the browser side does for one story: its modes, the project's wait and the delay.
          * A story its settings exclude is recorded here and has no modes to shoot, only the wait.
          * @param {unknown} _ctx the command's context
-         * @param {{ id: string, chromatic: object, test?: { file: string, name: string } }} story the
-         *     story id, its parameters.chromatic, and its test (absolute file, full name)
+         * @param {{ id: string, chromatic: object }} story the story id and its parameters.chromatic
          * @returns {Promise<{ modes: object[], waitFor: object | null, delay: number }>} the plan
          */
-        async visualPlan(_ctx, { id, chromatic, test }) {
+        async visualPlan(_ctx, { id, chromatic }) {
             await ready;
             planned.add(id);
-            if (test?.file && test.name) {
-                tests.set(id, { file: relative(root, test.file).replaceAll("\\", "/"), name: test.name });
-            }
             const s = await settings(id, chromatic);
             for (const { name } of s.modes) {
                 shots.delete(fileName(id, name));
