@@ -322,9 +322,7 @@ async function earlierAccepts(repo, head, pr, { baselines, approvals }) {
         }
     }
     const change = `pr:${pr}`;
-    const files = await git(["ls-tree", "-r", "--name-only", head, `${approvals}/${changeFolder(change)}/`]).catch(
-        () => "",
-    );
+    const files = await git(["ls-tree", "-r", "--name-only", head, `${approvals}/${changeFolder(change)}/`]).catch(() => "");
     const chain = [];
     for (const file of files.split("\n").filter((n) => n.endsWith(".json"))) {
         const st = await git(["show", `${head}:${file}`]).then(JSON.parse, () => null);
@@ -1936,12 +1934,10 @@ export function createApp({
             info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${pick.queued.length} queued)`;
             info.candidate = { commit, runId, queued: pick.queued.map((c) => ({ commit: c.commit, runId: c.runId })) };
         }
-        return (
-            getRun(gh, runId)
-                // When CI last touched the run, as a pull request's "4 min ago".
-                .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
-                .catch((err) => keptOr(info, err))
-        );
+        return getRun(gh, runId)
+            // When CI last touched the run, as a pull request's "4 min ago".
+            .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
+            .catch((err) => keptOr(info, err));
     }
 
     async function load() {
@@ -2990,12 +2986,7 @@ export function createApp({
             // Each of them, so the sheet lists them and opens any one: none is included unseen.
             approvedBeforeItems: list
                 .filter((x) => x.approvedBefore)
-                .map((x) => ({
-                    project: x.project,
-                    file: x.file,
-                    pr: x.approvedBefore.pr,
-                    change: x.approvedBefore.change,
-                })),
+                .map((x) => ({ project: x.project, file: x.file, pr: x.approvedBefore.pr, change: x.approvedBefore.change })),
             notOpened: s.projects.reduce((n, p) => n + p.notOpened, 0),
             undecided: s.projects
                 .filter((p) => p.undecided > 0)
