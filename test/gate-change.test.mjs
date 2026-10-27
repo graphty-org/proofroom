@@ -645,22 +645,59 @@ describe("seed statements in the gate", () => {
     });
 });
 
+/**
+ * Finish rejects CARD after an earlier accept.
+ * @param {{ repo: string }} r the repository
+ * @param {{ id: string }} accepted the earlier statement
+ * @returns {{ statement: object, id: string, file: string }} the reject statement
+ */
+const rejectAfter = (r, accepted) =>
+    finish(
+        r,
+        statementOf(r, [entry(r, CARD, { decision: "reject", reason: "the border is gone" })], {
+            previous: accepted.id,
+            approvedAt: "2026-10-25T15:00:00Z",
+        }),
+    );
+
+const dropped = (file, sha) =>
+    `${file}: commit ${sha.slice(0, 12)} of this change adds it, and the head no longer holds it; a Finish is never taken back, so finish again instead`;
+
 describe("statements a change takes back", () => {
     it("fail a change whose later commit reverts a reject Finish, naming the statement, with no force-push", () => {
         const r = changeRepo();
         const accepted = acceptCard(r);
-        const rejected = finish(
-            r,
-            statementOf(r, [entry(r, CARD, { decision: "reject", reason: "the border is gone" })], {
-                previous: accepted.id,
-                approvedAt: "2026-10-25T15:00:00Z",
-            }),
-        );
+        const rejected = rejectAfter(r, accepted);
+        const adding = git(r.repo, "rev-parse", "HEAD");
         git(r.repo, "revert", "--no-edit", "HEAD");
-        const reverting = git(r.repo, "rev-parse", "HEAD");
-        expect(check(r)).toEqual([
-            `${rejected.file}: commit ${reverting.slice(0, 12)} of this change deletes it; a Finish is never taken back, so finish again instead`,
-        ]);
+        expect(check(r)).toEqual([dropped(rejected.file, adding)]);
+    });
+
+    it("fail a reject dropped in a merge of master, in a merge of a side branch, and by a modify then delete", () => {
+        for (const how of ["master", "side", "modify-then-delete"]) {
+            const r = changeRepo();
+            const accepted = acceptCard(r);
+            const rejected = rejectAfter(r, accepted);
+            const adding = git(r.repo, "rev-parse", "HEAD");
+            if (how === "modify-then-delete") {
+                commit(r, { [rejected.file]: {} });
+                commit(r, { [rejected.file]: null });
+            } else {
+                if (how === "side") {
+                    git(r.repo, "checkout", "-q", "-b", "side");
+                    commit(r, { "src.txt": "side code" });
+                    git(r.repo, "checkout", "-q", "pr");
+                } else {
+                    git(r.repo, "checkout", "-q", "master");
+                    commit(r, { "src.txt": "landed elsewhere" });
+                    git(r.repo, "checkout", "-q", "pr");
+                }
+                git(r.repo, "merge", "-q", "--no-commit", how);
+                git(r.repo, "rm", "-q", rejected.file);
+                git(r.repo, "commit", "-q", "-m", "merge");
+            }
+            expect(check(r), how).toEqual([dropped(rejected.file, adding)]);
+        }
     });
 
     it("fail a statement modified by a later commit, and let one that never verified be removed", () => {
@@ -668,7 +705,7 @@ describe("statements a change takes back", () => {
         const done = acceptCard(r);
         commit(r, { [done.file]: { ...done.statement, approvedAt: "2026-10-26T00:00:00Z" } });
         expect(check(r)[0]).toMatch(`${done.file}: commit `);
-        expect(check(r)[0]).toMatch("of this change modifies it");
+        expect(check(r)[0]).toMatch("of this change adds it, and the head changes it");
         // Committed unsigned before the key landed: it approves nothing, so removing it takes nothing back.
         const s = changeRepo();
         commit(s, { [CARD_FILE]: "new image" });

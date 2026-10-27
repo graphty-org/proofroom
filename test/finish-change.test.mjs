@@ -181,9 +181,7 @@ async function finishOnce(s) {
  * @returns {string[]} their paths
  */
 const filesAt = (r, ref, dir) =>
-    git(r.remote, "ls-tree", "-r", "--name-only", ref, "--", `${dir}/`)
-        .split("\n")
-        .filter(Boolean);
+    git(r.remote, "ls-tree", "-r", "--name-only", ref, "--", `${dir}/`).split("\n").filter(Boolean);
 
 /**
  * The gate's approval check on the merge result of `feature` into master, as `gate --change pr:123`.
@@ -196,7 +194,18 @@ const filesAt = (r, ref, dir) =>
 function gateProblems(r, { keys = [KEY.entry], mode = "change" } = {}) {
     const merged = join(r.dir, `merge-${Math.random().toString(36).slice(2)}`);
     git(r.dir, "clone", "-q", "-b", "master", r.remote, merged);
-    git(merged, "-c", "user.name=CI", "-c", "user.email=ci@example.com", "merge", "-q", "--no-ff", "--no-edit", "origin/feature");
+    git(
+        merged,
+        "-c",
+        "user.name=CI",
+        "-c",
+        "user.email=ci@example.com",
+        "merge",
+        "-q",
+        "--no-ff",
+        "--no-edit",
+        "origin/feature",
+    );
     const base = git(merged, "rev-parse", "HEAD^1");
     return approvalProblems({
         base,
@@ -269,7 +278,9 @@ describe("Finish in change mode", () => {
         expect((await finishOnce(s)).job.error).toBeNull();
         await decide(s, ALL.slice(2));
         expect((await finishOnce(s)).job.error).toBeNull();
-        const [first, second] = statementsOn(r).sort((a, b) => (a.previous === null ? -1 : b.previous === null ? 1 : 0));
+        const [first, second] = statementsOn(r).sort((a, b) =>
+            a.previous === null ? -1 : b.previous === null ? 1 : 0,
+        );
         expect(first.previous).toBeNull();
         expect(second.previous).toBe(statementId(first));
         expect(s.touches).toBe(2);
@@ -405,13 +416,17 @@ describe("Finish of a seed in change mode", () => {
      * @returns {Record<string, { dir: string, results: object }>} the projects
      */
     const capture = (r, runId = 501) => ({
-        "compact-mantine": copyFixture("compact-mantine", join(r.dir, `run-${runId}-${Math.random()}/compact-mantine`), {
-            commit: r.master,
-            headSha: null,
-            pr: null,
-            runId,
-            runAttempt: 1,
-        }),
+        "compact-mantine": copyFixture(
+            "compact-mantine",
+            join(r.dir, `run-${runId}-${Math.random()}/compact-mantine`),
+            {
+                commit: r.master,
+                headSha: null,
+                pr: null,
+                runId,
+                runAttempt: 1,
+            },
+        ),
     });
 
     /**
@@ -424,9 +439,15 @@ describe("Finish of a seed in change mode", () => {
      * @param {Record<string, { dir: string, results: object }>} [o.projects] the run's capture
      * @param {string} [o.candidate] the candidate's commit
      * @param {boolean} [o.touch] false cancels the passkey touch
+     * @param {object} [o.config] the configuration
      * @returns {Promise<{ prepared: object, result?: object, touches: number }>} what happened
      */
-    async function seedFinish(r, host, list, { projects = capture(r), candidate, touch = true } = {}) {
+    async function seedFinish(
+        r,
+        host,
+        list,
+        { projects = capture(r), candidate, touch = true, config = FIXTURE_CONFIG } = {},
+    ) {
         const decisions = list.map(([file, decision = "accept", reason = null]) => ({
             project: "compact-mantine",
             file,
@@ -439,7 +460,7 @@ describe("Finish of a seed in change mode", () => {
             target: { pr: null, branch: null, ...(candidate && { candidate }) },
             projects,
             decisions,
-            config: FIXTURE_CONFIG,
+            config,
             repository: REPO_ID,
             retryDelays: [],
         };
@@ -448,7 +469,13 @@ describe("Finish of a seed in change mode", () => {
             return { prepared, touches: 0 };
         }
         const statement = { ...prepared.statement, approval: approve(prepared.statement, KEY, { origin: ORIGIN }) };
-        const approval = { statement, commit: prepared.commit, branch: prepared.branch, origin: ORIGIN, pendingKeys: [] };
+        const approval = {
+            statement,
+            commit: prepared.commit,
+            branch: prepared.branch,
+            origin: ORIGIN,
+            pendingKeys: [],
+        };
         return { prepared, result: await finish({ ...input, approval }), touches: 1 };
     }
 
@@ -462,7 +489,18 @@ describe("Finish of a seed in change mode", () => {
     function gateOn(r, branch, change) {
         const merged = join(r.dir, `merge-${Math.random().toString(36).slice(2)}`);
         git(r.dir, "clone", "-q", "-b", "master", r.remote, merged);
-        git(merged, "-c", "user.name=CI", "-c", "user.email=ci@example.com", "merge", "-q", "--no-ff", "--no-edit", `origin/${branch}`);
+        git(
+            merged,
+            "-c",
+            "user.name=CI",
+            "-c",
+            "user.email=ci@example.com",
+            "merge",
+            "-q",
+            "--no-ff",
+            "--no-edit",
+            `origin/${branch}`,
+        );
         return approvalProblems({
             base: git(merged, "rev-parse", "HEAD^1"),
             head: "HEAD",
@@ -575,6 +613,20 @@ describe("Finish of a seed in change mode", () => {
         expect(gateOn(r, fresh, "pr:901")).toEqual([]);
     });
 
+    it("closes the old seed pull request after a restart even when ignoreBranches hides seed branches", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        const config = { ...FIXTURE_CONFIG, ignoreBranches: ["visual/"] };
+        await seedFinish(r, host, [[BADGE]], { projects, config });
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await seedFinish(r, host, [[BADGE, "reject", "caught mid-animation"], [BUTTON]], { projects, config });
+        expect(host.opened.map((o) => [o.number, o.state])).toEqual([
+            [900, "closed"],
+            [901, "open"],
+        ]);
+    });
+
     it("refuses and closes a recorded seed branch someone pushed a code commit to, naming the commit", async () => {
         const r = changeRepo();
         const host = fakeCodeHost({ listOpened: true });
@@ -665,7 +717,14 @@ describe("Finish in tree mode", () => {
         const own = JSON.parse(readFileSync(join(r.repo, CONFIG_FILE), "utf8"));
         delete own.approvalFormat;
         const tree = git(r.repo, "rev-parse", `master:${BASELINES}`);
-        const earlier = { version: 1, commit: r.master, tree, baselines: BASELINES, pr: 1, approvedAt: "2026-10-01T00:00:00.000Z" };
+        const earlier = {
+            version: 1,
+            commit: r.master,
+            tree,
+            baselines: BASELINES,
+            pr: 1,
+            approvedAt: "2026-10-01T00:00:00.000Z",
+        };
         const signed = { ...earlier, approval: approve(earlier, KEY, { origin: ORIGIN }) };
         commitAndPush(
             r.repo,
@@ -713,12 +772,30 @@ describe("Finish in tree mode", () => {
         expect(approvals.every((f) => !f.slice(APPROVALS.length + 1).includes("/"))).toBe(true);
         const merged = join(r.dir, "merged");
         git(r.dir, "clone", "-q", "-b", "master", r.remote, merged);
-        git(merged, "-c", "user.name=CI", "-c", "user.email=ci@example.com", "merge", "-q", "--no-ff", "--no-edit", "origin/feature");
+        git(
+            merged,
+            "-c",
+            "user.name=CI",
+            "-c",
+            "user.email=ci@example.com",
+            "merge",
+            "-q",
+            "--no-ff",
+            "--no-edit",
+            "origin/feature",
+        );
         const base = git(merged, "rev-parse", "HEAD^1");
         const { keys, problems } = oldGate.approvalKeys(base, "HEAD", merged);
         expect(problems).toEqual([]);
         expect(
-            oldGate.treeApprovalProblems({ base, head: "HEAD", cwd: merged, baselines: BASELINES, approvals: APPROVALS, keys }),
+            oldGate.treeApprovalProblems({
+                base,
+                head: "HEAD",
+                cwd: merged,
+                baselines: BASELINES,
+                approvals: APPROVALS,
+                keys,
+            }),
         ).toEqual([]);
     });
 

@@ -47,7 +47,7 @@
  * the base's config only. With `"selfApproval": "forbid"` no statement may be signed by a key whose
  * identity contributed to the change (contributorsOf, selfApprovalProblems). Statements and the old review records under <baselines>/reviews/ are append-only: a change
  * that modifies or deletes one the base holds fails, and so does one whose later commit deletes or
- * modifies a statement an earlier commit of it added (change-approval.mjs withdrawnStatements). A
+ * modifies a statement an earlier commit of it added, in any commit or merge (change-approval.mjs withdrawnStatements). A
  * seed statement (`seed-approval`) is checked as a change statement, but its capturedHead must be
  * on the base: its reviewer saw a capture of the default branch. The review records mean nothing else to the
  * gate. Without that approval, committing the captured PNGs straight into the baselines directory would

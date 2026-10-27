@@ -1849,7 +1849,7 @@ async function retireSeeds(input, { base, fetch }) {
     if (!host?.listChanges) {
         return;
     }
-    const open = await net("listing the open changes", () => host.listChanges(config));
+    const open = await net("listing the open changes", () => host.listChanges({ ...config, ignoreBranches: [] }));
     const tracking = ownRef(config.defaultBranch);
     for (const c of open.filter((o) => o.branch && !o.fork)) {
         if (!(await fetch(c.branch).then(() => true, () => false))) {

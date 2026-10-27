@@ -40,12 +40,14 @@ export function fakeCodeHost({
         calls,
         posted,
         opened,
-        listChanges: call("listChanges", () => [
-            ...structuredClone(changes),
-            ...(listOpened ? opened : [])
-                .filter((o) => o.state === "open")
-                .map((o) => ({ number: o.number, url: o.html_url, branch: o.branch, fork: false })),
-        ]),
+        listChanges: call("listChanges", (config = {}) =>
+            [
+                ...structuredClone(changes),
+                ...(listOpened ? opened : [])
+                    .filter((o) => o.state === "open")
+                    .map((o) => ({ number: o.number, url: o.html_url, branch: o.branch, fork: false })),
+            ].filter((c) => !(config.ignoreBranches ?? []).some((prefix) => c.branch?.startsWith(prefix))),
+        ),
         describe: call("describe", (number) => {
             const c = changes.find((x) => x.number === number);
             return {

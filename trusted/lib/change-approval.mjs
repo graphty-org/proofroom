@@ -485,12 +485,12 @@ function checkStatement(file, bytes, at) {
 }
 
 /**
- * The statements a later commit of the change takes back: every statement file a commit of
- * `base..head` deletes or modifies (a rename is a deletion here) that the base does not hold, from
- * one `git log`. A statement once pushed to a change stays, byte for byte, so dropping a later
- * reject (a revert of its Finish commit, say) takes rewriting the branch's history, which the code
- * host shows. A statement that never verified against the base's keys (one committed unsigned
- * before the first key landed) approves nothing, so removing it takes nothing back.
+ * The statements the change takes back: every statement file a commit of `base..head` adds that
+ * the base does not hold and that the head no longer holds exactly as added, whether a later
+ * commit, a merge, a revert or a rename dropped or changed it. A statement once pushed to a change
+ * stays, byte for byte, so dropping a later reject takes rewriting the branch's history, which the
+ * code host shows. A statement that did not verify against the base's keys as added (one committed
+ * unsigned before the first key landed) approves nothing, so removing it takes nothing back.
  * @param {(args: string[], input?: string) => Buffer} git the runner
  * @param {object} at what to read
  * @param {string} at.base the base
@@ -507,47 +507,60 @@ export function withdrawnStatements(git, { base, head, approvals, keys }) {
         "-z",
         "--no-abbrev",
         "--no-renames",
-        "--diff-filter=DM",
+        "--diff-filter=A",
         `${base}..${head}`,
         "--",
         `${approvals}/`,
     ])
         .toString("utf8")
         .split("\0");
-    const found = new Map();
+    const added = [];
     let commit = null;
     for (let i = 0; i < parts.length; i++) {
         const token = parts[i].replace(/^\n+/, "");
         if (token.startsWith("\x01")) {
             commit = token.slice(1);
         } else if (token.startsWith(":")) {
-            const [, , old, , status] = token.split(" ");
+            const blob = token.split(" ")[3];
             const path = parts[++i];
-            if (path.slice(approvals.length + 1).includes("/") && !found.has(path)) {
-                found.set(path, { commit, old, status });
+            if (path.slice(approvals.length + 1).includes("/")) {
+                added.push({ path, blob, commit });
             }
         }
     }
-    if (found.size === 0) {
+    if (added.length === 0) {
         return [];
     }
-    const onBase = new Set(
-        git(["ls-tree", "-r", "-z", "--name-only", base, "--", `${approvals}/`])
-            .toString("utf8")
-            .split("\0"),
-    );
+    const treeOf = (rev) =>
+        new Map(
+            git(["ls-tree", "-r", "-z", rev, "--", `${approvals}/`])
+                .toString("utf8")
+                .split("\0")
+                .filter(Boolean)
+                .map((line) => {
+                    const tab = line.indexOf("\t");
+                    return [line.slice(tab + 1), line.slice(0, tab).split(" ")[2]];
+                }),
+        );
+    const onBase = treeOf(base);
+    const atHead = treeOf(head);
     const blobs = readBlobs(
         git,
-        [...found.values()].map((f) => f.old),
+        added.map((a) => a.blob),
     );
     const out = [];
-    for (const [path, { commit: sha, old, status }] of found) {
-        if (onBase.has(path) || (keys && !verifiesWith(blobs.get(old), keys))) {
+    const named = new Set();
+    for (const { path, blob, commit: sha } of added) {
+        if (named.has(path) || onBase.has(path) || atHead.get(path) === blob) {
             continue;
         }
-        const what = status === "D" ? "deletes" : "modifies";
+        if (keys && !verifiesWith(blobs.get(blob), keys)) {
+            continue;
+        }
+        named.add(path);
+        const what = atHead.has(path) ? "changes it" : "no longer holds it";
         out.push(
-            `${path}: commit ${sha.slice(0, 12)} of this change ${what} it; a Finish is never taken back, so finish again instead`,
+            `${path}: commit ${sha.slice(0, 12)} of this change adds it, and the head ${what}; a Finish is never taken back, so finish again instead`,
         );
     }
     return out;
