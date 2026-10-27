@@ -61,13 +61,13 @@
  * whose captures are still downloading is listed with `downloading: true` and its progress, and
  * rebuilt in the cache when they land; `GET /api/pr/...` of a project still downloading answers
  * 202 and moves its download to the front of the queue. What GitHub says about a finished run
- * (its jobs and artifacts) is asked once and kept beside its downloads. Grid tiles load
- * thumbnails (`GET /api/thumb/...`) and a changed item's other pictures (`GET /api/spot/...`:
- * spotlit, zoomed toward its change, the row's zoomed pictures, or `auto`), made in child
- * processes as soon as a capture lands and kept on disk: one job per item, every kind of a changed
- * pair from one decode, queued in list order (component, then number), the change just opened
- * first. Each pair's row crop, zoom and area count are kept in memory and appended to one file,
- * `<tmp>/spots/areas.jsonl`, read once at start. A capture `run` made arrives with each item's
+ * (its jobs and artifacts) is asked once and kept beside its downloads. The page loads each image
+ * (`GET /api/blob/<hash>`) and each picture of an item (`GET /api/pic/<name>`, its kind `spot`,
+ * `row-plain`, `row-spot`, `plain` or `auto`), made in child processes as soon as a capture lands
+ * and kept on disk: one job per item, every kind of a changed pair from one decode, queued in list
+ * order (component, then number), the change just opened first. Each pair's row crop, zoom and
+ * area count are kept in memory and appended to one file, `<tmp>/spots/areas.jsonl`, read once at
+ * start. A capture `run` made arrives with each item's
  * pictures (its `pictures`, WebP files beside its images) and changed areas (`areas`): those are
  * served as they are and no job is made for them. `GET /api/junit/<id>` answers a change's
  * comparison report as a JUnit file to save.

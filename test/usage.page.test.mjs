@@ -120,7 +120,7 @@ describe("review page: usage events", () => {
         // One page load, one session.
         expect(new Set(log.map((e) => e.s)).size).toBe(1);
         expect(log.every((e) => Number.isFinite(e.at))).toBe(true);
-        expect(log.find((e) => e.type === "load")).toMatchObject({ w: 1000, h: 800, dpr: 1, page: "next" });
+        expect(log.find((e) => e.type === "load")).toMatchObject({ w: 1000, h: 800, dpr: 1 });
         // Every press by its action id and how it came.
         const keys = log.filter((e) => e.type === "action" && e.via === "key").map((e) => e.a);
         expect(keys).toEqual(expect.arrayContaining(["view-highlight", "accept", "undo", "reject"]));

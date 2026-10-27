@@ -31,7 +31,9 @@
         "trusted/",
         "capture/",
         "templates/",
+        "docs/",
         "README.md",
+        "CHANGELOG.md",
         "LICENSE"
     ],
     "engines": {

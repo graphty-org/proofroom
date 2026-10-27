@@ -1837,7 +1837,7 @@ app.viewer = createViewer(app);
 app.baselines = installBaselines(app);
 app.holdSpace = (on) => (app.screen === "baselines" ? app.baselines.viewer : app.viewer).holdSpace(on);
 
-logUsage("load", { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, page: "next" });
+logUsage("load", { w: innerWidth, h: innerHeight, dpr: devicePixelRatio });
 startKeys(app);
 if (currentToken()) {
     boot();
