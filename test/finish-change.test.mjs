@@ -624,6 +624,27 @@ describe("Finish of a seed in change mode", () => {
         expect(gateOn(r, branch, "pr:900")).toEqual([]);
     });
 
+    it("commits the seed statement unsigned while the default branch holds no key, replacing X in the same Finish", async () => {
+        const r = repoWith({ approvalFormat: "change", repositoryId: REPO_ID });
+        const host = fakeCodeHost({ listOpened: true });
+        const result = await finish({
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null },
+            projects: capture(r),
+            decisions: [{ project: "compact-mantine", file: BADGE, decision: "accept", reason: null }],
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+        });
+        const [{ branch }] = host.opened;
+        expect(result).toMatchObject({ branch, pullRequest: "https://fake/changes/900" });
+        expect(git(r.remote, "rev-list", "--count", `${r.master}..${branch}`)).toBe("1");
+        const [st] = seedStatements(r, branch);
+        expect(st).toMatchObject({ type: "seed-approval", change: "pr:900" });
+        expect(st.approval).toBeUndefined();
+    });
+
     it("seeds with branch: on a code host that opens no pull requests, pushing nothing before the touch", async () => {
         const r = changeRepo();
         const host = fakeCodeHost();
