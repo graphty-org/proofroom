@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
+import { pinFixedInPage } from "../capture/capture.mjs";
 import { visualStoryTest } from "../capture/story-test.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
 
@@ -10,6 +11,17 @@ import { tempDir } from "./helpers.mjs";
 import { context, png, read, report, repo } from "./story-test-fakes.mjs";
 
 describe("story tests' visual step", () => {
+    it("launches Chromium with FC_FONTATIONS preset, whatever the caller's environment (#3787)", () => {
+        const saved = process.env.FC_FONTATIONS;
+        delete process.env.FC_FONTATIONS;
+        try {
+            const v = visualStoryTest({ project: "graphty-element", out: tempDir("story-test-out-"), root: repo({}) });
+            expect(v.providerOptions.launchOptions.env).toMatchObject({ FC_FONTATIONS: "1", TZ: "UTC" });
+        } finally {
+            if (saved !== undefined) process.env.FC_FONTATIONS = saved;
+        }
+    });
+
     it("shoots a story taller than the viewport in scrolled tiles, keeping its layout at the viewport", async () => {
         const root = repo({});
         const out = tempDir("story-test-out-");
@@ -28,6 +40,17 @@ describe("story tests' visual step", () => {
         expect([shot.width, shot.height]).toEqual([2400, 1810]);
         const gray = (y) => shot.data[y * 2400 * 4];
         expect([gray(0), gray(1799), gray(1800), gray(1809)]).toEqual([10, 10, 20, 20]);
+        // The second tile is shot only for the 5 rows it adds, and Chromium stitches the tiles, so this
+        // process never decodes or encodes a PNG: that work, on the one Node thread all four capture
+        // workers share, made the graph-io-fidelity capture twice as slow (#3980).
+        const viewport = { x: 0, y: 0, width: 1200, height: 900 };
+        expect(ctx.clips).toEqual([
+            viewport,
+            { x: 0, y: 895, width: 1200, height: 5 },
+            viewport,
+            { ...viewport, y: 895, height: 5 },
+        ]);
+        expect(ctx.pages.map((html) => html.match(/<img /g).length)).toEqual([2, 2]);
     });
 
     // 1,063 CSS px tall, as graphty's CompactOverview Size Specifications: the window scrolls
@@ -43,8 +66,9 @@ describe("story tests' visual step", () => {
     ])("scrolls the body by what the window could not when $name", async ({ windowMax, short }) => {
         const out = tempDir("story-test-out-");
         const v = visualStoryTest({ project: "graphty-element", out, root: repo({}) });
-        // Short, a third tile finds the frame where the second left it, and nothing more to copy.
-        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800), ...(short ? [png(30, 2400, 1800)] : [])];
+        // Short, a third tile would find the frame where the second left it, and nothing more to
+        // copy: it is never shot.
+        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800)];
         const ctx = context([...tiles, ...tiles], { width: 1200, height: 1063 });
         const frame = await ctx.frame();
         const measured = frame.evaluate;
@@ -115,7 +139,11 @@ describe("story tests' visual step", () => {
         expect(await shoot("a--fresh", [png(50), png(50)])).toEqual({ status: "new" });
         await v.commands.visualPlan(context([]), { id: "a--broken", chromatic: {} });
         await v.commands.visualFail(context([]), { id: "a--broken", modes: [null], reason: "play threw", console: [] });
-        await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } });
+        // An excluded story is not shot, but the page still waits for it to finish, so its late
+        // console lines cannot fail the story after it.
+        expect(
+            await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } }),
+        ).toEqual({ modes: [], waitFor: expect.objectContaining({ method: "waitForStableFrame" }), delay: 0 });
 
         await report(v, root, {
             files: ["a.stories.ts", "b.stories.ts", "c.stories.ts", "d.stories.ts"],
@@ -208,5 +236,34 @@ describe("story tests' visual step", () => {
             "b--wobbles": "unchanged",
         });
         expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(false);
+    });
+});
+
+describe("pinFixedInPage", () => {
+    it("draws a sticky element static while tiles are shot, and puts its style back", () => {
+        const el = (position) => {
+            const e = { position, style: { cssText: "", setProperty: (n, v) => (e.style[n] = v) } };
+            e.getBoundingClientRect = () => ({ top: 0, left: 0, width: 10, height: 10 });
+            e.querySelectorAll = () => [];
+            return e;
+        };
+        const header = el("sticky");
+        const plain = el("static");
+        Object.assign(globalThis, {
+            document: { querySelectorAll: () => [header, plain] },
+            getComputedStyle: (e) => ({ position: e.position }),
+        });
+        try {
+            pinFixedInPage(false);
+            expect(header.style.position).toBe("static");
+            expect(plain.style.position).toBeUndefined();
+            header.style.cssText = "changed";
+            pinFixedInPage(true);
+            expect(header.style.cssText).toBe("");
+            expect(globalThis.__visualReviewUnstuck).toBeUndefined();
+        } finally {
+            delete globalThis.document;
+            delete globalThis.getComputedStyle;
+        }
     });
 });

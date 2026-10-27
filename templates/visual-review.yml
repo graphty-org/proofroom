@@ -19,6 +19,10 @@ on:
 permissions:
     contents: read
 
+env:
+    # Chromium 143 can crash at launch (SIGSEGV in getenv) unless this is preset; see chromiumEnv in capture.mjs.
+    FC_FONTATIONS: "1"
+
 jobs:
     # The projects of visual-review.config.json, as the capture job's matrix.
     plan:
@@ -27,7 +31,7 @@ jobs:
         outputs:
             projects: ${{ steps.plan.outputs.projects }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   sparse-checkout: visual-review.config.json
                   sparse-checkout-cone-mode: false
@@ -56,7 +60,7 @@ jobs:
             matrix:
                 include: ${{ fromJSON(needs.plan.outputs.projects) }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             # Baseline PNGs are Git LFS objects. They are cached by the pointer files' hash, so a run
             # downloads from LFS only the images accepted since the cache was saved.
@@ -136,7 +140,7 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         runs-on: ubuntu-24.04
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   fetch-depth: 0
                   filter: blob:none

@@ -29,6 +29,10 @@ on:
 permissions:
     contents: read
 
+env:
+    # Chromium 143 can crash at launch (SIGSEGV in getenv) unless this is preset; see chromiumEnv in capture.mjs.
+    FC_FONTATIONS: "1"
+
 jobs:
     plan:
         name: Plan
@@ -36,7 +40,7 @@ jobs:
         outputs:
             projects: ${{ steps.plan.outputs.projects }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   sparse-checkout: visual-review.config.json
                   sparse-checkout-cone-mode: false
@@ -71,7 +75,7 @@ jobs:
             matrix:
                 include: ${{ fromJSON(needs.plan.outputs.projects) }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   ref: ${{ inputs.ref }}
 
@@ -103,7 +107,7 @@ jobs:
                 include: ${{ fromJSON(needs.plan.outputs.projects) }}
         steps:
             # The default branch's checkout: the capture tool, the config and the baselines come from here.
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - name: Download Storybook build
               uses: actions/download-artifact@v8

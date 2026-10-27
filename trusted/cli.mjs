@@ -9,8 +9,8 @@
  * beyond Node's standard library and runs from a checkout without an install.
  */
 
-import { readFile, readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const HELP = {
@@ -81,11 +81,13 @@ The URL to open, with its session token, is printed at every start.
     parity: `usage: visual-review parity --project <id> <first> <second>
 
 Compares two captures of one project made from the same commit (each a results.json, or the
-directory that holds it), story by story and mode by mode, by the SHA-256 of each capture: the
-built Storybook's capture against the story tests', or one machine's against another's. Prints one
-JSON line per difference (bytes that differ, a story only one side captured, a story one side
-failed to capture), then a summary. Exits 1 on any difference: different bytes from the same
-commit are a bug in one environment, so no threshold applies.`,
+directory that holds it), story by story and mode by mode, by the SHA-256 of each capture and,
+when the bytes differ, by the decoded pixels (two encoders may write the same picture differently):
+the built Storybook's capture against the story tests', or one machine's against another's. Prints
+one JSON line per difference (a different size, different pixels with their count, bytes whose
+images are not both in the directories, a story only one side captured, a story one side failed to
+capture), then a summary. Exits 1 on any difference: different pixels from the same commit are a
+bug in one environment, so no threshold applies.`,
 
     "merge-results": `usage: visual-review merge-results --project <id> --out <dir> [--baselines <dir>] [--quarantine <file>] <partial>...
 
@@ -173,7 +175,7 @@ Commands:
   notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
   compare          compare two directories of PNGs (local use)
-  parity           compare two captures of the same commit byte for byte
+  parity           compare two captures of the same commit pixel for pixel
   merge-results    combine the story tests' partial captures of one project
   usage            sum up the review page's usage events (when the config turns them on)
   install-browser  install the Chromium capture uses
@@ -521,7 +523,7 @@ async function parity(args) {
         console.error(HELP.parity);
         return 2;
     }
-    const { parity: diff, readResults } = await import("./lib/parity.mjs");
+    const { parity: diff, readResults, samePixels } = await import("./lib/parity.mjs");
     const [first, second] = await Promise.all(positionals.map((p) => readResults(p)));
     for (const [path, r] of [
         [positionals[0], first],
@@ -532,7 +534,8 @@ async function parity(args) {
             return 2;
         }
     }
-    const { compared, same, differences } = diff(first, second);
+    const dirs = await Promise.all(positionals.map(async (p) => ((await stat(p)).isDirectory() ? p : dirname(p))));
+    const { compared, same, differences } = await samePixels(diff(first, second), dirs);
     for (const difference of differences) {
         console.log(JSON.stringify(difference));
     }
