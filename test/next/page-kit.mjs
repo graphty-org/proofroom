@@ -9,9 +9,9 @@ import { chromium, webkit } from "playwright";
 
 import { startApp } from "../faults.mjs";
 import { fakeGh, makeRepo } from "../helpers.mjs";
-import { listAnswer, rowsAnswer } from "./fixtures.mjs";
+import { finishPreview, listAnswer, rowsAnswer } from "./fixtures.mjs";
 
-export { fiftyChanges, listAnswer, project, richRows, row, rowsAnswer, target } from "./fixtures.mjs";
+export { fiftyChanges, finishPreview, listAnswer, project, richRows, row, rowsAnswer, target } from "./fixtures.mjs";
 
 // The picture every /api/pic request is answered with: a small gray PNG.
 const PICTURE = (() => {
@@ -52,15 +52,18 @@ export const BROWSERS = { chromium, webkit };
  *     clock?: boolean, ui?: "review" | "next", path?: string, failList?: number,
  *     pictures?: (name: string) => boolean, decide?: (body: object) => object,
  *     acceptAll?: (body: object) => object, update?: (body: object) => object,
- *     finishStatus?: () => object | null, host?: string }} [options]
+ *     finishStatus?: () => object | null, host?: string, finishPreview?: (id: string, t: object) => object,
+ *     prepare?: (body: object) => object, finish?: (body: object) => object }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
  *     project's reviewable), the window, the address after #, local storage to start with,
  *     whether the test controls the page's clock, the server's page at /, the path to open, and
  *     how many of the first asks for the list answer HTTP 500, which pictures to answer (the rest
  *     fail with HTTP 500), the answer to each POST /api/decide (by default `{ ok: true }`) and
  *     POST /api/accept-all (by default every file listed done), POST /api/update's answer, the
- *     job GET /api/finish-status reports, and the host name the page is opened at (localhost for
- *     a passkey)
+ *     job GET /api/finish-status reports, the host name the page is opened at (localhost for
+ *     a passkey), and Finish's answers: GET /api/target/<id>?finish=1 (by default finishPreview of
+ *     the listed target), POST /api/finish-prepare (by default no passkey asked) and POST
+ *     /api/finish (by default a job that has already ended with a commit), each kept in `posts`
  * @returns {Promise<{ page: import("playwright").Page, context: import("playwright").BrowserContext,
  *     close: () => Promise<void>, actions: object[], requests: string[],
  *     posts: { path: string, body: any }[], origin: string, setList: (answer: object) => void,
@@ -146,6 +149,29 @@ export async function openNext(browser, options = {}) {
     );
     await page.route("**/api/finish-status", (route) =>
         route.fulfill({ json: { job: options.finishStatus ? options.finishStatus() : null } }),
+    );
+    // Finish: the preview of a listed target, the preparation (no passkey asked by default) and the
+    // start, which by default ends at once with a commit.
+    await page.route("**/api/target/**", (route) => {
+        const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop());
+        const t = list.targets.find((x) => x.id === id);
+        return route.fulfill({ json: options.finishPreview ? options.finishPreview(id, t) : finishPreview(t) });
+    });
+    await page.route("**/api/finish-prepare", (route) =>
+        answerWith(route, options.prepare, () => ({ required: false })),
+    );
+    await page.route("**/api/finish", (route) =>
+        answerWith(route, options.finish, (b) => ({
+            job: {
+                id: 1,
+                target: b.id,
+                running: false,
+                step: null,
+                error: null,
+                warnings: [],
+                result: { commit: "c0ffee1234", rejects: 0 },
+            },
+        })),
     );
     await page.route("**/api/pr-context/**", (route) =>
         route.fulfill({

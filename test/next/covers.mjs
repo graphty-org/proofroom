@@ -78,6 +78,18 @@ export const COVERS = {
         "closebox",
     ],
     "layout.page.test.mjs": ["pane1", "pane2", "back", "openrow", "pickrow"],
+    "finish.page.test.mjs": [
+        "finish",
+        "finishchg",
+        "finishall",
+        "stopfinish",
+        "unqueue",
+        "retryfinish",
+        "finishgo",
+        "gofirst",
+        "finishregister",
+        "confirmcancel",
+    ],
     "decide.page.test.mjs": [
         "accept",
         "reject",

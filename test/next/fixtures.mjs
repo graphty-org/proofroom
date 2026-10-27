@@ -330,3 +330,38 @@ export function richRows(name, n = 180) {
         ],
     };
 }
+
+/**
+ * What GET /api/target/<id>?finish=1 answers for a target summary: the summary and its Finish
+ * preview, counted from the projects as the server counts them (every decision an accept unless
+ * `over` says otherwise), with the commit status accept.mjs's commitStatus words.
+ * @param {object} t the target summary
+ * @param {object} [over] preview fields to change
+ * @returns {object} the answer
+ */
+export function finishPreview(t, over = {}) {
+    const decided = t.projects.reduce((n, p) => n + p.decided, 0);
+    const f = {
+        accepts: decided,
+        excludes: 0,
+        rejects: 0,
+        acceptNotes: 0,
+        notes: [],
+        approvedBefore: 0,
+        approvedBeforeItems: [],
+        notOpened: 0,
+        undecided: t.projects
+            .filter((p) => p.undecided > 0)
+            .map((p) => ({ project: p.project, undecided: p.undecided })),
+        unloaded: [],
+        previews: [],
+        digest: `digest-${t.id}`,
+        ...over,
+    };
+    const undecided = f.undecided.reduce((n, p) => n + p.undecided, 0);
+    f.status ??= {
+        state: f.rejects > 0 ? "failure" : undecided > 0 ? "pending" : "success",
+        description: `Reviewed: ${f.accepts} accepted, ${f.rejects} rejected, ${f.excludes} excluded, ${undecided} left undecided`,
+    };
+    return { signer: { signs: true, author: "Ada Owner <ada@example.com>" }, startCommand: null, ...t, finish: f };
+}
