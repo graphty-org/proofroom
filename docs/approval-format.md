@@ -197,6 +197,13 @@ whatever it leaves undecided or rejects; a Finish that only rejects posts its co
 statement. The statement names the change's newest statement on the branch as `previous`, and
 both ends of a fork when there are two, so Finishing again closes it.
 
+A statement committed unsigned, while the default branch held no key, fails the gate once a key is
+there. The next Finish of that change removes it and signs a new statement of what it decides, so
+decide again every snapshot the unsigned statement held.
+
+A capture of the default branch (a seed) cannot be approved with a change statement: in change
+mode, Finish refuses it. Accept those snapshots on a pull request's capture instead.
+
 Two Finishes of one change can race: each builds its commit on the branch tip it fetched, and the
 first push wins. When a push is refused, Finish fetches the branch again and:
 
@@ -222,8 +229,8 @@ Finish refuses.
 
 Never set it while CI still runs `@graphty/visual-review`'s gate: that gate reads only tree
 statements, and would fail every change finished afterwards. A repository whose CI runs proofroom's
-gate but has not set `approvalFormat` keeps receiving tree statements, which that gate still
-reads, so leaving it unset is safe.
+gate but has not set `approvalFormat`, and whose approvals directory holds tree statements, keeps
+receiving tree statements, which that gate still reads, so leaving it unset is safe.
 
 ## Where the gate's trust comes from
 

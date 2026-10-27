@@ -37,7 +37,7 @@ afterEach(async () => {
     await app?.idle();
 });
 
-it("asks for the passkey once, says it signs the decisions and the baselines, and pushes one signed statement", async () => {
+it("asks for the passkey once, says it signs this Finish's decisions, and pushes one signed statement", async () => {
     // A repository in change mode with no key yet: the reader registers one on the page.
     const r = makeRepo();
     const own = JSON.parse(readFileSync(join(r.repo, CONFIG_FILE), "utf8"));
@@ -53,20 +53,8 @@ it("asks for the passkey once, says it signs the decisions and the baselines, an
     app = createApp({ repo: r.repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, gh: onePr()(r) });
     server.on("request", app);
     page = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
-    const asked = [];
-    // The page asks in its own dialog: every question is answered yes, as the reader would.
-    await page.exposeFunction("asked", (message) => {
-        asked.push(message);
-        return true;
-    });
     await page.addInitScript(() => {
-        const { document, MutationObserver, navigator } = globalThis;
-        new MutationObserver(() => {
-            for (const d of document.querySelectorAll("dialog.ask[open]:not([data-seen])")) {
-                d.dataset.seen = "";
-                globalThis.asked(d.querySelector(".ask-text").innerText).then(() => d.querySelector("#ask-yes").click());
-            }
-        }).observe(document, { childList: true, subtree: true, attributes: true });
+        const { navigator } = globalThis;
         globalThis.gets = 0;
         const real = navigator.credentials.get.bind(navigator.credentials);
         navigator.credentials.get = (o) => {
@@ -86,23 +74,40 @@ it("asks for the passkey once, says it signs the decisions and the baselines, an
             automaticPresenceSimulation: true,
         },
     });
+    // The page asks in its own dialog: every question is answered yes with a click, as the reader
+    // would, until `done` shows.
+    const asked = [];
+    const answerYesUntil = async (done) => {
+        const ask = page.locator("dialog.ask[open]");
+        for (;;) {
+            await ask.or(done).first().waitFor();
+            if (!(await ask.isVisible())) {
+                return;
+            }
+            asked.push(await ask.locator(".ask-text").innerText());
+            await ask.locator("#ask-yes").click();
+            await ask.waitFor({ state: "detached" });
+        }
+    };
     await page.goto(`${origin}/#token=${TOKEN}`);
     await page.getByRole("button", { name: "Register passkey" }).click();
-    await page.getByText(/^Passkey registered/).first().waitFor();
-    for (const file of ["button--primary.dark.png", "badge--default.light.png"]) {
-        const res = await fetch(`${origin}/api/decide`, {
-            method: "POST",
-            headers: { "x-review-token": TOKEN, origin, "content-type": "application/json" },
-            body: JSON.stringify({ id: "123", project: "compact-mantine", file, decision: "accept", reason: null }),
-        });
-        expect(res.status).toBe(200);
+    await answerYesUntil(page.getByText(/^Passkey registered/).first());
+
+    // Two images accepted with the A key, from the first one's tile on; the rest stay undecided.
+    await page.getByRole("button", { name: "Review", exact: true }).first().click();
+    await page.locator('.tile[data-file="button--primary.dark.png"]').click();
+    const status = () => page.locator("#status").textContent();
+    for (const n of [2, 3]) {
+        await page.locator("#stage[data-ready]").waitFor();
+        await page.keyboard.press("a");
+        await expect.poll(status).toMatch(new RegExp(`^Accepted #${n}\\.`));
     }
 
     await page.getByRole("button", { name: /^Finish #123/ }).click();
-    await page.locator(".finish-outcome h2", { hasText: /^Finished #123/ }).waitFor();
+    await answerYesUntil(page.locator(".finish-outcome h2", { hasText: /^Finished #123/ }));
 
     expect(asked.join("\n")).toContain(
-        "Your passkey signs your decisions and the baselines this Finish leaves on the branch, in one prompt (Face ID or a security key).",
+        "Your passkey signs this Finish's 2 decisions, in one prompt (Face ID or a security key).",
     );
     expect(await page.evaluate(() => globalThis.gets)).toBe(1);
     const files = git(r.remote, "show", "--name-only", "--format=", "feature").split("\n");
@@ -111,9 +116,9 @@ it("asks for the passkey once, says it signs the decisions and the baselines, an
     expect(more).toEqual([]);
     const st = JSON.parse(git(r.remote, "show", `feature:${file}`));
     expect(file).toBe(statementPath(APPROVALS, st));
-    expect(st.entries.map((e) => e.path)).toEqual([
-        "compact-mantine/badge--default.light.png",
-        "compact-mantine/button--primary.dark.png",
+    expect(st.entries.map((e) => [e.path, e.decision])).toEqual([
+        ["compact-mantine/button--primary.dark.png", "accept"],
+        ["compact-mantine/slider--sizes.png", "accept"],
     ]);
     const keys = JSON.parse(readFileSync(join(tmp, "state/passkeys-pending.json"), "utf8")).keys;
     expect(verifyApproval(st, keys, { origin })).toBeNull();

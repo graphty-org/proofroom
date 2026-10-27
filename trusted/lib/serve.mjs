@@ -828,10 +828,10 @@ export function createApp({
     /**
      * The accept commit each target's Finish was prepared with, and what it waits for: the
      * record's approval (`stage` "record"), the tree statement's ("tree"), or nothing more
-     * ("signed").
+     * ("signed"). `change` says the statement is a change statement accept.mjs built.
      * @type {Map<string, { stage: "record" | "tree" | "signed", challenge: string, commit: string,
      *     branch: string, record: string, recordBody: object, pushed: boolean, tree: boolean,
-     *     resign: boolean, statement?: object, now: string, work: object, digest: string,
+     *     change: boolean, resign: boolean, statement?: object, now: string, work: object, digest: string,
      *     expires: number }>}
      */
     const approvals = new Map();
@@ -3808,9 +3808,11 @@ export function createApp({
             }
             const { trusted } = await knownKeys();
             // A change statement signs exactly what this Finish decides, whatever is left undecided.
-            const unsigned = changeMode() ? null : signingProblem(t, work);
+            // This is only the guess of the last refresh: the format is decided below, by what
+            // prepareApproval built from the freshly fetched default branch.
+            const guess = changeMode() ? null : signingProblem(t, work);
             const here = trusted.filter((k) => k.rpId === rpId);
-            const keyless = prepareWithoutKey(t, work, { trusted, here, unsigned });
+            const keyless = prepareWithoutKey(t, work, { trusted, here, unsigned: guess });
             if (keyless) {
                 return keyless;
             }
@@ -3826,6 +3828,8 @@ export function createApp({
                     { error: "the earlier Finish's record is not on the branch tip any more: reload the page" },
                 ];
             }
+            // A tree statement is never signed over rejected or undecided images, whatever the guess.
+            const unsigned = prepared.statement ? null : signingProblem(t, work);
             // Signing an earlier Finish's record signs nothing else: the tree is a Finish's of its own.
             const tree = !unsigned && !resign;
             // The tree holds the record, so signing the tree signs the decisions too: one approval.
@@ -3837,6 +3841,7 @@ export function createApp({
             approvals.set(t.id, {
                 ...prepared,
                 stage: tree ? "tree" : "record",
+                change: Boolean(prepared.statement),
                 challenge,
                 statement,
                 tree,
@@ -3884,7 +3889,11 @@ export function createApp({
             if (body.digest !== undefined && body.digest !== work.digest) {
                 return [409, { error: CHANGED_SINCE }];
             }
-            const sign = !resign && (changeMode() || signingProblem(t, work) === null);
+            // A change statement finish-prepare built is signed as it is; anything else signs the
+            // tree only when the tree may be signed (a Finish of rejects alone signs nothing).
+            const p = approvals.get(t.id);
+            const signsChange = p?.change === true && p.digest === work.digest;
+            const sign = !resign && (signsChange || signingProblem(t, work) === null);
             const checked = await approvalOf(t, work, body, sign);
             if (checked.refused) {
                 return checked.refused;

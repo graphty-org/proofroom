@@ -1230,12 +1230,16 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
             `this repository has no id for its change statements: set "repositoryId" in the default branch's ${CONFIG_FILE} (docs/approval-format.md, "Repository")`,
         );
     }
-    const change = target.pr === null ? `branch:${branch}` : `pr:${target.pr}`;
+    // A seed's capture is of a default branch commit, which is on its pull request's base, and the
+    // pull request's id is not known before Finish opens it: no statement of it could ever count.
+    if (target.pr === null) {
+        throw new AcceptError(
+            "a capture of the default branch cannot be approved with change statements: accept these snapshots on a pull request's capture instead (docs/approval-format.md)",
+        );
+    }
+    const change = `pr:${target.pr}`;
     const entries = [...plan.entries, ...rejectEntries(rejects)].sort((a, b) => a.path.localeCompare(b.path));
-    const found =
-        target.pr === null
-            ? { ...(await acceptParent({ repo, target, net: input.net, config, rejects }, { base, branch, plan, fetch })), chain: [] }
-            : await changeParent(repo, config, { base, branch, plan, fetch, entries, change });
+    const found = await changeParent(repo, config, { base, branch, plan, fetch, entries, change });
     if (found.seed) {
         return { ...found.seed, statement: null };
     }
@@ -1255,10 +1259,13 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
     if (why) {
         throw new AcceptError(`this Finish's change statement is not valid (${why})`);
     }
-    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr === null ? "master" : target.pr}`);
+    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr}`);
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, found.parent]);
     try {
+        if (found.dead.length > 0) {
+            await git(tree, ["rm", "-q", "--", ...found.dead]);
+        }
         const local = previewsOf([...input.rejects, ...writes], target.pr);
         await writeAcceptCommit(input, { tree, plan, writes, body: null, local, statement: push ? statement : null });
         if (!push) {
@@ -1359,7 +1366,8 @@ async function differingFiles(repo, ref, plan, since) {
  * @param {string} repo the repository
  * @param {object} config the settings
  * @param {object} at the captured commit, the branch, the plan, the fetcher, the entries and the change
- * @returns {Promise<{ parent?: string, chain: object[], seed?: object }>} it
+ * @returns {Promise<{ parent?: string, chain: object[], dead: string[], seed?: object }>} it, and
+ *     the files of the change's statements the default branch's keys do not verify
  */
 async function changeParent(repo, config, at) {
     const { base, branch, plan, fetch, entries, change } = at;
@@ -1374,7 +1382,14 @@ async function changeParent(repo, config, at) {
             throw new AcceptError(`capture is stale, wait for CI: the branch has moved past the captured head (${why})`);
         }
     }
-    const chain = await statementsAt(repo, tip, config, change);
+    // Once the default branch holds a key, a statement it does not verify (one committed unsigned
+    // before the key landed) would fail the gate: this Finish removes it and decides afresh.
+    const keys = await keysAt(repo, ownRef(config.defaultBranch));
+    const all = await statementsAt(repo, tip, config, change);
+    const docOf = (st) => Object.fromEntries(Object.entries(st).filter(([k]) => k !== "file" && k !== "id"));
+    const verified = (st) => keys.length === 0 || verifyApproval(docOf(st), keys) === null;
+    const chain = all.filter(verified);
+    const dead = all.filter((st) => !verified(st)).map((st) => st.file);
     const newest = chain.length > 0 ? newestDecisions(chain) : null;
     const held =
         newest !== null &&
@@ -1384,10 +1399,10 @@ async function changeParent(repo, config, at) {
             const d = newest.decisions.get(e.path);
             return d !== undefined && !("conflict" in d) && sameDecision(d, e);
         });
-    if (held) {
-        return { chain, seed: { commit: tip, branch, record: null, alreadyFinished: true } };
+    if (held && dead.length === 0) {
+        return { chain, dead, seed: { commit: tip, branch, record: null, alreadyFinished: true } };
     }
-    return { parent: tip, chain };
+    return { parent: tip, chain, dead };
 }
 
 /**

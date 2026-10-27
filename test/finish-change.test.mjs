@@ -12,11 +12,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as oldGate from "./fixtures/old-gate/trusted/gate.mjs";
 import { approvalProblems } from "../trusted/gate.mjs";
+import { finish } from "../trusted/lib/accept.mjs";
 import { PASSKEYS_FILE } from "../trusted/lib/approval.mjs";
 import { statementId, statementPath } from "../trusted/lib/change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "../trusted/lib/config.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { FIXTURE_CONFIG, git, makeRepo, onePr, until } from "./helpers.mjs";
+import { copyFixture, FIXTURE_CONFIG, git, makeRepo, onePr, until } from "./helpers.mjs";
 import { approve, makeKey, passkeysJson } from "./passkey-vectors.mjs";
 
 const TOKEN = "t".repeat(43);
@@ -355,6 +356,60 @@ describe("Finish in change mode", () => {
         expect(st.approval).toBeUndefined();
         expect(filesAt(r, "feature", `${BASELINES}/reviews`)).toEqual([]);
         expect(gateProblems(r, { keys: null })).toEqual([]);
+    });
+
+    it("posts a Finish that only rejects, with no passkey asked and no statement written", async () => {
+        const r = changeRepo();
+        const s = await start(r);
+        await decide(s, [["compact-mantine", BUTTON, "reject", "the border is gone"]]);
+        const { prepared, job } = await finishOnce(s);
+        expect(prepared.required).toBe(false);
+        expect(job.error).toBeNull();
+        expect(job.result).toMatchObject({ commit: null, rejects: 1, commentError: null });
+        expect(s.touches).toBe(0);
+        expect(git(r.remote, "rev-parse", "feature")).toBe(r.head);
+        expect(filesAt(r, "feature", APPROVALS)).toEqual([]);
+    });
+
+    it("replaces a statement committed unsigned once a key lands, with one touch, and the gate passes", async () => {
+        const r = repoWith({ approvalFormat: "change", repositoryId: REPO_ID });
+        const before = await start(r);
+        await decide(before, ALL);
+        expect((await finishOnce(before)).job.error).toBeNull();
+        expect(statementsOn(r)[0].approval).toBeUndefined();
+        commitAndPush(r.repo, { [PASSKEYS_FILE]: passkeysJson(KEY) }, "key");
+        expect(gateProblems(r)).not.toEqual([]);
+
+        const s = await start(r);
+        await decide(s, ALL);
+        const { prepared, job } = await finishOnce(s);
+        expect(prepared).toMatchObject({ required: true, signs: "change" });
+        expect(job.error).toBeNull();
+        expect(s.touches).toBe(1);
+        const [st, ...more] = statementsOn(r);
+        expect(more).toEqual([]);
+        expect(st.previous).toBeNull();
+        expect(st.approval).toBeDefined();
+        expect(gateProblems(r)).toEqual([]);
+    });
+
+    it("refuses a seed, whose statement no gate could count, and pushes nothing", async () => {
+        const r = changeRepo();
+        const at = { commit: r.master, headSha: null, pr: null };
+        const projects = { "compact-mantine": copyFixture("compact-mantine", join(r.dir, "m/compact-mantine"), at) };
+        const before = git(r.remote, "for-each-ref", "--format=%(refname)");
+        await expect(
+            finish({
+                repo: r.repo,
+                gh: async () => "{}",
+                target: { pr: null, branch: null },
+                projects,
+                decisions: [{ project: "compact-mantine", file: BADGE, decision: "accept", reason: null }],
+                config: FIXTURE_CONFIG,
+                repository: REPO_ID,
+            }),
+        ).rejects.toThrow("a capture of the default branch cannot be approved with change statements");
+        expect(git(r.remote, "for-each-ref", "--format=%(refname)")).toBe(before);
     });
 });
 
