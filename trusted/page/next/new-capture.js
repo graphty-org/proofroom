@@ -208,6 +208,10 @@ export async function newCapture(app, prefill = null) {
     start.focus();
 }
 
+// A change named as its row is, or as the server's refusal names it (a number, or under plain git
+// the remote branch).
+const changeName = (app, c) => c.label ?? c.remote ?? `${wordsOf(app.list).numberPrefix}${c.pr}`;
+
 /**
  * The sheet's second step for a change from the code host captured on this machine: it names the
  * change and its author, Capture here [Enter] and Cancel [Esc] (to the sheet as it was).
@@ -225,7 +229,7 @@ export function confirmChange(app, req) {
             el(
                 "p",
                 { class: "cbody" },
-                `This builds and runs the code of ${c.label} by ${c.author ?? "an unknown author"} on this computer.`,
+                `This builds and runs the code of ${changeName(app, c)} by ${c.author ?? "an unknown author"} on this computer.`,
             ),
             el("div", { class: "foot" }, control(app, "capback", { zone: "box" }), ok),
         ),

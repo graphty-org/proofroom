@@ -317,7 +317,7 @@ export function captureQueue({
         }
         if (!confirmed) {
             throw new CaptureRefused(428, `capturing ${name} here builds and runs its code: confirm it first`, {
-                change: { pr: change.pr, author: change.author },
+                change: { pr: change.pr, author: change.author, ...(change.pr === null && { remote: change.remote }) },
             });
         }
     }
