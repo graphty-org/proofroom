@@ -225,6 +225,11 @@ changes every capture with text, which is one re-baseline.
   batch's changes. Every capture must still equal a baseline, so a batch passes only on images
   already approved on its pull requests.
 
+The capture job also makes the pictures the review page's list shows (WebP, a few KB each, drawn
+by the same Chromium that took the captures) and records which browser drew them, so the artifact
+carries them and the review page shows every picture as soon as it is downloaded. See
+[Capture and compare](docs/capture-and-compare.md).
+
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
 rather capture inside an existing CI workflow (to reuse a Storybook your build job already made),
