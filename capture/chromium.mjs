@@ -67,37 +67,33 @@ async function newContext(browser) {
 }
 
 /**
- * Loads the preview once and reads every story's `parameters.chromatic`, plus what the page
- * says about its renderer.
+ * Loads one page, waits until the story source says it is ready, and reads what the story source
+ * asks of it (Storybook's preview and its stories' parameters), plus what the page says about the
+ * renderer.
  * @param {import("playwright").Browser} browser the browser
- * @param {string} base the Storybook's base URL
- * @returns {Promise<{ params: Record<string, { chromatic?: object }>, renderer: string | null,
- *     gpu: boolean }>} parameters by story id
+ * @param {string} url the page
+ * @param {{ ready: () => unknown, read: () => unknown }} source in the page: whether it is ready,
+ *     and what to read once it is (plain data)
+ * @returns {Promise<{ value: any, renderer: string | null, gpu: boolean }>} what was read, the
+ *     WebGL renderer and whether WebGPU is there
  */
-export async function extract(browser, base) {
+export async function probe(browser, url, { ready, read }) {
     const context = await newContext(browser);
     try {
         const page = await context.newPage();
-        await page.goto(`${base}iframe.html`, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        await page.waitForFunction(() => /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.storyStoreValue, null, {
-            timeout: RENDER_TIMEOUT,
-        });
-        return await page.evaluate(async () => {
-            const preview = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__;
-            const all = await preview.extract();
-            const params = {};
-            for (const [id, story] of Object.entries(all)) {
-                // Through JSON so functions and class instances never cross into Node.
-                params[id] = { chromatic: JSON.parse(JSON.stringify(story.parameters?.chromatic ?? {})) };
-            }
+        await page.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
+        await page.waitForFunction(ready, null, { timeout: RENDER_TIMEOUT });
+        const value = await page.evaluate(read);
+        const facts = await page.evaluate(() => {
             const gl = document.createElement("canvas").getContext("webgl");
             const info = gl?.getExtension("WEBGL_debug_renderer_info");
             let renderer = null;
             if (gl) {
                 renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
             }
-            return { params, renderer, gpu: "gpu" in navigator };
+            return { renderer, gpu: "gpu" in navigator };
         });
+        return { value, ...facts };
     } finally {
         await context.close();
     }
@@ -108,13 +104,16 @@ export async function extract(browser, base) {
  * @param {import("playwright").Browser} browser the browser
  * @param {string} url the story's full URL
  * @param {{ delay: number, waitFor: { selector: string, method: string, failOnConsole: string |
- *     null } | null }} options the story's delay, and what to wait for after the render: the
- *     promise `method` returns on every element matching `selector`, failing the story when a
- *     console line contains `failOnConsole`
+ *     null } | null, rendered: { phase: () => string | false, failed: string[], error: () => string[] } }} options
+ *     the story's delay; what to wait for after the render: the promise `method` returns on every
+ *     element matching `selector`, failing the story when a console line contains
+ *     `failOnConsole`; and how the story source tells, in the story's page, that it drew
+ *     (`phase` is false until it ended, then how; `failed` lists the endings that are failures,
+ *     and `error` reads what the page shows about one)
  * @returns {Promise<{ png: Buffer | null, reason: string | null, console: string[] }>} the PNG,
  *     or a reason it failed; a failure's console holds the rest of its message and any stack
  */
-export async function shoot(browser, url, { delay, waitFor }) {
+export async function shoot(browser, url, { delay, waitFor, rendered }) {
     const context = await newContext(browser);
     const lines = [];
     const fail = (reason) => {
@@ -150,24 +149,10 @@ export async function shoot(browser, url, { delay, waitFor }) {
         const frame = await element.contentFrame();
         await frame.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
         const phase = await frame
-            .waitForFunction(
-                () => {
-                    if (document.body.classList.contains("sb-show-errordisplay")) {
-                        return "errored";
-                    }
-                    const p = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.currentRender?.phase;
-                    return ["completed", "afterEach", "finished", "errored", "aborted"].includes(p) && p;
-                },
-                null,
-                { timeout: RENDER_TIMEOUT },
-            )
+            .waitForFunction(rendered.phase, null, { timeout: RENDER_TIMEOUT })
             .then((h) => h.jsonValue());
-        if (phase === "errored" || phase === "aborted") {
-            // Storybook's error screen holds the thrown message and its stack (a play function's
-            // failed expect included).
-            const shown = await frame.evaluate(() =>
-                ["error-message", "error-stack"].map((id) => document.getElementById(id)?.textContent?.trim() ?? ""),
-            );
+        if (rendered.failed.includes(phase)) {
+            const shown = await frame.evaluate(rendered.error);
             return fail([`story render ${phase}`, ...shown].join("\n"));
         }
         // A web font the story uses is fetched only once text needs it, which can be after the

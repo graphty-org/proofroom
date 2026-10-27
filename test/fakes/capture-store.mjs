@@ -12,8 +12,9 @@ import { join } from "node:path";
  * @param {object} [state] what it holds
  * @param {object[]} [state.runs] CI runs: { id, attempt, status, conclusion, url, headSha, updatedAt }
  * @param {Record<number, Record<string, object>>} [state.jobs] each run's capture job by project
- * @param {Record<number, Record<string, string>>} [state.sets] each run's capture set by project:
- *     the directory holding its results.json and images
+ * @param {Record<number, Record<string, string | { attempt: number, write: (dir: string) => void }>>} [state.sets]
+ *     each run's capture set by project: the directory holding its results.json and images, or
+ *     the attempt that captured it and what writes it into a directory
  * @returns {import("../../trusted/lib/adapters/index.mjs").CaptureStore & { calls: string[] }} the adapter
  */
 export function fakeCaptureStore({ runs = [], jobs = {}, sets = {} } = {}) {
@@ -32,13 +33,13 @@ export function fakeCaptureStore({ runs = [], jobs = {}, sets = {} } = {}) {
         return structuredClone(r);
     };
     const list = (run) =>
-        Object.entries(sets[run.id] ?? {}).map(([project, dir]) => ({
+        Object.entries(sets[run.id] ?? {}).map(([project, set]) => ({
             project,
-            attempt: run.attempt,
+            attempt: typeof set === "string" ? run.attempt : set.attempt,
             bytes: 1000,
             expired: false,
             expiresAt: null,
-            ref: dir,
+            ref: set,
         }));
     return {
         name: "fake",
@@ -64,11 +65,15 @@ export function fakeCaptureStore({ runs = [], jobs = {}, sets = {} } = {}) {
             for (const project of projects) {
                 const s = listed.find((x) => x.project === project);
                 if (s) {
-                    const to = join(dir, `${run.id}-${run.attempt}`, project);
+                    const to = join(dir, `${run.id}-${s.attempt}`, project);
                     if (!existsSync(join(to, "results.json"))) {
-                        cpSync(s.ref, to, { recursive: true });
+                        if (typeof s.ref === "string") {
+                            cpSync(s.ref, to, { recursive: true });
+                        } else {
+                            s.ref.write(to);
+                        }
                     }
-                    out[project] = { dir: to, attempt: run.attempt, bytes: s.bytes };
+                    out[project] = { dir: to, attempt: s.attempt, bytes: s.bytes };
                 } else {
                     out[project] = null;
                 }

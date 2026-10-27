@@ -7,7 +7,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startApp } from "./faults.mjs";
-import { fakeGh, job, makeRepo, onePr } from "./helpers.mjs";
+import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
+import { job, makeRepo } from "./helpers.mjs";
 
 let s = null;
 afterEach(async () => {
@@ -18,7 +19,7 @@ afterEach(async () => {
 describe("the changes list answer", () => {
     it("names the repository and when each pull request's run was last updated", async () => {
         const r = makeRepo();
-        s = await startApp(r, { gh: onePr()(r) });
+        s = await startApp(r, { ...onePrFakes()(r) });
         const { status, body } = await s.api("GET", "/api/prs");
         expect(status).toBe(200);
         // Named after origin (remote.git), not the checkout's folder.
@@ -30,7 +31,7 @@ describe("the changes list answer", () => {
     it("gives no time for a pull request CI never ran on", async () => {
         const r = makeRepo();
         s = await startApp(r, {
-            gh: fakeGh({
+            ...fakeAdapters({
                 prs: [{ number: 7, head: r.head, branch: "waiting" }],
                 jobs: { 1000: [job("compact-mantine")] },
             }),

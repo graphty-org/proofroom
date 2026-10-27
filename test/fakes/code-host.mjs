@@ -12,13 +12,13 @@ import { GITHUB_VOCABULARY } from "../../trusted/lib/adapters/github.mjs";
  * @param {object[]} [state.changes] the open changes, as listChanges returns them
  * @param {string | null} [state.login] whoAmI's answer
  * @param {string | null} [state.repositoryId] repositoryId's answer
+ * @param {object[]} [state.posted] receives every write
  * @returns {import("../../trusted/lib/adapters/index.mjs").CodeHost & { calls: string[], posted: object[],
  *     opened: { number: number, html_url: string, branch: string, state: string, body: string }[] }}
  *     the adapter, with every call by name, every write, and the changes it opened
  */
-export function fakeCodeHost({ changes = [], login = "owner", repositoryId = "fake:1" } = {}) {
+export function fakeCodeHost({ changes = [], login = "owner", repositoryId = "fake:1", posted = [] } = {}) {
     const calls = [];
-    const posted = [];
     const opened = [];
     const call =
         (name, fn) =>

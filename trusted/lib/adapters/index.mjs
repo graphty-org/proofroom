@@ -53,7 +53,10 @@ import { localFolderStore } from "./local-folder.mjs";
  */
 
 /**
- * @typedef {ReturnType<typeof localFolderStore>} LocalStore capture sets in a folder on this machine
+ * @typedef {ReturnType<typeof localFolderStore>} LocalStore capture sets in a folder on this machine:
+ *     the local previews of a change and `serve --results`. It is not a CaptureStore and the config
+ *     cannot name it: it has no CI runs or jobs, and its sets are read where they are, never fetched.
+ *     The server reads it beside the capture store the config names.
  */
 
 /**

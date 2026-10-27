@@ -9,7 +9,8 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { startApp } from "../faults.mjs";
-import { makeRepo, onePr } from "../helpers.mjs";
+import { onePrFakes } from "../fakes/adapters.mjs";
+import { makeRepo } from "../helpers.mjs";
 import { COVERS } from "./covers.mjs";
 import { NOW } from "./fixtures.mjs";
 import { TOKEN, fiftyChanges, listAnswer, message, openNext, project, rowsAnswer, target } from "./page-kit.mjs";
@@ -541,7 +542,7 @@ describe("addresses", () => {
 describe("on the real server", () => {
     it("lists the server's pull request and opens it into its snapshots", async () => {
         const r = makeRepo();
-        const s = await startApp(r, { gh: onePr()(r), token: TOKEN });
+        const s = await startApp(r, { ...onePrFakes()(r), token: TOKEN });
         const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
         try {
             page.setDefaultTimeout(0);

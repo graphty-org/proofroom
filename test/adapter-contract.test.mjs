@@ -98,6 +98,12 @@ describe("the adapters are the only way out", () => {
             "trusted/lib/adapters/github.mjs",
             "trusted/lib/github.mjs",
         ]);
+        // Nor calls a gh runner itself, or starts gh by name (exec("gh", ...), spawn("gh", ...)).
+        const raw = modules()
+            .filter(([path]) => path !== "trusted/lib/github.mjs" && !path.startsWith("trusted/lib/adapters/"))
+            .filter(([, text]) => /\bgh\(|\(\s*["'`]gh["'`]/.test(text))
+            .map(([path]) => path);
+        expect(raw).toEqual([]);
         const playwright = modules()
             .filter(([, text]) => /^import [^;]*from "playwright"|await import\("playwright"\)/m.test(text))
             .map(([path]) => path);
@@ -428,10 +434,18 @@ describe.each([
         const { renderer, good, bad, done } = await make();
         const browser = await renderer.open();
         try {
-            const shot = await renderer.shoot(browser, good, { delay: 0, waitFor: null });
+            const shot = await renderer.shoot(browser, good, {
+                delay: 0,
+                waitFor: null,
+                rendered: storybookSource.rendered,
+            });
             expect(shot.reason).toBeNull();
             expect(PNG.sync.read(shot.png).width).toBeGreaterThan(0);
-            const failed = await renderer.shoot(browser, bad, { delay: 0, waitFor: null });
+            const failed = await renderer.shoot(browser, bad, {
+                delay: 0,
+                waitFor: null,
+                rendered: storybookSource.rendered,
+            });
             expect(failed.png).toBeNull();
             expect(failed.reason).toMatch(/errored/);
         } finally {

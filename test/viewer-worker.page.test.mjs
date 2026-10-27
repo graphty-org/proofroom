@@ -13,7 +13,8 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { startApp } from "./faults.mjs";
-import { FIXTURE, isolateGit, makeRepo, onePr } from "./helpers.mjs";
+import { onePrFakes } from "./fakes/adapters.mjs";
+import { FIXTURE, isolateGit, makeRepo } from "./helpers.mjs";
 
 const TOKEN = "w".repeat(43);
 const CLI = new URL("../trusted/cli.mjs", import.meta.url).pathname;
@@ -63,7 +64,7 @@ const expose = (urls) =>
 
 async function serve(options = {}) {
     const r = makeRepo();
-    s = await startApp(r, { gh: onePr()(r), token: TOKEN, ...options });
+    s = await startApp(r, { ...onePrFakes()(r), token: TOKEN, ...options });
     return s;
 }
 
@@ -232,7 +233,9 @@ describe("prefetch", () => {
             // Focus on (O), kept for the next visit: there #2 opens cold with it on.
             await page.keyboard.press("o");
             await expect
-                .poll(() => page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:options")).focus))
+                .poll(() =>
+                    page.evaluate(() => JSON.parse(globalThis.localStorage.getItem("visual-review:options")).focus),
+                )
                 .toBe(true);
             await page.close();
             await visit();

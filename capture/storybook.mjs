@@ -1,7 +1,9 @@
 /**
  * The story source: a built Storybook. `build()` runs the project's build command, `stories()`
  * lists the story ids in its index.json, `url()` is one story's iframe URL, and `serve()` serves
- * the built directory on 127.0.0.1 for the renderer to open.
+ * the built directory on 127.0.0.1 for the renderer to open. `preview` and `rendered` are what
+ * the renderer runs in Storybook's pages: how to read every story's parameters, and how to tell
+ * that a story has drawn.
  */
 
 import { execFile } from "node:child_process";
@@ -9,6 +11,8 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { promisify } from "node:util";
+
+/* global document -- read only inside the page */
 
 /**
  * The iframe URL of one story, relative to the Storybook root. `chromatic=true` makes
@@ -114,3 +118,41 @@ export const stories = async (dir) => storyIds(JSON.parse(await readFile(join(di
  * @returns {string} the URL
  */
 export const url = (base, id, globals) => base + storyUrl(id, globals);
+
+/**
+ * Storybook's preview page, for the renderer's probe: the page, whether it has loaded its stories,
+ * and every story's `parameters.chromatic` (through JSON, so functions and class instances never
+ * cross into Node).
+ */
+export const preview = Object.freeze({
+    url: (base) => `${base}iframe.html`,
+    ready: () => /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.storyStoreValue,
+    read: async () => {
+        const all = await /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__.extract();
+        const params = {};
+        for (const [id, story] of Object.entries(all)) {
+            params[id] = {
+                chromatic: JSON.parse(JSON.stringify(/** @type {any} */ (story).parameters?.chromatic ?? {})),
+            };
+        }
+        return params;
+    },
+});
+
+/**
+ * How the renderer tells, in a story's page, that Storybook drew it: `phase` is false until the
+ * render ended, then how it ended ("errored" while Storybook's error screen shows); `failed` are
+ * the endings that fail the story; `error` reads the error screen's message and stack (a play
+ * function's failed expect included).
+ */
+export const rendered = Object.freeze({
+    phase: () => {
+        if (document.body.classList.contains("sb-show-errordisplay")) {
+            return "errored";
+        }
+        const p = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.currentRender?.phase;
+        return ["completed", "afterEach", "finished", "errored", "aborted"].includes(p) && p;
+    },
+    failed: ["errored", "aborted"],
+    error: () => ["error-message", "error-stack"].map((id) => document.getElementById(id)?.textContent?.trim() ?? ""),
+});

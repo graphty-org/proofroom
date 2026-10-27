@@ -15,7 +15,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { copyFixture, fakeGh, FIXTURE, FIXTURE_CONFIG, job, makeRepo, onePr } from "./helpers.mjs";
+import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
+import { copyFixture, FIXTURE, FIXTURE_CONFIG, job, makeRepo, onePr } from "./helpers.mjs";
 
 // Every directory read, by any code in this process.
 const dirReads = vi.hoisted(() => ({ count: 0 }));
@@ -65,12 +66,13 @@ afterEach(async () => {
 
 /**
  * Starts the app on a random port of 127.0.0.1, over the fixture as pull request #123.
- * @param {object} [options] passed to createApp, but `ghOf`
+ * @param {object} [options] passed to createApp, but `ghOf` and `fakes`
  * @param {(r: object) => Function} [options.ghOf] makes the gh runner for the repository
+ * @param {(r: object) => object} [options.fakes] makes the code host and capture store instead
  * @returns {Promise<object>} `get(path, headers)`, `post(path, body, headers)`, the origin, the
  *     app and its tmp directory
  */
-async function start({ ghOf = onePr(), ...options } = {}) {
+async function start({ ghOf, fakes = onePrFakes(), ...options } = {}) {
     const r = makeRepo();
     const server = createServer();
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -83,7 +85,7 @@ async function start({ ghOf = onePr(), ...options } = {}) {
         config: FIXTURE_CONFIG,
         token: TOKEN,
         origin,
-        gh: ghOf(r),
+        ...(ghOf ? { gh: ghOf(r) } : fakes(r)),
         ...options,
     });
     server.on("request", app);
@@ -237,7 +239,10 @@ describe("serve: images and pictures by their content", () => {
         });
         const status = join(previews, "123", "status.json");
         writeFileSync(status, JSON.stringify({ state: "done" }));
-        const s = await start({ ghOf: () => fakeGh({ prs: [{ number: 123, head: r.head, branch: "feature" }] }), previews });
+        const s = await start({
+            fakes: () => fakeAdapters({ prs: [{ number: 123, head: r.head, branch: "feature" }] }),
+            previews,
+        });
         const token = { "x-review-token": TOKEN };
         expect((await s.get(`/api/blob/${BUTTON.capture}`, token)).status).toBe(200);
         // visual-preview.sh captures the pull request again: the button's image is another one.

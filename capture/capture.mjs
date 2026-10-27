@@ -29,8 +29,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { threadId } from "node:worker_threads";
 
-import { CLOCK_START, close, extract, open as openBrowser, SCALE, shoot } from "./chromium.mjs";
-import { serve, stories as storiesIn, url as storyUrlAt } from "./storybook.mjs";
+import { CLOCK_START, close, open as openBrowser, probe, SCALE, shoot } from "./chromium.mjs";
+import { preview, rendered, serve, stories as storiesIn, url as storyUrlAt } from "./storybook.mjs";
 
 import { pngSize, sha256 } from "../trusted/lib/compare.mjs";
 import {
@@ -179,7 +179,7 @@ async function snapshotsOf({ project, ids, params, baselines, base }) {
  * @returns {Promise<object>} its `image` capture line, with the PNG as `bytes`, or its `failed` line
  */
 async function shootSnapshot(browser, { common, url, delay }, waitFor) {
-    const shot = await shoot(browser, url, { delay, waitFor });
+    const shot = await shoot(browser, url, { delay, waitFor, rendered });
     if (!shot.png) {
         return {
             type: "failed",
@@ -256,7 +256,7 @@ export function openCapture({
             const browser = await openBrowser({ env: { ...process.env, ...fontEnv, TZ: "UTC" } });
             const all = await storiesIn(sb);
             const ids = all.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
-            const { params } = await extract(browser, base);
+            const { value: params } = await probe(browser, preview.url(base), preview);
             return {
                 server,
                 browser,
@@ -365,7 +365,7 @@ export function capture({
             return line;
         };
         try {
-            const { params, renderer, gpu } = await extract(browsers[0], base);
+            const { value: params, renderer, gpu } = await probe(browsers[0], preview.url(base), preview);
             const excluded = [];
             for (const snapshot of await snapshotsOf({ project, ids, params, baselines, base })) {
                 if (snapshot.excluded) {
