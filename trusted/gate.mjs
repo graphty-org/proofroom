@@ -624,8 +624,21 @@ export async function contributorsOf({
     fetchJson,
     git = gitIn(cwd),
 }) {
-    const commits = changeCommits(git, { base, head, baselines, approvals });
     const out = new Map();
+    let commits;
+    try {
+        commits = changeCommits(git, { base, head, baselines, approvals });
+    } catch (err) {
+        for (const change of changes) {
+            out.set(change, {
+                logins: new Set(),
+                emails: new Set(),
+                signers: new Set(),
+                problems: [`could not read who contributed to ${change}: ${err.message}`],
+            });
+        }
+        return out;
+    }
     const github = env.GITHUB_ACTIONS === "true";
     const signed = github ? null : sshSigners(git, base, head, keys);
     for (const change of changes) {
@@ -667,6 +680,18 @@ export async function contributorsOf({
                 if (v?.verified !== true) {
                     who.problems.push(
                         `commit ${c.sha.slice(0, 12)} is not signed, or GitHub does not verify its signature (${v?.reason ?? "unsigned"})`,
+                    );
+                }
+            }
+            // Every counted commit the gate checks must be one GitHub lists, but for the merge
+            // result CI builds (the base, then the pull request's head).
+            const listed = new Set(pr.commits.map((c) => c.sha));
+            const prHead = pr.commits.at(-1)?.sha;
+            for (const [sha, c] of commits) {
+                const mergeResult = c.parents.length === 2 && c.parents[1] === prHead && !commits.has(c.parents[0]);
+                if (c.counts && !listed.has(sha) && !mergeResult) {
+                    who.problems.push(
+                        `commit ${sha.slice(0, 12)} is in this checkout but GitHub does not list it in ${change}`,
                     );
                 }
             }

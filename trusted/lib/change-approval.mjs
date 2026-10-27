@@ -365,7 +365,18 @@ export function changeApprovals({ base, head, baselines, approvals, keys, reposi
  * @returns {string[]} the blob ids
  */
 function historyOf(git, base, approvals) {
-    const parts = git(["log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", "--full-history", base, "--", `${approvals}/`])
+    const parts = git([
+        "log",
+        "--format=",
+        "--raw",
+        "-z",
+        "--no-abbrev",
+        "--no-renames",
+        "--full-history",
+        base,
+        "--",
+        `${approvals}/`,
+    ])
         .toString("utf8")
         .split("\0");
     const ids = new Set();
@@ -568,13 +579,21 @@ function decisionProblem(found, { full, b, h }) {
     return `${full}: the head holds another file than the one approved; review it again`;
 }
 
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const hasControl = (text) => [...text].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f);
+
 /**
- * The commits of a change, from one `git log` of `base..head` and one batch read of the statements
- * they add, each with its parents and its author and committer e-mails, and whether it counts as
- * a contribution. Two kinds do not: the tool's own commit (Finish's), recognized by what it
- * changes, never by who made it -- it adds one statement and changes nothing but the baseline
- * files that statement's entries name -- and a merge that adds nothing of its own (every file is
- * one parent's, as in a clean merge of the default branch or a merge result CI builds).
+ * The commits of a change, each with its parents and its author and committer e-mails, and
+ * whether it counts as a contribution. Two kinds do not: the tool's own commit (Finish's),
+ * recognized by what it changes, never by who made it -- it adds one statement and changes nothing
+ * but the baseline files that statement's entries name -- and a merge that adds nothing of its own
+ * (every file is one parent's, as in a clean merge of the default branch or a merge result CI
+ * builds).
+ *
+ * The commits and their parents come from `git rev-list --parents`, which prints nothing a
+ * contributor chooses; the files and the e-mails each from their own `git log`, whose output is
+ * checked against that list, so an e-mail or a file name holding a separator cannot invent a
+ * commit or hide one. Statements are read in one batch.
  * @param {(args: string[], input?: string) => Buffer} git the runner
  * @param {object} at what to read
  * @param {string} at.base the base
@@ -582,27 +601,23 @@ function decisionProblem(found, { full, b, h }) {
  * @param {string} at.baselines the baselines directory
  * @param {string} at.approvals the approvals directory
  * @returns {Map<string, { counts: boolean, parents: string[], emails: string[] }>} by commit
+ * @throws {Error} when git's output does not match the commit list, or an e-mail holds a control character
  */
 export function changeCommits(git, { base, head, baselines, approvals }) {
-    const text = git([
-        "log",
-        "--format=%x01%H %ae %ce%x02%P",
-        "--name-only",
-        "-z",
-        "--no-renames",
-        "--diff-merges=combined",
-        `${base}..${head}`,
-    ]).toString("utf8");
+    const range = `${base}..${head}`;
+    const parentsOf = new Map();
+    for (const line of git(["rev-list", "--parents", range]).toString("utf8").split("\n").filter(Boolean)) {
+        const [sha, ...parents] = line.split(" ");
+        parentsOf.set(sha, parents);
+    }
+    const filesOf = commitFiles(git, range, parentsOf);
+    const emailsOf = commitEmails(git, range, parentsOf);
     const commits = new Map();
     const stated = new Map();
-    for (const record of text.split("\x01").slice(1)) {
-        const [line, ...rest] = record.split("\0");
-        const [who, parentList] = line.split("\x02");
-        const [sha, ...emails] = who.split(" ");
-        const parents = parentList.split(" ").filter(Boolean);
-        const files = rest.map((f) => f.replace(/^\n/, "")).filter(Boolean);
+    for (const [sha, parents] of parentsOf) {
+        const files = filesOf.get(sha);
         const added = files.filter((f) => f.startsWith(`${approvals}/`) && f.slice(approvals.length + 1).includes("/"));
-        commits.set(sha, { counts: !(parents.length > 1 && files.length === 0), parents, emails: emails.filter(Boolean) });
+        commits.set(sha, { counts: !(parents.length > 1 && files.length === 0), parents, emails: emailsOf.get(sha) });
         if (added.length === 1 && parents.length === 1) {
             stated.set(sha, { file: added[0], files });
         }
@@ -618,6 +633,86 @@ export function changeCommits(git, { base, head, baselines, approvals }) {
         }
     }
     return commits;
+}
+
+/**
+ * Takes one commit of a `git log` that names it, refusing one the commit list does not hold or
+ * that the log names twice.
+ * @param {Map<string, any>} seen what the log named so far
+ * @param {string} sha the commit the log names
+ * @param {Map<string, string[]>} parentsOf the commit list
+ * @param {string} range the range
+ */
+function logCommit(seen, sha, parentsOf, range) {
+    if (!SHA.test(sha) || !parentsOf.has(sha) || seen.has(sha)) {
+        throw new Error(`git log of ${range} names a commit its commit list does not hold once`);
+    }
+}
+
+/**
+ * The files each commit changes (a merge's: what no parent has), from one `git log`.
+ * @param {(args: string[]) => Buffer} git the runner
+ * @param {string} range the range
+ * @param {Map<string, string[]>} parentsOf the commit list
+ * @returns {Map<string, string[]>} by commit
+ */
+function commitFiles(git, range, parentsOf) {
+    const text = git([
+        "log",
+        "--format=%x01%H",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--diff-merges=combined",
+        range,
+    ]).toString("utf8");
+    const out = new Map();
+    let files = null;
+    for (const raw of text.split("\0")) {
+        const token = raw.replace(/^\n/, "");
+        if (token.startsWith("\x01")) {
+            const sha = token.slice(1);
+            logCommit(out, sha, parentsOf, range);
+            files = [];
+            out.set(sha, files);
+        } else if (token && files) {
+            files.push(token);
+        } else if (token) {
+            throw new Error(`git log of ${range} names a file before any commit`);
+        }
+    }
+    if (out.size !== parentsOf.size) {
+        throw new Error(`git log of ${range} leaves out a commit of its commit list`);
+    }
+    return out;
+}
+
+/**
+ * Each commit's author and committer e-mails, from one `git log`.
+ * @param {(args: string[]) => Buffer} git the runner
+ * @param {string} range the range
+ * @param {Map<string, string[]>} parentsOf the commit list
+ * @returns {Map<string, string[]>} by commit
+ */
+function commitEmails(git, range, parentsOf) {
+    const text = git(["log", "--format=%x01%H%x00%ae%x00%ce", range]).toString("utf8");
+    const out = new Map();
+    for (const record of text.split("\x01").slice(1)) {
+        const fields = record.replace(/\n$/, "").split("\0");
+        if (fields.length !== 3) {
+            throw new Error(`git log of ${range} prints a commit whose e-mails do not parse`);
+        }
+        const [sha, ...emails] = fields;
+        logCommit(out, sha, parentsOf, range);
+        if (emails.some(hasControl)) {
+            throw new Error(`commit ${sha.slice(0, 12)} carries an e-mail address holding a control character`);
+        }
+        out.set(sha, emails.filter(Boolean));
+    }
+    if (out.size !== parentsOf.size) {
+        throw new Error(`git log of ${range} leaves out a commit of its commit list`);
+    }
+    return out;
 }
 
 /**

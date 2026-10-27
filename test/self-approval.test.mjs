@@ -154,7 +154,8 @@ const refused = (file, who) =>
  * @returns {{ fetchJson: (path: string) => Promise<any>, asked: string[] }} the getter, and what it was asked
  */
 function github(r, { opener = "bob", commit = () => ({}) }) {
-    const shas = git(r.repo, "rev-list", "master..pr").split("\n").filter(Boolean);
+    // Oldest first, as GitHub lists them.
+    const shas = git(r.repo, "rev-list", "--reverse", "master..pr").split("\n").filter(Boolean);
     const asked = [];
     const fetchJson = async (path) => {
         asked.push(path);
@@ -290,8 +291,26 @@ describe("the self-approval rule, plain git", () => {
             expect(result.self).toEqual([]);
             return calls;
         };
-        expect(await counted(1)).toBe(3);
-        expect(await counted(6)).toBe(3);
+        expect(await counted(1)).toBe(5);
+        expect(await counted(6)).toBe(5);
+    });
+
+    it("fails closed on an e-mail that would forge the commit list", async () => {
+        // The e-mail holds the separators of a one-line log: a fake merge with no files, then a made-up commit.
+        const r = repoWith();
+        commitAs(r, { "src.txt": "code" }, { as: people.alice, email: "a@x\x02P1 P2\x01deadbeef", signed: false });
+        finishAs(r, people.alice);
+        const forged =
+            "could not read who contributed to pr:7: git log of master..pr prints a commit whose e-mails do not parse";
+        expect((await check(r)).self).toEqual([forged]);
+        expect((await check(r, { env: GITHUB, fetchJson: github(r, {}).fetchJson })).self).toEqual([forged]);
+        // A control character alone fails closed too.
+        const s = repoWith();
+        const code = commitAs(s, { "src.txt": "code" }, { as: people.alice, email: "a@x\x02y" });
+        finishAs(s, people.rita);
+        expect((await check(s)).self).toEqual([
+            `could not read who contributed to pr:7: commit ${code.slice(0, 12)} carries an e-mail address holding a control character`,
+        ]);
     });
 });
 
@@ -367,6 +386,54 @@ describe("the self-approval rule on GitHub", () => {
         expect((await check(r, { env: GITHUB, fetchJson })).self).toEqual([
             `commit ${code.slice(0, 12)} is not signed, or GitHub does not verify its signature (bad_email)`,
         ]);
+    });
+
+    it("fails closed on a counted commit in the checkout that GitHub does not list", async () => {
+        const r = repoWith();
+        const code = commitAs(r, { "src.txt": "code" }, { as: people.alice, signed: false });
+        finishAs(r, people.rita);
+        const { fetchJson: all } = github(r, {});
+        const fetchJson = async (path) => {
+            const got = await all(path);
+            return Array.isArray(got) ? got.filter((c) => c.sha !== code) : got;
+        };
+        expect((await check(r, { env: GITHUB, fetchJson })).self).toEqual([
+            `commit ${code.slice(0, 12)} is in this checkout but GitHub does not list it in pr:7`,
+        ]);
+    });
+
+    it("lets through the merge result CI builds, though GitHub does not list it", async () => {
+        const r = repoWith();
+        commitAs(r, { "src.txt": "code" }, { as: people.alice, signed: false });
+        finishAs(r, people.rita);
+        const { fetchJson } = github(r, {});
+        const prHead = git(r.repo, "rev-parse", "pr");
+        git(r.repo, "checkout", "-q", "master");
+        commitAs(r, { "other.txt": "landed elsewhere" }, { as: people.bob, signed: false });
+        // A merge of the base and the head whose tree differs from both parents in a file of its own.
+        git(r.repo, "checkout", "-q", "pr");
+        git(r.repo, "-c", "user.name=x", "-c", "user.email=x@example.com", "merge", "-q", "--no-commit", "master");
+        writeFileSync(join(r.repo, "src.txt"), "merged code");
+        git(r.repo, "add", "-A");
+        const tree = git(r.repo, "write-tree");
+        const merge = git(
+            r.repo,
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@example.com",
+            "commit-tree",
+            tree,
+            "-p",
+            "master",
+            "-p",
+            prHead,
+            "-m",
+            "merge",
+        );
+        git(r.repo, "merge", "--abort");
+        git(r.repo, "update-ref", "refs/heads/pr", merge);
+        expect((await check(r, { env: GITHUB, fetchJson })).self).toEqual([]);
     });
 
     it("fails closed when GitHub cannot be asked, or lists too many commits to be sure", async () => {
