@@ -777,6 +777,14 @@ body.infind .fk {
 .banner[hidden] {
     display: none;
 }
+/* The renderer banner's sentence and two buttons wrap in a narrow pane, never cut. */
+#snap-renderer {
+    flex-wrap: wrap;
+}
+/* "attempts disagree": the color of an old capture's unstable story. */
+.badge.other {
+    color: var(--st-other);
+}
 
 /* Rows: 84 px with a picture (28 px with No pictures), real elements whose layout is skipped while
    off screen. */

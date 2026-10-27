@@ -56,6 +56,7 @@ import {
     moreItems,
     openList,
     pictureItems,
+    rendererBlocked,
     scrollToCurrent,
     setGrouping,
     setPictures,
@@ -320,7 +321,9 @@ function drawSnaps() {
     const list = $("snap-list");
     if (!c || app.snaps.length === 0) {
         $("snap-banner").hidden = true;
+        $("snap-renderer").hidden = true;
         $("snap-stale").hidden = true;
+        list.hidden = false;
         $("snaps").classList.remove("nopics");
         app.lv.built = null;
     }
@@ -370,6 +373,27 @@ function drawViewer() {
     const v = $("viewer");
     const c = app.open();
     const s = c ? app.snaps.find((x) => x.key === app.snap) : null;
+    if (c && rendererBlocked(app)) {
+        // The list's banner says what to do; nothing here to act on.
+        app.viewer.stop();
+        v.replaceChildren(
+            el(
+                "div",
+                { class: "stage" },
+                el(
+                    "div",
+                    { class: "emptyv" },
+                    el("p", {}, el("b", {}, "Renderer changed")),
+                    el(
+                        "p",
+                        {},
+                        "The snapshot list says what to do: show the changes anyway, or capture the baselines again.",
+                    ),
+                ),
+            ),
+        );
+        return;
+    }
     if (s) {
         app.viewer.draw(s);
         return;
@@ -1031,6 +1055,39 @@ app.copyListLink = async () => {
     } catch (err) {
         say(`The link could not be copied: ${err.message}`, "err");
     }
+};
+
+// The list menu's Download the comparison report (JUnit): the open change's run, saved as a file.
+app.downloadJunit = async () => {
+    const c = app.open();
+    const q = app.loadedRun ? `?${new URLSearchParams({ run: app.loadedRun })}` : "";
+    let res;
+    try {
+        res = await fetch(`/api/junit/${encodeURIComponent(app.openId)}${q}`, { credentials: "same-origin" });
+    } catch (err) {
+        say(`The comparison report could not be downloaded: ${err.message}`, "err");
+        return;
+    }
+    if (!res.ok) {
+        const why = await res.json().then((b) => b.error, () => `HTTP ${res.status}`);
+        say(`The comparison report could not be downloaded: ${why}`, "err");
+        return;
+    }
+    const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "junit.xml";
+    const href = URL.createObjectURL(await res.blob());
+    const a = el("a", { href, download: name, hidden: true });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+    say(`Downloaded the comparison report of ${c.label}: ${name}.`);
+};
+
+// The renderer banner's Show the changes anyway: the rows of this change, whatever drew them.
+app.showRendererChanges = () => {
+    app.lv.rendererAnyway = true;
+    draw();
+    say("Showing the changes made under a different renderer. Every image may differ.");
 };
 
 // A row picture that failed, asked for again.

@@ -332,6 +332,18 @@ export const ACTIONS = {
         available: (app) => app.writeOK(),
     },
     undoall: { label: "Undo all decisions...", run: (app) => app.undoAll(), available: (app) => app.writeOK() },
+    junit: { label: "Download the comparison report (JUnit)", run: (app) => app.downloadJunit() },
+    // The renderer banner (design 10).
+    rendereranyway: {
+        label: "Show the changes anyway",
+        title: "Show the rows, though every image may differ",
+        run: (app) => app.showRendererChanges(),
+    },
+    recapture: {
+        label: "Capture the baselines again...",
+        title: "Capture again, so the baselines are drawn by the same renderer",
+        run: (app) => app.newCapture(),
+    },
     // The stale capture: what changed on the default branch, and Update from it.
     chgonmaster: {
         label: (app) => `Changed on ${master(app)}`,
