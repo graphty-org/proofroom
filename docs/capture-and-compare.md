@@ -123,7 +123,11 @@ Each changed snapshot's result carries its changed areas (`areas`). `results.jso
 capture's `renderer`, and, given `--reference`, that capture's renderer as `baselineRenderer`: the
 browser the default branch's captures, and so its baselines, were drawn with. When the two differ,
 the review page says so before it shows any change (see
-[The renderer banner](new-page.md#the-renderer-banner)).
+[The renderer banner](new-page.md#the-renderer-banner)). The comparison is with the reference
+capture, not with whatever drew the baselines: once the default branch captures with a new browser,
+its pull requests compare like with like and show no banner, even when its baselines were drawn
+before the change. So capture the baselines again in the pull request that changes the browser,
+where the banner shows.
 
 Options: `--reference <dir>` as for `run`; `--id <id>[.<mode>],...` judges only those snapshots,
 and then writes no `results.json` or JUnit file and reports no removed baseline; `--junit <file>`.

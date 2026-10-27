@@ -146,6 +146,32 @@ describe("serve: a capture run made", () => {
         expect(s.jobs).toEqual([]);
     });
 
+    it("marks a row whose earlier attempts saw another status or image, and only that row, as attempts disagree", async () => {
+        const root = join(makeRepo().dir, "local");
+        const { dir, results } = capturedByRun(root);
+        const [same, otherStatus, otherImage] = results.items.filter((i) => i.capture && i.baseline);
+        const attempt = (item, edit = {}) => ({
+            status: item.status,
+            capture: item.capture,
+            changedPixels: item.changedPixels,
+            reason: null,
+            console: [],
+            ...edit,
+        });
+        same.attempts = [attempt(same)];
+        otherStatus.attempts = [
+            attempt(otherStatus, { status: otherStatus.status === "changed" ? "unstable" : "changed" }),
+        ];
+        otherImage.attempts = [attempt(otherImage, { capture: "f".repeat(64) })];
+        writeFileSync(join(dir, "results.json"), JSON.stringify(results));
+        const s = await start(root);
+        const id = (await s.get("/api/prs")).body.targets[0].id;
+        const rows = await s.get(`/api/pr/${encodeURIComponent(id)}/compact-mantine?rows=1`);
+        expect(rows.status).toBe(200);
+        const disagree = rows.body.items.filter((i) => i.disagree).map((i) => i.file);
+        expect(disagree.sort()).toEqual([otherStatus.file, otherImage.file].sort());
+    });
+
     it("answers a change's comparison report as a JUnit file to save, one suite per project", async () => {
         const root = join(makeRepo().dir, "local");
         const { results } = capturedByRun(root);

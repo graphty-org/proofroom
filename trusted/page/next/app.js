@@ -70,7 +70,7 @@ import {
 } from "./list.js";
 import { ORDER, STATUS, mark } from "./marks.js";
 import { history as messageHistory, say, sayAgain } from "./messages.js";
-import { applyPanes, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
+import { applyPanes, keepFloor, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
 import {
     applyTheme,
     cancelPasskey,
@@ -722,6 +722,10 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
     }
     app.level = 1;
     layout("snaps");
+    if (rendererBlocked(app) && !shownNow()[1]) {
+        // The renderer banner lives in the list, so the list shows even for a small change.
+        applyPanes(keepFloor([shownNow()[0], true], { ...app.at(), prefer: "snaps" }), app.at());
+    }
     writeAddress(true);
     $("snap-list").scrollTop = 0;
     draw();

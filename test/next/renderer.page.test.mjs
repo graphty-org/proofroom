@@ -37,18 +37,20 @@ const CHROMIUM_131 = { name: "Chromium", version: "131.0.6778.33" };
 const CHROMIUM_128 = { name: "Chromium", version: "128.0.6613.18" };
 
 /**
- * A page with a change of 12 changed snapshots and one other change, whose rows' answer carries these capture fields,
- * opened by a click on the change.
+ * A page with a change of 12 changed snapshots (or `count`) and one other change, whose rows' answer carries these
+ * capture fields, opened by a click on the change; the Snapshots pane is shown by Shift+2 when it opened as a rail,
+ * unless `asOpened`.
  * @param {object} results the capture's fields the rows' answer carries (`renderer`, `baselineRenderer`)
  * @param {(items: object[]) => void} [edit] changes the rows
+ * @param {{ count?: number, asOpened?: boolean }} [how] the change's size, and whether to leave the panes as opened
  * @returns {Promise<import("playwright").Page>} the tab
  */
-async function open(results, edit = () => {}) {
+async function open(results, edit = () => {}, { count = 12, asOpened = false } = {}) {
     t = await openNext(browser, {
         // Two changes: with one alone, the page opens it at once and folds the list of changes away.
-        targets: [target(Number(ID), { projects: [project("graphty-element", { reviewable: 12 })] }), target(4101)],
+        targets: [target(Number(ID), { projects: [project("graphty-element", { reviewable: count })] }), target(4101)],
         rows: (id, name) => {
-            const answer = rowsAnswer(name, 12, () => "changed");
+            const answer = rowsAnswer(name, count, () => "changed");
             edit(answer.items);
             return { ...answer, results: { scale: 2, ...results } };
         },
@@ -57,7 +59,7 @@ async function open(results, edit = () => {}) {
     await page.locator(`.chg[data-chg="${ID}"]`).click();
     // Opened: the snapshot pane's header names the change's count.
     await page.locator("#snaps-head .h2").waitFor();
-    if ((await page.locator("#snaps").getAttribute("class")).includes("rail")) {
+    if (!asOpened && (await page.locator("#snaps").getAttribute("class")).includes("rail")) {
         await page.keyboard.press("Shift+Digit2");
     }
     return page;
@@ -84,6 +86,19 @@ describe("the renderer banner", () => {
             "Showing the changes made under a different renderer. Every image may differ.",
         );
         await page.locator(".iline").waitFor();
+    });
+
+    it("shows the Snapshots pane, so the banner can be read, when a change of 10 or fewer opens", async () => {
+        const page = await open({ renderer: CHROMIUM_131, baselineRenderer: CHROMIUM_128 }, undefined, {
+            count: 4,
+            asOpened: true,
+        });
+        await expect.poll(() => banner(page).isVisible()).toBe(true);
+        expect(await page.locator("#snaps").getAttribute("class")).not.toContain("rail");
+        expect(await banner(page).getByRole("button", { name: "Show the changes anyway" }).isVisible()).toBe(true);
+        expect(await banner(page).getByRole("button", { name: "Capture the baselines again..." }).isVisible()).toBe(
+            true,
+        );
     });
 
     it("names the whole versions when only a later part differs", async () => {

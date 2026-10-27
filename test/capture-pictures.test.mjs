@@ -22,6 +22,7 @@ import { collect } from "../trusted/lib/collect.mjs";
 import { compareSnapshot, DEFAULT_THRESHOLD, pngSize, sha256 } from "../trusted/lib/compare.mjs";
 import { compareRun } from "../trusted/lib/compare-run.mjs";
 import * as config from "../trusted/lib/config.mjs";
+import { MAX_AREAS } from "../trusted/lib/results.mjs";
 import { factsOf, PAIR_KINDS, pictures } from "../trusted/lib/thumbs.mjs";
 
 import { tempDir } from "./helpers.mjs";
@@ -154,6 +155,29 @@ describe("compare", () => {
         // Pictures are `run`'s: compare alone makes none.
         expect(results.items.every((i) => i.pictures === undefined)).toBe(true);
         expect(readdirSync(out).filter((f) => f.endsWith(".webp"))).toEqual([]);
+    });
+
+    it("finds the same row facts as the server's picture job when a pair has more areas than results.json holds", async () => {
+        // A dot changed every 30 px: 40 x 30 separate areas, more than MAX_AREAS.
+        const base = PNG.sync.read(png(1200, 900));
+        const dots = PNG.sync.read(png(1200, 900));
+        for (let y = 5; y < 900; y += 30) {
+            for (let x = 5; x < 1200; x += 30) {
+                dots.data.set([220, 20, 20, 255], (y * 1200 + x) * 4);
+            }
+        }
+        const out = tempDir("vr-out-");
+        const { results } = await compareRun({
+            project: "app",
+            baselines: baselinesOf({ "a--dots.png": PNG.sync.write(base) }),
+            captures: tempDir("vr-cap-"),
+            out,
+            junit: null,
+            lines: linesOf([["a--dots.png", PNG.sync.write(dots)]]),
+        });
+        const item = byFile(results)["a--dots.png"];
+        expect(item.areas).toHaveLength(MAX_AREAS);
+        expect(factsOf(item)).toEqual(serverPictures(out, item).facts);
     });
 
     it("given an encoder, writes the pictures of every item to decide, and an earlier attempt's go when it passes", async () => {

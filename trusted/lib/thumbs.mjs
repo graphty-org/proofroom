@@ -16,6 +16,7 @@ import { PNG } from "pngjs";
 
 import { cropOf, dimmed, grow, regions, ROW, rowCrop } from "../page/spot.js";
 import { paddedPair } from "./compare.mjs";
+import { MAX_AREAS } from "./results.mjs";
 
 // A grid tile is about 190 CSS pixels wide: 400 image pixels keep it sharp on a 2x screen, at
 // about a thirtieth of a 2400 x 1800 capture's memory once decoded.
@@ -128,7 +129,9 @@ export function pictureParts(job) {
     const [a, b] = [PNG.sync.read(Buffer.from(job.baseline)), PNG.sync.read(Buffer.from(job.capture))];
     const { width, height, pb, mask } = paddedPair(a, b, job);
     const grown = grow(mask, width, height);
-    const boxes = regions(grown, width, height);
+    // At most as many areas as compare writes into results.json, so a row's facts are the same
+    // whichever made them.
+    const boxes = regions(grown, width, height).slice(0, MAX_AREAS);
     const near = cropOf(boxes, width, height);
     const { crop, zoom } = rowCrop(boxes, width, height);
     const whole = [0, 0, width, height];
