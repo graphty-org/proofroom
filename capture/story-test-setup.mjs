@@ -6,9 +6,9 @@
  * It repeats capture.mjs's page set-up -- no WebGPU, `chromatic=true`, a fresh store, the fixed
  * running clock -- and, after each story's play function, its waits, then asks the Node commands
  * of story-test.mjs for the shot of every mode. A shot that did not pass is rendered and shot
- * again while the adapter's `retries` allow, each shot one attempt. A failed play, a render error
- * and the project's console rule fail the test; so does a snapshot that did not pass, unless the
- * adapter's `fail` is "errors".
+ * again while the adapter's `retries` allow, each shot one attempt, in an afterEach hook of its own.
+ * A failed play, a render error and the project's console rule fail the test; so does a snapshot
+ * that did not pass, unless the adapter's `fail` is "errors".
  */
 
 /* global document, requestAnimationFrame, history, location, localStorage, sessionStorage, indexedDB -- browser only */
@@ -119,6 +119,11 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         document.body.classList.add("sb-show-main", `sb-main-${name}`);
     };
     let clock = null;
+    // Which test is running. A hook that timed out keeps running, and without this its render and shot
+    // land in the next story's test: it shot that story's page as its own and drew it into the next
+    // story's (#3740). A stale hook stops at its next step instead.
+    let test = 0;
+    const stale = (mine) => mine !== test;
     // capture.mjs gives every render a fresh browser context: nothing the story before stored.
     const fresh = async () => {
         await commands.visualPark();
@@ -129,6 +134,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         globalThis.Date = clock;
     };
     beforeEach(async () => {
+        test += 1;
         head ??= commands.visualHead().then((css) => {
             const style = document.createElement("style");
             style.textContent = css;
@@ -161,13 +167,24 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
     const rendered = (story, mode, i) =>
         i === 0 && Object.entries(mode.globals ?? {}).every(([k, v]) => story.globals?.[k] === v);
 
+    // The project's wait on every matching element. `settled`: for a story that is not shot (excluded, or
+    // already failed), so the wait only lets its scene finish here, not in the next story's test, and its
+    // outcome (a rejection, an element without the method) decides nothing.
+    const waitForElements = ({ selector, method }, settled) => {
+        const els = [...document.querySelectorAll(selector)];
+        if (!settled) {
+            return Promise.all(els.map((el) => el[method]()));
+        }
+        return Promise.allSettled(els.filter((el) => typeof el[method] === "function").map((el) => el[method]()));
+    };
+
     const settle = async (plan) => {
         await document.fonts.ready;
         await frame();
         await document.fonts.ready;
         if (plan.waitFor) {
-            const { selector, method, failOnConsole } = plan.waitFor;
-            await Promise.all([...document.querySelectorAll(selector)].map((el) => el[method]()));
+            const { failOnConsole } = plan.waitFor;
+            await waitForElements(plan.waitFor, false);
             await frame();
             if (failOnConsole && lines.some((l) => l.includes(failOnConsole))) {
                 throw new Error(failOnConsole);
@@ -179,47 +196,120 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         }
     };
 
-    const shootMode = async (story, chromatic, plan, mode, i) => {
-        if (!rendered(story, mode, i)) {
-            await render(story, mode);
+    const shot = async (story, chromatic, mode) =>
+        commands.visualShot({ id: story.id, mode: mode.name, chromatic, console: lines.splice(0) });
+
+    // The modes whose first shot did not pass, for the retrying hook below, and the failures so far.
+    // A story's settle can take most of a hook's time (a gallery that lays out every tile), so the
+    // retries run in a hook of their own instead of doubling the first one's cost (#3740).
+    let confirm = null;
+
+    const restoreDate = () => {
+        // Only when no story put its own Date in meanwhile: the story's cleanup puts back its own.
+        if (globalThis.Date === clock) {
+            globalThis.Date = RealDate;
         }
-        await settle(plan);
-        const shot = { id: story.id, mode: mode.name, chromatic };
-        let r = await commands.visualShot({ ...shot, console: lines.splice(0) });
-        while (r.again) {
-            await render(story, mode);
-            await settle(plan);
-            r = await commands.visualShot({ ...shot, console: lines.splice(0) });
+    };
+
+    // Registered first so that it runs after the shooting hook: Vitest runs afterEach hooks in
+    // reverse order (sequence.hooks "stack", the default).
+    afterEach(async () => {
+        const job = confirm;
+        confirm = null;
+        if (!job) {
+            return;
         }
-        return r.failure;
+        const { story, chromatic, plan, fail, mine, failures } = job;
+        try {
+            for (const [i, mode] of job.modes.entries()) {
+                try {
+                    let r = { again: true };
+                    while (r.again) {
+                        if (stale(mine)) {
+                            return;
+                        }
+                        await render(story, mode);
+                        await settle(plan);
+                        if (stale(mine)) {
+                            return;
+                        }
+                        r = await shot(story, chromatic, mode);
+                    }
+                    if (r.failure) {
+                        failures.push(r.failure);
+                    }
+                } catch (e) {
+                    if (stale(mine)) {
+                        return;
+                    }
+                    await fail(
+                        job.modes.slice(i).map((m) => m.name),
+                        String(e?.message ?? e),
+                    );
+                    throw e;
+                }
+            }
+        } finally {
+            restoreDate();
+        }
+        if (failures.length > 0) {
+            throw new Error(failures.join("\n"));
+        }
+    });
+
+    // A failed story is recorded as failed, not shot; an excluded one has no modes. Either still
+    // finishes here, not in the next story's test. True when the story is not shot.
+    const unshot = async (context, plan, fail) => {
+        const failed = context.task.result?.state === "fail";
+        if (failed) {
+            await fail(
+                plan.modes.map((m) => m.name),
+                context.task.result.errors?.[0]?.message ?? "the story test failed",
+            );
+        }
+        if ((failed || plan.modes.length === 0) && plan.waitFor) {
+            await waitForElements(plan.waitFor, true);
+        }
+        return failed;
     };
 
     afterEach(async (context) => {
+        confirm = null;
         const story = context.story;
         if (!story) {
             return;
         }
+        const mine = test;
         // Through JSON, as capture.mjs reads it, so no function crosses to Node.
         const chromatic = JSON.parse(JSON.stringify(story.parameters?.chromatic ?? {})); // NOSONAR(S7784): structuredClone throws on the functions this drops
         const plan = await commands.visualPlan({ id: story.id, chromatic });
         const fail = (modes, reason) =>
             commands.visualFail({ id: story.id, modes, reason, chromatic, console: lines.splice(0) });
+        const again = [];
         const failures = [];
         try {
-            if (context.task.result?.state === "fail") {
-                await fail(
-                    plan.modes.map((m) => m.name),
-                    context.task.result.errors?.[0]?.message ?? "the story test failed",
-                );
+            if (await unshot(context, plan, fail)) {
                 return;
             }
             for (const [i, mode] of plan.modes.entries()) {
                 try {
-                    const failure = await shootMode(story, chromatic, plan, mode, i);
-                    if (failure) {
-                        failures.push(failure);
+                    if (!rendered(story, mode, i)) {
+                        await render(story, mode);
+                    }
+                    await settle(plan);
+                    if (stale(mine)) {
+                        return;
+                    }
+                    const r = await shot(story, chromatic, mode);
+                    if (r.again) {
+                        again.push(mode);
+                    } else if (r.failure) {
+                        failures.push(r.failure);
                     }
                 } catch (e) {
+                    if (stale(mine)) {
+                        return;
+                    }
                     await fail(
                         plan.modes.slice(i).map((m) => m.name),
                         String(e?.message ?? e),
@@ -227,14 +317,11 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
                     throw e;
                 }
             }
+            confirm = { story, chromatic, plan, fail, mine, modes: again, failures };
         } finally {
-            // Only when no story put its own Date in meanwhile: the story's cleanup puts back its own.
-            if (globalThis.Date === clock) {
-                globalThis.Date = RealDate;
+            if (!confirm) {
+                restoreDate();
             }
-        }
-        if (failures.length > 0) {
-            throw new Error(failures.join("\n"));
         }
     });
 }

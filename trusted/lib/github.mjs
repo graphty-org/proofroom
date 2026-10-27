@@ -284,12 +284,24 @@ export const getRun = async (gh, id) => toRun(await api(gh, `repos/{owner}/{repo
  * @returns {Promise<Record<string, { status?: string, conclusion: string | null, url: string } | undefined>>} by project
  */
 export async function visualJobs(gh, run, attempt, projects) {
-    const { jobs } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100`);
-    const visual = jobs.filter((j) => /^visual\b/.test(j.name));
+    // Every page: a run that calls the workflow beside other lanes can have more than 100 jobs.
+    const jobs = [];
+    for (let page = 1; ; page++) {
+        const got = await api(
+            gh,
+            `repos/{owner}/{repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+        );
+        jobs.push(...got.jobs);
+        if (got.jobs.length < 100 || jobs.length >= (got.total_count ?? 0)) {
+            break;
+        }
+    }
+    // A called workflow's jobs are named "<caller job> / visual (<project>)".
+    const visual = jobs.filter((j) => /(^| \/ )visual\b/.test(j.name));
     return Object.fromEntries(
         projects.map((p) => {
             // The exact name: "visual (graphty-element)" also contains "graphty".
-            const job = visual.find((j) => j.name === `visual (${p})`);
+            const job = visual.find((j) => j.name === `visual (${p})` || j.name.endsWith(` / visual (${p})`));
             return [p, job && { ...(job.status && { status: job.status }), conclusion: job.conclusion, url: job.html_url }];
         }),
     );
@@ -411,18 +423,19 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
             others.push(p);
         }
     }
+    const newestOf = (pattern) =>
+        artifacts
+            .filter((x) => pattern.test(x.name))
+            .map((x) => ({
+                name: x.name,
+                expired: x.expired,
+                bytes: x.size_in_bytes ?? 0,
+                attempt: Number(pattern.exec(x.name)[1]),
+            }))
+            .sort((x, y) => y.attempt - x.attempt)[0];
     const newest = Object.fromEntries(
         projects.map((project) => {
-            const pattern = new RegExp(`^visual-${project}-(\\d+)$`);
-            const a = artifacts
-                .filter((x) => pattern.test(x.name))
-                .map((x) => ({
-                    name: x.name,
-                    expired: x.expired,
-                    bytes: x.size_in_bytes ?? 0,
-                    attempt: Number(pattern.exec(x.name)[1]),
-                }))
-                .sort((x, y) => y.attempt - x.attempt)[0];
+            const a = newestOf(new RegExp(String.raw`^visual-${project}-(\d+)$`));
             return [project, a ?? null];
         }),
     );

@@ -35,7 +35,7 @@ vi.mock("../trusted/lib/compare.mjs", async (original) => {
 const byFile = (r) => Object.fromEntries(r.items.map((i) => [i.file, i]));
 
 let counter;
-const storybook = () => standIn(counter.url);
+const storybook = (ids) => standIn(counter.url, undefined, ids);
 
 beforeAll(async () => {
     vi.stubEnv("GITHUB_ACTIONS", "");
@@ -112,7 +112,7 @@ describe("capture", () => {
         });
         // Every image is on disk, named by its line, with the bytes the line carries.
         const images = snapshots.filter((l) => l.type === "image");
-        expect(images).toHaveLength(5);
+        expect(images).toHaveLength(6);
         for (const line of images) {
             const bytes = readFileSync(join(out, line.file));
             expect(bytes.equals(line.bytes)).toBe(true);
@@ -169,11 +169,30 @@ describe("capture", () => {
         expect(size["demo--small.png"]).toEqual([1200 * 2, 900 * 2]);
         expect(size["demo--plain.png"]).toEqual([1200 * 2, 900 * 2]);
         // A story taller than the viewport is captured to its full scroll height.
-        expect(size["demo--tall.png"]).toEqual([1200 * 2, 2000 * 2]);
+        expect(size["demo--tall.png"]).toEqual([1200 * 2, 1000 * 2]);
         // The capture waits for the page's fonts: the box drawn at (400, 300) when they settle is in it.
         const png = PNG.sync.read(readFileSync(join(out, "demo--late-font.png")));
         const at = (405 * 2 + 305 * 2 * png.width) * 4;
         expect([...png.data.subarray(at, at + 3)]).toEqual([255, 0, 0]);
+    });
+
+    it("gives the story's frame the focus, so a control its play function focused shows it", async () => {
+        const out = tempDir("vr-out-");
+        await captureAll({
+            project: "demo",
+            storybook: storybook(["demo--focus"]),
+            baselines: tempDir("vr-bl-"),
+            out,
+            workers: 1,
+        });
+        const png = PNG.sync.read(readFileSync(join(out, "demo--focus.png")));
+        const rgb = (x, y) => {
+            const at = (x * 2 + y * 2 * png.width) * 4;
+            return [...png.data.subarray(at, at + 3)];
+        };
+        // The play function's focused input, and the story had the focus from its start.
+        expect(rgb(110, 110)).toEqual([0, 0, 255]);
+        expect(rgb(210, 110)).toEqual([0, 0, 255]);
     });
 
     it("launches every browser with GPU rasterization off, so text renders the same each time", async () => {
@@ -200,7 +219,16 @@ describe("capture", () => {
 
 describe("run", () => {
     it("classifies new, unchanged, excluded, failed, and a story newly excluded by its parameters", async () => {
-        const sb = storybook();
+        // Only the stories this test checks: the tall and late-font fixtures are other tests', and
+        // capturing them too doubled this test's work, which on a loaded 4-core runner
+        // took it past the suite's 60 s limit (#3768).
+        const sb = storybook([
+            "demo--plain",
+            "demo--excluded-here",
+            "demo--always-excluded",
+            "demo--broken",
+            "demo--small",
+        ]);
         const baselines = tempDir("vr-bl-");
         const go = (out) => run({ project: "demo", storybook: sb, baselines, out, workers: 2 });
 
@@ -283,7 +311,16 @@ describe("run", () => {
         const sb = storybook();
         const seedOut = tempDir("vr-out-");
         const go = (out, baselines) => run({ project: "demo", storybook: sb, baselines, out, workers: 2 });
-        await go(seedOut, tempDir("vr-bl-"));
+        // The seed needs only the two pictures copied below: capturing every story here doubled
+        // this test's time on a loaded runner (#3768).
+        await run({
+            project: "demo",
+            storybook: sb,
+            baselines: tempDir("vr-bl-"),
+            out: seedOut,
+            workers: 2,
+            stories: ["demo--plain", "demo--tall"],
+        });
 
         // Baselines under old ids: one that looks the same as its new story, one that does not,
         // one whose rename names no story, and one renamed from an id that is still a story (which
@@ -375,23 +412,26 @@ describe("screenshotWholePage", () => {
     });
 
     async function withPage(html, use) {
-        const page = await browser.newPage({ viewport: { width: 100, height: 900 }, deviceScaleFactor: 2 });
+        // A context of its own, as capture has: the screenshot opens a second page in it.
+        const context = await browser.newContext({ viewport: { width: 100, height: 900 }, deviceScaleFactor: 2 });
+        const page = await context.newPage();
         try {
             await page.setContent(html);
             // As capture does: a screenshot before the page's first frame fails in Chromium.
             await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
             return await use(page);
         } finally {
-            await page.close();
+            await context.close();
         }
     }
 
-    it("is Playwright's own full-page screenshot, byte for byte, within the limit", async () => {
+    it("draws the same pixels as Playwright's full-page screenshot on a page without text", async () => {
         await withPage(bands(40), async (page) => {
-            const own = await page.screenshot({ animations: "disabled", caret: "hide", fullPage: true });
-            const ours = await screenshotWholePage(page);
-            expect(ours.readUInt32BE(20)).toBe(8000);
-            expect(ours.equals(own)).toBe(true);
+            const ours = PNG.sync.read(await screenshotWholePage(page));
+            const own = PNG.sync.read(await page.screenshot({ animations: "disabled", caret: "hide", fullPage: true }));
+            expect([ours.width, ours.height]).toEqual([200, 8000]);
+            expect([own.width, own.height]).toEqual([200, 8000]);
+            expect(ours.data.equals(own.data)).toBe(true);
         });
     });
 
@@ -408,11 +448,10 @@ describe("screenshotWholePage", () => {
         });
     });
 
-    it("is the settled page's height when the first capture shrinks a page within the limit", async () => {
-        // Chromium's first screenshot beyond the viewport lays text out again: 11px monospace
-        // with line-height: normal is 21 CSS px a row before it and 20 after, so these 150 rows
-        // are 3,160 CSS px on load and 3,010 once captured (#1982). The image is the settled page,
-        // ending on its red block, with no background below it.
+    it("keeps the page's loaded height within the limit: text is not laid out again", async () => {
+        // Chromium's capture beyond the viewport laid text out again: 11px monospace with
+        // line-height: normal went from 21 CSS px a row to 20 (#1982). Tiles never capture beyond
+        // the viewport, so these 150 rows stay 3,160 CSS px and the image ends on the red block.
         const rows = Array.from(
             { length: 150 },
             (_, i) => `<div style="padding:4px 6px;font:11px monospace">${i}</div>`,
@@ -421,22 +460,23 @@ describe("screenshotWholePage", () => {
         await withPage(html, async (page) => {
             const png = PNG.sync.read(await screenshotWholePage(page));
             const height = await page.evaluate(() => document.documentElement.scrollHeight);
-            expect(height).toBe(150 * 20 + 10);
+            expect(height).toBe(150 * 21 + 10);
             expect([png.width, png.height]).toEqual([200, height * 2]);
             expect(redAt(png, png.height - 1)).toBe(200);
+            expect(redAt(png, png.height - 20)).toBe(200);
+            expect(redAt(png, png.height - 21)).toBe(255);
         });
     });
 
-    it("is the settled page's height when the first capture shrinks a page taller than the limit", async () => {
-        // The label is 21 CSS px before the first capture beyond the viewport and 20 after, so the
-        // page is 4,221 CSS px on load and 4,220 once captured (#1976, #1982).
+    it("keeps the page's loaded height beyond the limit: the label stays 21 px", async () => {
+        // The label is 21 CSS px on load and stays so (#1976, #1982): the page is 4,221 CSS px.
         const label = `<div style="padding:4px 6px;font:600 11px ui-monospace, monospace">ak</div>`;
         await withPage(`<!doctype html>${bands(42).replace('<body style="margin:0">', `$&${label}`)}`, async (page) => {
             const png = PNG.sync.read(await screenshotWholePage(page));
-            expect([png.width, png.height]).toEqual([200, 8440]);
-            // The label 20 px tall, the bands below it, and the last band down to the last row.
-            expect(redAt(png, 40)).toBe(0);
-            expect(redAt(png, 8439)).toBe(41 * 5);
+            expect([png.width, png.height]).toEqual([200, 8442]);
+            // The label 21 px tall, the bands below it, and the last band down to the last row.
+            expect(redAt(png, 42)).toBe(0);
+            expect(redAt(png, 8441)).toBe(41 * 5);
         });
     });
 });

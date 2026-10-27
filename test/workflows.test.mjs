@@ -64,7 +64,9 @@ describe("visual-seed.yml", () => {
         const visual = job(seed, "visual");
         expect(visual).toContain("if: ${{ !cancelled() && needs.plan.result == 'success' }}");
         // The download comes first, so a project whose own build failed stops before installing.
-        const steps = [...visual.matchAll(/^ {12}- (?:name: (.+)|uses: (.+))$/gm)].map((m) => m[1] ?? m[2]);
-        expect(steps.slice(0, 2)).toEqual(["actions/checkout@v4", "Download Storybook build"]);
+        const steps = [...visual.matchAll(/^ {12}- (?:name: (.+)|uses: (.+))$/gm)].map(
+            (m) => m[1] ?? m[2]?.replace(/@\S+$/, ""),
+        );
+        expect(steps.slice(0, 2)).toEqual(["actions/checkout", "Download Storybook build"]);
     });
 });
