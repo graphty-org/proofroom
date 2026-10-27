@@ -1072,7 +1072,8 @@ export const badgeNode = (b) =>
     el(
         "span",
         { class: b.cls ? `badge ${b.cls}` : "badge", title: b.title ?? null },
-        b.mark ? mark(b.mark) : null,
+        // The mark carries the status color; the words stay in ink, as every status's do.
+        b.mark ? mark(b.mark, "c-other") : null,
         b.text,
     );
 
