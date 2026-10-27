@@ -178,6 +178,53 @@ The mode is the base config's `approvalFormat` (`"change"` or `"tree"`). Without
 in tree mode. Version 1 statements name no repository, so tree mode trusts any repository that
 trusts the same key; it exists for moving over.
 
+## What Finish writes: `approvalFormat`
+
+Finish writes the format the repository's gate reads, chosen by the default branch's
+`visual-review.config.json`, so a change that edits its own config never switches it:
+
+- `"approvalFormat": "change"`: one change statement per Finish, as above, and nothing under
+  `<baselines>/reviews/`. The review records already there stay as they are; the review page still
+  reads them, with the statements, to preselect images approved before.
+- `"approvalFormat": "tree"`: a tree statement and a review record, as `@graphty/visual-review`
+  wrote them.
+- No `approvalFormat`: `"tree"` when the approvals directory on the default branch holds tree
+  statements and no change statement (a repository coming from `@graphty/visual-review`), else
+  `"change"`.
+
+In change mode, every Finish that commits a decision signs one statement with one passkey touch,
+whatever it leaves undecided or rejects; a Finish that only rejects posts its comment and writes no
+statement. The statement names the change's newest statement on the branch as `previous`, and
+both ends of a fork when there are two, so Finishing again closes it.
+
+Two Finishes of one change can race: each builds its commit on the branch tip it fetched, and the
+first push wins. When a push is refused, Finish fetches the branch again and:
+
+- when the new commits hold the captured head and change none of the files this Finish writes (the
+  author pushed code, say), makes the same commit, with the same signed statement, on the new tip
+  and pushes it, with no new touch;
+- when the branch gained another statement of this change that decided no snapshot differently,
+  pushes nothing and asks you to press Finish again: the new statement names the other as
+  `previous`, with one touch;
+- otherwise pushes nothing, naming the snapshots the two Finishes decided differently, or saying
+  the capture is stale.
+
+The repository's id (see "Repository") must be known when Finish writes a change statement: on
+GitHub it is read from GitHub, elsewhere it is the default branch's `repositoryId`, and without one
+Finish refuses.
+
+### Moving a repository to change statements
+
+1. Run proofroom's gate in CI (`proofroom gate`, with `--change` or `--pr`). It reads tree
+   statements and change statements both while the base is in tree mode.
+2. Then set `"approvalFormat": "change"` in `visual-review.config.json` and merge it. From the next
+   Finish on, the review page writes change statements, and the gate refuses tree statements.
+
+Never set it while CI still runs `@graphty/visual-review`'s gate: that gate reads only tree
+statements, and would fail every change finished afterwards. A repository whose CI runs proofroom's
+gate but has not set `approvalFormat` keeps receiving tree statements, which that gate still
+reads, so leaving it unset is safe.
+
 ## Where the gate's trust comes from
 
 The gate proves what it checks only if it runs. On a pull request, CI runs the pull request's own
