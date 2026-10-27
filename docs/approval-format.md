@@ -401,7 +401,9 @@ Finish again to start a fresh seed branch.
 Before Finish opens a fresh seed branch, it closes every open pull request whose statements carry
 the same captured commit, so an older seed of the same run cannot stay green holding an accept you
 have since rejected. It also deletes that pull request's branch, and the branch of any seed pull
-request it closes, so nobody can reopen it with the earlier accept. If deleting a branch fails,
+request it closes, so nobody can reopen it with the earlier accept. A seed pull request someone
+closed by hand gets the same treatment: the next Finish of that run deletes its branch if it is
+still there. If deleting a branch fails,
 Finish logs it and goes on: delete the branch by hand, or a person with write access can reopen the
 closed pull request, which passes again on your earlier accept. On a code host that cannot close
 pull requests, Finish refuses, naming the old branch, until you close or delete it.

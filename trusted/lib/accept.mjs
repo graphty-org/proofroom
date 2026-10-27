@@ -1703,7 +1703,8 @@ async function seedPushOf(repo, config, branch, fetch) {
  * Where a seed Finish goes: the branch recorded for this run when it passes the reuse checks
  * (reuseProblem); else a fresh branch on the captured commit, once every open pull request holding
  * a seed of this capture is closed (retireSeeds). A recorded branch that fails a check is closed
- * and the Finish refused, naming why; one that is gone (deleted, merged or closed) is forgotten.
+ * and the Finish refused, naming why; one that is gone (deleted or merged) is forgotten, and one
+ * whose pull request was closed elsewhere is forgotten and its branch deleted.
  * @param {object} input commitSeed's input
  * @param {{ key: string, base: string, fetch: (b: string) => Promise<any> }} at the run, the
  *     captured commit and the fetcher
@@ -1723,7 +1724,10 @@ async function seedBranchOf(input, { key, base, fetch }) {
             return { ...recorded, parent, lease };
         }
         await keepSeedRecord(repo, config, key, null);
-        if (why !== GONE) {
+        if (why === CLOSED) {
+            // Closed elsewhere with its branch kept: delete it, so nobody can reopen it with its accept.
+            await deleteClosedBranch(repo, recorded.branch);
+        } else if (why !== GONE) {
             const closed = await closeSeedChange(host, recorded, repo);
             throw new AcceptError(
                 `${recorded.branch} cannot take this Finish: ${why}. ${closed}; press Finish again to start a fresh seed branch`,
@@ -1742,6 +1746,7 @@ async function seedBranchOf(input, { key, base, fetch }) {
 }
 
 const GONE = "gone";
+const CLOSED = "closed";
 
 /**
  * Closes a recorded seed's pull request, which may carry this reviewer's earlier signed accept.
@@ -1768,7 +1773,8 @@ async function closeSeedChange(host, recorded, repo) {
 
 /**
  * Why a recorded seed branch cannot take another Finish, on the code host's current state: it is
- * gone (GONE: deleted, or its pull request merged or closed); its pull request comes from another
+ * gone (GONE: deleted, or its pull request merged); its pull request was closed unmerged with its
+ * branch still there (CLOSED); its pull request comes from another
  * repository; or a commit since the captured commit is not a Finish commit of this seed (it changes
  * only one statement file, of this change, and the baseline files its entries name; the statement
  * verifies against a base key and names this change and, for a seed statement, this run's captured
@@ -1778,7 +1784,7 @@ async function closeSeedChange(host, recorded, repo) {
  * @param {object} input commitSeed's input
  * @param {{ branch: string, change: string | null, number: number | null, x: string | null }} recorded the record
  * @param {{ base: string, fetch: (b: string) => Promise<any> }} at the captured commit and the fetcher
- * @returns {Promise<string | null>} why not, GONE, or null
+ * @returns {Promise<string | null>} why not, GONE, CLOSED, or null
  */
 async function reuseProblem(input, recorded, { base, fetch }) {
     const { repo, config, host, net } = input;
@@ -1789,7 +1795,7 @@ async function reuseProblem(input, recorded, { base, fetch }) {
     if (recorded.number !== null && host?.change) {
         const c = await net("reading the pull request", () => host.change(recorded.number));
         if (c?.state !== "open") {
-            return GONE;
+            return c?.merged || c?.merged_at ? GONE : CLOSED;
         }
         const repoOf = (side) => side?.repo?.id ?? side?.repo?.full_name ?? null;
         if (c.head?.ref !== undefined && c.head.ref !== recorded.branch) {

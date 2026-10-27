@@ -664,6 +664,22 @@ describe("Finish of a seed in change mode", () => {
         expect(host.opened[0].state).toBe("closed");
     });
 
+    it("deletes the branch of a seed pull request someone closed by hand, so its accept cannot be reopened", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [old] = host.opened;
+        old.state = "closed";
+        expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
+        await seedFinish(r, host, [[BADGE, "reject", "caught mid-animation"], [BUTTON]], { projects });
+        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+        expect(host.opened.map((o) => [o.number, o.state])).toEqual([
+            [900, "closed"],
+            [901, "open"],
+        ]);
+    });
+
     it("adds a candidate's second Finish as one commit on its branch's tip, chained after the first", async () => {
         const r = changeRepo();
         const host = fakeCodeHost({ listOpened: true });
