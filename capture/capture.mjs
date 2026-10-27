@@ -380,15 +380,18 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         await page.route(wrapper, (route) =>
             route.fulfill({
                 contentType: "text/html",
-                body: `<!doctype html><style>html,body{margin:0}</style><iframe src="${url.replaceAll('"', "&quot;")}" style="border:0;position:absolute;left:0;top:0;width:${VIEWPORT.width}px;height:${VIEWPORT.height}px"></iframe>`,
+                body: `<!doctype html><style>html,body{margin:0}</style><iframe style="border:0;position:absolute;left:0;top:0;width:${VIEWPORT.width}px;height:${VIEWPORT.height}px"></iframe>`,
             }),
         );
         await page.goto(wrapper, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        // Focused, as the story was when it was the page itself (and as story-test.mjs's
-        // visualPark focuses the tester iframe), so a play function's focus ring still shows.
+        // The empty frame takes the focus before the story loads in it, as the story had when it
+        // was the page itself and as story-test.mjs's visualPark focuses the tester iframe before
+        // the play function. Focusing it after the story loaded would blur a control a play
+        // function already focused.
         const element = await page.waitForSelector("iframe");
         await element.focus();
         const frame = await element.contentFrame();
+        await frame.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
         const phase = await frame
             .waitForFunction(
                 () => {
