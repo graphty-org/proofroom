@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { threadId } from "node:worker_threads";
 
-import { CLOCK_START, close, open as openBrowser, probe, SCALE, shoot } from "./chromium.mjs";
+import { CLOCK_START, close, open as openBrowser, probe, rendererOf, SCALE, shoot, webpEncoder } from "./chromium.mjs";
 import { preview, rendered, serve, stories as storiesIn, url as storyUrlAt } from "./storybook.mjs";
 
 import { pngSize, sha256 } from "../trusted/lib/compare.mjs";
@@ -392,6 +392,9 @@ export function capture({
                 capturedAt: new Date().toISOString(),
                 clock: { start: CLOCK_START, running: true },
                 scale: SCALE,
+                // The browser that draws every image: compare keeps it, and the page warns when the
+                // baselines were drawn by another.
+                renderer: rendererOf(browsers[0]),
                 environment: {
                     chromium: browsers[0].version(),
                     renderer,
@@ -488,7 +491,9 @@ export function capture({
 
 /**
  * Captures one project and compares it in one process (`proofroom run`): each snapshot is judged
- * the moment its image is written, so its result line follows it by the judging time alone.
+ * the moment its image is written, so its result line follows it by the judging time alone. Each
+ * item that needs a decision also gets its list pictures, encoded as WebP by a Chromium of
+ * capture's own (opened at the first one), so the review server makes none for this capture.
  * ponytail: the judging runs on this thread, between the browsers' events (230 ms for a changed
  * pair, 0.3 ms for equal bytes); a worker-thread pool if a change-heavy capture shows browser stalls.
  * @param {Parameters<typeof capture>[0] & { reference?: string | null, retries?: number,
@@ -502,6 +507,11 @@ export function run({ reference = null, retries = 0, junit, print, ...options })
         throw new Error(`retries must be an integer from 0 to ${MAX_ATTEMPTS}`);
     }
     const shots = capture(options);
+    let encoder = null;
+    const encode = async (images) => {
+        encoder ??= openBrowser().then(async (browser) => ({ browser, page: await webpEncoder(browser) }));
+        return (await encoder).page.encode(images);
+    };
     return compareRun({
         project: options.project,
         baselines: options.baselines,
@@ -514,10 +524,17 @@ export function run({ reference = null, retries = 0, junit, print, ...options })
         print,
         log: options.log,
         progress: join(options.out, PROGRESS_FILE),
+        encode,
         onResult: (result, line) => {
             if (!result.passed && line && result.attempt <= retries) {
                 shots.again(line);
             }
         },
+    }).finally(async () => {
+        // One that failed to open has nothing to close; its error is the run's already.
+        const opened = await encoder?.catch(() => null);
+        if (opened) {
+            await close(opened.browser);
+        }
     });
 }
