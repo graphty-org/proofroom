@@ -69,6 +69,17 @@ async function storyTest(v, id, shots) {
 }
 
 describe("story tests' visual step", () => {
+    it("launches Chromium with FC_FONTATIONS preset, whatever the caller's environment (#3787)", () => {
+        const saved = process.env.FC_FONTATIONS;
+        delete process.env.FC_FONTATIONS;
+        try {
+            const v = visualStoryTest({ project: PROJECT, out: tempDir("story-test-out-"), root: repo({}) });
+            expect(v.providerOptions.launchOptions.env).toMatchObject({ FC_FONTATIONS: "1", TZ: "UTC" });
+        } finally {
+            if (saved !== undefined) process.env.FC_FONTATIONS = saved;
+        }
+    });
+
     it("shoots a story taller than the viewport in scrolled tiles, keeping its layout at the viewport", async () => {
         const root = repo({});
         const out = tempDir("story-test-out-");
@@ -83,6 +94,14 @@ describe("story tests' visual step", () => {
         expect([shot.width, shot.height]).toEqual([2400, 1810]);
         const gray = (y) => shot.data[y * 2400 * 4];
         expect([gray(0), gray(1799), gray(1800), gray(1809)]).toEqual([10, 10, 20, 20]);
+        // The second tile is shot only for the 5 rows it adds, and Chromium stitches the tiles, so this
+        // process never decodes or encodes a PNG: that work, on the one Node thread all four capture
+        // workers share, made a tall story's capture twice as slow.
+        expect(ctx.clips).toEqual([
+            { x: 0, y: 0, width: 1200, height: 900 },
+            { x: 0, y: 895, width: 1200, height: 5 },
+        ]);
+        expect(ctx.pages.map((html) => html.match(/<img /g).length)).toEqual([2]);
     });
 
     it("never resizes the page, and stitches a story taller than one screenshot as capture.mjs does", async () => {
@@ -114,8 +133,9 @@ describe("story tests' visual step", () => {
     ])("scrolls the body by what the window could not when $name", async ({ windowMax, short }) => {
         const out = tempDir("story-test-out-");
         const v = visualStoryTest({ project: PROJECT, out, root: repo({}) });
-        // Short, a third tile finds the frame where the second left it, and nothing more to copy.
-        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800), ...(short ? [png(30, 2400, 1800)] : [])];
+        // Short, a third tile would find the frame where the second left it, and nothing more to
+        // copy: it is never shot.
+        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800)];
         const ctx = context(tiles, { width: 1200, height: 1063 });
         const frame = await ctx.frame();
         const measured = frame.evaluate;

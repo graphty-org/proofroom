@@ -76,6 +76,16 @@ describe("parity", () => {
         expect(parity(first, withExact(second, undefined)).differences[0].problem).toBe("different bytes");
     });
 
+    it("agrees when the second side is exactly the baseline, whatever the first drew against it", () => {
+        const first = results([{ id: "a--one", status: "changed", capture: hash("1") }]);
+        const exactSecond = results([{ id: "a--one", status: "unchanged", capture: hash("b") }]);
+        expect(parity(first, exactSecond).differences).toEqual([]);
+        const otherBaseline = { ...exactSecond, items: [{ ...exactSecond.items[0], baseline: hash("c") }] };
+        expect(parity(first, otherBaseline).differences[0].problem).toBe("different bytes");
+        // Not the other way round: the first side exact does not excuse the second.
+        expect(parity(exactSecond, first).differences[0].problem).toBe("different bytes");
+    });
+
     it("agrees on a story both sides exclude, never on one both failed", () => {
         const both = (status) => results([{ id: "a--one", status }]);
         expect(parity(both("excluded"), both("excluded")).differences).toEqual([]);
