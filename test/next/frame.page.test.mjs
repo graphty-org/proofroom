@@ -116,11 +116,11 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     "Find in the focused pane",
                     "This sheet",
                     "Image only",
+                    "Accept (or the selection)",
+                    "Accept the current group",
                 ]) {
                     expect(text).toContain(words);
                 }
-                // Keys whose actions this page does not have yet are not listed.
-                expect(text).not.toContain("Accept (or the selection)");
                 await box(page).getByText("The last 20 messages").click();
                 const items = await box(page).locator("li").allInnerTexts();
                 expect(items).toHaveLength(20);
@@ -357,7 +357,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 // list, with the decided row's Undo, back beside it.
                 await page.locator("#stage").waitFor();
                 await page.keyboard.press("Shift+Digit2");
-                const undo = page.getByRole("button", { name: "Undo" });
+                // The decided row's own Undo, not the toolbar's.
+                const undo = page.locator('#snap-list [data-act="rowundo"]');
                 await undo.waitFor();
                 expect(await undo.getAttribute("aria-disabled")).toBe(null);
                 const writers = () =>
@@ -413,12 +414,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 expect(await status()).toMatch(/^Updated \d+ s ago$/);
                 expect(await writers()).toEqual([["rowundo", null, "Undo this decision"]]);
                 await undo.click();
-                await expect.poll(() => message(page)).toBe("Undone: the accept of #1.");
+                await expect.poll(() => message(page)).toBe("Undone: #1.");
                 expect(decides()).toBe(sent + 1);
                 await page.getByRole("button", { name: "Messages" }).click();
                 const said = await box(page).locator("li").allInnerTexts();
                 expect(said.slice(0, 3).map((m) => m.slice(6))).toEqual([
-                    "Undone: the accept of #1.",
+                    "Undone: #1.",
                     "Refreshed.",
                     "Back online: decisions are saved again.",
                 ]);

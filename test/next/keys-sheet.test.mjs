@@ -8,8 +8,8 @@ import { describe, expect, it } from "vitest";
 import { ACTIONS } from "../../trusted/page/next/actions.js";
 import { MAP } from "../../trusted/page/next/key-map.js";
 
-// The rows whose actions arrive with the decision keys (implementation plan, stage 10).
-const PENDING = ["Shift+Up / Shift+Down", "A", "Shift+A", "R", "E", "U", "X"];
+// The rows whose actions are still to come: none since the decision keys arrived.
+const PENDING = [];
 
 describe("the Keys sheet's map", () => {
     it("names an existing action in every row but the pending ones", () => {

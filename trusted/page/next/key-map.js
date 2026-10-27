@@ -15,7 +15,7 @@ export const MAP = [
     ],
     ["Esc", "Close a menu, box or selection; else what the Back button says", ["back", "closebox"]],
     ["A", "Accept (or the selection)", ["accept"]],
-    ["Shift+A", "Accept the current group", ["acceptgroup"]],
+    ["Shift+A", "Accept the current group", ["gaccept"]],
     ["R", "Reject...", ["reject"]],
     ["E", "Exclude...", ["exclude"]],
     ["U", "Undo the last decision", ["undo"]],
