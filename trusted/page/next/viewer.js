@@ -668,10 +668,11 @@ export function createViewer(app, o = {}) {
         resized.observe(parts.wrap);
     }
 
-    // Auto chooses again when the stage changes size.
+    // Auto chooses again when the stage changes size; a viewer whose screen is hidden draws nothing.
     const resized = new ResizeObserver(() => {
         const s = current();
-        if (s && parts?.wrap.isConnected && vs.layout === "auto" && stackedFor(s) !== stacked) {
+        const shown = parts?.wrap.isConnected && parts.wrap.getClientRects().length > 0;
+        if (s && shown && vs.layout === "auto" && stackedFor(s) !== stacked) {
             render(s);
             fill(parts.tools, toolbar(s));
             app.settle?.();
