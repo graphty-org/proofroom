@@ -5,19 +5,20 @@
  * statement that gate cannot read.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as oldGate from "./fixtures/old-gate/trusted/gate.mjs";
 import { approvalProblems } from "../trusted/gate.mjs";
-import { finish } from "../trusted/lib/accept.mjs";
+import { finish, prepareApproval } from "../trusted/lib/accept.mjs";
 import { PASSKEYS_FILE } from "../trusted/lib/approval.mjs";
 import { statementId, statementPath } from "../trusted/lib/change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "../trusted/lib/config.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import { copyFixture, FIXTURE_CONFIG, git, makeRepo, onePr, until } from "./helpers.mjs";
+import { fakeCodeHost } from "./fakes/code-host.mjs";
 import { approve, makeKey, passkeysJson } from "./passkey-vectors.mjs";
 
 const TOKEN = "t".repeat(43);
@@ -392,24 +393,247 @@ describe("Finish in change mode", () => {
         expect(st.approval).toBeDefined();
         expect(gateProblems(r)).toEqual([]);
     });
+});
 
-    it("refuses a seed, whose statement no gate could count, and pushes nothing", async () => {
+describe("Finish of a seed in change mode", () => {
+    const SEED_BRANCH = /^visual\/seed-\d{4}-\d{2}-\d{2}-[0-9a-f]{12}-[0-9a-f]{32}$/;
+
+    /**
+     * A capture of master by one CI run, as `serve --master-run` downloads it.
+     * @param {object} r the repository
+     * @param {number} [runId] the run
+     * @returns {Record<string, { dir: string, results: object }>} the projects
+     */
+    const capture = (r, runId = 501) => ({
+        "compact-mantine": copyFixture("compact-mantine", join(r.dir, `run-${runId}-${Math.random()}/compact-mantine`), {
+            commit: r.master,
+            headSha: null,
+            pr: null,
+            runId,
+            runAttempt: 1,
+        }),
+    });
+
+    /**
+     * One seed Finish as the page runs it: prepare (which opens the pull request when the run has
+     * none), one passkey touch, then Finish.
+     * @param {object} r the repository
+     * @param {object} host the code host
+     * @param {[string, string?, string?][]} list file, decision (accept) and reason
+     * @param {object} [o] what else
+     * @param {Record<string, { dir: string, results: object }>} [o.projects] the run's capture
+     * @param {string} [o.candidate] the candidate's commit
+     * @param {boolean} [o.touch] false cancels the passkey touch
+     * @returns {Promise<{ prepared: object, result?: object, touches: number }>} what happened
+     */
+    async function seedFinish(r, host, list, { projects = capture(r), candidate, touch = true } = {}) {
+        const decisions = list.map(([file, decision = "accept", reason = null]) => ({
+            project: "compact-mantine",
+            file,
+            decision,
+            reason,
+        }));
+        const input = {
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null, ...(candidate && { candidate }) },
+            projects,
+            decisions,
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+        };
+        const prepared = await prepareApproval({ ...input, now: new Date() });
+        if (!touch) {
+            return { prepared, touches: 0 };
+        }
+        const statement = { ...prepared.statement, approval: approve(prepared.statement, KEY, { origin: ORIGIN }) };
+        const approval = { statement, commit: prepared.commit, branch: prepared.branch, origin: ORIGIN, pendingKeys: [] };
+        return { prepared, result: await finish({ ...input, approval }), touches: 1 };
+    }
+
+    /**
+     * The gate on the merge result of a seed branch into master, as `gate --pr N`.
+     * @param {object} r the repository
+     * @param {string} branch the seed branch
+     * @param {string} change the change gated
+     * @returns {string[]} the problems
+     */
+    function gateOn(r, branch, change) {
+        const merged = join(r.dir, `merge-${Math.random().toString(36).slice(2)}`);
+        git(r.dir, "clone", "-q", "-b", "master", r.remote, merged);
+        git(merged, "-c", "user.name=CI", "-c", "user.email=ci@example.com", "merge", "-q", "--no-ff", "--no-edit", `origin/${branch}`);
+        return approvalProblems({
+            base: git(merged, "rev-parse", "HEAD^1"),
+            head: "HEAD",
+            cwd: merged,
+            baselines: BASELINES,
+            approvals: APPROVALS,
+            keys: [KEY.entry],
+            mode: "change",
+            changes: [change],
+            repository: REPO_ID,
+        }).problems;
+    }
+
+    const seedStatements = (r, branch) =>
+        git(r.remote, "diff", "--name-only", "--diff-filter=A", `master...${branch}`, "--", `${APPROVALS}/`)
+            .split("\n")
+            .filter(Boolean)
+            .map((file) => ({ file, ...JSON.parse(git(r.remote, "show", `${branch}:${file}`)) }));
+
+    beforeEach(() => {
+        vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+
+    it("opens the pull request first, signs one seed statement with one touch, and the gate passes", async () => {
         const r = changeRepo();
-        const at = { commit: r.master, headSha: null, pr: null };
-        const projects = { "compact-mantine": copyFixture("compact-mantine", join(r.dir, "m/compact-mantine"), at) };
-        const before = git(r.remote, "for-each-ref", "--format=%(refname)");
-        await expect(
-            finish({
-                repo: r.repo,
-                gh: async () => "{}",
-                target: { pr: null, branch: null },
-                projects,
-                decisions: [{ project: "compact-mantine", file: BADGE, decision: "accept", reason: null }],
-                config: FIXTURE_CONFIG,
-                repository: REPO_ID,
-            }),
-        ).rejects.toThrow("a capture of the default branch cannot be approved with change statements");
-        expect(git(r.remote, "for-each-ref", "--format=%(refname)")).toBe(before);
+        const host = fakeCodeHost({ listOpened: true });
+        const { prepared, result, touches } = await seedFinish(r, host, [[BADGE]]);
+        // The pull request was open before the touch: prepare opened it, and its number is signed.
+        expect(prepared.opened).toBe("https://fake/changes/900");
+        expect(prepared.statement).toMatchObject({ type: "seed-approval", change: "pr:900", capturedHead: r.master });
+        expect(touches).toBe(1);
+        expect(host.opened).toHaveLength(1);
+        const [{ branch }] = host.opened;
+        expect(branch).toMatch(SEED_BRANCH);
+        expect(result).toMatchObject({ branch, pullRequest: "https://fake/changes/900" });
+        // X' replaced X: one commit on the captured commit, holding the baselines and the statement.
+        expect(git(r.remote, "rev-list", "--count", `${r.master}..${branch}`)).toBe("1");
+        const [st] = seedStatements(r, branch);
+        expect(st.previous).toBeNull();
+        expect(host.posted.find((p) => p.kind === "update")?.body).toContain("Seeds visual baselines from master");
+        expect(gateOn(r, branch, "pr:900")).toEqual([]);
+        // The statement counts for its own pull request only.
+        expect(gateOn(r, branch, "pr:901")[0]).toContain("not reviewed");
+    });
+
+    it("leaves the pull request failing as not reviewed after a cancelled touch, and the next Finish replaces X", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, touch: false });
+        const [{ branch }] = host.opened;
+        expect(seedStatements(r, branch)).toEqual([]);
+        expect(gateOn(r, branch, "pr:900").join("\n")).toContain("not reviewed");
+        const { result } = await seedFinish(r, host, [[BADGE]], { projects });
+        expect(result.branch).toBe(branch);
+        expect(host.opened).toHaveLength(1);
+        expect(git(r.remote, "rev-list", "--count", `${r.master}..${branch}`)).toBe("1");
+        expect(gateOn(r, branch, "pr:900")).toEqual([]);
+    });
+
+    it("chains a second Finish of the run onto its seed branch, and a later reject there fails the gate", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        const [{ branch }] = host.opened;
+        expect(host.opened).toHaveLength(1);
+        const chain = seedStatements(r, branch);
+        const first = chain.find((st) => st.previous === null);
+        const { file, ...doc } = first;
+        expect(chain.find((st) => st !== first).previous).toBe(statementId(doc));
+        expect(gateOn(r, branch, "pr:900")).toEqual([]);
+        await seedFinish(r, host, [[BADGE, "reject", "caught mid-animation"], [BUTTON]], { projects });
+        expect(gateOn(r, branch, "pr:900")).toEqual([
+            `${BASELINES}/compact-mantine/${BADGE}: rejected (caught mid-animation); a rejected item needs a code change, not another review`,
+        ]);
+        expect(file).toBeDefined();
+    });
+
+    it("gives two runs of master seeded on one day two branches and two pull requests", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r, 501) });
+        await seedFinish(r, host, [[BUTTON]], { projects: capture(r, 502) });
+        expect(host.opened.map((o) => o.number)).toEqual([900, 901]);
+        expect(new Set(host.opened.map((o) => o.branch)).size).toBe(2);
+    });
+
+    it("after a restart without its records, goes to a fresh branch and closes the old seed pull request", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await seedFinish(r, host, [[BADGE, "reject", "caught mid-animation"], [BUTTON]], { projects });
+        expect(host.opened.map((o) => [o.number, o.state])).toEqual([
+            [900, "closed"],
+            [901, "open"],
+        ]);
+        // No open pull request holds the earlier accept: the new one leaves the rejected image out.
+        const fresh = host.opened[1].branch;
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(git(r.remote, "ls-tree", "--name-only", fresh, "--", badge)).toBe("");
+        expect(git(r.remote, "ls-tree", "--name-only", host.opened[0].branch, "--", badge)).toBe(badge);
+        expect(seedStatements(r, fresh)[0].entries.find((e) => e.decision === "reject")).toMatchObject({
+            path: `compact-mantine/${BADGE}`,
+            reason: "caught mid-animation",
+        });
+        expect(gateOn(r, fresh, "pr:901")).toEqual([]);
+    });
+
+    it("refuses and closes a recorded seed branch someone pushed a code commit to, naming the commit", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [{ branch }] = host.opened;
+        const other = join(r.dir, "intruder");
+        git(r.dir, "clone", "-q", "-b", branch, r.remote, other);
+        writeFileSync(join(other, "src.txt"), "code\n");
+        git(other, "add", "-A");
+        git(other, "-c", "user.name=I", "-c", "user.email=i@example.com", "commit", "-q", "-m", "code");
+        git(other, "push", "-q", "origin", branch);
+        const code = git(other, "rev-parse", "HEAD");
+        await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(
+            `commit ${code.slice(0, 12)} is not a Finish commit of this seed (it changes src.txt)`,
+        );
+        expect(host.opened[0].state).toBe("closed");
+        // The next Finish starts a fresh seed branch with a pull request of its own.
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(host.opened.map((o) => o.state)).toEqual(["closed", "open"]);
+    });
+
+    it("refuses and closes a recorded seed whose pull request comes from another repository", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const real = host.change;
+        host.change = async (n) => ({ ...(await real(n)), head: { ref: host.opened[0].branch, repo: { id: 2 } } });
+        await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(
+            "its pull request comes from another repository",
+        );
+        expect(host.opened[0].state).toBe("closed");
+    });
+
+    it("adds a candidate's second Finish as one commit on its branch's tip, chained after the first", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, candidate: r.master });
+        const [{ branch }] = host.opened;
+        expect(branch).toMatch(/^visual\/approve-[0-9a-f]{12}-[0-9a-f]{32}$/);
+        const tip = git(r.remote, "rev-parse", branch);
+        await seedFinish(r, host, [[BADGE], [BUTTON]], { projects, candidate: r.master });
+        expect(git(r.remote, "rev-parse", `${branch}^`)).toBe(tip);
+        expect(seedStatements(r, branch)).toHaveLength(2);
+        expect(gateOn(r, branch, "pr:900")).toEqual([]);
+    });
+
+    it("seeds with branch: on a code host that opens no pull requests, pushing nothing before the touch", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost();
+        delete host.openChange;
+        delete host.listChanges;
+        const { prepared, result } = await seedFinish(r, host, [[BADGE]]);
+        expect(prepared.opened).toBeUndefined();
+        expect(prepared.statement.change).toBe(`branch:${prepared.branch}`);
+        expect(result.pullRequest).toBeNull();
+        expect(gateOn(r, prepared.branch, `branch:${prepared.branch}`)).toEqual([]);
     });
 });
 

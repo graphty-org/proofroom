@@ -13,11 +13,19 @@ import { GITHUB_VOCABULARY } from "../../trusted/lib/adapters/github.mjs";
  * @param {string | null} [state.login] whoAmI's answer
  * @param {string | null} [state.repositoryId] repositoryId's answer
  * @param {object[]} [state.posted] receives every write
+ * @param {boolean} [state.listOpened] listChanges and change also answer for the changes it opened,
+ *     as a real code host does
  * @returns {import("../../trusted/lib/adapters/index.mjs").CodeHost & { calls: string[], posted: object[],
  *     opened: { number: number, html_url: string, branch: string, state: string, body: string }[] }}
  *     the adapter, with every call by name, every write, and the changes it opened
  */
-export function fakeCodeHost({ changes = [], login = "owner", repositoryId = "fake:1", posted = [] } = {}) {
+export function fakeCodeHost({
+    changes = [],
+    login = "owner",
+    repositoryId = "fake:1",
+    posted = [],
+    listOpened = false,
+} = {}) {
     const calls = [];
     const opened = [];
     const call =
@@ -32,7 +40,12 @@ export function fakeCodeHost({ changes = [], login = "owner", repositoryId = "fa
         calls,
         posted,
         opened,
-        listChanges: call("listChanges", () => structuredClone(changes)),
+        listChanges: call("listChanges", () => [
+            ...structuredClone(changes),
+            ...(listOpened ? opened : [])
+                .filter((o) => o.state === "open")
+                .map((o) => ({ number: o.number, url: o.html_url, branch: o.branch, fork: false })),
+        ]),
         describe: call("describe", (number) => {
             const c = changes.find((x) => x.number === number);
             return {
@@ -62,6 +75,11 @@ export function fakeCodeHost({ changes = [], login = "owner", repositoryId = "fa
             return o ? { number: o.number, html_url: o.html_url } : null;
         }),
         change: call("change", (number) => {
+            const o = listOpened ? opened.find((x) => x.number === number) : undefined;
+            if (o) {
+                const repo = { id: 1 };
+                return { number, state: o.state, head: { ref: o.branch, repo }, base: { repo } };
+            }
             const c = changes.find((x) => x.number === number);
             return c ? { number, state: "open", head: { ref: c.branch, sha: c.headSha } } : { number, state: "closed" };
         }),

@@ -46,6 +46,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -55,6 +56,7 @@ import {
     changeFolder,
     contentHash,
     newestDecisions,
+    SEED_TYPE,
     statementId,
     statementPath,
     statementProblem,
@@ -421,12 +423,18 @@ export async function finish({
         config,
         sign,
         repository,
+        host,
     });
     if (made.done) {
         return made.done;
     }
     const pushed = made.pushed ?? { commit: null, branch: target.branch, record: null };
-    const pullRequest = made.pushed && isMaster ? await openSeedPullRequest(host, decided, pushed) : null;
+    const pullRequest =
+        made.pushed && isMaster
+            ? pushed.pullRequest !== undefined
+                ? await describeSeedPullRequest(host, decided, pushed)
+                : await openSeedPullRequest(host, decided, pushed)
+            : null;
     const { commit, branch } = pushed;
     if (target.localBranch) {
         // A local branch has no code host change to comment on or set a status for. On a host that
@@ -452,7 +460,9 @@ export async function finish({
     // A rejected image means the candidate never promotes: an accept pull request an earlier Finish
     // of it opened is closed, so its baselines never reach the default branch.
     const closed =
-        isMaster && target.candidate && rejects.length > 0 ? await closeCandidatePullRequest(host, target) : {};
+        isMaster && target.candidate && rejects.length > 0
+            ? await closeCandidatePullRequest(host, target, { repo, config })
+            : {};
     return {
         ...closed,
         commit,
@@ -526,6 +536,7 @@ async function pushDecisions({
     config,
     sign,
     repository,
+    host,
 }) {
     if (approval) {
         const pushed = await pushApproval({ repo, target, approval, progress, net, config });
@@ -550,6 +561,7 @@ async function pushDecisions({
         config,
         statement: sign,
         repository,
+        host,
     });
     // The earlier Finish posted the comment and the status too: nothing is posted again.
     return {
@@ -650,19 +662,48 @@ async function openSeedPullRequest(host, decided, { commit, branch }) {
 }
 
 /**
+ * A seed's pull request in change mode, opened before the passkey touch (commitSeed): its
+ * description is written now, with this Finish's decisions and notes. A failed rewrite only warns:
+ * the statement is pushed, and the next Finish writes it again.
+ * @param {import("./adapters/index.mjs").CodeHost} host the code host
+ * @param {object} decided what finish checked: first, accepts, rejects, notes, progress, net, config
+ * @param {{ pullRequest?: string | null, number?: number | null }} pushed what commitSeed pushed
+ * @returns {Promise<string | null>} the pull request's URL (null on plain git)
+ */
+async function describeSeedPullRequest(host, decided, { pullRequest, number }) {
+    if (pullRequest === null || number === null || number === undefined || !host.updateChange) {
+        return pullRequest;
+    }
+    const { first, accepts, rejects, notes, progress, net, config, target } = decided;
+    progress("updating the pull request");
+    const body = seedBody(first, accepts, rejects, notes, config, target.candidate ?? null);
+    await net("updating the pull request", () => host.updateChange(number, { body })).catch((err) =>
+        console.error(`proofroom: could not write the description of ${pullRequest}: ${err.message}`),
+    );
+    return pullRequest;
+}
+
+/**
  * Closes the open accept pull request of a candidate, if there is one.
  * @param {import("./adapters/index.mjs").CodeHost} host the code host
  * @param {{ candidate?: string }} target the candidate
+ * @param {{ repo: string, config: { workDir: string } }} [at] the repository and settings, for the
+ *     seed branch a change mode Finish recorded for the candidate (its name is random)
  * @returns {Promise<{ closedPullRequest?: string, closeError?: string }>} the pull request closed,
  *     or why closing it failed
  */
-export async function closeCandidatePullRequest(host, target) {
-    const branch = candidateBranch(target.candidate);
+export async function closeCandidatePullRequest(host, target, at = null) {
+    const key = `candidate:${target.candidate}`;
+    const recorded = at ? (await seedRecords(at.repo, at.config))[key] : undefined;
+    const branch = recorded?.branch ?? candidateBranch(target.candidate);
     let open = null;
     try {
-        open = await host.openChangeOf(branch);
+        open = recorded?.number ? { number: recorded.number, html_url: recorded.url } : await host.openChangeOf(branch);
         if (open) {
             await host.closeChange(open.number);
+        }
+        if (recorded) {
+            await keepSeedRecord(at.repo, at.config, key, null);
         }
         return open ? { closedPullRequest: open.html_url } : {};
     } catch (err) {
@@ -820,15 +861,20 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
  * @param {number[]} [input.retryDelays] as in finish
  * @param {string | null} [input.repository] as in finish
+ * @param {(args: string[], input?: string) => Promise<string>} [input.gh] as in finish
+ * @param {import("./adapters/index.mjs").CodeHost} [input.codeHost] as in finish: a seed's pull
+ *     request is opened here, before the passkey touch, when the seed has none yet
  * @returns {Promise<{ commit: string, branch: string, record: string | null, recordBody: object | null,
- *     statement?: object, pushed: boolean, accepts: number, excludes: number, rejects: number }>}
+ *     statement?: object, pushed: boolean, opened?: string, accepts: number, excludes: number, rejects: number }>}
  *     the accept commit and branch it goes to, the record's path and the record to sign, whether
- *     the commit is pushed already, and what the Finish holds; in change mode (the default
+ *     the commit is pushed already, the seed pull request this call opened (`opened`), and what the Finish holds; in change mode (the default
  *     branch's config, docs/approval-format.md) no record but the change `statement` to sign,
  *     which pushApproval adds to the commit
  */
 export async function prepareApproval({
     repo,
+    gh,
+    codeHost = null,
     target,
     projects,
     decisions,
@@ -860,6 +906,7 @@ export async function prepareApproval({
         push: false,
         recordVersion: 2,
         repository,
+        host: codeHost ?? (gh ? githubCodeHost(gh) : null),
     });
     if (built.statement !== undefined) {
         if (built.alreadyFinished || built.statement === null) {
@@ -874,6 +921,7 @@ export async function prepareApproval({
             recordBody: null,
             statement: built.statement,
             pushed: false,
+            ...(built.opened && { opened: built.pullRequest }),
             accepts: accepts.filter((a) => a.decision === "accept").length,
             excludes: accepts.filter((a) => a.decision !== "accept").length,
             rejects: rejects.length,
@@ -1112,7 +1160,8 @@ export async function unsignedRecordAt(repo, tip, pr, config) {
  * @param {(step: string) => void} input.progress as in finish
  * @param {Function} input.net as in finish
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
- * @returns {Promise<{ commit: string, branch: string, record: string, pending?: boolean }>} what was pushed
+ * @returns {Promise<{ commit: string, branch: string, record: string, pending?: boolean,
+ *     pullRequest?: string | null, number?: number | null }>} what was pushed (and a seed's pull request)
  */
 async function pushApproval({ repo, target, approval, progress, net, config }) {
     const { statement, commit, branch } = approval;
@@ -1154,7 +1203,8 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
  * pushApproval in change mode: the signed statement, checked with the gate's own code, goes into
  * the accept commit at the place its content gives, and the commit is pushed (pushChange).
  * @param {object} input as pushApproval's
- * @returns {Promise<{ commit: string, branch: string, record: null, pending?: boolean }>} what was pushed
+ * @returns {Promise<{ commit: string, branch: string, record: null, pending?: boolean,
+ *     pullRequest?: string | null, number?: number | null }>} what was pushed (and a seed's pull request)
  */
 async function pushSignedChange(input) {
     const { repo, target, approval, progress, net, config } = input;
@@ -1167,18 +1217,16 @@ async function pushSignedChange(input) {
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, commit]);
     try {
-        const path = statementPath(config.approvals, statement);
-        await put(join(tree, path), `${JSON.stringify(statement, null, 2)}\n`);
-        await git(tree, ["add", "--", path]);
-        const message = (await git(repo, ["log", "-1", "--format=%B", commit])).replace(
-            /^Approval: pending$/m,
-            `Approval: ${path}`,
-        );
-        await git(tree, ["commit", "-q", "--no-verify", "--amend", "-F", "-"], `${message}\n`);
+        await amendStatement(tree, statement, config);
+        const seed = statement.type === SEED_TYPE ? await seedPushOf(repo, config, branch, fetch) : null;
         const pushed = await pushChange(
             { repo, target, progress, net, config },
-            { tree, writes: [], branch, statement, fetch },
+            { tree, writes: [], branch, statement, fetch, lease: seed?.lease ?? null },
         );
+        if (seed) {
+            await keepSeedRecord(repo, config, seed.key, { ...seed.record, x: null });
+            return { commit: pushed, branch, record: null, pullRequest: seed.record.url, number: seed.record.number };
+        }
         return { commit: pushed, branch, record: null, pending: await pendingPush(repo, target) };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
@@ -1288,8 +1336,10 @@ async function keysAt(repo, ref) {
  *     an earlier Finish pushed is reused only when its record holds exactly these decisions
  * @param {string | null} [input.repository] this repository's id for a change statement
  *     (`github:<id>`); null takes the default branch's `repositoryId`
+ * @param {import("./adapters/index.mjs").CodeHost | null} [input.host] the code host a seed's pull
+ *     request is opened, looked up and closed on (change mode)
  * @returns {Promise<{ commit: string, branch: string, record: string | null, alreadyFinished?: true, pending?: boolean,
- *     statement?: object }>} the commit (pushed unless `push` is false) and branch, and the record's
+ *     statement?: object, pullRequest?: string | null, number?: number | null, opened?: boolean }>} the commit (pushed unless `push` is false) and branch, and the record's
  *     path (null for a seed pushed earlier and reused, and in change mode, whose commit holds its
  *     `statement` instead: unsigned, and not yet in the commit when it is not pushed)
  */
@@ -1307,6 +1357,7 @@ async function commitAccepts({
     statement = false,
     recordVersion = 3,
     repository = null,
+    host = null,
 }) {
     const { baselines, defaultBranch } = config;
     const isMaster = target.pr === null && !target.localBranch;
@@ -1344,7 +1395,7 @@ async function commitAccepts({
         );
     }
     if (settings.format === "change") {
-        const input = { repo, target, rejects, first, now, progress, net, config, push };
+        const input = { repo, target, rejects, first, now, progress, net, config, push, host };
         const id = repository ?? settings.repositoryId;
         return commitChange(input, { base, branch, plan, writes, fetch, repository: id });
     }
@@ -1426,12 +1477,9 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
             `this repository has no id for its change statements: set "repositoryId" in the default branch's ${CONFIG_FILE} (docs/approval-format.md, "Repository")`,
         );
     }
-    // A seed's capture is of a default branch commit, which is on its pull request's base, and the
-    // pull request's id is not known before Finish opens it: no statement of it could ever count.
+    // A capture of a default branch commit (a seed, or a candidate) is approved by a seed statement.
     if (target.pr === null && !target.localBranch) {
-        throw new AcceptError(
-            "a capture of the default branch cannot be approved with change statements: accept these snapshots on a pull request's capture instead (docs/approval-format.md)",
-        );
+        return commitSeed(input, { base, plan, writes, fetch, repository });
     }
     const change = target.localBranch ? `branch:${target.branch}` : `pr:${target.pr}`;
     const entries = [...plan.entries, ...rejectEntries(rejects)].sort((a, b) => a.path.localeCompare(b.path));
@@ -1476,6 +1524,419 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
             console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
         );
     }
+}
+
+/**
+ * commitChange for a capture of the default branch itself (a seed, or a candidate): the accepted
+ * baselines and one seed statement (docs/approval-format.md, "Seed statements") on a seed branch of
+ * this run's own, whose pull request is the `change` the statement names. That id must be signed,
+ * so on a code host that opens pull requests a fresh seed branch is pushed first with the accept
+ * commit X alone (the baselines) and its pull request opened; the signed statement then replaces X
+ * with X' (X plus the statement, one commit, same parent), pushed with a lease on X. A later Finish
+ * of the same run goes on the branch the server recorded for it, after the reuse checks
+ * (seedBranchOf); a fresh branch first retires every open pull request holding a seed of this
+ * capture (retireSeeds). On plain git nothing is pushed early: the change is `branch:<the branch>`.
+ * @param {object} input commitChange's input, with `host`
+ * @param {{ base: string, plan: object, writes: object[], fetch: (b: string) => Promise<any>,
+ *     repository: string }} work the captured commit, the planned writes, the verified writes, the
+ *     fetcher and the repository's id
+ * @returns {Promise<{ commit: string, branch: string, record: null, statement: object,
+ *     pullRequest: string | null, number: number | null, opened: boolean }>} what was committed (and
+ *     pushed, unless `push` is false), the seed's pull request, and whether this Finish opened it
+ */
+async function commitSeed(input, { base, plan, writes, fetch, repository }) {
+    const { repo, target, rejects, now, config, push } = input;
+    const key = seedKey(target, input.first, base);
+    const found = await seedBranchOf(input, { key, base, fetch });
+    const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
+    await removeWorktree(repo, tree);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, found.parent]);
+    try {
+        const local = previewsOf([...rejects, ...writes], null);
+        await writeAcceptCommit(input, { tree, plan, writes, body: null, local, statement: null });
+        let { change, url, number, lease } = found;
+        let opened = false;
+        if (change === null && input.host?.openChange) {
+            // The pull request's id is what the statement signs: push X alone and open it first.
+            const x = await pushAccepts(input, { tree, writes, branch: found.branch, lease });
+            await keepSeedRecord(repo, config, key, { branch: found.branch, change: null, url: null, number: null, x });
+            ({ url, number } = await openSeedChange(input, found.branch, x));
+            change = `pr:${number}`;
+            lease = x;
+            opened = true;
+        } else if (change === null) {
+            change = `branch:${found.branch}`;
+        }
+        const record = { branch: found.branch, change, url, number, x: lease };
+        await keepSeedRecord(repo, config, key, record);
+        /** @type {any} */
+        const statement = {
+            version: 2,
+            type: SEED_TYPE,
+            repository,
+            baselines: config.baselines,
+            change,
+            capturedHead: base,
+            previous: chainEnds(await statementsAt(repo, found.parent, config, change)),
+            approvedAt: now.toISOString().replace(/\.\d+Z$/, "Z"),
+            entries: [...plan.entries, ...rejectEntries(rejects)].sort((a, b) => a.path.localeCompare(b.path)),
+        };
+        const why = statementProblem(statement);
+        if (why) {
+            throw new AcceptError(`this Finish's seed statement is not valid (${why})`);
+        }
+        const out = { branch: found.branch, record: null, statement, pullRequest: url, number, opened };
+        if (!push) {
+            return { ...out, commit: await git(tree, ["rev-parse", "HEAD"]) };
+        }
+        // No passkey is registered: the statement goes in unsigned, X' replacing X.
+        await amendStatement(tree, statement, config);
+        const commit = await pushAccepts(input, { tree, writes, branch: found.branch, lease });
+        await keepSeedRecord(repo, config, key, { ...record, x: null });
+        return { ...out, commit };
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    } finally {
+        await removeWorktree(repo, tree).catch((err) =>
+            console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
+        );
+    }
+}
+
+/**
+ * Which run (or candidate) a seed Finish is of: its seed branch is recorded under this key.
+ * @param {{ candidate?: string }} target as in finish
+ * @param {{ runId?: number | null }} first the results.json of the first decided project
+ * @param {string} base the captured commit
+ * @returns {string} the key
+ */
+const seedKey = (target, first, base) =>
+    target.candidate ? `candidate:${base}` : `run:${first?.runId ?? "local"}:${base}`;
+
+/**
+ * A fresh seed branch's name: by run, and unguessable (128 random bits), so nobody can create it
+ * before Finish does and two runs never share one.
+ * @param {{ candidate?: string }} target as in finish
+ * @param {string} base the captured commit
+ * @param {Date} now the review time
+ * @returns {string} the branch
+ */
+const freshSeedBranch = (target, base, now) => {
+    const random = randomBytes(16).toString("hex");
+    return target.candidate
+        ? `visual/approve-${base.slice(0, 12)}-${random}`
+        : `visual/seed-${now.toISOString().slice(0, 10)}-${base.slice(0, 12)}-${random}`;
+};
+
+const seedRecordsFile = (repo, config) => join(repo, config.workDir, "seed-branches.json");
+
+/**
+ * The seed branches this server created, by run (seedKey): the branch, the change its statements
+ * name, its pull request, and the unsigned accept commit X pushed before the passkey touch (null
+ * once replaced). Finish reuses only a branch recorded here, never one found by its name.
+ * @param {string} repo the repository
+ * @param {{ workDir: string }} config the settings
+ * @returns {Promise<Record<string, { branch: string, change: string | null, url: string | null,
+ *     number: number | null, x: string | null }>>} the records
+ */
+async function seedRecords(repo, config) {
+    try {
+        return JSON.parse(await readFile(seedRecordsFile(repo, config), "utf8"));
+    } catch {
+        return {};
+    }
+}
+
+/**
+ * Records (or, with null, forgets) a run's seed branch.
+ * @param {string} repo the repository
+ * @param {{ workDir: string }} config the settings
+ * @param {string} key the run (seedKey)
+ * @param {object | null} record what to keep
+ */
+async function keepSeedRecord(repo, config, key, record) {
+    const all = await seedRecords(repo, config);
+    if (record === null) {
+        delete all[key];
+    } else {
+        all[key] = record;
+    }
+    await put(seedRecordsFile(repo, config), `${JSON.stringify(all, null, 2)}\n`);
+}
+
+/**
+ * What a signed seed statement's push replaces: the run's record (found by its branch and change),
+ * and the unsigned accept commit X at the branch's tip, if that is where the branch is.
+ * @param {string} repo the repository
+ * @param {{ workDir: string }} config the settings
+ * @param {string} branch the seed branch
+ * @param {(b: string) => Promise<any>} fetch the fetcher
+ * @returns {Promise<{ key: string, record: object, lease: string | null } | null>} it, or null
+ *     when this server recorded no such branch
+ */
+async function seedPushOf(repo, config, branch, fetch) {
+    const found = Object.entries(await seedRecords(repo, config)).find(([, r]) => r.branch === branch);
+    if (!found) {
+        return null;
+    }
+    const [key, record] = found;
+    await fetch(branch).catch(() => {});
+    const tip = await git(repo, ["rev-parse", "--verify", "-q", ownRef(branch)]).catch(() => "");
+    return { key, record, lease: record.x && tip === record.x ? record.x : null };
+}
+
+/**
+ * Where a seed Finish goes: the branch recorded for this run when it passes the reuse checks
+ * (reuseProblem); else a fresh branch on the captured commit, once every open pull request holding
+ * a seed of this capture is closed (retireSeeds). A recorded branch that fails a check is closed
+ * and the Finish refused, naming why; one that is gone (deleted, merged or closed) is forgotten.
+ * @param {object} input commitSeed's input
+ * @param {{ key: string, base: string, fetch: (b: string) => Promise<any> }} at the run, the
+ *     captured commit and the fetcher
+ * @returns {Promise<{ branch: string, change: string | null, url: string | null, number: number | null,
+ *     parent: string, lease: string | null }>} the branch, its change and pull request (null while
+ *     none is open), the commit this Finish goes on, and the unsigned X this Finish replaces
+ */
+async function seedBranchOf(input, { key, base, fetch }) {
+    const { repo, target, config, host, now } = input;
+    const recorded = (await seedRecords(repo, config))[key];
+    if (recorded) {
+        const why = await reuseProblem(input, recorded, { base, fetch });
+        if (why === null) {
+            const tip = await git(repo, ["rev-parse", ownRef(recorded.branch)]);
+            const lease = recorded.x && tip === recorded.x ? tip : null;
+            const parent = lease ? await git(repo, ["rev-parse", `${tip}^`]) : tip;
+            return { ...recorded, parent, lease };
+        }
+        await keepSeedRecord(repo, config, key, null);
+        if (why !== GONE) {
+            const closed = await closeSeedChange(host, recorded);
+            throw new AcceptError(
+                `${recorded.branch} cannot take this Finish: ${why}. ${closed}; press Finish again to start a fresh seed branch`,
+            );
+        }
+    }
+    await retireSeeds(input, { base, fetch });
+    return { branch: freshSeedBranch(target, base, now), change: null, url: null, number: null, parent: base, lease: null };
+}
+
+const GONE = "gone";
+
+/**
+ * Closes a recorded seed's pull request, which may carry this reviewer's earlier signed accept.
+ * @param {import("./adapters/index.mjs").CodeHost | null} host the code host
+ * @param {{ branch: string, url: string | null, number: number | null }} recorded the record
+ * @returns {Promise<string>} what was done, for the message
+ */
+async function closeSeedChange(host, recorded) {
+    if (recorded.number === null) {
+        return `Close or delete ${recorded.branch}`;
+    }
+    if (!host?.closeChange) {
+        return `Close ${recorded.url ?? recorded.branch}`;
+    }
+    try {
+        await host.closeChange(recorded.number);
+        return `Its pull request ${recorded.url} was closed`;
+    } catch (err) {
+        return `Closing ${recorded.url} failed (${err.message}): close it by hand`;
+    }
+}
+
+/**
+ * Why a recorded seed branch cannot take another Finish, on the code host's current state: it is
+ * gone (GONE: deleted, or its pull request merged or closed); its pull request comes from another
+ * repository; or a commit since the captured commit is not a Finish commit of this seed (it changes
+ * only one statement file, of this change, and the baseline files its entries name; the statement
+ * verifies against a base key and names this change and, for a seed statement, this run's captured
+ * commit), but for the unsigned X this server pushed at the tip before a cancelled touch. A seed
+ * pull request must hold no code: a reviewer who Finishes a seed must never sign for someone
+ * else's commits.
+ * @param {object} input commitSeed's input
+ * @param {{ branch: string, change: string | null, number: number | null, x: string | null }} recorded the record
+ * @param {{ base: string, fetch: (b: string) => Promise<any> }} at the captured commit and the fetcher
+ * @returns {Promise<string | null>} why not, GONE, or null
+ */
+async function reuseProblem(input, recorded, { base, fetch }) {
+    const { repo, config, host, net } = input;
+    const listed = await net("git ls-remote", () => git(repo, ["ls-remote", "--heads", "origin", recorded.branch]));
+    if (listed === "") {
+        return GONE;
+    }
+    if (recorded.number !== null && host?.change) {
+        const c = await net("reading the pull request", () => host.change(recorded.number));
+        if (c?.state !== "open") {
+            return GONE;
+        }
+        const repoOf = (side) => side?.repo?.id ?? side?.repo?.full_name ?? null;
+        if (c.head?.ref !== undefined && c.head.ref !== recorded.branch) {
+            return `its pull request's branch is ${c.head.ref}, not ${recorded.branch}`;
+        }
+        if (repoOf(c.head) !== repoOf(c.base)) {
+            return "its pull request comes from another repository";
+        }
+    }
+    await fetch(recorded.branch);
+    const tip = await git(repo, ["rev-parse", ownRef(recorded.branch)]);
+    if (!(await gitOk(repo, ["merge-base", "--is-ancestor", base, tip]))) {
+        return "it no longer holds the captured commit";
+    }
+    const keys = await keysAt(repo, ownRef(config.defaultBranch));
+    const commits = (await git(repo, ["rev-list", "--reverse", "--parents", `${base}..${tip}`]))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => line.split(" "));
+    for (const [sha, ...parents] of commits) {
+        if (sha === tip && sha === recorded.x) {
+            continue;
+        }
+        const why = parents.length === 1 ? await notFinishCommit(repo, sha, recorded.change, { base, keys, config }) : "it is a merge";
+        if (why) {
+            return `commit ${sha.slice(0, 12)} is not a Finish commit of this seed (${why})`;
+        }
+    }
+    return null;
+}
+
+/**
+ * Why one commit is not a Finish commit of a seed, or null when it is.
+ * @param {string} repo the repository
+ * @param {string} sha the commit
+ * @param {string | null} change the seed's change
+ * @param {{ base: string, keys: object[], config: { approvals: string, baselines: string } }} at the
+ *     captured commit, the base's keys and the settings
+ * @returns {Promise<string | null>} why not, or null
+ */
+async function notFinishCommit(repo, sha, change, { base, keys, config }) {
+    const files = (await git(repo, ["diff-tree", "--no-commit-id", "-r", "-z", "--name-only", "--no-renames", sha]))
+        .split("\0")
+        .filter(Boolean);
+    const folder = change === null ? null : `${config.approvals}/${changeFolder(change)}/`;
+    const stated = files.filter((f) => f.startsWith(`${config.approvals}/`));
+    if (stated.length !== 1 || folder === null || !stated[0].startsWith(folder)) {
+        return `it changes ${files.find((f) => !f.startsWith(`${config.baselines}/`)) ?? files[0] ?? "nothing"}`;
+    }
+    const st = await git(repo, ["show", `${sha}:${stated[0]}`]).then(JSON.parse, () => null);
+    if (statementProblem(st) !== null || st.change !== change) {
+        return `${stated[0]} is not a statement of ${change}`;
+    }
+    const named = new Set(st.entries.map((e) => `${config.baselines}/${e.path}`));
+    const other = files.find((f) => f !== stated[0] && !named.has(f));
+    if (other !== undefined) {
+        return `it changes ${other}`;
+    }
+    if (keys.length > 0 && verifyApproval(st, keys) !== null) {
+        return `${stated[0]} does not verify against the default branch's keys`;
+    }
+    // A seed statement of this run; or a change statement of a later capture of the branch itself.
+    const own =
+        st.type === SEED_TYPE
+            ? st.capturedHead === base
+            : st.capturedHead !== base && (await gitOk(repo, ["merge-base", "--is-ancestor", base, st.capturedHead]));
+    return own ? null : `${stated[0]} reviewed another capture`;
+}
+
+/**
+ * Before a fresh seed branch: closes every open pull request of this repository whose added
+ * statements carry this capture's commit, whatever its branch is named, since a reject in the new
+ * seed does nothing to an older one, which would stay green holding the earlier accept. Refuses,
+ * naming it, when one cannot be closed (a code host without `closeChange`, plain git).
+ * @param {object} input commitSeed's input
+ * @param {{ base: string, fetch: (b: string) => Promise<any> }} at the captured commit and the fetcher
+ */
+async function retireSeeds(input, { base, fetch }) {
+    const { repo, config, host, net } = input;
+    if (!host?.listChanges) {
+        return;
+    }
+    const open = await net("listing the open changes", () => host.listChanges(config));
+    const tracking = ownRef(config.defaultBranch);
+    for (const c of open.filter((o) => o.branch && !o.fork)) {
+        if (!(await fetch(c.branch).then(() => true, () => false))) {
+            continue;
+        }
+        const added = (
+            await git(repo, ["diff", "-z", "--name-only", "--diff-filter=A", `${tracking}...${ownRef(c.branch)}`, "--", `${config.approvals}/`])
+        )
+            .split("\0")
+            .filter(Boolean);
+        let holds = false;
+        for (const file of added) {
+            const st = await git(repo, ["show", `${ownRef(c.branch)}:${file}`]).then(JSON.parse, () => null);
+            holds ||= statementProblem(st) === null && st.capturedHead === base;
+        }
+        if (!holds) {
+            continue;
+        }
+        if (!host.closeChange || c.number === null || c.number === undefined) {
+            throw new AcceptError(
+                `${c.branch} holds an earlier seed of this capture: close or delete it, then press Finish again`,
+            );
+        }
+        await net("closing the earlier seed", () => host.closeChange(c.number)).catch((err) => {
+            throw new AcceptError(
+                `${c.url ?? c.branch} holds an earlier seed of this capture and closing it failed (${err.message}): close it, then press Finish again`,
+            );
+        });
+    }
+}
+
+/**
+ * Opens a fresh seed branch's pull request (its description is written once Finish ends).
+ * @param {object} input commitSeed's input
+ * @param {string} branch the seed branch, holding X
+ * @param {string} x the accept commit pushed
+ * @returns {Promise<{ url: string, number: number }>} the pull request
+ */
+async function openSeedChange(input, branch, x) {
+    const { host, net, config, target } = input;
+    const failed = (why) => {
+        const e = new AcceptError(
+            `${branch} was pushed as ${x.slice(0, 10)}, but opening its pull request failed: ${why}. Press Finish again to open it.`,
+        );
+        e.pullRequestMissing = true;
+        return e;
+    };
+    let url;
+    try {
+        url = await net(
+            "opening the pull request",
+            () =>
+                host.openChange({
+                    title: masterSubject(config.commitPrefix, target.candidate ?? null),
+                    head: branch,
+                    base: config.defaultBranch,
+                    body: "Opened by Finish before the reviewer signs; its description follows when Finish ends.",
+                }),
+            true,
+        );
+    } catch (err) {
+        throw failed(err.message);
+    }
+    const open = host.openChangeOf ? await host.openChangeOf(branch).catch(() => null) : null;
+    const number = open?.number ?? Number(/(\d+)\/?$/.exec(url ?? "")?.[1]);
+    if (!Number.isInteger(number)) {
+        throw failed(`the code host named no number for ${url}`);
+    }
+    return { url: open?.html_url ?? url, number };
+}
+
+/**
+ * Adds a statement to the accept worktree's HEAD, amending it (X becomes X'), at the place its
+ * content gives, and names it on the message's Approval line.
+ * @param {string} tree the accept worktree
+ * @param {object} statement the statement
+ * @param {{ approvals: string }} config the settings
+ */
+async function amendStatement(tree, statement, config) {
+    const path = statementPath(config.approvals, statement);
+    await put(join(tree, path), `${JSON.stringify(statement, null, 2)}\n`);
+    await git(tree, ["add", "--", path]);
+    const message = (await git(tree, ["log", "-1", "--format=%B", "HEAD"])).replace(
+        /^Approval: pending$/m,
+        `Approval: ${path}`,
+    );
+    await git(tree, ["commit", "-q", "--no-verify", "--amend", "-F", "-"], `${message}\n`);
 }
 
 /**
@@ -1617,15 +2078,15 @@ async function changeParent(repo, config, at) {
  * - otherwise the capture is stale.
  * @param {object} input finish's repo, progress, net and config
  * @param {{ tree: string, writes: object[], branch: string, statement: object,
- *     fetch: (b: string) => Promise<any> }} work the worktree, the writes, the branch, the
+ *     fetch: (b: string) => Promise<any>, lease?: string | null }} work the worktree, the writes, the branch, the
  *     statement and the fetcher
  * @returns {Promise<string>} the pushed commit
  */
-async function pushChange(input, { tree, writes, branch, statement, fetch }) {
+async function pushChange(input, { tree, writes, branch, statement, fetch, lease = null }) {
     const { repo, config } = input;
     for (let rebuilt = 0; ; rebuilt++) {
         try {
-            return await pushAccepts(input, { tree, writes, branch });
+            return await pushAccepts(input, { tree, writes, branch, lease });
         } catch (err) {
             if (!(err instanceof AcceptError && err.raced) || rebuilt >= 2) {
                 throw err;
@@ -1964,11 +2425,12 @@ async function requireLfsPointers(tree, items) {
  * A local branch's accept commit is not pushed: the branch is moved to it (moveLocalBranch).
  * @param {{ repo?: string, target?: object, progress: (step: string) => void, net: Function }} input
  *     finish's repository, target, step reporter and network runner
- * @param {{ tree: string, writes: object[], branch: string, only?: { candidate: string, config: object } | null }} work
- *     the worktree, the writes, the branch to push to, and for a candidate its commit (requireAcceptOnly)
+ * @param {{ tree: string, writes: object[], branch: string, only?: { candidate: string, config: object } | null,
+ *     lease?: string | null }} work the worktree, the writes, the branch to push to, for a candidate
+ *     its commit (requireAcceptOnly), and the tip this push replaces (a seed's unsigned accept commit)
  * @returns {Promise<string>} the pushed commit
  */
-async function pushAccepts({ repo, target, progress, net }, { tree, writes, branch, only = null }) {
+async function pushAccepts({ repo, target, progress, net }, { tree, writes, branch, only = null, lease: replaces = null }) {
     if (target?.localBranch) {
         return moveLocalBranch({ repo, progress, net }, { tree, branch });
     }
@@ -1985,7 +2447,7 @@ async function pushAccepts({ repo, target, progress, net }, { tree, writes, bran
     await net("git lfs push", () => git(tree, ["lfs", "push", "origin", "HEAD"]));
     progress("pushing");
     const head = await git(tree, ["rev-parse", "HEAD"]);
-    const lease = only ? await replaceable(tree, branch, head, only) : null;
+    const lease = replaces ?? (only ? await replaceable(tree, branch, head, only) : null);
     await net("git push", async (attempt) => {
         // A push whose connection dropped may have landed: a later attempt checks before pushing.
         const tip = attempt > 1 ? await git(tree, ["ls-remote", "origin", `refs/heads/${branch}`]) : "";

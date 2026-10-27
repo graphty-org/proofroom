@@ -2118,7 +2118,7 @@ export function createApp({
     // Closes the accept pull requests a rejecting Finish could not close; a failure stays a warning.
     const closeLeftOpen = async () => {
         for (const commit of toClose) {
-            const { closeError } = await closeCandidatePullRequest(host, { candidate: commit });
+            const { closeError } = await closeCandidatePullRequest(host, { candidate: commit }, { repo, config });
             if (closeError) {
                 listWarnings.push(
                     `the accept pull request of rejected candidate ${commit.slice(0, 10)} is still open: ${closeError}`,
@@ -3075,6 +3075,7 @@ export function createApp({
         try {
             const prepared = await prepareApproval({
                 repo,
+                codeHost: host,
                 target: finishTarget(t),
                 projects: work.captures,
                 decisions: work.list,
@@ -4602,6 +4603,8 @@ export function createApp({
                     resign,
                     ...(tree && { statement }),
                     ...(unsigned && { unsigned }),
+                    // A seed's pull request opens before the touch: it holds the images unsigned until then.
+                    ...(prepared.opened && { opened: prepared.opened }),
                     challenge,
                     rpId,
                     allowCredentials: here.map((k) => k.id),
