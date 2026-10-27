@@ -3027,6 +3027,9 @@ export function createApp({
 
     // Whether a Finish of this work commits anything (a Finish of rejects alone only comments).
     const commitsOf = (work) => work.list.some((d) => d.decision !== "reject");
+    // Whether it may sign something all the same: a Finish rejecting an image of a candidate retires
+    // the accept pull request an earlier change mode Finish of it opened (prepareApproval says).
+    const retiresOf = (t) => Boolean(t.candidate) && changeMode();
 
     /**
      * finish-prepare's answer when this Finish needs no passkey (no key is known, it commits
@@ -3041,7 +3044,7 @@ export function createApp({
      * @returns {Array<unknown> | null} the answer, or null when finish-prepare goes on to sign
      */
     const prepareWithoutKey = (t, work, { trusted, here, unsigned }) => {
-        if (trusted.length === 0 || !commitsOf(work) || (unsigned && here.length === 0)) {
+        if (trusted.length === 0 || !(commitsOf(work) || retiresOf(t)) || (unsigned && here.length === 0)) {
             approvals.delete(t.id);
             return [200, { required: false, ...(trusted.length > 0 && unsigned && { unsigned }) }];
         }
@@ -4572,6 +4575,11 @@ export function createApp({
             const { prepared, refused: notPrepared } = await prepareLocked(t, work, now);
             if (notPrepared) {
                 return notPrepared;
+            }
+            if (prepared === null) {
+                // A Finish of rejects alone with no accept pull request to retire: it signs nothing.
+                approvals.delete(t.id);
+                return [200, { required: false }];
             }
             if (resign && !prepared.pushed) {
                 return [

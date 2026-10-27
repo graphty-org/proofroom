@@ -15,6 +15,9 @@ import { GITHUB_VOCABULARY } from "../../trusted/lib/adapters/github.mjs";
  * @param {object[]} [state.posted] receives every write
  * @param {boolean} [state.listOpened] listChanges and change also answer for the changes it opened,
  *     as a real code host does
+ * @param {(branch: string) => string} [state.headOf] a branch's tip on the remote: an opened change's
+ *     head follows it while the change is open and stays where it was when it was closed, as
+ *     GitHub's refs/pull/N/head does; reopening one whose branch is gone throws
  * @returns {import("../../trusted/lib/adapters/index.mjs").CodeHost & { calls: string[], posted: object[],
  *     opened: { number: number, html_url: string, branch: string, state: string, body: string }[] }}
  *     the adapter, with every call by name, every write, and the changes it opened
@@ -25,7 +28,15 @@ export function fakeCodeHost({
     repositoryId = "fake:1",
     posted = [],
     listOpened = false,
+    headOf = null,
 } = {}) {
+    const tip = (branch) => {
+        try {
+            return headOf?.(branch);
+        } catch {
+            return undefined;
+        }
+    };
     const calls = [];
     const opened = [];
     const call =
@@ -84,7 +95,8 @@ export function fakeCodeHost({
             const o = listOpened ? opened.find((x) => x.number === number) : undefined;
             if (o) {
                 const repo = { id: 1 };
-                return { number, state: o.state, head: { ref: o.branch, repo }, base: { repo } };
+                const sha = o.state === "open" ? tip(o.branch) : o.head;
+                return { number, html_url: o.html_url, state: o.state, head: { ref: o.branch, sha, repo }, base: { repo } };
             }
             const c = changes.find((x) => x.number === number);
             return c ? { number, state: "open", head: { ref: c.branch, sha: c.headSha } } : { number, state: "closed" };
@@ -100,6 +112,9 @@ export function fakeCodeHost({
             posted.push({ kind: "close", number });
             const o = opened.find((x) => x.number === number);
             if (o) {
+                if (o.state === "open") {
+                    o.head = tip(o.branch);
+                }
                 o.state = "closed";
             }
         }),
@@ -107,6 +122,9 @@ export function fakeCodeHost({
             posted.push({ kind: "reopen", number });
             const o = opened.find((x) => x.number === number);
             if (o) {
+                if (headOf && tip(o.branch) === undefined) {
+                    throw new Error("the head branch is gone");
+                }
                 o.state = "open";
             }
         }),

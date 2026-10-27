@@ -398,15 +398,25 @@ the captured commit is a Finish commit of this seed. If a check fails, Finish re
 commit or the reason, and closes that pull request, since it may carry your earlier signed accept;
 Finish again to start a fresh seed branch. The branch is kept, so that Finish can retire it.
 
-Every seed Finish retires the earlier seeds of the same capture: every open pull request whose
-statements carry the same captured commit, and every such pull request closed unmerged (by Finish
-above, or by hand) whose branch is still there under `visual/`. Retiring a seed means pushing to its
-branch a seed statement of its own pull request, chained after its newest statements, that rejects
-every file they decided, then closing the pull request and deleting its branch. A pull request that
-was closed is reopened after that push and closed again, because GitHub moves a pull request's head
-only while it is open. You sign each retiring statement with your passkey, one touch each after the
-seed's own; without a registered key they go in unsigned. The seed is pushed only after every
-earlier one is retired: if a push or a close fails, Finish stops and names it.
+Every seed Finish retires the earlier seeds of the same capture. It looks at the branch of every
+open pull request, and at every branch under `visual/`, for statements that carry the same captured
+commit, and retires each pull request those statements name (`pr:N`, looked up by its number, so a
+later pull request opened from the same branch does not hide it), unless it was merged. Retiring a
+seed means pushing to its branch a seed statement of its own pull request, chained after its newest
+statements, that rejects every file they decided; reopening the pull request if it is closed at that
+moment, because GitHub moves a pull request's head only while it is open; waiting until GitHub shows
+the head at that commit; and only then closing the pull request and, once every pull request on it
+is retired, deleting its branch. You sign each retiring statement with your passkey, one touch each
+after the seed's own; without a registered key they go in unsigned. The seed is pushed only after
+every earlier one is retired: if a push, a reopen or a close fails, or the head never reaches the
+retiring commit, Finish stops, names it, and keeps the branch, so the next Finish retires it again.
+If GitHub refuses to reopen the pull request (its branch was force-pushed or recreated while it was
+closed), Finish names the pull request and its branch: reopen it by hand and Finish again, or delete
+the branch, so Finish no longer finds it, and remove the key that signed it.
+
+A Finish that rejects an image of a candidate retires the candidate's accept pull request the same
+way, before it posts the rejects: you sign that retiring statement with one touch (unsigned without
+a registered key).
 
 What that guarantees: GitHub keeps a closed pull request's last head (`refs/pull/N/head`) and
 offers "Restore branch", and anyone with write access can restore the branch and reopen the pull
@@ -420,8 +430,6 @@ What it does not cover:
   of proofroom without retiring statements): Finish cannot find it, and a restored branch passes
   again on its accept. Restore its branch, leaving the pull request closed, and the next Finish
   of that capture retires it; or remove the key that signed it.
-- A candidate's accept pull request that a Finish rejecting an image of that candidate closes: that
-  Finish signs nothing, so it closes the pull request and deletes the branch without a statement.
 - A code host that cannot reopen pull requests or look up a branch's closed one: closed seeds are
   not found. On a code host that cannot close pull requests, Finish refuses, naming the old branch,
   until you close or delete it.
