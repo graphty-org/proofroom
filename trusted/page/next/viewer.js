@@ -14,7 +14,7 @@ import { control, labelOf } from "./actions.js";
 import { badgesOf, decisionWords, layoutOf, sizeText } from "./list.js";
 import { makeLocator, moveToPressed } from "./locator.js";
 import { STATUS, statusMark } from "./marks.js";
-import { applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow, twoLevels } from "./panes.js";
+import { PANES, applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow, twoLevels } from "./panes.js";
 import { HIGHLIGHTS, highlight } from "./settings.js";
 import { el, fmt, ic, kb } from "./ui.js";
 
@@ -66,11 +66,30 @@ const fill = (node, ...kids) =>
 
 /**
  * The viewer, for the page `app`; the page calls `draw(snapshot)` whenever it redraws while a
- * snapshot is current, and `stop()` when it shows none.
- * @param {any} app the page
+ * snapshot is current, and `stop()` when it shows none. The Review screen's by default; the
+ * Baselines screen's (baselines.js) draws its own item line and bar, and shows no Baseline toggle,
+ * Options, Details or end card.
+ * @param {any} app the page, or the screen that stands for it
+ * @param {object} [o] another screen's viewer
+ * @param {string} [o.root] the viewer's element id ("viewer")
+ * @param {string} [o.idp] the prefix of its elements' ids ("")
+ * @param {string} [o.screen] the screen ("review")
+ * @param {string[]} [o.names] its side panes' names
+ * @param {(hash: string) => string} [o.imageUrl] an image's address, by its hash
+ * @param {(s: any, view: string, state: object) => object} [o.labels] the frames' labels
+ * @param {(view: string) => string} [o.oneImageWhy] why a view needing two images is unavailable
+ * @param {(line: HTMLElement, s: any) => void} [o.line] fills the item line
+ * @param {(bar: HTMLElement, s: any) => void} [o.bar] fills the bar under the stage
+ * @param {HTMLElement} [o.below] what goes under the bar
  * @returns {object} the viewer's state and actions (app.viewer)
  */
-export function createViewer(app) {
+export function createViewer(app, o = {}) {
+    const review = !o.line;
+    const root = o.root ?? "viewer";
+    const idp = o.idp ?? "";
+    const screen = o.screen ?? "review";
+    const panes = PANES[screen];
+    const imageUrl = o.imageUrl ?? ((hash) => `/api/blob/${hash}`);
     const vs = { ...loadKept(), blink: false, spotFlash: false, space: false, details: false };
     const items = new WeakMap(); // each snapshot as the stage reads it
     const areas = { key: null, text: "", count: 0 }; // the changed areas of the snapshot on the stage
@@ -100,6 +119,9 @@ export function createViewer(app) {
             return "The story did not render: there is no image to compare.";
         }
         if (v !== "side" && !twoImages(s)) {
+            if (o.oneImageWhy) {
+                return o.oneImageWhy(v);
+            }
             return s.status === "removed"
                 ? "Needs a new image: this snapshot was removed."
                 : "Needs a baseline: this snapshot is new.";
@@ -143,7 +165,7 @@ export function createViewer(app) {
     }
 
     // The snapshots Previous and Next walk, in the list's order (every row Show and Find keep).
-    const walk = () => layoutOf(app.lv, app.snaps).groups.flatMap((g) => g.rows);
+    const walk = () => (review ? layoutOf(app.lv, app.snaps).groups.flatMap((g) => g.rows) : app.snaps);
 
     const stage = createStage({
         flashMs: 667, // one image each two thirds of a second: about 1.5 swaps a second
@@ -170,7 +192,7 @@ export function createViewer(app) {
                 img.onerror = () => reject(new Error(`${what}: the image could not be shown`));
                 img.src = url;
             }),
-        imageUrl: (hash) => `/api/blob/${hash}`,
+        imageUrl,
         itemName: (item) => item.snap.name,
         onlyExclude: (item) => ["failed", "unstable"].includes(item.status),
         pass: () => {
@@ -190,13 +212,13 @@ export function createViewer(app) {
             areas.text = text;
             areas.count = count;
             const s = current();
-            if (s && parts) {
+            if (s && parts && review) {
                 fillLine(s);
                 // The item line's controls are new: their key boxes follow the zones again.
                 app.settle?.();
             }
         },
-        labels: (item, view) => labelsOf(item.snap, view),
+        labels: (item, view) => (o.labels ? o.labels(item.snap, view, vs) : labelsOf(item.snap, view)),
     });
 
     // The label strip above each frame: never over the image (design 5.6).
@@ -307,7 +329,7 @@ export function createViewer(app) {
         parts.wrap.querySelector(".locator")?.remove();
         parts.wrap.append(
             makeLocator(app, {
-                src: `/api/blob/${hash}`,
+                src: imageUrl(hash),
                 size: diff ? [diff.w, diff.h] : (s.size ?? s.baselineSize ?? [1, 1]),
                 boxes: s.status === "changed" && diff ? diff.boxes : [],
                 frames,
@@ -393,10 +415,12 @@ export function createViewer(app) {
                 children: [check(), "Image only", kb("Shift+3")],
             }),
             control(app, "layoutmenu", { zone: "toolbar" }),
-            control(app, "options", {
-                zone: "toolbar",
-                attrs: { "data-menukeys": JSON.stringify({ B: "outline", O: "centerarea" }) },
-            }),
+            review
+                ? control(app, "options", {
+                      zone: "toolbar",
+                      attrs: { "data-menukeys": JSON.stringify({ B: "outline", O: "centerarea" }) },
+                  })
+                : null,
         );
         return [
             el(
@@ -419,32 +443,35 @@ export function createViewer(app) {
                 control(app, "zoomcycle", { zone: "toolbar" }),
                 el("span", { class: "seg", role: "group", "aria-label": "Zoom" }, zooms),
             ),
-            el(
-                "div",
-                { class: "tg", "data-g": "baseline", title: "Baseline" },
-                control(app, "baseline", {
-                    zone: "toolbar",
-                    attrs: { "aria-pressed": two ? String(vs.showBase) : null },
-                    children: two ? [check(), "Baseline", kb("P")] : ["Baseline: none", kb("P")],
-                }),
-            ),
-            imageOnly()
+            review
+                ? el(
+                      "div",
+                      { class: "tg", "data-g": "baseline", title: "Baseline" },
+                      control(app, "baseline", {
+                          zone: "toolbar",
+                          attrs: { "aria-pressed": two ? String(vs.showBase) : null },
+                          children: two ? [check(), "Baseline", kb("P")] : ["Baseline: none", kb("P")],
+                      }),
+                  )
+                : null,
+            imageOnly() && review
                 ? el("span", { class: "itemsum grow" }, lineHead(s, "iline", fullName(s)), lineEnd(s))
                 : el("span", { class: "grow" }),
             display,
             control(app, "more", {
                 zone: "toolbar",
                 attrs: {
-                    id: "morebtn",
-                    "data-menukeys": JSON.stringify({
-                        "Shift+3": "imageonly",
-                        Y: "more",
-                        B: "outline",
-                        O: "centerarea",
-                    }),
+                    id: `${idp}morebtn`,
+                    class: "morebtn",
+                    ...(!review && { title: "Image only, Layout" }),
+                    "data-menukeys": JSON.stringify(
+                        review
+                            ? { "Shift+3": "imageonly", Y: "more", B: "outline", O: "centerarea" }
+                            : { "Shift+3": "imageonly", Y: "more" },
+                    ),
                 },
             }),
-        ];
+        ].filter(Boolean);
     }
 
     // The item line's start: Back, the number, the status and the story's name (in the toolbar,
@@ -621,21 +648,21 @@ export function createViewer(app) {
 
     // The viewer's elements: made once, and put back when the viewer showed something else.
     function ensureParts() {
-        const v = document.getElementById("viewer");
+        const v = document.getElementById(root);
         if (parts && parts.stage.parentElement === parts.wrap && parts.wrap.parentElement === v) {
             return;
         }
         parts ??= {
             bar: el("div", { class: "decide" }),
             card: el("div", { class: "endwrap", hidden: true }),
-            details: el("div", { class: "details", id: "details", hidden: true }),
+            details: el("div", { class: "details", id: `${idp}details`, hidden: true }),
             line: el("div", { class: "iline" }),
-            stage: el("div", { class: "stage", id: "stage" }),
-            tools: el("div", { class: "vtb", id: "vtb", role: "toolbar", "aria-label": "Viewer" }),
+            stage: el("div", { class: "stage", id: `${idp}stage` }),
+            tools: el("div", { class: "vtb", id: `${idp}vtb`, role: "toolbar", "aria-label": "Viewer" }),
             wrap: el("div", { class: "stagewrap" }),
         };
         parts.wrap.replaceChildren(parts.stage, parts.card);
-        v.replaceChildren(parts.tools, parts.line, parts.details, parts.wrap, parts.bar);
+        v.replaceChildren(parts.tools, parts.line, parts.details, parts.wrap, parts.bar, ...(o.below ? [o.below] : []));
         shownKey = null;
         resized.disconnect();
         resized.observe(parts.wrap);
@@ -661,13 +688,20 @@ export function createViewer(app) {
             areas.key = null;
             stage.box = 0;
         }
-        parts.tools.className = `vtb ${imageOnly() ? "merged" : ""}`;
+        parts.tools.className = `vtb ${imageOnly() && review ? "merged" : ""}`;
         fill(parts.tools, toolbar(s));
-        fillLine(s);
-        fillDetails(s);
-        fillBar(s);
+        if (review) {
+            fillLine(s);
+            fillDetails(s);
+            fillBar(s);
+        } else {
+            o.line(parts.line, s);
+            o.bar(parts.bar, s);
+        }
         render(s);
-        fillCard();
+        if (review) {
+            fillCard();
+        }
         app.opened.add(s.key);
         // The Layout button says what Auto chose, once the stage has its size.
         const lay = parts.tools.querySelector('[data-act="layoutmenu"]');
@@ -678,7 +712,7 @@ export function createViewer(app) {
 
     // ------------------------------------------------------------ actions
 
-    const imageOnly = () => imageOnlyPressed(shownNow());
+    const imageOnly = () => imageOnlyPressed(shownNow(panes));
     const redraw = () => app.draw();
     const layoutTitle = () =>
         vs.layout === "auto" ? `Auto chose ${stacked ? "over and under" : "side by side"} for this window` : "Layout";
@@ -767,7 +801,20 @@ export function createViewer(app) {
             ]),
         // Below a viewer width of 900 px More also holds Flash while held, and below 800 px Zoom.
         moreMenu: (anchor) => {
-            const vw = document.getElementById("viewer")?.clientWidth ?? innerWidth;
+            const vw = document.getElementById(root)?.clientWidth ?? innerWidth;
+            if (!review) {
+                app.showMenu(anchor, [
+                    { head: "Display" },
+                    menuItem("imageonly", "Image only", imageOnly()),
+                    ...Object.entries(LAYOUTS).map(([k, l]) => ({
+                        id: `layout-${k}`,
+                        label: `Layout: ${l}`,
+                        key: "Y",
+                        checked: vs.layout === k,
+                    })),
+                ]);
+                return;
+            }
             app.showMenu(
                 anchor,
                 [
@@ -803,11 +850,11 @@ export function createViewer(app) {
         },
         pressImageOnly: () => {
             const at = app.at();
-            const { shown, before } = pressImageOnly(shownNow(), ioBefore, at);
+            const { shown, before } = pressImageOnly(shownNow(panes), ioBefore, at);
             ioBefore = before;
             applyPanes(shown, at);
-            remember(app.level, app.snaps.length, shown);
-            const names = ["Changes", "Snapshots"].filter((_, i) => shown[i]);
+            remember(app.level, app.snaps.length, shown, screen);
+            const names = (o.names ?? ["Changes", "Snapshots"]).filter((_, i) => shown[i]);
             app.say(
                 imageOnlyPressed(shown)
                     ? "Image only: Shift+3 brings the panes back."
