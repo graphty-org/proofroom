@@ -83,6 +83,7 @@ export const COVERS = {
         "finishchg",
         "finishall",
         "stopfinish",
+        "signfinish",
         "unqueue",
         "retryfinish",
         "finishgo",

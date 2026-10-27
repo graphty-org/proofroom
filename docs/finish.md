@@ -37,10 +37,13 @@ Finish runs on the server. The change's row shows where it is, "Step 3 of 6: com
 keep reviewing other changes. Reloading the page shows the running Finish again.
 
 - **Finished**: the row moves to Nothing to decide and reads "Finished 14:02, signed", with links
-  to the commit (and to the comment when rejects were posted) and **Dismiss**. The message line
+  to the commit (and to the pull request the comment is on, when rejects or accept notes were
+  posted) and **Dismiss**. When the comment or the commit status could not be posted, the row adds
+  "comment not posted" or "status not set", and the message line says why. The message line
   offers **Next change**, as does the changes pane's header [Shift+N].
-- **Failed**: every decision is kept. The row reads "Finish failed" (its tooltip and the message
-  line say which step failed and why) and offers **Retry**, which opens the sheet again. A
+- **Failed**: every decision is kept. The row reads which step failed, as in "Finish failed: push
+  rejected" (its tooltip has the whole reason, and so does the message line), and offers
+  **Retry**, which opens the sheet again. A
   cancelled passkey says "Passkey cancelled: nothing was changed."
 
 ## Finish all
@@ -59,7 +62,10 @@ stops only that change; the run goes on with the next.
 **Stop**, on the section header while the run goes, ends the run after the change finishing now.
 Leaving or reloading the page does the same. Changes not yet run return to Decided, not finished.
 
-Each signed Finish needs its own passkey touch, so a run needs you at the page until it ends.
+Each signed Finish needs its own passkey touch, so a run needs you at the page until it ends. The
+first change's prompt starts with **Finish all**; for each later one the message line asks you to
+touch your passkey and shows **Sign #3487**, which starts its prompt (browsers start a passkey
+prompt only from a press). Stop while it waits ends the run there.
 
 ## Seeding
 

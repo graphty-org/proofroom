@@ -58,7 +58,8 @@ export const ACTIONS = {
     settings: { label: "Settings", run: (app) => app.settingsSheet() },
     finish: {
         label: (app) => app.finishLabel(),
-        title: "Publish your decisions: the summary sheet says what it does first",
+        // A numbered change's label is short and whole on the button; any other's full name.
+        title: (app) => (/^#/.test(app.open()?.label ?? "#") ? null : `Finish ${app.open().label}`),
         writes: true,
         run: (app) => app.finishOpen(),
         available: (app) => app.finishOK(),
@@ -140,7 +141,6 @@ export const ACTIONS = {
     },
     finishall: {
         label: (app) => `Finish all ${app.finishable().length}...`,
-        title: "One summary sheet for every decided change, then each finished in turn",
         writes: true,
         run: (app) => app.finishSheet(app.finishable().map((r) => r.id)),
         available: (app) => (app.finishing() ? RUNNING : true),
@@ -149,6 +149,12 @@ export const ACTIONS = {
         label: "Stop",
         title: "Ends the run after the change that is finishing now",
         run: (app) => app.stopFinish(),
+    },
+    signfinish: {
+        label: (app, ctx) => app.signLabel(ctx.id),
+        title: "Starts the passkey prompt for this change's turn in Finish all",
+        writes: true,
+        run: (app) => app.signFinish(),
     },
     unqueue: {
         label: "Remove from the run",
@@ -436,7 +442,8 @@ export const ACTIONS = {
     endfinish: {
         label: (app) => app.endFinishLabel(),
         key: "Enter",
-        title: "Publish your decisions: the summary sheet says what it does first",
+        // A numbered change's label is short and whole on the button; any other's full name.
+        title: (app) => (/^#/.test(app.open()?.label ?? "#") ? null : `Finish ${app.open().label}`),
         writes: true,
         run: (app) => app.finishOpen(),
         available: (app) => app.finishOK(),

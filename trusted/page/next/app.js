@@ -167,7 +167,9 @@ function drawTop() {
     $("frame-slot").replaceChildren(
         control(app, "keys", { zone: "top" }),
         control(app, "settings", { zone: "top" }),
-        app.openId !== null ? control(app, "finish", { zone: "top", attrs: { class: "primary", id: "finish" } }) : null,
+        ...(app.openId !== null
+            ? [control(app, "finish", { zone: "top", attrs: { class: "primary", id: "finish" } })]
+            : []),
     );
 }
 

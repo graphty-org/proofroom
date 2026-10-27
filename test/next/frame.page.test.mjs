@@ -417,7 +417,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await expect.poll(() => message(page)).toBe("Refreshed.");
                 expect(await status()).toMatch(/^Updated \d+ s ago$/);
                 expect(await writers()).toEqual([
-                    ["finish", null, "Publish your decisions: the summary sheet says what it does first"],
+                    ["finish", null, ""],
                     ["rowundo", null, "Undo this decision"],
                 ]);
                 await undo.click();

@@ -101,6 +101,23 @@ function stepLine(run) {
  */
 const statusText = (f) => `the commit status "${f.status.description}" (${f.status.state})`;
 
+// A failed step in plain words, from the step the server puts before the reason ("pushing: ...").
+const FAILED_AT = [
+    [/^(starting|checking)/, "check failed"],
+    [/^writing/, "write failed"],
+    [/^committing/, "commit failed"],
+    [/^uploading images/, "upload failed"],
+    [/^pushing/, "push rejected"],
+    [/^opening the pull request/, "pull request not opened"],
+    [/^posting the comment/, "comment not posted"],
+    [/^opening the issue/, "issue not opened"],
+    [/^posting the status/, "status not set"],
+];
+const failedAt = (why, fallback) => FAILED_AT.find(([match]) => match.test(why))?.[1] ?? fallback;
+
+// "a", "a and b", "a, b and c".
+const andList = (words) => (words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`);
+
 const committer = (t) => t.signer?.author?.replace(/ <[^>]*>$/, "") ?? "this server's git identity";
 
 /**
@@ -111,8 +128,9 @@ export function installFinish(app) {
     const queue = []; // the changes waiting their turn in Finish all, in order
     let running = null; // the change finishing now: { id, step, plan }
     let run = null; // the Finish all run: { stop }
-    const done = new Map(); // finished here: id -> { at, signed, links }
-    const failed = new Map(); // failed here: id -> the reason
+    const done = new Map(); // finished here: id -> { at, signed, links, short, why }
+    const failed = new Map(); // failed here: id -> { at: the failed step in words, why }
+    let signing = null; // the press a queued change's passkey prompt waits for: { id, start, cancel }
     let sheet = null; // the open summary sheet: { list, items }
 
     const targetOf = (id) => app.list?.targets?.find((t) => t.id === id) ?? null;
@@ -178,7 +196,8 @@ export function installFinish(app) {
                 ...r,
                 state: "finished",
                 mark: ["accept", "c-accept"],
-                count: `Finished ${d.at}${d.signed ? ", signed" : ""}`,
+                count: `Finished ${d.at}${d.signed ? ", signed" : ""}${d.short ? `; ${d.short}` : ""}`,
+                why: d.why,
                 links: d.links,
                 dismissable: true,
                 section: r.section === "decided" ? "nothing" : r.section,
@@ -189,8 +208,8 @@ export function installFinish(app) {
                 ...r,
                 state: "finishfailed",
                 mark: ["failed", "c-failed"],
-                count: "Finish failed",
-                why: failed.get(r.id),
+                count: `Finish failed: ${failed.get(r.id).at}`,
+                why: failed.get(r.id).why,
                 section: "decided",
             };
         }
@@ -263,7 +282,7 @@ export function installFinish(app) {
         const rejects = f.notes.filter((x) => x.decision === "reject");
         const undecided = f.undecided.reduce((k, p) => k + p.undecided, 0);
         return [
-            el("h3", {}, `Finish ${seed ? "" : `${c?.label ?? id} `}${c?.title ?? ""}`),
+            el("h3", {}, `Finish ${c?.label ?? id} ${c?.title ?? ""}`),
             notice ? el("p", { class: "c-failed" }, notice) : null,
             undecided > 0
                 ? el(
@@ -536,12 +555,14 @@ export function installFinish(app) {
                 prepared.required
                     ? `Touch your passkey to sign ${label(id)}${after}. Stay on this page.`
                     : `Finishing ${label(id)}${after}.`,
+                "",
+                prepared.required && !item.approval ? [control(app, "signfinish", { zone: "msgline", ctx: { id } })] : [],
             );
             redraw();
             let approval = null;
             if (prepared.required) {
                 try {
-                    approval = await (item.approval ?? approve(prepared));
+                    approval = await (item.approval ?? pressToSign(id, prepared));
                 } catch (err) {
                     running = null;
                     app.say(
@@ -582,9 +603,29 @@ export function installFinish(app) {
             }
             await follow(id, job);
         } catch (err) {
-            fail(id, err.message);
+            fail(id, err.message, "not started");
         }
     }
+
+    // A passkey prompt starts only inside a press (Safari refuses one without it), so a change
+    // whose turn comes after the sheet's press waits for its own: Sign on the message line.
+    function pressToSign(id, prepared) {
+        return new Promise((resolve, reject) => {
+            signing = {
+                id,
+                start: () => {
+                    signing = null;
+                    approve(prepared).then(resolve, reject);
+                },
+                cancel: () => {
+                    signing = null;
+                    reject(Object.assign(new Error("cancelled"), { name: "AbortError" }));
+                },
+            };
+        });
+    }
+    app.signLabel = (id) => `Sign ${label(id)}`;
+    app.signFinish = () => signing?.start();
 
     // Follows the job of change `id` to its end: a status ask a quarter second after the last
     // (an in-memory read on the server), two seconds after one that failed.
@@ -614,49 +655,87 @@ export function installFinish(app) {
                 id,
                 job?.error ??
                     "the server restarted during it and kept no record: check the branch before finishing again",
+                job?.error ? "check failed" : "server restarted",
             );
             return;
         }
-        await succeed(id, job.result ?? {});
+        await succeed(id, job.result ?? {}, job.warnings ?? []);
     }
 
-    function fail(id, why) {
+    function fail(id, why, fallback) {
         running = null;
-        failed.set(id, why);
+        const at = failedAt(why, fallback);
+        failed.set(id, { at, why });
         redraw();
-        app.say(`Finish of ${label(id)} failed: ${why}. Every decision is kept.`, "err", [
+        // The reason without the step it names, which the words before it say already.
+        const reason = (FAILED_AT.some(([match]) => match.test(why)) ? why.replace(/^[^:]*: /, "") : why).replace(
+            /^./,
+            (x) => x.toUpperCase(),
+        );
+        app.say(`Finish of ${label(id)} failed: ${at}. ${reason.replace(/\.$/, "")}. Every decision is kept.`, "err", [
             control(app, "retryfinish", { zone: "msgline", ctx: { id } }),
         ]);
     }
 
-    async function succeed(id, r) {
+    async function succeed(id, r, warnings) {
         const c = app.change(id);
         const repo = c?.url ? c.url.replace(/\/pull\/\d+$/, "") : null;
+        // The comment holds the rejects and the accept notes; the server gives no address of its
+        // own, so its link is the pull request it is on.
+        const commented = c?.url && !r.issue && !r.commentError && (r.rejects > 0 || r.acceptNotes > 0);
         const links = [
             r.commit && repo ? { text: "Commit", href: `${repo}/commit/${r.commit}` } : null,
-            r.rejects > 0 && c?.url ? { text: "Comment", href: c.url } : null,
+            commented ? { text: "Comment", href: c.url } : null,
             r.pullRequest ? { text: "Pull request", href: r.pullRequest } : null,
             r.issue ? { text: "Issue", href: r.issue } : null,
         ].filter(Boolean);
         const signed = running?.plan?.signed === true;
-        done.set(id, { at: clock(), signed, links });
+        // What went wrong after the push, in a few words for the row and in full for the message.
+        const short = [r.commentError ? "comment not posted" : null, r.statusError ? "status not set" : null];
+        const why = [
+            r.commentError ? `The comment was not posted: ${r.commentError}.` : null,
+            r.statusError ? `The commit status was not set: ${r.statusError}.` : null,
+            ...warnings,
+        ].filter(Boolean);
+        const at = clock();
+        done.set(id, {
+            at,
+            signed,
+            links,
+            short: andList(short.filter(Boolean)),
+            why: why.length > 0 ? why.join(" ") : null,
+        });
         running = null;
         await app.reload();
         if (app.openId === id) {
             await app.openChange(id, { snap: app.snap, quiet: true });
         }
         redraw();
-        app.say(
-            `Finished ${label(id)} at ${done.get(id).at}${signed ? ", signed" : ""}. ${links.length > 0 ? "Its links are on its row." : ""}`.trim(),
-            "",
-            [control(app, "nextchange", { zone: "msgline" })],
-        );
+        const linked = links.map((l) => l.text.toLowerCase());
+        const said = [
+            r.resigned
+                ? `Signed the decisions of the earlier Finish of ${label(id)} at ${at}.`
+                : r.alreadyFinished
+                  ? `${label(id)} was already finished: an earlier Finish committed these decisions. Nothing was pushed or posted now.`
+                  : `Finished ${label(id)} at ${at}${signed ? ", signed" : ""}.`,
+            ...why,
+            linked.length > 0
+                ? `${andList(linked).replace(/^./, (x) => x.toUpperCase())} ${linked.length === 1 ? "is" : "are"} linked on its row.`
+                : null,
+        ];
+        app.say(said.filter(Boolean).join(" "), why.length > 0 ? "err" : "", [
+            control(app, "nextchange", { zone: "msgline" }),
+        ]);
     }
 
     /** Stop: the run ends after the change finishing now. */
     app.stopFinish = () => {
         if (run) {
             run.stop = true;
+        }
+        if (signing) {
+            signing.cancel();
+            return;
         }
         app.say("Stopping after the change that is finishing now.");
     };

@@ -178,6 +178,13 @@ describe("the summary sheet", () => {
                 ctx.skip();
             }
             const page = await open({}, name);
+            // No change open: the top bar's Finish is absent, and nothing stands in its place.
+            const slot = page.locator("#frame-slot");
+            expect(await slot.evaluate((n) => [...n.childNodes].map((c) => c.nodeName))).toEqual([
+                "BUTTON",
+                "BUTTON",
+            ]);
+            expect(await slot.innerText()).not.toContain("null");
             await openChange(page, OPEN);
             const finish = page.locator('#top [data-act="finish"]');
             expect(await shows(finish)).toBe(`Finish #${OPEN} (2)`);
@@ -214,7 +221,7 @@ describe("the summary sheet", () => {
             await page.keyboard.press("Enter");
             await expect
                 .poll(() => message(page))
-                .toMatch(new RegExp(`^Finished #${OPEN} at \\d\\d:\\d\\d\\. Its links are on its row\\.$`));
+                .toMatch(new RegExp(`^Finished #${OPEN} at \\d\\d:\\d\\d\\. Commit is linked on its row\\.$`));
             expect(posts("/api/finish").map((p) => p.body)).toEqual([{ id: OPEN, digest: `digest-${OPEN}` }]);
             await page.keyboard.press("Escape");
             await expect.poll(() => countOf(page, OPEN)).toMatch(/^Finished \d\d:\d\d$/);
@@ -331,6 +338,7 @@ describe("Finish... and Finish all", () => {
     it("runs Finish all one change at a time: Queued rows, the step list, one failure stopping only its change", async () => {
         const j = jobs({ hold: [A], fail: { [B]: "pushing: the push was rejected: the branch moved" } });
         const page = await open({ finish: j.finish, finishStatus: j.finishStatus });
+        await recordMessages(page);
         const all = page.locator('.sechead [data-act="finishall"]');
         expect(await shows(all)).toBe("Finish all 3...");
         await all.click();
@@ -360,9 +368,12 @@ describe("Finish... and Finish all", () => {
         await openNothing(page);
         await expect.poll(() => countOf(page, C)).toMatch(/^Finished \d\d:\d\d$/);
         expect(await countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
-        expect(await countOf(page, B)).toBe("Finish failed");
+        expect(await countOf(page, B)).toBe("Finish failed: push rejected");
         expect(await rowOf(page, B).locator(".cnt").getAttribute("title")).toBe(
             "pushing: the push was rejected: the branch moved",
+        );
+        expect(await said(page)).toContain(
+            `Finish of #${B} failed: push rejected. The push was rejected: the branch moved. Every decision is kept.`,
         );
         // One preparation and one start per change, in order.
         expect(posts("/api/finish").map((p) => p.body.id)).toEqual([A, B, C]);
@@ -430,6 +441,117 @@ describe("Finish... and Finish all", () => {
         );
         expect(await sheet(page).innerText()).toContain("Signs with: Passkey 'MacBook Touch ID'.");
     });
+
+    it("says on the row and the message line when the comment or the commit status failed", async () => {
+        const result = {
+            [A]: { commit: "c0ffee1", rejects: 0, acceptNotes: 2, commentError: "HTTP 502", statusError: null },
+            [B]: { commit: "c0ffee2", rejects: 0, acceptNotes: 0, commentError: null, statusError: "HTTP 500" },
+            [C]: { commit: "c0ffee3", rejects: 2, acceptNotes: 0, commentError: null, statusError: null },
+        };
+        const finish = (b) => ({
+            job: { id: 1, target: b.id, running: false, step: null, error: null, warnings: [], result: result[b.id] },
+        });
+        const page = await open({ finish });
+        await recordMessages(page);
+        const linksOf = (id) => rowOf(page, id).locator("a").allInnerTexts();
+        for (const id of [A, B, C]) {
+            await rowOf(page, id).getByRole("button", { name: "Finish..." }).click();
+            await sheet(page).waitFor();
+            await page.keyboard.press("Enter");
+            await sheet(page).waitFor({ state: "detached" });
+            await expect.poll(() => said(page)).toContainEqual(expect.stringMatching(new RegExp(`^Finished #${id} `)));
+        }
+        await openNothing(page);
+        expect(await countOf(page, A)).toMatch(/^Finished \d\d:\d\d; comment not posted$/);
+        expect(await rowOf(page, A).locator(".cnt").getAttribute("title")).toBe(
+            "The comment was not posted: HTTP 502.",
+        );
+        expect(await linksOf(A)).toEqual(["Commit"]);
+        expect(await countOf(page, B)).toMatch(/^Finished \d\d:\d\d; status not set$/);
+        expect(await linksOf(B)).toEqual(["Commit"]);
+        expect(await countOf(page, C)).toMatch(/^Finished \d\d:\d\d$/);
+        expect(await linksOf(C)).toEqual(["Commit", "Comment"]);
+        const lines = await said(page);
+        expect(lines).toContainEqual(
+            expect.stringMatching(
+                new RegExp(`^Finished #${A} at \\d\\d:\\d\\d\\. The comment was not posted: HTTP 502\\. Commit is linked on its row\\.`),
+            ),
+        );
+        expect(lines).toContainEqual(
+            expect.stringMatching(
+                new RegExp(`^Finished #${B} at \\d\\d:\\d\\d\\. The commit status was not set: HTTP 500\\. Commit is linked on its row\\.`),
+            ),
+        );
+        expect(lines).toContainEqual(
+            expect.stringMatching(new RegExp(`^Finished #${C} at \\d\\d:\\d\\d\\. Commit and comment are linked on its row\\.`)),
+        );
+    });
+
+    for (const name of ["chromium", "webkit"]) {
+        it(`Finish all with a passkey: each change's prompt starts inside its own press (${name})`, async (ctx) => {
+            if (!browsers[name]) {
+                ctx.skip();
+            }
+            const passkey = {
+                rpId: "127.0.0.1",
+                required: true,
+                keys: [{ id: "AAAA", label: "MacBook Touch ID", rpId: "127.0.0.1", pending: false }],
+                problem: null,
+                waiting: null,
+            };
+            const targets = [decided(Number(A), 5), decided(Number(B), 3)].map((x) => ({ ...x, passkey }));
+            const prepare = (b) => ({
+                required: true,
+                signs: "change",
+                challenge: `Y2hh${b.id}`,
+                rpId: "127.0.0.1",
+                allowCredentials: ["AAAA"],
+            });
+            const page = await open({ targets, prepare }, name);
+            await recordMessages(page);
+            // The passkey prompt, answered at once; each call records whether a press started it.
+            await page.evaluate(() => {
+                globalThis.gets = [];
+                const buf = () => new Uint8Array([1, 2, 3]).buffer;
+                const get = async () => {
+                    globalThis.gets.push(globalThis.navigator.userActivation?.isActive ?? null);
+                    return {
+                        rawId: buf(),
+                        response: { authenticatorData: buf(), clientDataJSON: buf(), signature: buf() },
+                    };
+                };
+                if (globalThis.navigator.credentials) {
+                    Object.defineProperty(globalThis.navigator.credentials, "get", { value: get });
+                } else {
+                    Object.defineProperty(globalThis.navigator, "credentials", { value: { get } });
+                }
+            });
+            const gets = () => page.evaluate(() => globalThis.gets);
+            await page.locator('.sechead [data-act="finishall"]').click();
+            await sheet(page).waitFor();
+            await page.keyboard.press("Enter");
+
+            // The first prompt started in the sheet's press; the second waits for its own.
+            const sign = page.locator('#msg-x [data-act="signfinish"]');
+            await sign.waitFor();
+            expect(await shows(sign)).toBe(`Sign #${B}`);
+            expect(await message(page)).toBe(`Touch your passkey to sign #${B}. Stay on this page.`);
+            expect(await gets()).toEqual([true]);
+            expect(posts("/api/finish").map((p) => p.body.id)).toEqual([A]);
+            await sign.click();
+            await openNothing(page);
+            await expect.poll(() => countOf(page, B)).toMatch(/^Finished \d\d:\d\d, signed$/);
+            expect(await countOf(page, A)).toMatch(/^Finished \d\d:\d\d, signed$/);
+            const active = await gets();
+            expect(active).toHaveLength(2);
+            // WebKit without navigator.userActivation records null: only Chromium can say.
+            expect(active.filter((x) => x === false)).toEqual([]);
+            expect(posts("/api/finish").map((p) => [p.body.id, p.body.challenge])).toEqual([
+                [A, `Y2hh${A}`],
+                [B, `Y2hh${B}`],
+            ]);
+        });
+    }
 });
 
 it("presses every Finish action", () => {
@@ -562,7 +684,7 @@ describe("on the review server", () => {
             await finish.click();
             const sh = sheet(page);
             await sh.waitFor();
-            expect(await sh.locator("h3").innerText()).toBe("Finish Seed from master");
+            expect(await sh.locator("h3").innerText()).toBe("Finish seed Seed from master");
             expect(await sh.innerText()).toMatch(
                 /Will commit: 1 accepted \(0 not opened\), 0 excluded, to branch visual\/seed-\d{4}-\d\d-\d\d as .+, and open its pull request\./,
             );
