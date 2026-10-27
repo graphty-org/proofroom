@@ -2,12 +2,16 @@
  * The Captures screen (design 9.2): the captures list on the left, in four sections (Running,
  * Queued, Finished today, Earlier), and the capture detail on the right: each project's stories
  * done, the story being captured, the failures so far with their reason, the log tail, Cancel, and
- * once it ended Review results [Enter]. Captures run on this machine, one at a time; the page asks
+ * once it ended Review results [Enter]. Captures on this machine run one at a time; the page asks
  * for the list (GET /api/captures) and the open capture (GET /api/captures/<id>, its log since the
- * last line it has) once a second while one runs or this screen is shown.
+ * last line it has) once a second while one runs or this screen is shown. A capture asked of CI
+ * shows each project's job state instead, from the capture store: the code host gives a job's log
+ * only once the job ends, so there is no story progress or log tail for it here.
  */
 
 import { control } from "./actions.js";
+import { wordsOf } from "./messages.js";
+import { ADAPTER_NAMES } from "./settings.js";
 import { el, fmt, ic } from "./ui.js";
 
 const SECTIONS = ["Running", "Queued", "Finished today", "Earlier"];
@@ -79,6 +83,33 @@ const timeOf = (c, now) =>
           ? "queued"
           : `${clock(c.endedAt ?? c.createdAt, now)}, ${span((c.endedAt ?? c.createdAt) - (c.startedAt ?? c.createdAt))}`;
 
+// Where a capture runs, as its row's tag and its detail say it.
+const whereOf = (app, c) => (c.where === "ci" ? (wordsOf(app.list).ciName ?? "CI") : "this machine");
+
+// A project job's mark, by its state.
+const JOB_MARKS = {
+    queued: ["clock", "c-ink2"],
+    running: ["spin", "c-ink2"],
+    passed: ["accept", "c-accept"],
+    failed: ["failed", "c-failed"],
+    cancelled: ["failed", "c-failed"],
+    skipped: ["clock", "c-ink2"],
+};
+
+// How long a project job ran, or has run so far.
+const jobTime = (j, now) =>
+    j.startedAt
+        ? j.endedAt
+            ? exact(Date.parse(j.endedAt) - Date.parse(j.startedAt))
+            : `${span(now - Date.parse(j.startedAt))} so far`
+        : "";
+
+// "3 min 10 s", "35 s".
+const exact = (ms) => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+};
+
 // A progress bar; its width is set through the style object, as the page's policy allows.
 const bar = (done, total, failed) => {
     const fill = el("div");
@@ -134,15 +165,9 @@ export function drawCaptures(app) {
                             { class: "l1" },
                             markOf(c),
                             el("b", { class: "grow ell" }, c.what.label),
-                            el("span", { class: "tag" }, c.where),
+                            el("span", { class: "tag" }, whereOf(app, c)),
                         ),
-                        bar(c.done, c.total, troubled(c)),
-                        el(
-                            "div",
-                            { class: "small muted" },
-                            // No count before the capture has counted its stories.
-                            c.total > 0 ? `${fmt(c.done)} of ${fmt(c.total)} stories, ${timeOf(c, now)}` : timeOf(c, now),
-                        ),
+                        ...rowCount(app, c, now),
                     ],
                 }),
             );
@@ -156,10 +181,37 @@ export function drawCaptures(app) {
     drawDetail(app, all.find((c) => c.id === app.capCur) ?? null, now);
 }
 
+// A row's second and third lines: its progress bar and count. On CI, project jobs are counted,
+// and with a store that reports no job states only the time is said.
+function rowCount(app, c, now) {
+    if (c.where === "ci") {
+        if (!app.captures?.ci?.status && busy(c)) {
+            return [el("div", { class: "small muted" }, `Capturing on ${whereOf(app, c)}, ${timeOf(c, now)}`)];
+        }
+        return [
+            bar(c.done, c.total, troubled(c)),
+            el("div", { class: "small muted" }, `${fmt(c.done)} of ${fmt(c.total)} project jobs, ${timeOf(c, now)}`),
+        ];
+    }
+    return [
+        bar(c.done, c.total, troubled(c)),
+        el(
+            "div",
+            { class: "small muted" },
+            // No count before the capture has counted its stories.
+            c.total > 0 ? `${fmt(c.done)} of ${fmt(c.total)} stories, ${timeOf(c, now)}` : timeOf(c, now),
+        ),
+    ];
+}
+
 function drawDetail(app, c, now) {
     const box = document.getElementById("cap-detail");
     if (!c) {
         box.replaceChildren(el("p", { class: "muted" }, "Captures you start from New capture... are listed here."));
+        return;
+    }
+    if (c.where === "ci") {
+        drawCiDetail(app, c, now, box);
         return;
     }
     const open = app.capOpen?.id === c.id ? app.capOpen : null;
@@ -250,4 +302,91 @@ function drawDetail(app, c, now) {
         ).childNodes,
     );
     log.scrollTop = log.scrollHeight;
+}
+
+// The detail of a capture asked of CI: each project's job state, with a link to its log once it
+// has one, the run's whole log, and Cancel when the store can cancel.
+function drawCiDetail(app, c, now, box) {
+    const ci = app.captures?.ci ?? {};
+    const name = whereOf(app, c);
+    const state =
+        c.state === "running"
+            ? `running for ${timeOf(c, now)}`
+            : c.state === "queued"
+              ? `queued: waiting for ${name} to start the run`
+              : c.state === "done"
+                ? `finished ${timeOf(c, now)}`
+                : c.state === "cancelled"
+                  ? `cancelled ${timeOf(c, now)}`
+                  : `failed ${timeOf(c, now)}`;
+    const link = (text) =>
+        c.runUrl ? el("a", { href: c.runUrl, target: "_blank", rel: "noreferrer" }, text) : el("span", {}, text);
+    const store = app.list?.adapters?.captureStore?.name;
+    box.replaceChildren(
+        ...el(
+            "div",
+            {},
+            el("h2", {}, c.what.label),
+            el(
+                "p",
+                { class: "muted" },
+                `${name[0].toUpperCase()}${name.slice(1)}, ${state}. Against the baselines of ${c.baselines.label}. Every project, every story.`,
+            ),
+            c.error && c.state === "failed" ? el("p", { class: "c-failed" }, c.error) : null,
+            ci.status
+                ? [
+                      el("h3", {}, `Project jobs (from ${ADAPTER_NAMES[store] ?? store ?? name})`),
+                      el(
+                          "table",
+                          { class: "jobs" },
+                          (c.jobs.length ? c.jobs : c.projects.map((project) => ({ project, state: "queued" }))).map(
+                              (j) =>
+                                  el(
+                                      "tr",
+                                      {},
+                                      el("td", {}, el("code", {}, `visual (${j.project})`)),
+                                      el(
+                                          "td",
+                                          {},
+                                          el(
+                                              "span",
+                                              { class: "st" },
+                                              ic(...(JOB_MARKS[j.state] ?? JOB_MARKS.queued)),
+                                              j.state,
+                                          ),
+                                      ),
+                                      el("td", { class: "muted" }, jobTime(j, now)),
+                                      el(
+                                          "td",
+                                          {},
+                                          j.url && j.state !== "queued"
+                                              ? el("a", { href: j.url, target: "_blank", rel: "noreferrer" }, "Log")
+                                              : null,
+                                      ),
+                                  ),
+                          ),
+                      ),
+                      el("p", { class: "small" }, "Story progress is shown when the job ends."),
+                      el("p", { class: "small" }, link(`Open the whole ${name} log`)),
+                  ]
+                : el(
+                      "p",
+                      { class: "small" },
+                      c.state === "running" ? `Capturing on ${name}. ` : "",
+                      "Your capture store reports no job states. ",
+                      link(`Open the ${name} log`),
+                  ),
+            el(
+                "div",
+                { class: "capacts" },
+                busy(c) && ci.cancel ? control(app, "capcancel", { zone: "rows", ctx: { cap: c.id } }) : null,
+                c.state === "done" || c.state === "failed"
+                    ? control(app, "capreview", { zone: "rows", ctx: { cap: c.id }, attrs: { class: "primary" } })
+                    : null,
+                c.state === "failed" || c.state === "cancelled"
+                    ? control(app, "capagain", { zone: "rows", ctx: { cap: c.id, label: "Capture again" } })
+                    : null,
+            ),
+        ).childNodes,
+    );
 }

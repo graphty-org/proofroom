@@ -254,6 +254,7 @@ export function captureRowOf(c, { now, words = GITHUB_WORDS }) {
     const kind = CAPTURE_KINDS[c.what.kind];
     const failed = c.state === "failed" || c.state === "cancelled";
     const id = `capture-${c.id}`;
+    const onCi = c.where === "ci";
     return {
         id,
         capId: c.id,
@@ -266,7 +267,8 @@ export function captureRowOf(c, { now, words = GITHUB_WORDS }) {
         head: c.head,
         branch: c.what.branch ?? null,
         author: c.what.author ?? null,
-        source: "this machine",
+        source: onCi ? (words.ciName ?? "CI") : "this machine",
+        onCi,
         ready: `0 of ${c.projects.length}`,
         readyAt: c.createdAt,
         age: ageText(now - c.createdAt),
@@ -291,9 +293,11 @@ export function captureRowOf(c, { now, words = GITHUB_WORDS }) {
                 ? "Capture cancelled by you"
                 : failed
                   ? `Capture failed: ${c.error}`
-                  : c.state === "queued"
-                    ? "On this machine, queued: local captures run one at a time"
-                    : `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`,
+                  : onCi
+                    ? `Capturing on ${words.ciName ?? "CI"}, ${fmt(c.done)} of ${plural(c.projects.length, "project")}`
+                    : c.state === "queued"
+                      ? "On this machine, queued: local captures run one at a time"
+                      : `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`,
         notReady: true,
         dismissKey: id,
         dismissable: false,
@@ -394,10 +398,16 @@ function rowOf(app, r) {
     const details = [r.branch, r.author, r.source, `${r.ready} projects ready`, r.age].filter(Boolean).join("  ");
     const acts = [];
     if (r.capId !== null) {
-        // A capture on this machine: its log is on the Captures screen.
+        // A capture from the page: its log is on the Captures screen. One on CI says how to follow
+        // it, and is cancelled only where the store can cancel.
         acts.push(
             ...(r.state === "capturing"
-                ? [control(app, "capcancel", { zone: "rows", ctx: { cap: r.capId } })]
+                ? [
+                      r.onCi ? control(app, "joblog", { zone: "rows", ctx: { id: r.id } }) : null,
+                      !r.onCi || app.captures?.ci?.cancel
+                          ? control(app, "capcancel", { zone: "rows", ctx: { cap: r.capId } })
+                          : null,
+                  ].filter(Boolean)
                 : [
                       control(app, "joblog", { zone: "rows", ctx: { id: r.id } }),
                       control(app, "capagain", { zone: "rows", ctx: { id: r.id, label: "Retry" } }),

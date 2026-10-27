@@ -2010,7 +2010,10 @@ dialog.finish pre {
 .log {
     background: #11151b;
     color: #cfd6e0;
-    font: 11px/1.5 ui-monospace, Menlo, monospace;
+    font:
+        11px/1.5 ui-monospace,
+        Menlo,
+        monospace;
     padding: 8px 10px;
     border-radius: 6px;
     height: 200px;
@@ -2051,4 +2054,15 @@ dialog.finish .warnbox {
 }
 #summary-newcap {
     margin-top: 8px;
+}
+
+/* A capture on CI: each project's job (captures.js). */
+.jobs {
+    border-collapse: collapse;
+    font-size: 12px;
+    margin: 4px 0;
+}
+.jobs td {
+    padding: 4px 12px 4px 0;
+    border-bottom: 1px solid var(--line);
 }

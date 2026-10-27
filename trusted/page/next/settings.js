@@ -264,7 +264,7 @@ export function diskText(disk) {
 }
 
 /** The adapters' names as Settings shows them, by their config names. */
-const ADAPTER_NAMES = {
+export const ADAPTER_NAMES = {
     github: "GitHub",
     "plain-git": "Plain git",
     "github-actions": "GitHub Actions artifacts",
