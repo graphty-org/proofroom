@@ -19,6 +19,10 @@ on:
 permissions:
     contents: read
 
+env:
+    # Chromium 143 can crash at launch (SIGSEGV in getenv) unless this is preset; see chromiumEnv in capture.mjs.
+    FC_FONTATIONS: "1"
+
 jobs:
     # The projects of visual-review.config.json, as the capture job's matrix.
     plan:

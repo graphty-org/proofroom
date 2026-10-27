@@ -11,6 +11,17 @@ import { tempDir } from "./helpers.mjs";
 import { context, png, read, report, repo } from "./story-test-fakes.mjs";
 
 describe("story tests' visual step", () => {
+    it("launches Chromium with FC_FONTATIONS preset, whatever the caller's environment (#3787)", () => {
+        const saved = process.env.FC_FONTATIONS;
+        delete process.env.FC_FONTATIONS;
+        try {
+            const v = visualStoryTest({ project: "graphty-element", out: tempDir("story-test-out-"), root: repo({}) });
+            expect(v.providerOptions.launchOptions.env).toMatchObject({ FC_FONTATIONS: "1", TZ: "UTC" });
+        } finally {
+            if (saved !== undefined) process.env.FC_FONTATIONS = saved;
+        }
+    });
+
     it("shoots a story taller than the viewport in scrolled tiles, keeping its layout at the viewport", async () => {
         const root = repo({});
         const out = tempDir("story-test-out-");

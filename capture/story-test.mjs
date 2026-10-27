@@ -19,6 +19,7 @@ import { classify, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 import { loadConfig, repoRoot } from "../trusted/lib/config.mjs";
 import {
     CHROMIUM_ARGS,
+    chromiumEnv,
     CLOCK_START,
     clip,
     EMPTY,
@@ -471,11 +472,9 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         providerOptions: {
             launchOptions: {
                 args: CHROMIUM_ARGS,
-                env: {
-                    ...process.env,
-                    ...(fontconfig && { FONTCONFIG_FILE: fontconfig, XDG_CACHE_HOME: join(out, ".font-cache") }),
-                    TZ: "UTC",
-                },
+                env: chromiumEnv(
+                    fontconfig ? { FONTCONFIG_FILE: fontconfig, XDG_CACHE_HOME: join(out, ".font-cache") } : {},
+                ),
             },
             contextOptions: { viewport: VIEWPORT, deviceScaleFactor: SCALE, timezoneId: "UTC", locale: "en-US" },
         },

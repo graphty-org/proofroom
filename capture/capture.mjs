@@ -73,6 +73,17 @@ export const CHROMIUM_ARGS = [
     "--disable-lcd-text",
     "--font-render-hinting=none",
 ];
+/**
+ * The environment every capture browser launches with: this process's, then `extra`, in UTC, and
+ * always with FC_FONTATIONS=1. Chromium 143 sets that variable itself from a font thread while a
+ * D-Bus thread may be reading the environment; when the setenv has to grow the array, glibc frees
+ * the old one under the reader and the browser dies at launch with SIGSEGV (only at some
+ * environment sizes, so it comes and goes). Presetting it makes Chromium's setenv an in-place
+ * overwrite. The full analysis is in the monorepo's vitest.base.mjs (2026-09-25).
+ * @param {Record<string, string>} [extra] variables to add, such as the pinned fonts'
+ * @returns {Record<string, string | undefined>} the launch environment
+ */
+export const chromiumEnv = (extra = {}) => ({ ...process.env, ...extra, TZ: "UTC", FC_FONTATIONS: "1" });
 const MAX_CONSOLE = 100;
 const MAX_LINE = 2000;
 
@@ -893,7 +904,7 @@ export async function capture({
     // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.
     const browsers = await Promise.all(
         Array.from({ length: Math.max(1, workers) }, () =>
-            chromium.launch({ args: CHROMIUM_ARGS, env: { ...process.env, ...fontEnv, TZ: "UTC" } }),
+            chromium.launch({ args: CHROMIUM_ARGS, env: chromiumEnv(fontEnv) }),
         ),
     );
     const [browser] = browsers;
