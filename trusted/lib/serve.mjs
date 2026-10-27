@@ -272,6 +272,7 @@ const POLL = 2 * 60000;
 
 // What an image of an evicted change answers, and its changes row once the code host deleted them.
 const EVICTED_TEXT = "Images not on disk: open the change to download them again";
+const DELETED_TEXT = "Images deleted by the code host: capture again";
 
 /**
  * The newest gh call waiting to retry after a network failure, for the page.
@@ -528,15 +529,20 @@ async function blobsOf(repo, names) {
  * @param {string} input.project the project
  * @param {string} input.dir the capture's directory
  * @param {{ items: object[] }} input.results its results.json, validated
+ * @param {boolean} [input.images] write the images too; false for a directory the disk budget
+ *     evicted, whose items still change (the hashes come from git) but whose images stay away
  * @returns {Promise<void>} resolves once the items and images are in place; rejects when the
  *     default branch's baselines or images cannot be read
  */
-async function againstBase({ repo, ref, head, baselines, project, dir, results }) {
+async function againstBase({ repo, ref, head, baselines, project, dir, results, images = true }) {
     const prefix = `${baselines}/${project}/`;
     const blobs = await pngBlobs(repo, ref, prefix);
     const contents = await blobsOf(repo, [...new Set(blobs.values())]);
     const hashOf = (file) => (blobs.has(file) ? contentHash(contents.get(blobs.get(file))) : null);
     const shown = compareWithBase(results, blobs, hashOf);
+    if (!images) {
+        return;
+    }
     for (const file of shown) {
         await putImage(repo, join(dir, "baselines", file), contents.get(blobs.get(file)), hashOf(file));
     }
@@ -1408,6 +1414,8 @@ export function createApp({
     // pull request's capture (`vsBase`) is also compared with the default branch's baselines.
     async function project(name, dir, problem, vsBase = false) {
         const loaded = dir ? await loadResults(dir, name) : { results: null, problem: null };
+        // Evicted by the disk budget: its counts are here, its images are not (budget.mjs).
+        const evicted = dir ? evictedAt(dir) : null;
         if (loaded.results && vsBase) {
             const ref = `refs/remotes/origin/${defaultBranch}`;
             const { headSha: head } = loaded.results;
@@ -1419,6 +1427,7 @@ export function createApp({
                 project: name,
                 dir,
                 results: loaded.results,
+                images: !evicted,
             }).catch((err) => {
                 loaded.results = null;
                 loaded.problem = `not compared with ${defaultBranch}'s baselines: ${err.message}`;
@@ -1429,8 +1438,6 @@ export function createApp({
         if (dir) {
             forgetImages(dir);
         }
-        // Evicted by the disk budget: its counts are here, its images are not (budget.mjs).
-        const evicted = dir ? evictedAt(dir) : null;
         if (loaded.results) {
             itemIndex.set(loaded.results, itemsByFile(loaded.results.items));
             if (!evicted) {
@@ -1811,6 +1818,17 @@ export function createApp({
         }
         if (t.pendingPush) {
             return [409, { error: pendingPushText(t) }];
+        }
+        // A Finish keeps the change on disk for the next hour (the budget's OPENED_KEEP_MS), and
+        // one the budget already evicted reads its images only once they are downloaded again.
+        markOpened(t.id);
+        const away = t.projects.filter((p) => p.evicted);
+        if (away.some((p) => p.evicted.deleted)) {
+            return [410, { error: DELETED_TEXT }];
+        }
+        if (away.length > 0) {
+            refetch(t);
+            return [409, { error: "Images not on disk: downloading them again; Finish once they are in" }];
         }
         return null;
     };
@@ -2492,12 +2510,14 @@ export function createApp({
             if (used <= budget || refreshing || !run || runs.has(Number(run))) {
                 continue;
             }
-            for (const [f, size] of files) {
-                if (f.startsWith(`${dir}${sep}`)) {
-                    used -= size;
+            // Evicted like a change, never removed: a target that could not load this refresh
+            // (no run) may still be this run's, and its counts are in results.json.
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+                const sub = join(dir, e.name);
+                if (e.isDirectory() && e.name !== "gh" && !evictedAt(sub)) {
+                    used -= evict(sub, files, Date.now());
                 }
             }
-            rmSync(dir, { recursive: true, force: true });
             forgetImages(dir);
         }
         const pinned = new Set([...held.values()].map((t) => t.id));
@@ -3710,6 +3730,11 @@ export function createApp({
             // also starts a refresh. Neither waits for GitHub. After a first load that failed, only
             // ?refresh=1 (the page's Retry) tries again.
             await restored;
+            // The change a page has open (`open`): the disk budget keeps it while it is polled.
+            const open = query?.get("open");
+            if (open && targets.has(open)) {
+                markOpened(open);
+            }
             const cachedOnly = query?.get("cached") === "1" || query?.get("refresh") === "1";
             if (cachedOnly) {
                 // A local preview that moved on (a project's capture written, or the preview done)
@@ -3771,11 +3796,12 @@ export function createApp({
                 return gone(id, run);
             }
             markOpened(id);
-            const away = t.projects.find((x) => x.project === name)?.evicted;
-            if (away?.deleted) {
-                return [410, { error: "Images deleted by the code host: capture again" }];
+            // The change downloads again as a whole, whichever of its projects the page asks about.
+            const away = t.projects.filter((x) => x.evicted);
+            if (away.some((x) => x.evicted.deleted)) {
+                return [410, { error: DELETED_TEXT }];
             }
-            if (away) {
+            if (away.length > 0) {
                 // Evicted by the disk budget: its images download again, and the page asks again.
                 refetch(t);
                 return [202, { downloading: true, target: summary(t), network: networkTrouble(), now: Date.now() }];

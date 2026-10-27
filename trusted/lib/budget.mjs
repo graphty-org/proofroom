@@ -68,13 +68,12 @@ export function evictionOrder(changes, now) {
  */
 export function evict(dir, files, now) {
     const gone = readdirSync(dir).filter((n) => !KEPT.has(n));
+    // One pass over the walk: each file under `dir` counts when its top entry goes.
+    const below = `${dir}${sep}`;
     let bytes = 0;
-    for (const n of gone) {
-        const path = join(dir, n);
-        for (const [f, size] of files) {
-            if (f === path || f.startsWith(`${path}${sep}`)) {
-                bytes += size;
-            }
+    for (const [f, size] of files) {
+        if (f.startsWith(below) && !KEPT.has(f.slice(below.length).split(sep)[0])) {
+            bytes += size;
         }
     }
     writeFileSync(join(dir, EVICTED_FILE), JSON.stringify({ bytes, at: now }));

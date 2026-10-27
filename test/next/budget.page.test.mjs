@@ -2,7 +2,7 @@
  * The disk budget on the new page, by real input in Chromium and in WebKit: Settings shows the
  * budget and what the work directory holds; a change whose images were evicted keeps its counts and
  * says what opening it downloads, and a click on it asks the server to download them again, its row
- * then showing the download and, once they are in, opening as any other; a change whose images the
+ * then showing the download and, once they are in, opening it; a change whose images the
  * code host deleted is in Not ready and says to capture again.
  */
 
@@ -99,14 +99,16 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await expect.poll(l2).toContain("Downloading: 0 of 1 projects");
             expect(await sectionOf(page, "10")).toBe("busy");
 
-            // Its images are in: the next list shows it as before, and a click opens it.
+            // Its images are in: the next list shows it as before, and it opens with no other click.
             t.setList(listAnswer([target(10, { projects: [project("graphty-element", { reviewable: 3 })] }), deleted]));
             await page.locator('[data-act="refresh"]').click();
-            await expect.poll(l2).not.toContain("Downloading");
-            expect(await l2()).not.toContain("Images not on disk");
-            await row.locator(".t").click();
             await expect.poll(() => message(page)).toMatch(/^Opened #10 Change 10: 3 undecided\.$/);
+            expect(await l2()).not.toContain("Downloading");
+            expect(await l2()).not.toContain("Images not on disk");
             expect(asked).toBe(2);
+            // While it is open, every list poll names it, so the budget keeps its images.
+            await page.locator('[data-act="refresh"]').click();
+            await expect.poll(() => t.requests.filter((r) => r.includes("&open=10")).length).toBeGreaterThan(0);
         });
     });
 }
