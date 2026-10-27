@@ -93,7 +93,8 @@ afterEach(async () => {
 
 const field = () => page.getByLabel(LABEL);
 const stored = () => page.evaluate(() => globalThis.localStorage.getItem("visual-review:token"));
-const loaded = (p = page) => p.locator("#chg-list .chg").first().waitFor();
+// The list holds the change (attached: a change the page opens at once folds the list to its rail).
+const loaded = (p = page) => p.locator("#chg-list .chg").first().waitFor({ state: "attached" });
 
 async function paste(text) {
     await field().fill(text);

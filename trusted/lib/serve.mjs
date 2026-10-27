@@ -449,13 +449,17 @@ export function sessionToken(stateDir) {
  */
 export function serverIdOf(stateDir) {
     const file = join(stateDir, "server-id");
-    const kept = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
-    if (/^[0-9a-f]{16}$/.test(kept)) {
-        return kept;
-    }
     const id = randomBytes(8).toString("hex");
-    mkdirSync(stateDir, { recursive: true });
-    writeFileSync(file, id);
+    try {
+        const kept = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+        if (/^[0-9a-f]{16}$/.test(kept)) {
+            return kept;
+        }
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(file, id);
+    } catch {
+        // The id cannot be kept (a full or failing disk): this start's own id names the cookie.
+    }
     return id;
 }
 
