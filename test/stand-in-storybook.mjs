@@ -23,6 +23,7 @@ export const PARAMS = {
     "demo--late-font": {},
     "demo--tall": {},
     "demo--wobbly": {},
+    "demo--focus": {},
 };
 
 const iframe = (counter) => `<!doctype html><html><body><script>
@@ -53,10 +54,22 @@ if (id === "demo--broken") {
     // A 50 x 20 box at (100, 100): far smaller than the viewport.
     document.body.insertAdjacentHTML("beforeend",
         "<div style='position:absolute;left:100px;top:100px;width:50px;height:20px;background:red'></div>");
+} else if (id === "demo--focus") {
+    // A story that starts with the page's focus draws a blue box at (200, 100), as a story
+    // reading document.hasFocus() would differ; then a play function focuses a control, and the
+    // input turns blue only while it has the focus.
+    if (document.hasFocus()) {
+        document.body.insertAdjacentHTML("beforeend",
+            "<div style='position:absolute;left:200px;top:100px;width:20px;height:20px;background:#00f'></div>");
+    }
+    document.head.insertAdjacentHTML("beforeend",
+        "<style>input{position:absolute;left:100px;top:100px;width:50px;height:20px;border:0;outline:0;background:#fff}input:focus{background:#00f}</style>");
+    document.body.insertAdjacentHTML("beforeend", "<input>");
+    document.querySelector("input").focus();
 } else if (id === "demo--tall") {
-    // A story 2000 px tall, taller than the 900 px viewport.
+    // A story 1000 px tall, taller than the 900 px viewport: two tiles, the fewest a tall story takes.
     document.body.insertAdjacentHTML("beforeend",
-        "<div style='position:absolute;left:0;top:0;width:10px;height:2000px;background:red'></div>");
+        "<div style='position:absolute;left:0;top:0;width:10px;height:1000px;background:red'></div>");
 } else if (id === "demo--wobbly") {
     // A box whose place the counting server decides: "settled" or "wobble".
     const left = drawn === "wobble" ? 300 : 100;
@@ -102,11 +115,12 @@ export async function countingServer() {
  * Writes the stand-in Storybook.
  * @param {string} counter the counting server's base URL
  * @param {string} [dir] where to write it (default: a new temporary directory)
+ * @param {string[]} [ids] the stories its index lists (default: every one)
  * @returns {string} its directory
  */
-export function storybook(counter, dir = tempDir("vr-sb-")) {
+export function storybook(counter, dir = tempDir("vr-sb-"), ids = Object.keys(PARAMS)) {
     mkdirSync(dir, { recursive: true });
-    const entries = Object.fromEntries(Object.keys(PARAMS).map((id) => [id, { id, type: "story" }]));
+    const entries = Object.fromEntries(ids.map((id) => [id, { id, type: "story" }]));
     entries["demo--docs"] = { id: "demo--docs", type: "docs" };
     writeFileSync(join(dir, "index.json"), JSON.stringify({ entries }));
     writeFileSync(join(dir, "iframe.html"), iframe(counter));

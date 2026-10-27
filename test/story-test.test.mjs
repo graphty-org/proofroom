@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 
+import { pinFixedInPage } from "../capture/capture.mjs";
 import { visualStoryTest } from "../capture/story-test.mjs";
 import { collect } from "../trusted/lib/collect.mjs";
 import { parseResultLines } from "../trusted/lib/result-line.mjs";
@@ -100,6 +101,73 @@ describe("story tests' visual step", () => {
         expect(ctx.viewports).toEqual([]);
     });
 
+    // 1,063 CSS px tall, as graphty's CompactOverview Size Specifications: the window scrolls
+    // `windowMax` px at most and the body scrolls the rest of the way to the end (163 px), whose
+    // last 163 px are the rows below the first tile. A fixed toast pinned at document row 1,000
+    // must follow the body's scroll, since its containing block does not.
+    it.each([
+        { name: "the window cannot scroll (html and body overflow: hidden, height: 100%)", windowMax: 0, short: 0 },
+        { name: "the window scrolls 16 px (the body's margin) and the body the rest", windowMax: 16, short: 0 },
+        // The body stops 63 px short of the measured end: the rows it never shows stay empty, and the
+        // tile's clip never reads past the screenshot (it threw "bitblt reading outside image").
+        { name: "the body stops 63 px short of the measured size", windowMax: 0, short: 63 },
+    ])("scrolls the body by what the window could not when $name", async ({ windowMax, short }) => {
+        const out = tempDir("story-test-out-");
+        const v = visualStoryTest({ project: PROJECT, out, root: repo({}) });
+        // Short, a third tile finds the frame where the second left it, and nothing more to copy.
+        const tiles = [png(10, 2400, 1800), png(20, 2400, 1800), ...(short ? [png(30, 2400, 1800)] : [])];
+        const ctx = context(tiles, { width: 1200, height: 1063 });
+        const frame = await ctx.frame();
+        const measured = frame.evaluate;
+        const win = { scrollX: 0, scrollY: 0 };
+        const body = { scrollLeft: 0, scrollTop: 0 };
+        body.scrollTo = (x, y) =>
+            Object.assign(body, {
+                scrollLeft: Math.max(0, x),
+                scrollTop: Math.max(0, Math.min(y, 163 - windowMax - short)),
+            });
+        // Absolute against the initial containing block: the window's scroll moves it, the body's does not.
+        const toast = { style: { top: "1000px", left: "8px", setProperty: (n, value) => (toast.style[n] = value) } };
+        toast.getBoundingClientRect = () => ({
+            top: Number.parseFloat(toast.style.top) - win.scrollY,
+            left: Number.parseFloat(toast.style.left) - win.scrollX,
+        });
+        const toastTops = [];
+        frame.evaluate = async (fn, arg) => {
+            if (!fn.toString().includes("scrollTo")) {
+                return measured(fn, arg);
+            }
+            Object.assign(globalThis, {
+                scrollTo: (_x, y) => Object.assign(win, { scrollX: 0, scrollY: Math.max(0, Math.min(y, windowMax)) }),
+                document: { body },
+                __visualReviewPinned: [[toast, "", 1000, 8]],
+            });
+            Object.defineProperties(globalThis, {
+                scrollX: { get: () => win.scrollX, configurable: true },
+                scrollY: { get: () => win.scrollY, configurable: true },
+            });
+            try {
+                const at = fn(arg);
+                // Where the toast shows in the document the tile draws: its viewport top plus the scroll.
+                toastTops.push(toast.getBoundingClientRect().top + at.y);
+                return at;
+            } finally {
+                for (const name of ["scrollTo", "document", "__visualReviewPinned", "scrollX", "scrollY"]) {
+                    delete globalThis[name];
+                }
+            }
+        };
+        await v.commands.visualPlan(ctx, { id: "a--app-css", chromatic: {} });
+        const shoot = () => v.commands.visualShot(ctx, { id: "a--app-css", mode: null, chromatic: {}, console: [] });
+        expect(await shoot()).toMatchObject({ status: "new", again: false });
+        const shot = PNG.sync.read(readFileSync(join(out, "a--app-css.png")));
+        expect([shot.width, shot.height]).toEqual([2400, 2126]);
+        const gray = (y) => shot.data[y * 2400 * 4];
+        const end = 2 * (1063 - short);
+        expect([gray(0), gray(1799), gray(1800), gray(end - 1), gray(2125)]).toEqual([10, 10, 20, 20, short ? 0 : 20]);
+        expect(new Set(toastTops)).toEqual(new Set([1000]));
+    });
+
     it("judges each shot at once, one result line per snapshot, and collect makes the capture", async () => {
         const root = repo({ "a--same.png": png(10), "a--moves.png": png(10), "a--gone.png": png(10) });
         const out = tempDir("story-test-out-");
@@ -110,7 +178,11 @@ describe("story tests' visual step", () => {
         expect((await storyTest(v, "a--fresh", [png(50)])).last).toMatchObject({ status: "new", failure: null });
         await v.commands.visualPlan(context([]), { id: "a--broken", chromatic: {} });
         await v.commands.visualFail(context([]), { id: "a--broken", modes: [null], reason: "play threw", console: [] });
-        await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } });
+        // An excluded story is not shot, but the page still waits for it to finish, so its late
+        // console lines cannot fail the story after it.
+        expect(
+            await v.commands.visualPlan(context([]), { id: "a--off", chromatic: { disableSnapshot: true } }),
+        ).toEqual({ modes: [], waitFor: expect.objectContaining({ method: "waitForStableFrame" }), delay: 0 });
 
         // Each line is on disk the moment its snapshot is judged.
         expect(linesIn(out).map((l) => [l.id, l.status, l.attempt])).toEqual([
@@ -263,5 +335,34 @@ describe("story tests' visual step", () => {
         expect(runs).toHaveLength(2);
         expect(runs).toEqual(expect.arrayContaining([[false, ["b--lost"]]]));
         expect(runs.filter(([, missing]) => missing.length === 0)).toHaveLength(1);
+    });
+});
+
+describe("pinFixedInPage", () => {
+    it("draws a sticky element static while tiles are shot, and puts its style back", () => {
+        const el = (position) => {
+            const e = { position, style: { cssText: "", setProperty: (n, v) => (e.style[n] = v) } };
+            e.getBoundingClientRect = () => ({ top: 0, left: 0, width: 10, height: 10 });
+            e.querySelectorAll = () => [];
+            return e;
+        };
+        const header = el("sticky");
+        const plain = el("static");
+        Object.assign(globalThis, {
+            document: { querySelectorAll: () => [header, plain] },
+            getComputedStyle: (e) => ({ position: e.position }),
+        });
+        try {
+            pinFixedInPage(false);
+            expect(header.style.position).toBe("static");
+            expect(plain.style.position).toBeUndefined();
+            header.style.cssText = "changed";
+            pinFixedInPage(true);
+            expect(header.style.cssText).toBe("");
+            expect(globalThis.__visualReviewUnstuck).toBeUndefined();
+        } finally {
+            delete globalThis.document;
+            delete globalThis.getComputedStyle;
+        }
     });
 });

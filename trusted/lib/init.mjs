@@ -34,7 +34,7 @@ const MANAGERS = {
 
 function setup(cache, install) {
     return [
-        "- uses: actions/setup-node@v4",
+        "- uses: actions/setup-node@v7",
         "  with:",
         "      node-version: 22.x",
         `      cache: ${cache}`,

@@ -115,7 +115,9 @@ import {
     commitStatus,
     decisionProblem,
     finish,
+    closeCandidatePullRequest,
     isPreviewOf,
+    masterSubject,
     newerOnMaster,
     onlyFinishCommits,
     prepareApproval,
@@ -691,6 +693,13 @@ async function loadResults(dir, name) {
  * @param {string} options.origin the origin the page is served from
  * @param {number} [options.masterRun] the default branch's CI run to seed from (the target the
  *     page calls "master")
+ * @param {() => Promise<{ commit: string, runId: number, waiting: boolean, at: number }[]>} [options.candidates]
+ *     lists the default branch's full runs (the config's `candidates` command), `waiting` when one
+ *     waits for its screenshots' approval: the page offers the oldest waiting one as the target
+ *     "master" and keeps offering it until it stops waiting, its accept commit reaches the default
+ *     branch, or a Finish rejects something in it; newer ones queue behind it. Decisions are kept by
+ *     image hash, so an image decided on one candidate arrives decided on the next. `masterRun`, when
+ *     given, wins
  * @param {string} [options.results] a local directory of `<project>/results.json` instead of CI:
  *     a preview to look at, with no decisions and no Finish
  * @param {string} [options.startCommand] the shell command that starts this server, shown so the
@@ -723,6 +732,7 @@ export function createApp({
     token,
     origin,
     masterRun,
+    candidates = null,
     results,
     startCommand = null,
     warm,
@@ -793,7 +803,7 @@ export function createApp({
     try {
         const saved = JSON.parse(readFileSync(jobFile, "utf8"));
         if (saved?.running) {
-            const where = saved.branch ?? "the visual/seed-* branch";
+            const where = saved.branch ?? "the visual/seed-* or visual/approve-* branch";
             job = {
                 ...saved,
                 running: false,
@@ -1790,7 +1800,7 @@ export function createApp({
     // A target that loaded before keeps what it showed when a later refresh of it fails.
     const keptOr = (info, err) => {
         const old = targets.get(info.id);
-        return old?.runId
+        return old?.runId && old.candidate?.commit === info.candidate?.commit
             ? { ...old, draft: info.draft, warnings: [retryLater("could not refresh", err.message)] }
             : blank(info, retryLater("failed to load", err.message));
     };
@@ -1827,6 +1837,34 @@ export function createApp({
             }
         })());
 
+    /**
+     * The default branch's target: the run given with --master-run (a seed), or the candidate
+     * offered (offeredCandidate), or null when there is neither.
+     * @returns {Promise<object | null>} the target
+     */
+    async function masterTarget() {
+        // A Finish of the offered candidate is running: it stays offered until the Finish ends.
+        if (finishing && targets.get("master")?.candidate) {
+            return targets.get("master");
+        }
+        const pick = !masterRun && candidates ? await offeredCandidate() : null;
+        const runId = masterRun ?? pick?.offered?.runId;
+        if (!runId) {
+            return null;
+        }
+        step(`reading ${defaultBranch}'s CI run`);
+        const info = { id: "master", pr: null, title: defaultBranch, url: null, branch: null };
+        if (pick?.offered) {
+            const { commit } = pick.offered;
+            info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${pick.queued.length} queued)`;
+            info.candidate = { commit, runId, queued: pick.queued.map((c) => ({ commit: c.commit, runId: c.runId })) };
+        }
+        return getRun(gh, runId)
+            // When CI last touched the run, as a pull request's "4 min ago".
+            .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
+            .catch((err) => keptOr(info, err));
+    }
+
     async function load() {
         const next = new Map();
         if (results) {
@@ -1862,7 +1900,7 @@ export function createApp({
             // This refresh's runs (runOf); a failed list keeps what the last one learned.
             let read = new Map();
             const prs = await openPullRequests(gh, config).catch((err) => {
-                if (!masterRun && kept.length === 0) {
+                if (!masterRun && !candidates && kept.length === 0) {
                     throw err;
                 }
                 console.error(`proofroom: pull requests not listed: ${err.message}`);
@@ -1945,16 +1983,9 @@ export function createApp({
                     : null;
             passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? opened;
             for (const t of built) next.set(t.id, t);
-            if (masterRun) {
-                step(`reading ${defaultBranch}'s CI run`);
-                const info = { id: "master", pr: null, title: defaultBranch, url: null, branch: null };
-                next.set(
-                    "master",
-                    await getRun(gh, masterRun)
-                        // When CI last touched the run, as a pull request's "4 min ago".
-                        .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
-                        .catch((err) => keptOr(info, err)),
-                );
+            const master = await masterTarget();
+            if (master) {
+                next.set("master", master);
             }
         }
         let seen = pushes;
@@ -1976,6 +2007,136 @@ export function createApp({
         targets = next;
         save();
         prune();
+    }
+
+    /**
+     * The candidate mode's state: the candidates a Finish rejected something in, by commit (never
+     * offered again), and the one offered last.
+     */
+    const candidatesFile = join(stateDir, "candidates.json");
+    let dropped = new Set();
+    let offeredBefore = null;
+    /** Dropped candidates whose accept pull request could not be closed yet: tried at every refresh. */
+    let toClose = new Set();
+    try {
+        const kept = JSON.parse(readFileSync(candidatesFile, "utf8"));
+        dropped = new Set(kept.dropped);
+        offeredBefore = kept.offered ?? null;
+        toClose = new Set(kept.toClose ?? []);
+    } catch {
+        // No candidate offered yet.
+    }
+    const saveCandidates = () =>
+        writeJson(candidatesFile, { dropped: [...dropped], offered: offeredBefore, toClose: [...toClose] });
+    // Closes the accept pull requests a rejecting Finish could not close; a failure stays a warning.
+    const closeLeftOpen = async () => {
+        for (const commit of toClose) {
+            const { closeError } = await closeCandidatePullRequest(gh, { candidate: commit });
+            if (closeError) {
+                listWarnings.push(
+                    `the accept pull request of rejected candidate ${commit.slice(0, 10)} is still open: ${closeError}`,
+                );
+            } else {
+                toClose.delete(commit);
+                saveCandidates();
+            }
+        }
+    };
+    const dropCandidate = (commit) => {
+        dropped.add(commit);
+        saveCandidates();
+    };
+    /**
+     * Starts a newly offered candidate: its decisions are the saved ones, by image hash, but none
+     * of them is published on it yet, so its Finish sends them all again (the rejects too, so a
+     * rejected image drops it as well).
+     * @param {string} commit the candidate
+     */
+    const offerCandidate = (commit) => {
+        update({ id: "master" }, (saved) => {
+            for (const d of Object.values(saved)) {
+                delete d.posted;
+            }
+        });
+        offeredBefore = commit;
+        saveCandidates();
+    };
+    /**
+     * Refuses a candidate list that is not the `candidates` command's shape.
+     * @param {unknown} list what the command printed, parsed
+     * @returns {object[]} the list
+     */
+    const checkedCandidates = (list) => {
+        const ok = (c) =>
+            typeof c?.commit === "string" &&
+            /^[0-9a-f]{40}$/.test(c.commit) &&
+            Number.isInteger(c.runId) &&
+            typeof c.waiting === "boolean" &&
+            typeof c.at === "number";
+        if (!Array.isArray(list)) {
+            throw new TypeError("the candidates command must print [{ commit, runId, waiting, at }]");
+        }
+        const bad = list.filter((c) => !ok(c)).length;
+        if (bad > 0) {
+            listWarnings.push(`the candidates command listed ${bad} malformed ${bad === 1 ? "row" : "rows"}, left out`);
+        }
+        return list.filter(ok);
+    };
+    /** The last candidate list read, kept when the next read fails. */
+    let lastList = [];
+    /**
+     * Whether a candidate's accept commit (exactly masterSubject's subject) is on the default branch
+     * as last fetched, with its review record still there: its approval merged, so it is done
+     * whatever the list says.
+     * @param {string} commit the candidate
+     * @returns {Promise<boolean>} whether it merged
+     */
+    const approvalMerged = async (commit) => {
+        const tip = `refs/remotes/origin/${defaultBranch}`;
+        const subject = masterSubject(config.commitPrefix, commit);
+        const log = await gitIn(["log", "--format=%x01%s%n%b", "--fixed-strings", `--grep=${subject}`, tip]).catch(
+            () => "",
+        );
+        for (const message of log.split("\x01")) {
+            const [first, ...body] = message.split("\n");
+            const record = first === subject ? /^Record: (.+)$/m.exec(body.join("\n"))?.[1] : undefined;
+            // Its record still on the default branch: a revert of the accept pull request removes it.
+            const kept =
+                record &&
+                (await gitIn(["cat-file", "-e", `${tip}:${record}`]).then(
+                    () => true,
+                    () => false,
+                ));
+            if (kept) {
+                return true;
+            }
+        }
+        return false;
+    };
+    /**
+     * The candidate to offer: the oldest waiting full run not dropped and not approved on the
+     * default branch, and the newer ones queued behind it. Oldest first, so a newer run never moves
+     * the one under review.
+     * @returns {Promise<{ offered: object | null, queued: object[] }>} the pick
+     */
+    async function offeredCandidate() {
+        await closeLeftOpen();
+        try {
+            lastList = checkedCandidates(await candidates());
+        } catch (err) {
+            console.error(`proofroom: candidates not listed: ${err.message}`);
+            listWarnings.push(retryLater("could not list the candidates", err.message));
+        }
+        const waiting = [];
+        for (const c of [...lastList].filter((x) => x.waiting).sort((a, b) => a.at - b.at)) {
+            if (!dropped.has(c.commit) && !(await approvalMerged(c.commit))) {
+                waiting.push(c);
+            }
+        }
+        if (waiting[0] && waiting[0].commit !== offeredBefore) {
+            offerCandidate(waiting[0].commit);
+        }
+        return { offered: waiting[0] ?? null, queued: waiting.slice(1) };
     }
 
     const listFile = join(stateDir, "list.json");
@@ -2240,6 +2401,8 @@ export function createApp({
             headSha: t.headSha,
             author: t.author ?? null,
             readyAt: t.readyAt ?? null,
+            // On the default branch in candidate mode: the full run offered and the ones queued behind it.
+            candidate: t.candidate ?? null,
             mergeMasterFirst: t.mergeMasterFirst,
             // The changes list's row states: "behind <default branch>", "Changed on <default branch>:
             // N newer baselines", look only.
@@ -2423,7 +2586,8 @@ export function createApp({
         return t.local === true || (Boolean(r?.local) && !isPreviewOf(r, t.pr));
     };
     const acceptable = (t, name) =>
-        !isLocal(t, name) && (t.pr !== null || projects[name].seedFromDefaultBranch === true);
+        // seedFromDefaultBranch is about seeding: a candidate's changed images are accepted like a pull request's.
+        !isLocal(t, name) && (t.pr !== null || Boolean(t.candidate) || projects[name].seedFromDefaultBranch === true);
     const LOCAL = "is a local preview: nothing is decided on it; only CI captures of a pushed commit are";
 
     async function targetOf(id) {
@@ -2530,8 +2694,10 @@ export function createApp({
      *     digest: string }} the decisions and their digest
      */
     const finishList = (t, resign = false) => {
+        // A candidate's Finish builds its accept commit again from every decision on it, published or
+        // not, and replaces its branch: a second Finish never drops what the first one committed.
         const list = [...decisionsOf(t)]
-            .filter(([, v]) => Boolean(v.posted) === resign)
+            .filter(([, v]) => (t.candidate ? !resign : Boolean(v.posted) === resign))
             .sort(([a], [b]) => (a < b ? -1 : 1))
             .map(([k, v]) => {
                 const at = k.indexOf("/");
@@ -2543,7 +2709,12 @@ export function createApp({
                     ...(v.approvedBefore && { approvedBefore: v.approvedBefore }),
                 };
             });
-        return { list, digest: sha256(JSON.stringify(list)) };
+        // A candidate with a rejected image cannot promote, so its Finish posts only the rejects: its
+        // accepts stay saved by image hash for the next candidate, and no accept pull request opens.
+        const rejects = list.filter((d) => d.decision === "reject");
+        const sent = t.candidate && rejects.length > 0 ? rejects : list;
+        // A candidate's digest names it, so an approval prepared on one candidate never finishes another.
+        return { list: sent, digest: sha256(JSON.stringify(t.candidate ? [t.candidate.commit, sent] : sent)) };
     };
     const CHANGED_SINCE = "Decisions changed since this sheet opened: check the summary again.";
 
@@ -2664,7 +2835,7 @@ export function createApp({
         try {
             const prepared = await prepareApproval({
                 repo,
-                target: { pr: t.pr, branch: t.branch },
+                target: finishTarget(t),
                 projects: work.captures,
                 decisions: work.list,
                 now,
@@ -3923,7 +4094,7 @@ export function createApp({
             runFinish(job, t, list, {
                 repo,
                 gh,
-                target: { pr: t.pr, branch: t.branch },
+                target: finishTarget(t),
                 projects: captures,
                 decisions: list,
                 undecided,
@@ -4074,6 +4245,7 @@ export function createApp({
                 console.error(`proofroom: Finish of ${finishLabel(t)}: ${j.warnings.at(-1)}`);
             }
             const r = j.result;
+            candidateFinished(j, t, r);
             const status = r.statusError ? `; status not posted: ${r.statusError}` : "";
             console.log(
                 r.alreadyFinished
@@ -4102,7 +4274,34 @@ export function createApp({
         }
     }
 
-    const finishLabel = (t) => (t.pr === null ? "the master seed" : `#${t.pr}`);
+    /**
+     * What a Finish of a candidate leaves behind: a candidate whose rejects were filed is dropped (the
+     * next queued one is offered, and the rejects stay saved by image hash), and an accept pull request
+     * it could not close is a warning and is closed by a later refresh.
+     * @param {object} j the job
+     * @param {object} t the target
+     * @param {object} r finish's result
+     */
+    function candidateFinished(j, t, r) {
+        if (!t.candidate || r.rejects === 0 || !r.issue) {
+            return;
+        }
+        if (r.closeError) {
+            // Closed by a later refresh, never by filing the rejects again.
+            j.warnings.push(`the accept pull request of this rejected candidate is still open: ${r.closeError}`);
+            toClose.add(t.candidate.commit);
+        }
+        dropCandidate(t.candidate.commit);
+    }
+
+    const finishLabel = (t) => {
+        if (t.candidate) {
+            return `the candidate ${t.candidate.commit.slice(0, 10)}`;
+        }
+        return t.pr === null ? "the master seed" : `#${t.pr}`;
+    };
+    // What accept.mjs is told about the target: on a candidate, its commit too.
+    const finishTarget = (t) => ({ pr: t.pr, branch: t.branch, ...(t.candidate && { candidate: t.candidate.commit }) });
 
     const tokenOk = (given, expected = token) => {
         const a = Buffer.from(String(given ?? ""));

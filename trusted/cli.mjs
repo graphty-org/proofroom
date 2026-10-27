@@ -9,8 +9,8 @@
  * beyond Node's standard library and runs from a checkout without an install.
  */
 
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { MAX_ATTEMPTS } from "./lib/results.mjs";
@@ -97,7 +97,7 @@ file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the tool fa
   --include-aa            without --project: count anti-aliased pixels as changed
   --no-fail               exit 0 when a snapshot did not pass; 2 still when the tool failed`,
 
-    serve: `usage: PORT=<n> proofroom serve [--master-run <id>] [--results <dir>] [--previews <dir>] [--ui next]
+    serve: `usage: PORT=<n> proofroom serve [--candidate next|<id>] [--results <dir>] [--previews <dir>] [--ui next]
 
 Serves the review page on $PORT, bound to $HOST (default localhost). With $HTTPS_CERT_PATH and
 $HTTPS_KEY_PATH set it serves HTTPS; without them, plain HTTP, and then only on a loopback HOST.
@@ -105,7 +105,14 @@ Lists the open pull requests that have a run of the config's workflow and downlo
 captures with gh. Refuses to start without git-lfs, because an accept would commit raw PNGs.
 The URL to open, with its session token, is printed at every start.
 
-  --master-run <id>  also list the default branch at that workflow run, for seeding baselines
+  --candidate next   also list the default branch's oldest full run waiting for its screenshots'
+                     approval, as the config's \`candidates\` command lists them; it stays offered
+                     until it stops waiting, its accept commit reaches the default branch, or a
+                     Finish rejects something in it, and newer ones queue behind it.
+                     Finish opens a pull request of visual/approve-<sha> touching only the
+                     baselines and approvals directories
+  --candidate <id>   also list the default branch at that workflow run, for seeding baselines
+  --master-run <id>  the same as --candidate <id>
   --results <dir>    serve a local directory of <project>/results.json instead, offline, as a
                      preview to look at: gh is never run, nothing can be decided, no Finish
   --previews <dir>   where local previews of pull requests are (<dir>/<pr>/<project>), as a
@@ -118,11 +125,13 @@ The URL to open, with its session token, is printed at every start.
     parity: `usage: proofroom parity --project <id> <first> <second>
 
 Compares two captures of one project made from the same commit (each a results.json, or the
-directory that holds it), story by story and mode by mode, by the SHA-256 of each capture: the
-built Storybook's capture against the story tests', or one machine's against another's. Prints one
-JSON line per difference (bytes that differ, a story only one side captured, a story one side
-failed to capture), then a summary. Exits 1 on any difference: different bytes from the same
-commit are a bug in one environment, so no threshold applies.`,
+directory that holds it), story by story and mode by mode, by the SHA-256 of each capture and,
+when the bytes differ, by the decoded pixels (two encoders may write the same picture differently):
+the built Storybook's capture against the story tests', or one machine's against another's. Prints
+one JSON line per difference (a different size, different pixels with their count, bytes whose
+images are not both in the directories, a story only one side captured, a story one side failed to
+capture), then a summary. Exits 1 on any difference: different pixels from the same commit are a
+bug in one environment, so no threshold applies.`,
 
     collect: `usage: proofroom collect --project <id> --out <dir> [--baselines <dir>] [--junit <file>] [--whole] <dir>...
 
@@ -229,7 +238,7 @@ Commands:
   serve            the review page
   notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
-  parity           compare two captures of the same commit byte for byte
+  parity           compare two captures of the same commit pixel for pixel
   collect          combine one project's result lines from test runners into one capture
   junit            write a capture set's results as a JUnit XML file
   usage            sum up the review page's usage events (when the config turns them on)
@@ -394,6 +403,18 @@ async function createServer(app, tls) {
     return createHttps({ cert: readFileSync(tls.cert), key: readFileSync(tls.key) }, app);
 }
 
+/**
+ * serve's run option: `--candidate next` (the candidate mode), or a run id from `--candidate <id>` or
+ * its old name `--master-run <id>`.
+ * @param {{ candidate?: string, "master-run"?: string }} values the parsed options
+ * @returns {{ next: boolean, masterRun: number | undefined }} the mode and the run id, NaN when not one
+ */
+function runOption(values) {
+    const next = values.candidate === "next";
+    const run = next ? values["master-run"] : (values.candidate ?? values["master-run"]);
+    return { next, masterRun: run === undefined ? undefined : Number(run) };
+}
+
 async function serve(args) {
     if (args.includes("--branch")) {
         console.error("proofroom serve: --branch is gone: a --results preview is look only and has no Finish");
@@ -403,13 +424,14 @@ async function serve(args) {
         args,
         options: {
             "master-run": { type: "string" },
+            candidate: { type: "string" },
             results: { type: "string" },
             previews: { type: "string" },
             ui: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
-    const masterRun = values["master-run"] === undefined ? undefined : Number(values["master-run"]);
+    const { next, masterRun } = runOption(values);
     const https = Boolean(HTTPS_CERT_PATH && HTTPS_KEY_PATH);
     const ui = values.ui ?? "review";
     if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun)) || !["review", "next"].includes(ui)) {
@@ -424,8 +446,12 @@ async function serve(args) {
         return 2;
     }
     const { root, config } = await settings();
+    if (next && !config.candidates) {
+        console.error("proofroom serve: --candidate next needs the config's `candidates` command");
+        return 2;
+    }
     const { lfsProblem } = await import("./lib/accept.mjs");
-    const { ghRunner } = await import("./lib/github.mjs");
+    const { exec, ghRunner } = await import("./lib/github.mjs");
     const { createApp, sessionToken } = await import("./lib/serve.mjs");
     const lfs = await lfsProblem(root);
     if (lfs) {
@@ -456,6 +482,7 @@ async function serve(args) {
         token,
         origin,
         masterRun,
+        candidates: next ? async () => JSON.parse(await exec("sh", ["-c", config.candidates], { cwd: root })) : null,
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,
@@ -654,7 +681,7 @@ async function parity(args) {
         console.error(HELP.parity);
         return 2;
     }
-    const { parity: diff, readResults } = await import("./lib/parity.mjs");
+    const { parity: diff, readResults, samePixels } = await import("./lib/parity.mjs");
     const [first, second] = await Promise.all(positionals.map((p) => readResults(p)));
     for (const [path, r] of [
         [positionals[0], first],
@@ -665,7 +692,8 @@ async function parity(args) {
             return 2;
         }
     }
-    const { compared, same, differences } = diff(first, second);
+    const dirs = await Promise.all(positionals.map(async (p) => ((await stat(p)).isDirectory() ? p : dirname(p))));
+    const { compared, same, differences } = await samePixels(diff(first, second), dirs);
     for (const difference of differences) {
         console.log(JSON.stringify(difference));
     }

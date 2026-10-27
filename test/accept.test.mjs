@@ -275,6 +275,143 @@ describe("finish: accepts", () => {
     });
 });
 
+describe("finish: a candidate of master", () => {
+    const candidateSetup = () => {
+        const s = setup();
+        const master = { commit: s.master, headSha: null, pr: null };
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master);
+        return s;
+    };
+    const changed = (s, branch) => git(s.remote, "diff", "--name-only", s.master, branch).split("\n").filter(Boolean);
+
+    it("commits on the candidate, pushes visual/approve-<sha> and opens an accept-only pull request", async () => {
+        const s = candidateSetup();
+        const out = await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        expect(out.branch).toBe(branch);
+        expect(remoteLog(s, branch)[1]).toBe(s.master);
+        expect(changed(s, branch).length).toBeGreaterThan(0);
+        expect(
+            changed(s, branch).every(
+                (f) => f.startsWith("visual-baselines/") || f.startsWith("visual-review-approvals/"),
+            ),
+        ).toBe(true);
+        const create = s.calls.find((c) => c.args.join(" ").includes("/pulls"));
+        expect(JSON.parse(create.input)).toMatchObject({
+            title: `test(workspace): approve visual baselines at ${s.master.slice(0, 12)}`,
+            head: branch,
+            base: "master",
+        });
+        expect(JSON.parse(create.input).body).toContain(
+            "It changes only visual-baselines/ and visual-review-approvals/.",
+        );
+        expect(JSON.parse(create.input).body).toMatch(/^No issue$/m);
+        expect(out.pullRequest).toBe("https://github.com/o/r/pull/9");
+    });
+
+    it("refuses accepts beside a reject: a candidate with a rejected image never promotes", async () => {
+        const s = candidateSetup();
+        const reject = { project: "compact-mantine", file: "slider--sizes.png", decision: "reject", reason: "tall" };
+        await expect(
+            s.run([accept("badge--default.light.png"), reject], { pr: null, branch: null, candidate: s.master }),
+        ).rejects.toThrow(/posts only its rejects/);
+        expect(s.calls).toHaveLength(0);
+    });
+
+    it("replaces the branch an earlier Finish of the same candidate left, and reuses its open pull request", async () => {
+        const s = candidateSetup();
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        // A signed Finish's approval commit on top, then its pull request failed to open.
+        git(s.repo, "fetch", "-q", "origin", branch);
+        git(s.repo, "checkout", "-q", "--detach", "FETCH_HEAD");
+        mkdirSync(join(s.repo, "visual-review-approvals"), { recursive: true });
+        writeFileSync(join(s.repo, "visual-review-approvals/t.json"), "{}\n");
+        git(s.repo, "add", "-A");
+        git(s.repo, "commit", "-q", "-m", "test(workspace): approve the visual baselines of the seed");
+        git(s.repo, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+        const before = git(s.remote, "rev-parse", branch);
+        const open = [{ number: 8, head: { ref: branch }, html_url: "https://github.com/o/r/pull/8" }];
+        const gh = async (args, input) => {
+            s.calls.push({ args, input });
+            if (args[1].endsWith("/pulls")) {
+                throw new Error("HTTP 422: A pull request already exists");
+            }
+            return JSON.stringify(args[1].includes("pulls?state=open") ? open : {});
+        };
+        const out = await s.run(
+            [
+                accept("badge--default.light.png"),
+                accept("button--primary.dark.png", "compact-mantine", "the border is darker now"),
+            ],
+            {
+                pr: null,
+                branch: null,
+                candidate: s.master,
+            },
+            0,
+            { gh },
+        );
+        expect(out.pullRequest).toBe("https://github.com/o/r/pull/8");
+        // The reused pull request's description is rewritten with this Finish's, so its notes are published.
+        const patch = s.calls.find((c) => c.args.includes("PATCH"));
+        expect(patch.args).toContain("repos/{owner}/{repo}/pulls/8");
+        expect(JSON.parse(patch.input).body).toContain("the border is darker now");
+        expect(git(s.remote, "rev-parse", branch)).not.toBe(before);
+        expect(remoteLog(s, branch)[1]).toBe(s.master);
+    });
+
+    it("forgets a branch deleted from origin since an earlier Finish, and pushes again", async () => {
+        const s = candidateSetup();
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        git(s.remote, "branch", "-D", branch);
+        const out = await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        expect(git(s.remote, "rev-parse", branch)).toBe(out.commit);
+    });
+
+    it("rebuilds a candidate's branch that its pull request's Update branch merged master into", async () => {
+        const s = candidateSetup();
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        git(s.repo, "checkout", "-q", "master");
+        writeFileSync(join(s.repo, "README.md"), "moved on\n");
+        git(s.repo, "commit", "-q", "-am", "master moves on");
+        git(s.repo, "push", "-q", "origin", "master");
+        git(s.repo, "fetch", "-q", "origin", branch);
+        git(s.repo, "checkout", "-q", "--detach", "FETCH_HEAD");
+        git(s.repo, "merge", "-q", "--no-edit", "master");
+        git(s.repo, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+        const out = await s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master });
+        expect(git(s.remote, "rev-parse", branch)).toBe(out.commit);
+        expect(git(s.remote, "log", "--format=%P", "-1", `${branch}~0`).split(" ")).toHaveLength(1);
+    });
+
+    it("refuses a capture that is not of the candidate", async () => {
+        const s = candidateSetup();
+        await expect(
+            s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.head }),
+        ).rejects.toThrow(/not of the candidate/);
+        expect(s.calls).toHaveLength(0);
+    });
+
+    it("refuses to push an accept commit that changes anything else", async () => {
+        const s = candidateSetup();
+        // An approval commit holding a change outside the two directories.
+        git(s.repo, "checkout", "-q", "--detach", s.master);
+        writeFileSync(join(s.repo, "README.md"), "changed\n");
+        git(s.repo, "commit", "-q", "-am", "not a baseline");
+        const commit = git(s.repo, "rev-parse", "HEAD");
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        await expect(
+            s.run([accept("badge--default.light.png")], { pr: null, branch: null, candidate: s.master }, 0, {
+                approval: { commit, branch, record: null },
+            }),
+        ).rejects.toThrow(/would change README\.md, outside visual-baselines\/ and visual-review-approvals\//);
+        expect(git(s.remote, "ls-remote", "--heads", ".", branch)).toBe("");
+    });
+});
+
 describe("finish: rejects on master", () => {
     it("opens one issue holding the rejects, with nothing accepted", async () => {
         const s = setup();
