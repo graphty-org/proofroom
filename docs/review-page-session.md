@@ -15,20 +15,17 @@ included, so the token never travels in a request header and a plain `<img>` can
 
 - It is `HttpOnly` (the page's own scripts cannot read it), `SameSite=Strict`, and `Secure` when
   the page is served over HTTPS.
-- Its name is `vr_session_<server id>`. The server id is new each time `serve` starts and is
-  printed beside the address. Browsers keep cookies per host, not per port, so several review
-  servers on one machine (one you started, one an agent started, a local preview) each keep their
-  own cookie and never sign each other's pages out.
+- Its name is `vr_session_<server id>`. The server id is made on the first start, kept in
+  `<workDir>/state/server-id`, and printed beside the address. Browsers keep cookies per host, not
+  per port, so several review servers on one machine (one you started, one an agent started, a
+  local preview), each with its own work directory, keep their own cookies and never sign each
+  other's pages out.
 - Its value is derived from the token. Issuing a new token (delete `<workDir>/state/token` and
   restart) ends every cookie made from the old one: the page then asks for the new token. Paste
   the token, or the whole URL `serve` printed.
-- A server restarted with the same token names its cookie anew. A page opened or reloaded after
-  the restart signs in by itself from the token it remembers. In a page left open across the
-  restart, a picture can show "Failed -- tap to retry", and an image opened in the viewer "the
-  image could not be shown", until the page's next request to the server signs it in again (or a
-  reload of the page); tapping a picture signs in and loads it.
-- It lasts a week, and the page renews it each time it opens, so the cookies of servers since
-  restarted expire on their own.
+- A server restarted with the same token and work directory keeps its cookie's name and value, so
+  a page left open across the restart keeps working without signing in again.
+- It lasts a week, and the page renews it each time it opens.
 
 ## Scripts
 
