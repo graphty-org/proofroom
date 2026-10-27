@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as oldGate from "./fixtures/old-gate/trusted/gate.mjs";
 import { approvalProblems } from "../trusted/gate.mjs";
-import { finish, prepareApproval } from "../trusted/lib/accept.mjs";
+import { closeCandidatePullRequest, finish, prepareApproval } from "../trusted/lib/accept.mjs";
 import { plainGitCodeHost } from "../trusted/lib/adapters/plain-git.mjs";
 import { PASSKEYS_FILE } from "../trusted/lib/approval.mjs";
 import { statementId, statementPath } from "../trusted/lib/change-approval.mjs";
@@ -494,7 +494,6 @@ describe("Finish of a seed in change mode", () => {
             origin: ORIGIN,
             pendingKeys: [],
             retire,
-            close: prepared.close,
         };
         meanwhile();
         return { prepared, result: await finish({ ...input, approval }), touches: 1 + retire.length };
@@ -867,19 +866,92 @@ describe("Finish of a seed in change mode", () => {
         expect(old.state).toBe("closed");
     });
 
-    it("closes a run's seed pull request holding only its images after a restart, but only after the touch", async () => {
+    it("leaves alone a run's seed pull request holding only its images after a restart: it names no change", async () => {
         const r = changeRepo();
         const host = seedHost(r);
         const projects = capture(r);
         await seedFinish(r, host, [[BADGE]], { projects, touch: false });
         const [old] = host.opened;
+        const tip = git(r.remote, "rev-parse", old.branch);
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
-        await seedFinish(r, host, [[BUTTON]], { projects, touch: false });
+        const before = host.posted.length;
+        const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(prepared.retire).toEqual([]);
         expect(old.state).toBe("open");
-        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
-        await seedFinish(r, host, [[BUTTON]], { projects });
-        expect(old.state).toBe("closed");
-        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+        untouched(r, host, before, tip);
+    });
+
+    /**
+     * An open pull request #<number> from a `visual/` developer branch that carries seed 900's
+     * signed statement: started from the seed branch with a commit of its own, or merged with it.
+     * @param {object} r the repository
+     * @param {object} host the code host
+     * @param {"started" | "merged"} how how the developer branch got the seed's commits
+     * @param {number} number its pull request
+     * @returns {{ branch: string, tip: string }} the branch and its tip
+     */
+    function developerBranch(r, host, how, number) {
+        const seed = host.opened.find((o) => o.number === 900).branch;
+        const branch = `visual/dev-${how}`;
+        const dev = join(r.dir, `dev-${how}`);
+        git(r.dir, "clone", "-q", "-b", how === "started" ? seed : "master", r.remote, dev);
+        git(dev, "checkout", "-q", "-b", branch);
+        const commit = (...args) => git(dev, "-c", "user.name=D", "-c", "user.email=d@example.com", ...args);
+        writeFileSync(join(dev, "dev.txt"), "work\n");
+        git(dev, "add", "-A");
+        commit("commit", "-q", "-m", "work");
+        if (how === "merged") {
+            commit("merge", "-q", "--no-ff", "--no-edit", `origin/${seed}`);
+        }
+        git(dev, "push", "-q", "origin", branch);
+        host.opened.push({
+            number,
+            html_url: `https://fake/changes/${number}`,
+            branch,
+            state: "open",
+            body: "",
+        });
+        return { branch, tip: git(r.remote, "rev-parse", branch) };
+    }
+
+    it("never touches a developer branch started from or merged with a seed branch, in any Finish", async () => {
+        for (const how of /** @type {const} */ (["started", "merged"])) {
+            for (const candidate of [undefined, "candidate"]) {
+                const r = changeRepo();
+                const host = seedHost(r);
+                const projects = capture(r);
+                const base = candidate && r.master;
+                await seedFinish(r, host, [[BADGE], [BUTTON]], { projects, candidate: base });
+                const dev = developerBranch(r, host, how, 980);
+                const devPr = host.opened.find((o) => o.number === 980);
+                const posts = () => host.posted.filter((p) => p.number === 980);
+                const kept = () => expect(git(r.remote, "rev-parse", dev.branch)).toBe(dev.tip);
+                rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+                // A Finish of rejects alone: on a seed run it rejects in the earlier seeds; on a
+                // candidate it retires them and a refresh closes what it could not.
+                const { prepared } = await seedFinish(r, host, [[BADGE, "reject", "clipped"]], {
+                    projects,
+                    candidate: base,
+                });
+                expect(prepared.retire.map((x) => x.number)).not.toContain(980);
+                expect(
+                    await closeCandidatePullRequest(
+                        host,
+                        { candidate: r.master },
+                        { repo: r.repo, config: FIXTURE_CONFIG },
+                    ),
+                ).toEqual({});
+                if (!candidate) {
+                    // A seed Finish with accepts retires seed 900 as a whole.
+                    const { prepared: next } = await seedFinish(r, host, [[BUTTON]], { projects });
+                    expect(next.retire.map((x) => x.number)).toEqual([900]);
+                }
+                expect(host.opened.find((o) => o.number === 900).state).toBe("closed");
+                expect(devPr.state).toBe("open");
+                expect(posts()).toEqual([]);
+                kept();
+            }
+        }
     });
 
     it("refuses a seed Finish on a code host that cannot list its changes", async () => {
@@ -937,7 +1009,7 @@ describe("Finish of a seed in change mode", () => {
         expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
     });
 
-    it("skips the closed pull request a seed statement names, closing only a later one opened from its branch", async () => {
+    it("skips the closed pull request a seed statement names, and leaves a later one opened from its branch alone", async () => {
         const r = changeRepo();
         const host = seedHost(r);
         const projects = capture(r);
@@ -955,10 +1027,12 @@ describe("Finish of a seed in change mode", () => {
         host.opened.push(later);
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
         const before = host.posted.length;
+        const tip = git(r.remote, "rev-parse", old.branch);
         const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
         expect(prepared.retire).toEqual([]);
-        expect(later.state).toBe("closed");
-        expect(host.posted.slice(before).filter((p) => p.number === 900)).toEqual([]);
+        expect(later.state).toBe("open");
+        expect(host.posted.slice(before).filter((p) => p.number === 900 || p.number === 950)).toEqual([]);
+        expect(git(r.remote, "rev-parse", old.branch)).toBe(tip);
     });
 
     it("does not retire again a seed an earlier Finish already retired", async () => {
@@ -976,46 +1050,46 @@ describe("Finish of a seed in change mode", () => {
         expect(host.posted.slice(before).filter((p) => p.number === 900)).toEqual([]);
     });
 
-    it("refuses a seed Finish when another seed of the capture was opened after the prepare", async () => {
+    it("refuses a seed Finish when another seed of the capture was reopened after the prepare", async () => {
         const r = changeRepo();
         const host = seedHost(r);
         const projects = capture(r);
         await seedFinish(r, host, [[BADGE]], { projects });
         const [first] = host.opened;
+        const tip = git(r.remote, "rev-parse", first.branch);
+        first.head = tip;
+        first.state = "closed";
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
-        const other = `${first.branch}-other`;
         await expect(
             seedFinish(r, host, [[BUTTON]], {
                 projects,
                 meanwhile: () => {
-                    git(r.remote, "branch", other, "master");
-                    host.opened.push({
-                        number: 970,
-                        html_url: "https://fake/changes/970",
-                        branch: other,
-                        state: "open",
-                        body: "",
-                    });
+                    first.state = "open";
                 },
             }),
         ).rejects.toThrow(
-            "https://fake/changes/970 holds a seed of this capture that changed since this Finish was prepared",
+            "https://fake/changes/900 holds a seed of this capture that changed since this Finish was prepared",
         );
-        expect(host.opened.find((o) => o.number === 900)?.state).toBe("open");
+        expect(first.state).toBe("open");
+        expect(git(r.remote, "rev-parse", first.branch)).toBe(tip);
     });
 
-    it("refuses a seed Finish when an earlier seed it only closes moved after the prepare, keeping it", async () => {
+    it("refuses a seed Finish when an earlier seed moved after the prepare, keeping it", async () => {
         const r = changeRepo();
         const host = seedHost(r);
         const projects = capture(r);
-        await seedFinish(r, host, [[BADGE]], { projects, touch: false });
+        await seedFinish(r, host, [[BADGE]], { projects });
         const [old] = host.opened;
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
         await expect(
             seedFinish(r, host, [[BUTTON]], {
                 projects,
-                // The other Finish's touch lands on its branch meanwhile.
-                meanwhile: () => git(r.remote, "update-ref", `refs/heads/${old.branch}`, r.master),
+                // Another Finish's commit lands on its branch meanwhile.
+                meanwhile: () => {
+                    const tip = git(r.remote, "rev-parse", old.branch);
+                    const moved = git(r.remote, "commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "moved");
+                    git(r.remote, "update-ref", `refs/heads/${old.branch}`, moved);
+                },
             }),
         ).rejects.toThrow(
             "https://fake/changes/900 holds a seed of this capture that changed since this Finish was prepared",

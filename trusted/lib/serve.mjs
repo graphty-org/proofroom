@@ -3164,7 +3164,7 @@ export function createApp({
         approvals.delete(t.id);
         const { commit, branch, record } = p;
         return {
-            approval: { statement, commit, branch, record, pendingKeys, origin, now: p.now, retire, close: p.close },
+            approval: { statement, commit, branch, record, pendingKeys, origin, now: p.now, retire },
             work: p.work,
         };
     }
