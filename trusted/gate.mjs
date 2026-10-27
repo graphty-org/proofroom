@@ -43,8 +43,9 @@
  * a key, a statement must carry a passkey approval by one of the base branch's keys over exactly
  * that statement (approval.mjs). Keys are never read from the pull request, a pull request that
  * would leave no key fails, and a change to passkeys.json itself is merged by an administrator.
- * Settings (`approvals`, `baselines`, `approvalFormat`, `repositoryId`) come from the base's config
- * only. Statements and the old review records under <baselines>/reviews/ are append-only: a change
+ * Settings (`approvals`, `baselines`, `approvalFormat`, `repositoryId`, `selfApproval`) come from
+ * the base's config only. With `"selfApproval": "forbid"` no statement may be signed by a key whose
+ * identity contributed to the change (contributorsOf, selfApprovalProblems). Statements and the old review records under <baselines>/reviews/ are append-only: a change
  * that modifies or deletes one the base holds fails. The review records mean nothing else to the
  * gate. Without that approval, committing the captured PNGs straight into the baselines directory would
  * turn the capture check green with no review at all.
@@ -64,13 +65,15 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { PASSKEYS_FILE, parsePasskeys, verifyApproval, verifyRecord } from "./lib/approval.mjs";
-import { changeApprovals, contentHash, gitIn } from "./lib/change-approval.mjs";
+import { changeApprovals, changeCommits, contentHash, gitIn, selfApprovalProblems } from "./lib/change-approval.mjs";
 import { CONFIG_FILE, loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { isSkipMarker, SKIPPED_FILE, validateResults } from "./lib/results.mjs";
 
@@ -554,13 +557,15 @@ export function repositoryOf(config, env = process.env) {
  * @param {"tree" | "change"} input.mode approvalMode
  * @param {string[]} input.changes the changes gated (`pr:7`)
  * @param {string | null} input.repository repositoryOf
- * @returns {{ problems: string[], notices: string[] }} one line per problem (empty when the
- *     baselines are approved), and what is only reported
+ * @returns {{ problems: string[], notices: string[], statements: object[], byTree: boolean }} one
+ *     line per problem (empty when the baselines are approved), what is only reported, the change
+ *     statements that count, and whether a tree statement approved what they do not
  */
 export function approvalProblems({ base, head, cwd, baselines, approvals, keys, mode, changes, repository }) {
     const c = changeApprovals({ base, head, baselines, approvals, keys, repository, changes, git: gitIn(cwd) });
     const problems = [...passkeysProblems({ base, head, cwd, keys }), ...c.history, ...c.statements];
     let unapproved = [];
+    let byTree = false;
     if (mode === "change") {
         for (const file of c.treeFiles) {
             problems.push(
@@ -572,12 +577,214 @@ export function approvalProblems({ base, head, cwd, baselines, approvals, keys, 
         const tree = treeProblems({ base, head, cwd, baselines, approvals, keys });
         // With no change statement of its own, the change was finished the old way: say why its tree fails.
         unapproved = tree.length === 0 ? [] : c.counted === 0 ? tree : c.coverage;
+        byTree = tree.length === 0;
     }
     problems.push(...unapproved);
     if (unapproved.length > 0 && unapproved === c.coverage && changes.length === 0) {
         problems.push("the gate was run without --change (or --pr), so no change statement can count");
     }
-    return { problems, notices: c.notices };
+    return { problems, notices: c.notices, statements: c.own, byTree };
+}
+
+/**
+ * Who contributed to each change, for the self-approval rule: the opener and each commit's
+ * verified signer, author and committer. The tool's own commits and merges that add nothing are
+ * left out (change-approval.mjs changeCommits); every other commit must be signed, or the change
+ * fails closed.
+ *
+ * On GitHub Actions the commits and the opener come from GitHub (the event payload, and the
+ * pull request's commits through the API with GITHUB_TOKEN), and a commit's signer is its
+ * committer's account when GitHub verifies the signature. Elsewhere they come from git: a
+ * commit counts as signed only by an SSH signature from one of the `signingKeys` an identity in
+ * passkeys.json names, and that key's owner is its signer.
+ * @param {object} at what to read
+ * @param {string} at.base what baseline changes are measured from
+ * @param {string} at.head the head
+ * @param {string} at.cwd the repository
+ * @param {string[]} at.changes the changes (`pr:7`)
+ * @param {object[]} at.keys the base's keys
+ * @param {string} at.baselines the baselines directory
+ * @param {string} at.approvals the approvals directory
+ * @param {Record<string, string | undefined>} [at.env] the environment
+ * @param {(path: string) => Promise<any>} [at.fetchJson] a GET of the repository's GitHub API path
+ *     (`pulls/7`), for tests
+ * @param {(args: string[], input?: string) => Buffer} [at.git] the git runner (gitIn), for tests
+ * @returns {Promise<Map<string, { logins: Set<string>, emails: Set<string>, signers: Set<string>,
+ *     problems: string[] }>>} by change
+ */
+export async function contributorsOf({
+    base,
+    head,
+    cwd,
+    changes,
+    keys,
+    baselines,
+    approvals,
+    env = process.env,
+    fetchJson,
+    git = gitIn(cwd),
+}) {
+    const commits = changeCommits(git, { base, head, baselines, approvals });
+    const out = new Map();
+    const github = env.GITHUB_ACTIONS === "true";
+    const signed = github ? null : sshSigners(git, base, head, keys);
+    for (const change of changes) {
+        const who = { logins: new Set(), emails: new Set(), signers: new Set(), problems: [] };
+        out.set(change, who);
+        const add = (set, ...values) => values.filter(Boolean).forEach((v) => set.add(String(v).toLowerCase()));
+        if (!github) {
+            for (const [sha, c] of commits) {
+                if (!c.counts) {
+                    continue;
+                }
+                add(who.emails, ...c.emails);
+                const key = signed.get(sha);
+                if (key) {
+                    who.signers.add(key);
+                } else {
+                    who.problems.push(
+                        `commit ${sha.slice(0, 12)} carries no signature by a signing key an identity in ${PASSKEYS_FILE} names`,
+                    );
+                }
+            }
+            continue;
+        }
+        try {
+            const pr = await githubPullRequest(change, env, fetchJson ?? githubApi(env));
+            add(who.logins, pr.opener);
+            for (const c of pr.commits) {
+                const local = commits.get(c.sha);
+                if (!local) {
+                    who.problems.push(`commit ${String(c.sha).slice(0, 12)} of ${change} is not in this checkout`);
+                    continue;
+                }
+                if (!local.counts) {
+                    continue;
+                }
+                add(who.logins, c.author?.login, c.committer?.login);
+                add(who.emails, c.commit?.author?.email, c.commit?.committer?.email);
+                const v = c.commit?.verification;
+                if (v?.verified !== true) {
+                    who.problems.push(
+                        `commit ${c.sha.slice(0, 12)} is not signed, or GitHub does not verify its signature (${v?.reason ?? "unsigned"})`,
+                    );
+                }
+            }
+        } catch (err) {
+            who.problems.push(`could not ask GitHub who contributed to ${change}: ${err.message}`);
+        }
+    }
+    return out;
+}
+
+/**
+ * The key whose identity's SSH signing key signed each commit of `base..head`, from one `git log`
+ * that verifies against those keys only.
+ * @param {(args: string[]) => Buffer} git the runner
+ * @param {string} base the base
+ * @param {string} head the head
+ * @param {object[]} keys the base's keys
+ * @returns {Map<string, string>} key id by commit, for the commits such a signature verifies
+ */
+function sshSigners(git, base, head, keys) {
+    const byPrint = new Map();
+    const lines = [];
+    for (const k of keys) {
+        for (const line of k.identity?.signingKeys ?? []) {
+            const blob = Buffer.from(line.split(" ")[1], "base64");
+            byPrint.set(`SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`, k.id);
+            lines.push(`proofroom ${line}`);
+        }
+    }
+    const out = new Map();
+    if (lines.length === 0) {
+        return out;
+    }
+    const dir = mkdtempSync(join(tmpdir(), "proofroom-signers-"));
+    try {
+        const file = join(dir, "allowed_signers");
+        writeFileSync(file, `${lines.join("\n")}\n`);
+        const text = git([
+            "-c",
+            `gpg.ssh.allowedSignersFile=${file}`,
+            "log",
+            "--format=%H %G? %GF",
+            `${base}..${head}`,
+        ]);
+        for (const line of text.toString("utf8").split("\n")) {
+            const [sha, status, print] = line.split(" ");
+            if (status === "G" && byPrint.has(print)) {
+                out.set(sha, byPrint.get(print));
+            }
+        }
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+    return out;
+}
+
+/**
+ * A GET of the repository's GitHub API, with GITHUB_TOKEN.
+ * @param {Record<string, string | undefined>} env the environment
+ * @returns {(path: string) => Promise<any>} the getter
+ */
+function githubApi(env) {
+    return async (path) => {
+        if (!env.GITHUB_TOKEN || !env.GITHUB_REPOSITORY) {
+            throw new Error("the gate step needs GITHUB_TOKEN (and GITHUB_REPOSITORY) to read the pull request");
+        }
+        const url = `${env.GITHUB_API_URL ?? "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/${path}`;
+        const res = await fetch(url, {
+            headers: { authorization: `Bearer ${env.GITHUB_TOKEN}`, accept: "application/vnd.github+json" },
+        });
+        if (!res.ok) {
+            throw new Error(`GET ${path} answered ${res.status}`);
+        }
+        return res.json();
+    };
+}
+
+// GitHub lists at most this many of a pull request's commits.
+const GITHUB_MAX_COMMITS = 250;
+
+/**
+ * A pull request's opener and commits on GitHub: the opener from the event payload when it is
+ * this pull request's, else from the API.
+ * @param {string} change the change (`pr:7`)
+ * @param {Record<string, string | undefined>} env the environment
+ * @param {(path: string) => Promise<any>} get the API getter
+ * @returns {Promise<{ opener: string | null, commits: any[] }>} what GitHub says
+ */
+async function githubPullRequest(change, env, get) {
+    const n = /^pr:(\d+)$/.exec(change)?.[1];
+    if (!n) {
+        throw new Error(`${change} is not a pull request`);
+    }
+    let event = null;
+    try {
+        event = env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8")) : null;
+    } catch {
+        // Unreadable: asked from the API instead.
+    }
+    const opener =
+        event?.pull_request?.number === Number(n)
+            ? event.pull_request.user?.login
+            : (await get(`pulls/${n}`)).user?.login;
+    if (!opener) {
+        throw new Error(`GitHub names no account that opened #${n}`);
+    }
+    const commits = [];
+    for (let page = 1; ; page++) {
+        const list = await get(`pulls/${n}/commits?per_page=100&page=${page}`);
+        commits.push(...list);
+        if (list.length < 100) {
+            break;
+        }
+    }
+    if (commits.length >= GITHUB_MAX_COMMITS) {
+        throw new Error(`#${n} has ${GITHUB_MAX_COMMITS} commits or more, and GitHub lists no more than that`);
+    }
+    return { opener, commits };
 }
 
 /**
@@ -689,12 +896,12 @@ function queueBaseOf(file) {
  * @param {string} at.diffBase what baseline changes are measured from
  * @param {string} at.head the head
  * @param {string} at.root the repository
- * @param {{ baselines: string, approvals: string, approvalFormat?: "tree" | "change", repositoryId?: string }} at.config the base branch's config
+ * @param {{ baselines: string, approvals: string, approvalFormat?: "tree" | "change", repositoryId?: string, selfApproval?: "allow" | "forbid" }} at.config the base branch's config
  * @param {{ approvals: string, repositoryId?: string }} at.headConfig the head's config
  * @param {string[]} at.changes the changes gated (`pr:7`)
- * @returns {string[]} the failing lines
+ * @returns {Promise<string[]>} the failing lines
  */
-function approvalLines({ base, diffBase, head, root, config, headConfig, changes }) {
+async function approvalLines({ base, diffBase, head, root, config, headConfig, changes }) {
     const { keys, problems } = approvalKeys(base, head, root);
     if (headConfig.approvals !== config.approvals) {
         problems.push(
@@ -727,10 +934,54 @@ function approvalLines({ base, diffBase, head, root, config, headConfig, changes
     for (const line of found.problems) {
         lines.push(`::error::baselines not approved -- ${line}`);
     }
+    if (config.selfApproval === "forbid") {
+        for (const line of await selfApprovalLines({ diffBase, head, root, config, changes, keys, found })) {
+            lines.push(`::error::self-approval -- ${line}`);
+        }
+    }
     for (const line of lines) {
         console.log(line);
     }
     return lines;
+}
+
+/**
+ * What the self-approval rule refuses (selfApprovalProblems), asking who contributed only when a
+ * statement counts. A tree statement's signer is never checked, so one that approves the change
+ * fails.
+ * @param {object} at what to check
+ * @param {string} at.diffBase what baseline changes are measured from
+ * @param {string} at.head the head
+ * @param {string} at.root the repository
+ * @param {{ baselines: string, approvals: string }} at.config the base branch's config
+ * @param {string[]} at.changes the changes gated
+ * @param {object[] | null} at.keys the base branch's keys
+ * @param {{ statements: object[], byTree: boolean }} at.found approvalProblems' result
+ * @returns {Promise<string[]>} the problems
+ */
+async function selfApprovalLines({ diffBase, head, root, config, changes, keys, found }) {
+    const problems = [];
+    if (found.byTree) {
+        problems.push(
+            'a version 1 tree statement approves these baselines, and its signer cannot be checked against the change\'s contributors; with "selfApproval": "forbid", Finish again with change statements',
+        );
+    }
+    if (found.statements.length === 0) {
+        return problems;
+    }
+    const contributors =
+        keys === null
+            ? new Map()
+            : await contributorsOf({
+                  base: diffBase,
+                  head,
+                  cwd: root,
+                  changes,
+                  keys,
+                  baselines: config.baselines,
+                  approvals: config.approvals,
+              });
+    return [...problems, ...selfApprovalProblems({ statements: found.statements, keys, contributors })];
 }
 
 export const GATE_USAGE = `usage: proofroom gate --captures <dir> --base <ref> [--head <ref>] [--change <id> | --pr <number> | --queue-event <file>]
@@ -754,9 +1005,9 @@ signature by one of its keys. Run it in CI after the capture jobs, on the change
 /**
  * The gate as a command.
  * @param {string[]} args the command line after "gate"
- * @returns {number} the exit code
+ * @returns {Promise<number>} the exit code
  */
-export function runGate(args) {
+export async function runGate(args) {
     const { values } = parseArgs({
         args,
         options: {
@@ -814,7 +1065,7 @@ export function runGate(args) {
     for (const line of problems) {
         console.log(`::error::visual changes not accepted -- ${line}`);
     }
-    const unrecorded = approvalLines({
+    const unrecorded = await approvalLines({
         base: values.base,
         diffBase,
         head: values.head,
@@ -837,5 +1088,5 @@ export function runGate(args) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    process.exitCode = runGate(process.argv.slice(2));
+    process.exitCode = await runGate(process.argv.slice(2));
 }
