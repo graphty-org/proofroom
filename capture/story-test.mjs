@@ -99,16 +99,34 @@ async function shootFrame(page, frame) {
  * them into the page's layer and their blurred shadows came out one level darker. The pixel is
  * added after the frame was measured and lies outside every shot; headless Chromium draws no
  * scrollbar, so nothing moves.
+ *
+ * A scrolling document gets a layer of its own, and an iframe's is transparent where the top frame's
+ * is white (its base background), so the anti-aliased edges of a rounded border were blended onto
+ * transparency and came out one level off. A document that paints no background of its own (html
+ * and body both transparent) gets the top frame's white while the pixel is there.
  * @param {boolean} on add the pixel, or remove it
  * @returns {void}
  */
 function scrollLikeTopFrame(on) {
     const ID = "visual-review-scroll-pixel";
+    const MARK = "visualReviewBase";
+    const root = document.documentElement;
     document.getElementById(ID)?.remove();
+    if (MARK in root.dataset) {
+        root.style.backgroundColor = root.dataset[MARK];
+        delete root.dataset[MARK];
+    }
     if (on) {
+        const clear = (el) => {
+            const style = document.defaultView.getComputedStyle(el);
+            return style.backgroundImage === "none" && /^rgba\(.*,\s*0\)$|^transparent$/.test(style.backgroundColor);
+        };
+        if (clear(root) && (!document.body || clear(document.body))) {
+            root.dataset[MARK] = root.style.backgroundColor;
+            root.style.backgroundColor = "white";
+        }
         const pixel = document.createElement("div");
         pixel.id = ID;
-        const root = document.documentElement;
         pixel.style.cssText = `position:absolute;left:0;top:${Math.max(root.scrollHeight, root.clientHeight)}px;width:1px;height:1px;visibility:hidden`;
         root.append(pixel);
     }
