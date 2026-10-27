@@ -14,7 +14,17 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { SHAPES, STATUS, decisionsFor } from "../../trusted/page/next/marks.js";
 import { COVERS } from "./covers.mjs";
-import { fiftyChanges, listAnswer, message, openNext, project, richRows, row, rowsAnswer, target } from "./page-kit.mjs";
+import {
+    fiftyChanges,
+    listAnswer,
+    message,
+    openNext,
+    project,
+    richRows,
+    row,
+    rowsAnswer,
+    target,
+} from "./page-kit.mjs";
 
 let browser;
 let t = null;
@@ -217,7 +227,6 @@ describe("the header and the rows within their budgets", () => {
         }
         await menuItem(page, "Status").click();
         await expect.poll(() => page.locator("#snap-list .ghead").count()).toBe(0); // groups of one are no groups
-        expect(await message(page)).toBe("Grouped by status.");
     });
 });
 
@@ -283,7 +292,10 @@ describe("marks", () => {
         const page = await openChange(RICH);
         await page.getByRole("button", { name: /^Show:/ }).click();
         await menuItem(page, "All (180)").click();
-        await page.locator(WIDGETS).getByRole("button", { name: /^Show all \d+ in this group$/ }).click();
+        await page
+            .locator(WIDGETS)
+            .getByRole("button", { name: /^Show all \d+ in this group$/ })
+            .click();
         const seen = await page.evaluate(() =>
             [...globalThis.document.querySelectorAll("#snap-list .srow .info .l:first-child .st")].map((n) => [
                 n.textContent,
@@ -320,7 +332,6 @@ describe("Show, Find and the status summary", () => {
         await menuItem(page, "removed (50)").click();
         await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(50);
         await currentIsShown(page);
-        expect(await message(page)).toBe("Show: removed.");
         // A click makes a row current.
         const second = page.locator("#snap-list .srow").nth(1);
         await second.click();
@@ -377,20 +388,24 @@ describe("Show, Find and the status summary", () => {
         expect(await page.locator('.iline [data-act="back"]').innerText()).toBe("Back to changesEsc");
         expect(await big.getAttribute("aria-expanded")).toBe("false");
         await currentIsShown(page);
-        // No match: the list and the message line say so, with Clear.
+        // No match: the list and the message line say so, and the box's Clear [Esc] empties it.
         await find.click();
         await page.keyboard.type("zzzz");
         await expect.poll(() => message(page)).toBe('No story matches "zzzz".');
-        expect(await page.locator("#snap-list").innerText()).toContain('No story matches "zzzz".');
+        expect(await page.locator("#snap-list").innerText()).toBe('No story matches "zzzz".');
         expect(await page.locator(".emptyv").innerText()).toBe("Nothing shown here.");
         await page.locator("#find-clear").click();
         await expect.poll(() => find.inputValue()).toBe("");
         await currentIsShown(page);
-        // Clear in the list says the same.
-        await page.keyboard.type("zzzz");
-        await page.locator("#snap-list").getByRole("button", { name: "Clear" }).click();
-        await expect.poll(() => page.locator("#snap-list .srow").count()).toBeGreaterThan(0);
-        await currentIsShown(page);
+        // A number that is no snapshot says nothing while typed; Enter says so.
+        const said = await message(page);
+        await page.keyboard.type("999");
+        await expect.poll(() => find.inputValue()).toBe("999");
+        expect(await message(page)).toBe(said);
+        await page.keyboard.press("Enter");
+        await expect.poll(() => message(page)).toBe("There is no snapshot #999 in this change.");
+        await page.keyboard.press("Escape");
+        await expect.poll(() => find.inputValue()).toBe("");
         // A number is a jump: no "N of M shown", the row (in the collapsed group) current at once,
         // Enter opens it and empties the box.
         await find.click();
@@ -426,7 +441,6 @@ describe("Show, Find and the status summary", () => {
         await list.getByRole("button", { name: "Show: All (3)" }).click();
         await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(3);
         await currentIsShown(page);
-        expect(await message(page)).toBe("Show: All.");
     });
 });
 
@@ -587,7 +601,10 @@ describe("rows", () => {
         const page = await openChange(RICH);
         await page.getByRole("button", { name: /^Show:/ }).click();
         await menuItem(page, "All (180)").click();
-        await page.locator(WIDGETS).getByRole("button", { name: /^Show all \d+ in this group$/ }).click();
+        await page
+            .locator(WIDGETS)
+            .getByRole("button", { name: /^Show all \d+ in this group$/ })
+            .click();
         await expect.poll(() => page.locator("#snap-list .srow").count()).toBeGreaterThan(100);
         // textContent: rows off screen are not rendered (content-visibility), so innerText skips them.
         const text = await page.locator("#snap-list").textContent();
@@ -605,6 +622,10 @@ describe("rows", () => {
         ]) {
             expect(text, words).toContain(words);
         }
+        // A moved row says "moved"; where from is in its tooltip.
+        expect(text).not.toContain("moved from");
+        const moved = page.locator("#snap-list .srow", { hasText: "image identical" }).first();
+        expect(await moved.getAttribute("title")).toMatch(/, moved from /);
         const rejected = page.locator("#snap-list .srow", { hasText: "Rejected: Legend overlaps" });
         await page.evaluate(() => {
             globalThis.changedRows = [];
@@ -629,6 +650,56 @@ describe("rows", () => {
         expect(await page.locator(`#snap-list .srow[data-snap="${key}"]`).getAttribute("class")).not.toContain(
             "decided",
         );
+    });
+
+    it("undoes a row under Show: Rejected by changing that row element alone, and keeps it shown", async () => {
+        const page = await openChange(RICH);
+        await page.getByRole("button", { name: /^Group:/ }).click();
+        await menuItem(page, "None").click();
+        await page.getByRole("button", { name: /^Show:/ }).click();
+        await menuItem(page, "Rejected (2)").click();
+        await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(2);
+        await page.evaluate(() => {
+            globalThis.changedRows = [];
+            new globalThis.MutationObserver((records) => {
+                for (const r of records) {
+                    for (const n of [...r.addedNodes, ...r.removedNodes]) {
+                        if (n.classList?.contains("srow")) {
+                            globalThis.changedRows.push(n.dataset.snap);
+                        }
+                    }
+                }
+            }).observe(globalThis.document.getElementById("snap-list"), { childList: true, subtree: true });
+        });
+        const rejected = page.locator("#snap-list .srow", { hasText: "Rejected: Legend overlaps" });
+        const key = await rejected.getAttribute("data-snap");
+        await rejected.getByRole("button", { name: "Undo" }).click();
+        await expect.poll(() => message(page)).toMatch(/^Undone: the reject of #\d+\.$/);
+        expect(await page.evaluate(() => globalThis.changedRows)).toEqual([key, key]);
+        expect(await page.locator("#snap-list .srow").count()).toBe(2);
+    });
+
+    it("walks Down into a collapsed group row by row, opening it", async () => {
+        const page = await openChange(RICH);
+        const caret = page.locator('.ghead[data-group="c:graphty-element > widgets"] .caret');
+        expect(await caret.getAttribute("aria-expanded")).toBe("false");
+        const all = await page.evaluate(
+            (sel) => globalThis.document.querySelector(sel).previousElementSibling.querySelectorAll(".srow").length,
+            WIDGETS,
+        );
+        await page
+            .locator(WIDGETS)
+            .locator("xpath=preceding-sibling::section[1]")
+            .locator(".srow")
+            .nth(all - 1)
+            .click();
+        await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("ArrowDown");
+        await expect.poll(() => caret.getAttribute("aria-expanded")).toBe("true");
+        await expect
+            .poll(() => current(page))
+            .toBe(await page.locator(`${WIDGETS} .srow`).nth(1).getAttribute("data-snap"));
+        await currentIsShown(page);
     });
 
     it("draws a placeholder for a picture that failed, and Retry asks again", async () => {
@@ -672,8 +743,9 @@ describe("a newer capture", () => {
         let since = null;
         const page = await openChange("3486", {
             clock: true,
-            rows: (id, name) => {
-                const a = rowsAnswer(name, 300);
+            // The newer run (4487, attempt 1) holds one snapshot fewer.
+            rows: (id, name, q) => {
+                const a = rowsAnswer(name, q.get("run") === "4487-1" ? 299 : 300);
                 return {
                     ...a,
                     carried: {
@@ -694,6 +766,8 @@ describe("a newer capture", () => {
             }
         });
         const before = await rowTexts(page);
+        const head = page.locator("#snaps-head > .h2");
+        expect(await head.innerText()).toMatch(/\bof 300 decided\b/);
         const list = targets();
         const newer = list.find((x) => x.id === "3486");
         newer.runId += 1;
@@ -706,6 +780,7 @@ describe("a newer capture", () => {
             "A newer capture of this change is ready (7abc123).",
         );
         expect(await rowTexts(page)).toEqual(before);
+        expect(await head.innerText()).toMatch(/\bof 300 decided\b/);
         await page.getByRole("button", { name: "Load it" }).click();
         await expect
             .poll(() => message(page))
@@ -713,6 +788,7 @@ describe("a newer capture", () => {
                 "Loaded the capture at 7abc123: 41 decisions kept (their images are unchanged), 3 no longer apply and are undecided again.",
             );
         expect(since).toBe("4486-1");
+        await expect.poll(() => head.innerText()).toMatch(/\bof 299 decided\b/);
         expect(await page.locator("#snap-banner").isVisible()).toBe(false);
         await currentIsShown(page);
     });

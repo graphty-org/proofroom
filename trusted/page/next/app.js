@@ -20,7 +20,9 @@ import {
     findEnter,
     findTyped,
     groupItems,
+    jumpTo,
     keepCurrentShown,
+    layoutOf,
     listItems,
     listState,
     moreItems,
@@ -679,10 +681,11 @@ app.arrow = (d) => {
         document.querySelector(".chg.cur")?.scrollIntoView({ block: "nearest" });
         return true;
     }
-    const rows = visibleRows(app);
+    // Every row Show and Find keep, collapsed groups' too: a row in a collapsed group opens it.
+    const rows = layoutOf(app.lv, app.snaps).groups.flatMap((g) => g.rows);
     if (rows.length > 0) {
         const at = rows.findIndex((s) => s.key === app.snap);
-        app.snap = rows[Math.max(0, Math.min(rows.length - 1, at < 0 ? 0 : at + d))].key;
+        jumpTo(app, rows[Math.max(0, Math.min(rows.length - 1, at < 0 ? 0 : at + d))].n);
         writeAddress(false);
         draw();
         scrollToCurrent();

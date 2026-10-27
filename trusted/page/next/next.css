@@ -802,6 +802,10 @@ body.infind .fk {
 .pic.ready .ph {
     display: none;
 }
+/* A removed row's hatching covers its loaded picture, never the placeholder chip. */
+.pic.ready .rm {
+    display: block;
+}
 .pic .ph > span {
     display: inline-flex;
     align-items: center;
@@ -822,6 +826,7 @@ body.infind .fk {
 .pic .rm {
     position: absolute;
     inset: 0;
+    display: none;
     background: repeating-linear-gradient(135deg, rgba(107, 114, 128, 0) 0 8px, rgba(107, 114, 128, 0.35) 8px 10px);
 }
 .srow.decided .pic {

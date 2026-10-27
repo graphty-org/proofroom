@@ -361,7 +361,6 @@ export function setShow(app, show) {
         lv.collapsed.add(BEFORE);
     }
     changed(app);
-    app.say(`Show: ${SHOW_LABEL[show]}.`);
 }
 
 /**
@@ -375,7 +374,6 @@ export function setGrouping(app, grouping) {
     lv.chosen = true;
     lv.collapsed = collapsedAtStart(layoutOf({ ...lv, collapsed: new Set() }, app.snaps).groups, lv.show);
     changed(app);
-    app.say(`Grouped by ${GROUPINGS[grouping].toLowerCase()}.`);
 }
 
 /**
@@ -387,7 +385,6 @@ export function setPictures(app, change) {
     app.lv.pics = { ...app.lv.pics, ...change };
     savePictures(app.lv.pics);
     changed(app);
-    app.say(`Pictures: ${picturesLabel(app.lv.pics)}.`);
 }
 
 /**
@@ -446,8 +443,9 @@ export function findTyped(app) {
     const lv = app.lv;
     lv.find = findBox().value;
     const n = jumpOf(lv.find);
-    if (n !== null && jumpTo(app, n) === null) {
-        app.say(`There is no snapshot #${n} in this change.`);
+    // A number jumps at once when it exists; Enter says when it does not.
+    if (n !== null) {
+        jumpTo(app, n);
     }
     keepCurrentShown(app);
     const lay = layoutOf(lv, app.snaps);
@@ -927,7 +925,7 @@ export function rowOf(app, s, filled = true) {
     const textW = lv.textW;
     const comp = lv.grouping === "component" ? "" : `${lv.multi ? `${s.project} > ` : ""}${s.component}`;
     const st = STATUS[s.status];
-    const word = s.status === "moved" && s.from ? `moved from ${s.from}` : (st?.word ?? s.status);
+    const word = st?.word ?? s.status;
     const tip = `#${s.n} ${s.project} > ${s.component} / ${s.name}${s.mode ? ` (${s.mode})` : ""}${s.from ? `, moved from ${s.from}` : ""}`;
     const row = (children) =>
         control(app, "pickrow", {
@@ -1126,12 +1124,7 @@ function headerOf(app, g) {
 function emptyOf(app, lay) {
     const lv = app.lv;
     if (lay.filtering) {
-        return el(
-            "div",
-            { class: "muted lempty" },
-            `No story matches "${lv.find.trim()}". `,
-            control(app, "clearfind", { zone: "rows", children: ["Clear"], attrs: { title: "Empty Find" } }),
-        );
+        return el("div", { class: "muted lempty" }, `No story matches "${lv.find.trim()}".`);
     }
     return el(
         "div",
@@ -1163,7 +1156,6 @@ export function drawRows(app) {
         lv.pics,
         filterOf(lv.find) ? lv.find.trim().toLowerCase() : "",
         [...lv.collapsed].sort(),
-        [...lv.keep].length,
         width,
     ]);
     if (sig === lv.built) {

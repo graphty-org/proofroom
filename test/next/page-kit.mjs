@@ -97,10 +97,13 @@ export async function openNext(browser, options = {}) {
         return route.fulfill({ json: list });
     });
     await page.route("**/api/pr/**", (route) => {
-        const [, , , id, name] = new URL(route.request().url()).pathname.split("/").map(decodeURIComponent);
+        const u = new URL(route.request().url());
+        const [, , , id, name] = u.pathname.split("/").map(decodeURIComponent);
         const t = list.targets.find((x) => x.id === id);
         const p = t?.projects.find((x) => x.project === name);
-        return route.fulfill({ json: options.rows ? options.rows(id, name) : rowsAnswer(name, p?.reviewable ?? 0) });
+        return route.fulfill({
+            json: options.rows ? options.rows(id, name, u.searchParams) : rowsAnswer(name, p?.reviewable ?? 0),
+        });
     });
     await page.route("**/api/pic/**", (route) => {
         const name = new URL(route.request().url()).pathname.split("/").pop();
