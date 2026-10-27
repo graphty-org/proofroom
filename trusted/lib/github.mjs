@@ -259,7 +259,7 @@ const toRun = (r) => ({
  * @param {{ workflow: string }} config the workflow file that captures (the config's `workflow`)
  * @returns {Promise<object | null>} the run, or null when CI never ran on it
  */
-async function newestCiRun(gh, sha, { workflow }) {
+export async function newestCiRun(gh, sha, { workflow }) {
     const { workflow_runs: runs } = await api(
         gh,
         `repos/{owner}/{repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?head_sha=${sha}&per_page=1`,

@@ -652,7 +652,16 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  *     branch's config, docs/approval-format.md) no record but the change `statement` to sign,
  *     which pushApproval adds to the commit
  */
-export async function prepareApproval({ repo, target, projects, decisions, now, config, retryDelays, repository = null }) {
+export async function prepareApproval({
+    repo,
+    target,
+    projects,
+    decisions,
+    now,
+    config,
+    retryDelays,
+    repository = null,
+}) {
     const { accepts, rejects } = check(projects, decisions, target.pr);
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first || accepts.length === 0) {
@@ -679,7 +688,9 @@ export async function prepareApproval({ repo, target, projects, decisions, now, 
     });
     if (built.statement !== undefined) {
         if (built.alreadyFinished || built.statement === null) {
-            throw new AcceptError("an earlier Finish of this change already holds these decisions: nothing is left to sign");
+            throw new AcceptError(
+                "an earlier Finish of this change already holds these decisions: nothing is left to sign",
+            );
         }
         return {
             commit: built.commit,
@@ -996,7 +1007,10 @@ async function pushSignedChange(input) {
             `Approval: ${path}`,
         );
         await git(tree, ["commit", "-q", "--no-verify", "--amend", "-F", "-"], `${message}\n`);
-        const pushed = await pushChange({ repo, progress, net, config }, { tree, writes: [], branch, statement, fetch });
+        const pushed = await pushChange(
+            { repo, progress, net, config },
+            { tree, writes: [], branch, statement, fetch },
+        );
         return { commit: pushed, branch, record: null };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
@@ -1304,7 +1318,10 @@ const rejectEntries = (rejects) =>
  */
 function chainEnds(chain) {
     const named = new Set(chain.flatMap((st) => (st.previous === null ? [] : [st.previous].flat())));
-    const ends = chain.map((st) => st.id).filter((id) => !named.has(id)).sort();
+    const ends = chain
+        .map((st) => st.id)
+        .filter((id) => !named.has(id))
+        .sort();
     return ends.length === 0 ? null : ends.length === 1 ? ends[0] : ends;
 }
 
@@ -1379,7 +1396,9 @@ async function changeParent(repo, config, at) {
         const finishOnly = (await onlyFinishCommits(repo, base, tip, config)) && !since.some((f) => differ.includes(f));
         const why = finishOnly ? null : await masterMergeProblem(repo, base, tip, ownRef(config.defaultBranch), differ);
         if (why) {
-            throw new AcceptError(`capture is stale, wait for CI: the branch has moved past the captured head (${why})`);
+            throw new AcceptError(
+                `capture is stale, wait for CI: the branch has moved past the captured head (${why})`,
+            );
         }
     }
     // Once the default branch holds a key, a statement it does not verify (one committed unsigned
@@ -1446,7 +1465,9 @@ async function pushChange(input, { tree, writes, branch, statement, fetch }) {
         const clash = mine.find((f) => theirs.has(f));
         if (clash !== undefined || !(await gitOk(repo, ["merge-base", "--is-ancestor", statement.capturedHead, tip]))) {
             const why = clash === undefined ? "the branch no longer holds the captured head" : `it changed ${clash}`;
-            throw new AcceptError(`capture is stale, wait for CI: the branch moved while Finish ran (${why}); nothing was pushed`);
+            throw new AcceptError(
+                `capture is stale, wait for CI: the branch moved while Finish ran (${why}); nothing was pushed`,
+            );
         }
         // The same files on the new tip: it copies nobody's commit, so nothing is rebased.
         await git(tree, ["checkout", "-q", "--detach", tip]);
@@ -1882,6 +1903,12 @@ export async function newerOnMaster(
  * that command runs in the merged worktree before the push; when it fails, nothing is pushed and
  * the branch stays where it was (the merge commit only ever existed in the throwaway worktree).
  *
+ * The rule for a conflicting path under the baselines directory: a pointer both sides changed, a
+ * pointer one side deleted and a settings file take the default branch's side (kept or deleted);
+ * a project's `renames.json` is merged as a list of pairs against the version both started from,
+ * the default branch's pair winning when both name the same old id, a pair it removed staying
+ * removed, and its deletion of the file winning.
+ *
  * It accepts nothing and writes no review record: a baseline that ends up as on the default
  * branch is no change for the gate, which diffs the pull request against its base.
  * @param {object} input the work
@@ -1891,12 +1918,19 @@ export async function newerOnMaster(
  * @param {{ defaultBranch: string, baselines: string, workDir: string, commitPrefix: string,
  *     updateCheck?: string | null }} input.config the settings
  * @param {(step: string) => void} [input.progress] told each step as it starts
- * @returns {Promise<{ commit: string, branch: string, taken: string[], recapture: string[] }>} the
- *     pushed merge commit, the conflicting baseline files that took the default branch's side, and
- *     the baseline files the branch now has different from before (paths under the baselines
- *     directory), whose stories CI compares again
+ * @param {(projects: string[]) => Promise<Record<string, { items: { file: string,
+ *     capture: string | null }[] } | null>>} [input.captures] the change's last capture
+ *     (results.json) of each project named, null for a project with none; asked only for the
+ *     projects with a conflicting snapshot, before anything is pushed
+ * @returns {Promise<{ commit: string, branch: string, taken: string[], merged: string[],
+ *     recapture: string[], report: { match: string[], decide: string[], unknown: string[] } }>}
+ *     the pushed merge commit, the conflicting baseline files resolved (taking the default
+ *     branch's side, or for the renames files in `merged` both sides' pairs), the baseline files the branch now has different from before (paths under the
+ *     baselines directory), whose stories CI compares again, and the conflicting snapshots split
+ *     by the change's last capture: equal to the default branch's image (nothing to decide),
+ *     different (decide again), or not in any capture known
  */
-export async function updateFromMaster({ repo, pr, branch, config, progress = () => {} }) {
+export async function updateFromMaster({ repo, pr, branch, config, progress = () => {}, captures = async () => ({}) }) {
     const { baselines, defaultBranch } = config;
     const own = (b) => `refs/visual-review/origin/${b}`;
     const master = own(defaultBranch);
@@ -1933,11 +1967,24 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
                         `merge ${defaultBranch} into it by hand: ${outside.join(", ")}`,
                 );
             }
+            const show = (rev, path) => work(["show", `${rev}:${path}`]).catch(() => null);
+            const merged = [];
+            const base = await git(repo, ["merge-base", head, master]);
             for (const path of conflicts) {
-                await ((await workOk(["cat-file", "-e", `${master}:${path}`]))
-                    ? work(["checkout", master, "--", path])
-                    : work(["rm", "-q", "--", path]));
+                const both =
+                    isRenamesFile(path, baselines) &&
+                    mergeRenames(await show(base, path), await show(head, path), await show(master, path));
+                if (both) {
+                    await writeFile(join(tree, path), both);
+                    await work(["add", "--", path]);
+                    merged.push(path);
+                } else {
+                    await ((await workOk(["cat-file", "-e", `${master}:${path}`]))
+                        ? work(["checkout", master, "--", path])
+                        : work(["rm", "-q", "--", path]));
+                }
             }
+            const report = await conflictReport(conflicts, { baselines, show: (p) => show(master, p), captures });
             const recapture = (await work(["diff", "--cached", "--name-only", "-z", head, "--", `${baselines}/`]))
                 .split("\0")
                 .filter((p) => p && !p.startsWith(`${baselines}/reviews/`));
@@ -1949,7 +1996,7 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
                           `Takes ${defaultBranch}'s side for ${conflicts.length} conflicting baseline ${conflicts.length === 1 ? "file" : "files"}, ` +
                               "already approved there; CI captures them again and the review shows what still differs:",
                           "",
-                          ...conflicts.map((p) => `- ${p}`),
+                          ...conflicts.map((p) => `- ${p}${merged.includes(p) ? " (both sides' renames merged)" : ""}`),
                       ];
             const message = [
                 `${config.commitPrefix}: merge ${defaultBranch} into ${branch} for visual review`,
@@ -1978,7 +2025,7 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
                     ? new AcceptError(`${branch} moved while it was being updated; nothing was pushed: update again`)
                     : err;
             });
-            return { commit: await work(["rev-parse", "HEAD"]), branch, taken: conflicts, recapture };
+            return { commit: await work(["rev-parse", "HEAD"]), branch, taken: conflicts, merged, recapture, report };
         } finally {
             await removeWorktree(repo, tree).catch((err) =>
                 console.error(`proofroom: could not remove the update worktree ${tree}: ${err.message}`),
@@ -1987,6 +2034,115 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     }
+}
+
+/**
+ * Whether a path is a project's renames file, `<baselines>/<project>/renames.json`.
+ * @param {string} path the path
+ * @param {string} baselines the baselines directory
+ * @returns {boolean} whether it is
+ */
+const isRenamesFile = (path, baselines) => /^[^/]+\/renames\.json$/.test(path.slice(baselines.length + 1));
+
+/**
+ * Two sides' renames files merged against the version both started from, as lists of
+ * `{ from, to }` pairs: every pair of the default branch's, then the pairs the change added or
+ * changed whose old id the default branch does not rename. A pair the default branch removed stays
+ * removed. A side without the file counts as an empty list, except the default branch's: when it
+ * deleted the file, its side (the deletion) is taken.
+ * @param {string | null} common the file both sides started from
+ * @param {string | null} mine the change's file
+ * @param {string | null} theirs the default branch's file
+ * @returns {string | null} the merged file, or null when the default branch has no file or a side
+ *     is not a list (the default branch's side is then taken whole)
+ */
+function mergeRenames(common, mine, theirs) {
+    if (theirs === null) {
+        return null;
+    }
+    const list = (text) => {
+        try {
+            const v = text === null ? [] : JSON.parse(text);
+            return Array.isArray(v) ? v : null;
+        } catch {
+            return null;
+        }
+    };
+    const [o, a, b] = [list(common), list(mine), list(theirs)];
+    if (o === null || a === null || b === null) {
+        return null;
+    }
+    const before = new Set(o.map((r) => JSON.stringify(r)));
+    const taken = new Set(b.map((r) => r?.from));
+    const added = a.filter((r) => !before.has(JSON.stringify(r)) && !taken.has(r?.from));
+    return `${JSON.stringify([...b, ...added], null, 4)}\n`;
+}
+
+/**
+ * The conflicting snapshots of an update, split by whether the change's last capture already
+ * equals the image the default branch now has: those need nothing once CI captures again, the
+ * others a decision again. A snapshot absent on the default branch matches a capture without it.
+ * @param {string[]} conflicts the conflicting paths
+ * @param {object} input how to read them
+ * @param {string} input.baselines the baselines directory
+ * @param {(path: string) => Promise<string | null>} input.show the default branch's file, or null
+ * @param {(projects: string[]) => Promise<Record<string, { items: { file: string,
+ *     capture: string | null }[] } | null>>} input.captures the change's last captures
+ * @returns {Promise<{ match: string[], decide: string[], unknown: string[] }>} the paths
+ */
+async function conflictReport(conflicts, { baselines, show, captures }) {
+    const report = { match: [], decide: [], unknown: [] };
+    const snapshots = conflicts
+        .filter((p) => p.endsWith(".png") && !p.startsWith(`${baselines}/reviews/`))
+        .map((path) => {
+            const [project, ...rest] = path.slice(baselines.length + 1).split("/");
+            return { path, project, file: rest.join("/") };
+        });
+    if (snapshots.length === 0) {
+        return report;
+    }
+    const sets = await captures([...new Set(snapshots.map((s) => s.project))]);
+    for (const { path, project, file } of snapshots) {
+        const results = sets[project];
+        if (!results) {
+            report.unknown.push(path);
+            continue;
+        }
+        const text = await show(path);
+        // ponytail: reads the hash from an LFS pointer only; a baseline stored as a plain PNG never
+        // matches, so it is listed as needing a decision, never as needing nothing.
+        const theirs = text === null ? null : (/^oid sha256:([0-9a-f]{64})$/m.exec(text)?.[1] ?? "");
+        const captured = results.items.find((i) => i.file === file)?.capture ?? null;
+        report[captured === theirs ? "match" : "decide"].push(path);
+    }
+    return report;
+}
+
+/**
+ * What an update says about its conflicting snapshots, as lines for a terminal or a log.
+ * @param {{ match: string[], decide: string[], unknown: string[] }} report updateFromMaster's report
+ * @param {string} defaultBranch the default branch
+ * @returns {string[]} the lines; none when no snapshot conflicted
+ */
+export function updateReportLines({ match, decide, unknown }, defaultBranch) {
+    const n = (k) => `${k} ${k === 1 ? "snapshot" : "snapshots"}`;
+    const known = match.length + decide.length;
+    return [
+        ...(known === 0
+            ? []
+            : [
+                  `${n(match.length)} ${match.length === 1 ? "matches" : "match"} ${defaultBranch} now and ` +
+                      `${match.length === 1 ? "needs" : "need"} nothing; ` +
+                      `${decide.length} ${decide.length === 1 ? "needs" : "need"} a decision again${decide.length > 0 ? ":" : "."}`,
+                  ...decide.map((p) => `  ${p}`),
+              ]),
+        ...(unknown.length === 0
+            ? []
+            : [
+                  `${n(unknown.length)} with no capture to compare with; CI's new capture shows whether they need a decision:`,
+                  ...unknown.map((p) => `  ${p}`),
+              ]),
+    ];
 }
 
 /**
@@ -2087,7 +2243,14 @@ async function planWrites(repo, base, writes, baselines) {
     const files = [];
     // A change statement's entry for the same decision: its path inside the baselines directory.
     const entry = (path, from, to, decision, reason, more = {}) =>
-        entries.push({ path: path.slice(baselines.length + 1), from, to, decision, ...(reason !== null && { reason }), ...more });
+        entries.push({
+            path: path.slice(baselines.length + 1),
+            from,
+            to,
+            decision,
+            ...(reason !== null && { reason }),
+            ...more,
+        });
     const counts = { accept: 0, exclude: 0, remove: 0 };
     // A settings file written earlier in this Finish (two modes of one story) is read as written.
     const written = new Map();

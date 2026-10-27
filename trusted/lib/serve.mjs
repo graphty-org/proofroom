@@ -125,6 +125,7 @@ import {
     treeStatement,
     unsignedRecordAt,
     updateFromMaster,
+    updateReportLines,
 } from "./accept.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
@@ -4002,8 +4003,12 @@ export function createApp({
                     j.step = step;
                     persist(j);
                 },
+                captures: async () => Object.fromEntries(t.projects.map((p) => [p.project, p.results ?? null])),
             });
             console.log(`proofroom: update of #${t.pr} done: commit ${j.result.commit}`);
+            for (const line of updateReportLines(j.result.report, defaultBranch)) {
+                console.log(`proofroom: update of #${t.pr}: ${line}`);
+            }
         } catch (err) {
             j.error = err.message;
             console.error(`proofroom: update of #${t.pr} failed: ${j.error}`);
