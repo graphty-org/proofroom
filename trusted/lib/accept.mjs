@@ -145,7 +145,7 @@ export async function lfsProblem(repo) {
 
 /**
  * The generated commit message.
- * @param {{ pr: number | null, counts: { accept: number, exclude: number, remove: number },
+ * @param {{ pr: number | null, branch?: string | null, counts: { accept: number, exclude: number, remove: number },
  *     runId: number | null, runAttempt: number | null, record: string, prefix: string,
  *     local?: object[], label?: string, candidate?: string | null }} input what the commit holds, the
  *     conventional-commit type and scope it starts with (`commitPrefix`), the projects captured by a
@@ -155,6 +155,7 @@ export async function lfsProblem(repo) {
  */
 export function commitMessage({
     pr,
+    branch = null,
     counts,
     runId,
     runAttempt,
@@ -164,7 +165,12 @@ export function commitMessage({
     label = "Record",
     candidate = null,
 }) {
-    const subject = pr === null ? masterSubject(prefix, candidate) : `${prefix}: accept visual baselines for #${pr}`;
+    const subject =
+        branch !== null
+            ? `${prefix}: accept visual baselines for branch ${branch}`
+            : pr === null
+              ? masterSubject(prefix, candidate)
+              : `${prefix}: accept visual baselines for #${pr}`;
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     return [
         subject,
@@ -176,7 +182,9 @@ export function commitMessage({
                   `Captured locally at ${local[0].merge} (${local.map((l) => l.project).join(", ")}).`,
                   "CI checks it; anything CI draws differently comes back to review.",
               ]
-            : [`Captured by CI run ${runId}, attempt ${runAttempt}.`]),
+            : branch !== null
+              ? ["Captured on this machine from the review page."]
+              : [`Captured by CI run ${runId}, attempt ${runAttempt}.`]),
         `${label}: ${record}`,
         "",
     ].join("\n");
@@ -261,6 +269,19 @@ export const cleanReason = (r) => (typeof r === "string" && r.trim() !== "" ? r.
  */
 export const isPreviewOf = (r, pr) => pr !== null && Boolean(r.local?.preview) && r.pr === pr && r.headSha !== null;
 
+/** The hash `local.diff` holds for a checkout with no uncommitted change: of an empty diff. */
+const NO_DIFF = sha256(Buffer.alloc(0));
+
+/**
+ * Whether a capture is of a local branch's commit, as the review page captures one
+ * (captures.mjs): made on this machine, no change named, and no uncommitted change in it.
+ * @param {object} r its results.json
+ * @param {string | null} branch the local branch being finished, or null
+ * @returns {boolean} whether it is
+ */
+export const isBranchCapture = (r, branch) =>
+    branch !== null && r.pr === null && r.runId === null && Boolean(r.local) && !r.local.preview && r.local.diff === NO_DIFF;
+
 /**
  * The projects of the decided captures that came from a local preview, for the record's
  * `subject.local` and the commit message.
@@ -280,9 +301,10 @@ const previewsOf = (decided, pr) =>
  * @param {{ project: string, file: string, decision: string, reason: string | null }[]} decisions
  *     the owner's decisions
  * @param {number | null} pr the pull request being finished (null for master)
+ * @param {string | null} [branch] the local branch being finished (its captures are accepted)
  * @returns {{ accepts: object[], rejects: object[] }} each with its results item attached
  */
-function check(projects, decisions, pr) {
+function check(projects, decisions, pr, branch = null) {
     const accepts = [];
     const rejects = [];
     for (const d of decisions) {
@@ -291,7 +313,7 @@ function check(projects, decisions, pr) {
         if (!item) {
             throw new AcceptError(`${d.project}/${d.file} is not in this capture`);
         }
-        const preview = isPreviewOf(capture.results, pr);
+        const preview = isPreviewOf(capture.results, pr) || isBranchCapture(capture.results, branch);
         if (!preview && (capture.results.local !== null || capture.results.runId === null)) {
             throw new AcceptError(
                 `${d.project} is a local capture, not acceptable: only CI captures and local previews of this pull request are`,
@@ -314,7 +336,7 @@ function check(projects, decisions, pr) {
  * @param {(args: string[], input?: string) => Promise<string>} [input.gh] the gh runner, wrapped into the GitHub code host when no `codeHost` is given
  * @param {import("./adapters/index.mjs").CodeHost} [input.codeHost] the code host the pull
  *     request, comment, issue and status go to; wins over `gh`
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} input.target a pull request and its
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, localBranch?: boolean }} input.target a pull request and its
  *     branch, or `{ pr: null }` for master; on master, `candidate` is the commit of the full run
  *     offered (serve's `candidates`): the accept commit goes on `visual/approve-<short sha>` and
  *     may change only the baselines and approvals directories
@@ -341,7 +363,7 @@ function check(projects, decisions, pr) {
  *     statement; null takes the default branch config's `repositoryId`
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, acceptNotes: number, state: string | null,
- *     status: string | null, statusError: string | null, commentError: string | null,
+ *     status: string | null, statusError: string | null, commentError: string | null, pending?: boolean,
  *     alreadyFinished?: true, resigned?: true, closedPullRequest?: string, closeError?: string }>} what
  *     was pushed and posted (`closedPullRequest`: a rejected candidate's accept pull request, closed;
  *     `alreadyFinished`: an earlier Finish
@@ -371,12 +393,12 @@ export async function finish({
     const host = codeHost ?? githubCodeHost(gh);
     const { progress, net } = stepRunner(tell, retryDelays);
     progress("checking");
-    const { accepts, rejects } = check(projects, decisions, target.pr);
+    const { accepts, rejects } = check(projects, decisions, target.pr, localBranchOf(target));
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first) {
         throw new AcceptError("nothing decided");
     }
-    const isMaster = target.pr === null;
+    const isMaster = target.pr === null && !target.localBranch;
     if (isMaster && target.candidate && rejects.length > 0 && accepts.length > 0) {
         // A rejected image means the candidate never promotes: an accept pull request would be orphaned.
         throw new AcceptError("a Finish that rejects an image of a candidate posts only its rejects");
@@ -404,6 +426,10 @@ export async function finish({
     const pushed = made.pushed ?? { commit: null, branch: target.branch, record: null };
     const pullRequest = made.pushed && isMaster ? await openSeedPullRequest(host, decided, pushed) : null;
     const { commit, branch } = pushed;
+    if (target.localBranch) {
+        // A local branch has no code host to comment on or set a status for.
+        return { ...unposted(pushed), rejects: rejects.length, pending: pushed.pending === true };
+    }
     // On a pull request, one comment holds the rejects and the accept notes; on master the accept
     // notes are in the seed pull request's description, and only rejects open the issue.
     const comment = isMaster ? rejects.length > 0 : rejects.length > 0 || notes.length > 0;
@@ -733,7 +759,7 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * Every check Finish makes runs here, so a refusal comes before the owner is asked.
  * @param {object} input the work
  * @param {string} input.repo the repository, with the captured head fetched
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, localBranch?: boolean }} input.target as in finish
  * @param {Record<string, { dir: string, results: object }>} input.projects as in finish
  * @param {object[]} input.decisions as in finish
  * @param {Date} input.now the review time, which becomes the record's `reviewedAt` and the
@@ -758,7 +784,7 @@ export async function prepareApproval({
     retryDelays,
     repository = null,
 }) {
-    const { accepts, rejects } = check(projects, decisions, target.pr);
+    const { accepts, rejects } = check(projects, decisions, target.pr, localBranchOf(target));
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first || accepts.length === 0) {
         throw new AcceptError("nothing to accept: a Finish signs the baselines only when it accepts something");
@@ -850,7 +876,7 @@ export async function treeStatement({ repo, commit, config, pr, now }) {
  * The approval is checked first, with the gate's own code.
  * @param {object} input the work
  * @param {string} input.repo the repository
- * @param {{ pr: number | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, branch?: string | null, candidate?: string, localBranch?: boolean }} input.target as in finish
  * @param {{ commit: string, record: string, recordBody: object, pushed: boolean }} input.prepared
  *     as prepareApproval returns
  * @param {object} input.approval the owner's approval of `recordBody`
@@ -865,7 +891,7 @@ export async function signRecord({ repo, target, prepared, approval, keys, origi
     if (why) {
         throw new AcceptError(`the approval does not verify (${why}); nothing was committed`);
     }
-    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr === null ? "master" : target.pr}`);
+    const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, prepared.commit]);
     try {
@@ -1027,13 +1053,13 @@ export async function unsignedRecordAt(repo, tip, pr, config) {
  * push is the staleness check: a branch that moved since step 1 refuses it.
  * @param {object} input the work
  * @param {string} input.repo the repository
- * @param {{ pr: number | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, branch?: string | null, candidate?: string, localBranch?: boolean }} input.target as in finish
  * @param {{ statement?: object, commit: string, branch: string, record: string, pendingKeys?: object[],
  *     origin: string }} input.approval as in finish, the statement with its `approval`
  * @param {(step: string) => void} input.progress as in finish
  * @param {Function} input.net as in finish
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
- * @returns {Promise<{ commit: string, branch: string, record: string }>} what was pushed
+ * @returns {Promise<{ commit: string, branch: string, record: string, pending?: boolean }>} what was pushed
  */
 async function pushApproval({ repo, target, approval, progress, net, config }) {
     const { statement, commit, branch } = approval;
@@ -1043,21 +1069,16 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
     if (statement) {
         progress("checking the approval");
         const tracking = ownRef(config.defaultBranch);
+        const from = await remoteOf(repo, target, config.defaultBranch);
         await net(`git fetch ${config.defaultBranch}`, () =>
-            git(repo, [
-                "fetch",
-                "-q",
-                "--no-write-fetch-head",
-                "origin",
-                `+refs/heads/${config.defaultBranch}:${tracking}`,
-            ]),
+            git(repo, ["fetch", "-q", "--no-write-fetch-head", from, `+refs/heads/${config.defaultBranch}:${tracking}`]),
         );
         await requireApproval(repo, tracking, statement, approval);
         if ((await git(repo, ["rev-parse", `${commit}:${config.baselines}`])) !== statement.tree) {
             throw new AcceptError("the accept commit is not the one approved; press Finish again");
         }
     }
-    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr === null ? "master" : target.pr}`);
+    const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, commit]);
     try {
@@ -1065,8 +1086,8 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
             await writeStatement(tree, statement, config);
         }
         const only = target.candidate ? { candidate: target.candidate, config } : null;
-        const pushed = await pushAccepts({ progress, net }, { tree, writes: [], branch, only });
-        return { commit: pushed, branch, record: approval.record };
+        const pushed = await pushAccepts({ repo, target, progress, net }, { tree, writes: [], branch, only });
+        return { commit: pushed, branch, record: approval.record, pending: await pendingPush(repo, target) };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
@@ -1080,19 +1101,16 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
  * pushApproval in change mode: the signed statement, checked with the gate's own code, goes into
  * the accept commit at the place its content gives, and the commit is pushed (pushChange).
  * @param {object} input as pushApproval's
- * @returns {Promise<{ commit: string, branch: string, record: null }>} what was pushed
+ * @returns {Promise<{ commit: string, branch: string, record: null, pending?: boolean }>} what was pushed
  */
 async function pushSignedChange(input) {
     const { repo, target, approval, progress, net, config } = input;
     const { statement, commit, branch } = approval;
     progress("checking the approval");
-    const fetch = (b) =>
-        net(`git fetch ${b}`, () =>
-            git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${ownRef(b)}`]),
-        );
+    const fetch = fetcher(repo, target, net);
     await fetch(config.defaultBranch);
     await requireApproval(repo, ownRef(config.defaultBranch), statement, approval);
-    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr === null ? "master" : target.pr}`);
+    const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, commit]);
     try {
@@ -1105,10 +1123,10 @@ async function pushSignedChange(input) {
         );
         await git(tree, ["commit", "-q", "--no-verify", "--amend", "-F", "-"], `${message}\n`);
         const pushed = await pushChange(
-            { repo, progress, net, config },
+            { repo, target, progress, net, config },
             { tree, writes: [], branch, statement, fetch },
         );
-        return { commit: pushed, branch, record: null };
+        return { commit: pushed, branch, record: null, pending: await pendingPush(repo, target) };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
@@ -1201,7 +1219,7 @@ async function keysAt(repo, ref) {
  * Writes, commits and pushes the accepts. Every check runs before the worktree is created.
  * @param {object} input the work
  * @param {string} input.repo the repository
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, localBranch?: boolean }} input.target as in finish
  * @param {object[]} input.accepts the checked accepts and exclusions
  * @param {object[]} input.rejects the checked rejects, for a version 2 record
  * @param {object} input.first the results.json of the first decided project
@@ -1217,7 +1235,7 @@ async function keysAt(repo, ref) {
  *     an earlier Finish pushed is reused only when its record holds exactly these decisions
  * @param {string | null} [input.repository] this repository's id for a change statement
  *     (`github:<id>`); null takes the default branch's `repositoryId`
- * @returns {Promise<{ commit: string, branch: string, record: string | null, alreadyFinished?: true,
+ * @returns {Promise<{ commit: string, branch: string, record: string | null, alreadyFinished?: true, pending?: boolean,
  *     statement?: object }>} the commit (pushed unless `push` is false) and branch, and the record's
  *     path (null for a seed pushed earlier and reused, and in change mode, whose commit holds its
  *     `statement` instead: unsigned, and not yet in the commit when it is not pushed)
@@ -1238,12 +1256,12 @@ async function commitAccepts({
     repository = null,
 }) {
     const { baselines, defaultBranch } = config;
-    const isMaster = target.pr === null;
+    const isMaster = target.pr === null && !target.localBranch;
     const lfs = await lfsProblem(repo);
     if (lfs) {
         throw new AcceptError(lfs);
     }
-    const base = isMaster ? first.commit : first.headSha;
+    const base = target.pr === null ? first.commit : first.headSha;
     requireOneHead(accepts, first, target.pr, base);
     const candidate = isMaster ? (target.candidate ?? null) : null;
     const branch = acceptBranch(target, base, now);
@@ -1257,13 +1275,15 @@ async function commitAccepts({
     const plan = await planWrites(repo, base, writes, baselines);
     // Finish fetches into refs of its own, never the remote-tracking refs a page reload fetches
     // into at the same time (two fetches of one ref fail on its lock).
-    const fetch = (b) =>
-        net(`git fetch ${b}`, () =>
-            git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${ownRef(b)}`]),
-        );
+    const fetch = fetcher(repo, target, net);
     await fetch(defaultBranch);
     // The format the default branch's config chooses, never this checkout's (config.mjs).
     const settings = approvalFormatAt(ownRef(defaultBranch), repo);
+    if (target.localBranch && settings.format !== "change") {
+        throw new AcceptError(
+            `a local branch is finished with change statements, and ${defaultBranch} uses tree statements: open a pull request for ${target.branch} and finish it there`,
+        );
+    }
     if (settings.format === "change") {
         const input = { repo, target, rejects, first, now, progress, net, config, push };
         const id = repository ?? settings.repositoryId;
@@ -1296,7 +1316,7 @@ async function commitAccepts({
         version: recordVersion,
     });
 
-    const tree = join(repo, config.workDir, "worktrees", `accept-${isMaster ? "master" : target.pr}`);
+    const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, parent]);
     try {
@@ -1315,7 +1335,7 @@ async function commitAccepts({
             branch,
             only: candidate ? { candidate, config } : null,
         });
-        return { commit, branch, record };
+        return { commit, branch, record, pending: await pendingPush(repo, target) };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
@@ -1337,7 +1357,7 @@ async function commitAccepts({
  * @param {{ base: string, branch: string, plan: object, writes: object[],
  *     fetch: (b: string) => Promise<any>, repository: string | null }} work the captured commit,
  *     the branch, the planned writes, the verified writes, the fetcher and the repository's id
- * @returns {Promise<{ commit: string, branch: string, record: null, statement: object,
+ * @returns {Promise<{ commit: string, branch: string, record: null, statement: object, pending?: boolean,
  *     alreadyFinished?: true }>} what was committed (and pushed, unless `push` is false)
  */
 async function commitChange(input, { base, branch, plan, writes, fetch, repository }) {
@@ -1349,12 +1369,12 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
     }
     // A seed's capture is of a default branch commit, which is on its pull request's base, and the
     // pull request's id is not known before Finish opens it: no statement of it could ever count.
-    if (target.pr === null) {
+    if (target.pr === null && !target.localBranch) {
         throw new AcceptError(
             "a capture of the default branch cannot be approved with change statements: accept these snapshots on a pull request's capture instead (docs/approval-format.md)",
         );
     }
-    const change = `pr:${target.pr}`;
+    const change = target.localBranch ? `branch:${target.branch}` : `pr:${target.pr}`;
     const entries = [...plan.entries, ...rejectEntries(rejects)].sort((a, b) => a.path.localeCompare(b.path));
     const found = await changeParent(repo, config, { base, branch, plan, fetch, entries, change });
     if (found.seed) {
@@ -1376,7 +1396,7 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
     if (why) {
         throw new AcceptError(`this Finish's change statement is not valid (${why})`);
     }
-    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr}`);
+    const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, found.parent]);
     try {
@@ -1389,7 +1409,7 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
             return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, record: null, statement };
         }
         const commit = await pushChange(input, { tree, writes, branch, statement, fetch });
-        return { commit, branch, record: null, statement };
+        return { commit, branch, record: null, statement, pending: await pendingPush(repo, target) };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
@@ -1598,13 +1618,13 @@ function otherFinishMessage(statement, others) {
 /**
  * The branch an accept commit goes to: the pull request's, a candidate's `visual/approve-<sha>`, or a
  * dated seed branch. Refuses a candidate whose capture is of another commit.
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} target as in finish
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, localBranch?: boolean }} target as in finish
  * @param {string} base the captured commit
  * @param {Date} now the review time
  * @returns {string | null} the branch
  */
 function acceptBranch(target, base, now) {
-    if (target.pr !== null) {
+    if (target.pr !== null || target.localBranch) {
         return target.branch;
     }
     if (!target.candidate) {
@@ -1676,7 +1696,7 @@ async function verifiedWrites(accepts) {
  */
 async function acceptParent(input, { base, branch, plan, fetch, exact = false }) {
     const { repo, target, net, config, rejects } = input;
-    if (target.pr !== null) {
+    if (target.pr !== null || target.localBranch) {
         await fetch(branch);
         const parent = await git(repo, ["rev-parse", ownRef(branch)]);
         const paths = plan.files.map((f) => f.path);
@@ -1795,7 +1815,7 @@ async function finishedBefore(repo, { tip, base, target, config, items, rejects,
 async function writeAcceptCommit(input, { tree, plan, writes, body, local, statement = null }) {
     const { repo, target, first, now, progress, config } = input;
     const { baselines } = config;
-    const isMaster = target.pr === null;
+    const isMaster = target.pr === null && !target.localBranch;
     const tracking = ownRef(config.defaultBranch);
     // A seed may be built on a commit older than the rule that stores baselines in Git LFS.
     // Carry the default branch's .gitattributes into it, so the PNGs become pointers and the
@@ -1827,6 +1847,7 @@ async function writeAcceptCommit(input, { tree, plan, writes, body, local, state
     await git(tree, ["add", "-A", "--", baselines]);
     const message = commitMessage({
         pr: target.pr,
+        branch: target.localBranch ? target.branch : null,
         counts: plan.counts,
         runId: first.runId,
         runAttempt: first.runAttempt,
@@ -1881,13 +1902,17 @@ async function requireLfsPointers(tree, items) {
  * batches the page can count; the push of HEAD after them uploads whatever else the commit needs.
  * Images that fit one batch go up with that push alone: a batch of its own would only start
  * git-lfs, and its round trip to the LFS server, twice.
- * @param {{ progress: (step: string) => void, net: Function }} input finish's step reporter and
- *     network runner
+ * A local branch's accept commit is not pushed: the branch is moved to it (moveLocalBranch).
+ * @param {{ repo?: string, target?: object, progress: (step: string) => void, net: Function }} input
+ *     finish's repository, target, step reporter and network runner
  * @param {{ tree: string, writes: object[], branch: string, only?: { candidate: string, config: object } | null }} work
  *     the worktree, the writes, the branch to push to, and for a candidate its commit (requireAcceptOnly)
  * @returns {Promise<string>} the pushed commit
  */
-async function pushAccepts({ progress, net }, { tree, writes, branch, only = null }) {
+async function pushAccepts({ repo, target, progress, net }, { tree, writes, branch, only = null }) {
+    if (target?.localBranch) {
+        return moveLocalBranch({ repo, progress, net }, { tree, branch });
+    }
     if (only) {
         await requireAcceptOnly(tree, only.candidate, only.config);
     }
@@ -1923,6 +1948,120 @@ async function pushAccepts({ progress, net }, { tree, writes, branch, only = nul
     });
     return head;
 }
+
+/**
+ * Moves a local branch to the accept commit: where the branch is checked out, by a fast-forward
+ * merge in that worktree (its files follow, and changes of its own that the merge does not touch
+ * stay); elsewhere by updating the ref only if it is still the tip Finish read. A branch that
+ * moved meanwhile is refused as stale, nothing changed. A branch with an upstream is then pushed
+ * there; one without stays on this machine.
+ * @param {{ repo: string, progress: (step: string) => void, net: Function }} input finish's
+ *     repository, step reporter and network runner
+ * @param {{ tree: string, branch: string }} work the accept worktree and the branch
+ * @returns {Promise<string>} the commit the branch is at now
+ */
+async function moveLocalBranch({ repo, progress, net }, { tree, branch }) {
+    progress(`moving ${branch}`);
+    const head = await git(tree, ["rev-parse", "HEAD"]);
+    const read = await git(repo, ["rev-parse", ownRef(branch)]);
+    const tip = await git(repo, ["rev-parse", `refs/heads/${branch}`]);
+    const stale = () => {
+        const err = new AcceptError(
+            `capture is stale: ${branch} moved past the captured commit while Finish ran; nothing was changed`,
+        );
+        err.raced = true;
+        return err;
+    };
+    if (tip !== read) {
+        throw stale();
+    }
+    const listed = await git(repo, ["worktree", "list", "--porcelain"]);
+    const checkedOut = listed
+        .split("\n\n")
+        .map((block) => block.split("\n"))
+        .find((lines) => lines.includes(`branch refs/heads/${branch}`));
+    if (checkedOut) {
+        // Its files are the reader's: written with the LFS filter, so images, not pointers.
+        const where = checkedOut[0].slice("worktree ".length);
+        await exec("git", ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", "-q", head], { cwd: where }).catch(
+            (err) => {
+                throw new AcceptError(`${branch} could not take the accept commit in ${where}: ${err.message}`);
+            },
+        );
+    } else {
+        await git(repo, ["update-ref", `refs/heads/${branch}`, head, read]).catch(() => {
+            throw stale();
+        });
+    }
+    const remote = await git(repo, ["config", `branch.${branch}.remote`]).catch(() => "");
+    const merge = await git(repo, ["config", `branch.${branch}.merge`]).catch(() => "");
+    if (remote && merge) {
+        progress(`pushing ${branch}`);
+        await net("git lfs push", () => git(tree, ["lfs", "push", remote, "HEAD"]));
+        await net("git push", () => git(tree, ["push", "-q", "--no-verify", remote, `HEAD:${merge}`])).catch((err) => {
+            throw new AcceptError(`the accept commit is on ${branch}, but pushing it to ${remote} failed: ${err.message}`);
+        });
+    }
+    return head;
+}
+
+/**
+ * Whether a Finish's commit stays on this machine: a local branch with no upstream to push to.
+ * @param {string} repo the repository
+ * @param {{ localBranch?: boolean, branch?: string | null }} target as in finish
+ * @returns {Promise<boolean>} whether it does
+ */
+async function pendingPush(repo, target) {
+    if (!target.localBranch) {
+        return false;
+    }
+    return (await git(repo, ["config", `branch.${target.branch}.merge`]).catch(() => "")) === "";
+}
+
+/**
+ * The local branch a target finishes onto, or null.
+ * @param {{ localBranch?: boolean, branch?: string | null }} target as in finish
+ * @returns {string | null} it
+ */
+const localBranchOf = (target) => (target.localBranch ? target.branch : null);
+
+/**
+ * The accept worktree's name for a target.
+ * @param {{ pr: number | null, localBranch?: boolean, branch?: string | null }} target as in finish
+ * @returns {string} it
+ */
+const acceptTree = (target) =>
+    `accept-${target.localBranch ? `branch-${target.branch.replace(/[^A-Za-z0-9._-]/g, "-")}` : (target.pr ?? "master")}`;
+
+/**
+ * Where Finish fetches a branch from: the repository itself for the local branch being finished,
+ * origin for anything else (or the repository itself when it has no origin).
+ * @param {string} repo the repository
+ * @param {{ localBranch?: boolean, branch?: string | null } | undefined} target as in finish
+ * @param {string} b the branch
+ * @returns {Promise<string>} the remote
+ */
+async function remoteOf(repo, target, b) {
+    if (target?.localBranch && b === target.branch) {
+        return ".";
+    }
+    const remotes = await git(repo, ["remote"]).catch(() => "");
+    return remotes.split("\n").includes("origin") ? "origin" : ".";
+}
+
+/**
+ * Finish's fetcher: a branch into its own ref (ownRef), from where remoteOf says.
+ * @param {string} repo the repository
+ * @param {object} target as in finish
+ * @param {Function} net the network runner
+ * @returns {(b: string) => Promise<any>} it
+ */
+const fetcher = (repo, target, net) => async (b) => {
+    const from = await remoteOf(repo, target, b);
+    return net(`git fetch ${b}`, () =>
+        git(repo, ["fetch", "-q", "--no-write-fetch-head", from, `+refs/heads/${b}:${ownRef(b)}`]),
+    );
+};
 
 /**
  * The tip a candidate's push may replace: its branch as last fetched, when that holds nothing but
