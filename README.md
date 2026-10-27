@@ -386,6 +386,34 @@ The server also serves a new review page at `/next/`: put `next/` after the host
 address `proofroom serve` printed. It reads the same captures and decisions as today's page; for
 now, make decisions on today's page. See [docs/new-page.md](docs/new-page.md).
 
+## Browsing baselines
+
+The new page's **Baselines** tab, at the top beside **Review**, shows every approved baseline in
+the repository: what the gate compares new captures with.
+
+- **Projects**, on the left: **Baselines of** chooses whose baselines you see, the default
+  branch's or a change's (its head commit). Under it, every project and its components, each with
+  how many baselines it holds; choose one to show only those.
+- **The baselines**, in the middle: one row per baseline with its picture, its story, its mode and
+  when it last changed in which change. **Find [/]** finds a story by name or by its number
+  ("#12"); **Group** groups the rows by component, by project, or not at all.
+- **The viewer**, on the right: the baseline the row chose, with the same toolbar as a review:
+  zoom with **Zoom [Z]**, Fit [0], 1x [1], 2x [2], 4x [4] and 8x [8], and **Image only [Shift+3]**.
+  **Previous [Left / J]** and **Next [Right / K]** move through the baselines. Under it, the
+  **History**: every version of that baseline, newest first, with its date, who accepted it, in
+  which change, and its approval (signed by which passkey, or not signed). Tick two versions to
+  compare them with **Side by side [V]**, **Flash [F]**, **Highlight [H]** and **Spotlight [S]**,
+  the older one on the left.
+
+**Hide [Shift+1]** and **Hide [Shift+2]** fold the two side panes to rails, as on Review; the
+viewer stays at least 800 px wide.
+
+Baselines stored in Git LFS that are not on this computer yet (often a change's new ones) show
+**Not downloaded** in place of their picture. **Download 312 images (68 MB)** above the list
+fetches exactly the images the list shows that are missing, and an older version in the history
+has its own **Download**. Nothing is downloaded until you press one of them. Pictures are made once
+per image and kept, so a baseline shared by many changes is drawn once.
+
 ## The screens
 
 Every screen has the same frame. The header holds a breadcrumb: **Visual review** (the targets
