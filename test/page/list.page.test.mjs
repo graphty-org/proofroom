@@ -634,7 +634,7 @@ describe("rows", () => {
             "Accepted (not opened)",
             "Accepted (approved before #1356)",
             "Rejected: Legend overlaps the minimap at the right edge",
-            "Rejected before (#5000): The label wraps under the icon",
+            "Rejected before (#5000, 2026-10-20): The label wraps under the icon",
             "Excluded: Animated: never stable",
             "Finished: it is on the branch",
             "re-review",

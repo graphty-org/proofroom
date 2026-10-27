@@ -135,6 +135,10 @@ async function finishJob(s, id) {
     return { begun, job: await endedJob(s) };
 }
 
+
+// The server's local day, as a posted reject records it.
+const today = () => new Date().toLocaleDateString("en-CA");
+
 describe("serve: pull requests", () => {
     it("lists every open pull request, with counts per project, and one without a CI run as waiting", async () => {
         const s = await start({
@@ -1063,7 +1067,7 @@ describe("serve: decisions and Finish", () => {
         // this capture, the reject for good.
         expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
             "badge--default.light.png": { decision: "accept", reason: null, posted: true },
-            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true },
+            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true, postedAt: today() },
         });
         // A second Finish has nothing new to post.
         expect((await finishJob(s, "123")).job.error).toBe("nothing decided");
@@ -1107,7 +1111,7 @@ describe("serve: decisions and Finish", () => {
         // comment is not on the branch, so the revert leaves it posted.
         expect(await decisions()).toEqual({
             "badge--default.light.png": { decision: "accept", reason: null },
-            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true },
+            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true, postedAt: today() },
         });
         expect(await unpublished()).toBe(1);
     });

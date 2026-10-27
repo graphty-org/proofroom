@@ -1028,7 +1028,8 @@ export function createApp({
      * answer is shared: callers never change it (update changes a copy).
      * @param {object} t the target
      * @returns {Readonly<Record<string, { decision: string, reason: string | null, hash: string | null,
-     *     base?: string | null, bulk?: true, posted?: true }>>} the decisions
+     *     base?: string | null, bulk?: true, posted?: true, postedAt?: string }>>} the decisions (`postedAt`:
+     *     the day, YYYY-MM-DD, a reject was posted)
      */
     const readState = (t) => {
         const file = stateFile(t);
@@ -4776,6 +4777,10 @@ export function createApp({
                     const k = `${project}/${file}`;
                     if (saved[k] && (decision !== "reject" || posted)) {
                         saved[k].posted = true;
+                        // The day a reject was posted, for the page's "Rejected before (#N, date)".
+                        if (decision === "reject") {
+                            saved[k].postedAt = new Date().toLocaleDateString("en-CA");
+                        }
                     }
                 }
             });
