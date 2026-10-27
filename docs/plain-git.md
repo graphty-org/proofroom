@@ -40,6 +40,7 @@ setting.
 4. Press **Finish**. The summary says what it will do, for example:
 
     > **Will commit:** 1 accepted (0 not opened), 0 excluded, to branch feat/x as Ada Owner.
+    >
     > **Will write** 1 reject to visual-review-rejects/feat-x.md on the branch.
 
 Finish commits onto the branch, in this order:
