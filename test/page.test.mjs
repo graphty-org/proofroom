@@ -18,6 +18,7 @@ import { parsePasskeys, verifyApproval } from "../trusted/lib/approval.mjs";
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
+import { fakeAdapters, onePrFakes, withMoved } from "./fakes/adapters.mjs";
 import {
     CONFIG,
     capturedItems,
@@ -34,7 +35,6 @@ import {
     onePr,
     pushCommit,
     seedTiles,
-    withMoved,
 } from "./helpers.mjs";
 
 const TOKEN = "p".repeat(43);
@@ -75,7 +75,7 @@ beforeAll(async () => {
     browser = await chromium.launch();
     // One review opened and closed before the tests: the browser's first page and the server code's
     // first run (its thumbnail processes started) cost the first test half a second the rest do not.
-    const r = await open((x) => ({ gh: onePr()(x) }));
+    const r = await open((x) => ({ ...onePrFakes()(x) }));
     await page.locator(".component").first().waitFor();
     tiles = await keepTiles({ origin, token: TOKEN, tmp: join(r.repo, "tmp/visual-review") }, 123);
     await page.close();
@@ -88,7 +88,7 @@ afterAll(() => browser?.close());
 // Two pull requests, #123 and #124, on the same head and CI run; `items`, compact-mantine's
 // items instead of the fixture's.
 const twoPrs = (r, items) =>
-    fakeGh({
+    fakeAdapters({
         prs: [
             { number: 123, head: r.head, branch: "feature" },
             { number: 124, head: r.head, branch: "feature" },
@@ -302,7 +302,7 @@ describe("review page: a component's Accept in a long grid, on an iPad", () => {
     let reloads;
 
     async function openMany(viewport) {
-        await open((r) => ({ gh: withMoved(r, LONG) }), { viewport, touch: true });
+        await open((r) => ({ ...withMoved(r, LONG) }), { viewport, touch: true });
         await section("comp05").waitFor();
         await page.evaluate(() => {
             const { document } = globalThis;
@@ -349,7 +349,7 @@ describe("review page: a component's Accept in a long grid, on an iPad", () => {
     }
 
     it("brings the next component to the top of the grid when the accepted one began above it", async () => {
-        await open((r) => ({ gh: withMoved(r, LONG) }), { viewport: { width: 1000, height: 800 } });
+        await open((r) => ({ ...withMoved(r, LONG) }), { viewport: { width: 1000, height: 800 } });
         await section("comp05").waitFor();
         // Scrolled into comp05, its heading out of sight above, its Accept reached by Tab.
         const gridTop = await page.evaluate(() => {
@@ -415,7 +415,7 @@ describe("review page: Accept takes what the filter shows, on an iPad", () => {
         ["sideways", { width: 1366, height: 1024 }],
     ]) {
         it(`held ${held}: under Removed, a component's Accept and the bar's take only removed items`, async () => {
-            await open((r) => ({ gh: withMoved(r, MIXED) }), { viewport, touch: true });
+            await open((r) => ({ ...withMoved(r, MIXED) }), { viewport, touch: true });
             await show("removed");
             const bar = page.locator("#accept-all");
             await expect.poll(() => bar.textContent()).toBe("Accept 25 removed");
@@ -448,7 +448,7 @@ describe("review page: Accept takes what the filter shows, on an iPad", () => {
     }
 
     it("under Removed, Find story narrows a component's Accept and the bar's as it narrows the grid", async () => {
-        await open((r) => ({ gh: withMoved(r, MIXED) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...withMoved(r, MIXED) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await show("removed");
         const bar = page.locator("#accept-all");
         await expect.poll(() => bar.textContent()).toBe("Accept 25 removed");
@@ -486,7 +486,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
         ["sideways", { width: 1366, height: 1024 }],
     ]) {
         it(`held ${held}: P shows the new image alone across both panes, and the buttons stay put`, async () => {
-            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await open((r) => ({ ...onePrFakes()(r) }), { viewport, touch: true });
             await page.locator(".component").first().waitFor();
             await openStory(2);
             await page.locator("#stage figure:nth-child(2) img").waitFor();
@@ -522,7 +522,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
     }
 
     it("keeps the choice for the next item and a fresh page", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.locator(".component").first().waitFor();
         await openStory(2);
         await (await menuOption("Baseline")).click();
@@ -543,7 +543,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
     });
 
     it("still flashes, and shows a removed item's baseline, with the choice off", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.locator(".component").first().waitFor();
         await openStory(2);
         await page.keyboard.press("p");
@@ -575,7 +575,7 @@ describe("review page: the Baseline pane, on an iPad", () => {
         // Flash's own label.
         let release;
         const held = new Promise((resolve) => (release = resolve));
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.route(blobOf("capture", "button--primary.dark.png"), async (route) => {
             await held;
             await route.continue();
@@ -639,7 +639,7 @@ describe("review page: the Focus point, on an iPad", () => {
         ["sideways", { width: 1366, height: 1024 }],
     ]) {
         it(`held ${held}: O at 4x centers the largest change, and after Accept the next item opens on its own`, async () => {
-            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await open((r) => ({ ...onePrFakes()(r) }), { viewport, touch: true });
             await page.locator(".component").first().waitFor();
             await openStory(2);
             await page.locator("#stage figure:nth-child(2) img").waitFor();
@@ -693,7 +693,7 @@ describe("review page: the Focus point, on an iPad", () => {
         // image arrives: the new image waits for it rather than showing at the top left first.
         let release;
         const held = new Promise((resolve) => (release = resolve));
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.route(blobOf("baseline", "slider--sizes.png"), async (route) => {
             await held;
             await route.continue();
@@ -740,7 +740,7 @@ describe("review page: the Focus point, on an iPad", () => {
             }
         }
         const body = PNG.sync.write(png);
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.route(blobOf("capture", "badge--default.light.png"), (route) =>
             route.fulfill({ status: 200, contentType: "image/png", body }),
         );
@@ -812,7 +812,7 @@ describe("review page: the control panel, on an iPad", () => {
         ["upright (iPad mini)", { width: 744, height: 1133 }, 220],
     ]) {
         it(`held ${held}: the controls used on most items show without a menu, in ${most} px above the panes`, async () => {
-            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await open((r) => ({ ...onePrFakes()(r) }), { viewport, touch: true });
             await page.locator(".component").first().waitFor();
             await openStory(2);
             await ready();
@@ -845,7 +845,7 @@ describe("review page: the control panel, on an iPad", () => {
         { width: 1180, height: 820 },
     ]) {
         it(`at ${viewport.width} x ${viewport.height}: no text field on the screen; Reject asks its reason in a box ready to type in`, async () => {
-            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await open((r) => ({ ...onePrFakes()(r) }), { viewport, touch: true });
             await page.locator(".component").first().waitFor();
             await openStory(2);
             await ready();
@@ -874,7 +874,7 @@ describe("review page: the control panel, on an iPad", () => {
     }
 
     it("keeps the rarer options in one Options menu, each with its key, and Escape closes it first", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.locator(".component").first().waitFor();
         await openStory(2);
         await ready();
@@ -902,7 +902,7 @@ describe("review page: the control panel, on an iPad", () => {
     });
 
     it("counts each tap and key in this browser only, and lists the most used in Keys", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.locator(".component").first().waitFor();
         await openStory(2);
         await ready();
@@ -922,7 +922,7 @@ describe("review page: the control panel, on an iPad", () => {
 
 describe("review page: a pull request", () => {
     beforeEach(async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator(".component").first().waitFor();
     });
 
@@ -1762,7 +1762,7 @@ describe("review page: the decision bar", () => {
         [768, 1024],
     ]) {
         it(`keeps every button in one place across items, decisions, zooms and scrolling at ${w} x ${h}`, async () => {
-            await open((r) => ({ gh: onePr()(r) }), { viewport: { width: w, height: h } });
+            await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: w, height: h } });
             await page.locator(".component").first().waitFor();
             await page.getByRole("button", { name: /^All/ }).click();
             await page.locator("#review-undecided").click();
@@ -1809,7 +1809,7 @@ describe("review page: the decision bar", () => {
     }
 
     it("never types a decision key into the reason box: R, type, Enter, then A accepts the next item", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await expect.poll(position).toMatch(/^2 of /);
@@ -1829,7 +1829,7 @@ describe("review page: the decision bar", () => {
     const stopClock = () => page.clock.pauseAt(Date.now() + 1000);
 
     it("keeps focus on a decision button it was on: Tab to Accept, Space twice", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -1848,7 +1848,7 @@ describe("review page: the decision bar", () => {
     });
 
     it("ignores the second tap of a double tap, which lands on the next item's Accept", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -1867,7 +1867,7 @@ describe("review page: the decision bar", () => {
     });
 
     it("refuses the second tap of a double tap that comes while the first decision is saving", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -1952,7 +1952,7 @@ describe("review page: waits that say what they wait for", () => {
     });
 
     it("says what a slow project waits for", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { review: false });
+        await open((r) => ({ ...onePrFakes()(r) }), { review: false });
         let release;
         const held = new Promise((resolve) => (release = resolve));
         await page.route("**/api/pr/123/compact-mantine", async (route) => {
@@ -1968,7 +1968,7 @@ describe("review page: waits that say what they wait for", () => {
     });
 
     it("says what a slow save waits for", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -2182,7 +2182,7 @@ describe("review page: the wait box", () => {
 
 describe("review page: moving on", () => {
     it("offers the next project at the end of a pass, opening its first undecided item", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator("#review-undecided").click();
         expect(await page.locator("#prev kbd").textContent()).toBe("J");
         expect(await page.locator("#next kbd").textContent()).toBe("K");
@@ -2223,7 +2223,7 @@ describe("review page: moving on", () => {
     });
 
     it("offers Finish and the next target when every project of a target is decided", async () => {
-        await open((r) => ({ gh: twoPrs(r) }));
+        await open((r) => ({ ...twoPrs(r) }));
         await page.locator(".component").first().waitFor();
         await page.keyboard.press("Shift+A");
         await expect.poll(progress).toBe("4 of 6 decided");
@@ -2265,7 +2265,7 @@ describe("review page: moving on", () => {
     });
 
     it("suggests Finish only once every project of the target is decided, and says what is left where", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator(".component").first().waitFor();
         await pickProject("graphty-element");
         await page.locator("#review-undecided").click();
@@ -2309,7 +2309,7 @@ describe("review page: moving on", () => {
     });
 
     it("jumps to another target and project from the header's pickers", async () => {
-        await open((r) => ({ gh: twoPrs(r) }));
+        await open((r) => ({ ...twoPrs(r) }));
         await page.locator(".component").first().waitFor();
         expect(await page.locator("#pick-target option").allTextContents()).toEqual(["#123 (7)", "#124 (7)"]);
         expect(await page.locator("#pick-project option").allTextContents()).toEqual([
@@ -2332,7 +2332,7 @@ describe("review page: navigation, on an iPad", () => {
         ["sideways", { width: 1366, height: 1024 }],
     ]) {
         it(`held ${held}: the header's crumbs go up to the grid and the targets, and forward into the item last opened`, async () => {
-            await open((r) => ({ gh: onePr()(r) }), { viewport, touch: true });
+            await open((r) => ({ ...onePrFakes()(r) }), { viewport, touch: true });
             await page.locator(".component").first().waitFor();
             // The grid: target and project, no Grid crumb, nothing opened yet.
             expect(await shown("crumbs")).toBe(true);
@@ -2386,7 +2386,7 @@ describe("review page: navigation, on an iPad", () => {
     }
 
     it("steps to the next and previous project with undecided items with ] and [, skipping the rest", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1024, height: 1366 }, touch: true });
         await page.locator(".component").first().waitFor();
         expect(await project()).toBe("compact-mantine");
         // From the grid, the next project's grid; it wraps.
@@ -2420,7 +2420,7 @@ describe("review page: navigation, on an iPad", () => {
 
 describe("review page: links and the frozen pass", () => {
     beforeEach(async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator(".component").first().waitFor();
     });
 
@@ -2607,7 +2607,7 @@ describe("review page: links and the frozen pass", () => {
 
 describe("review page: Finish", () => {
     it("states the rejects it will publish, and refuses when they changed since", async () => {
-        const r = await open((x) => ({ gh: onePr()(x) }));
+        const r = await open((x) => ({ ...onePrFakes()(x) }));
         await page.locator("#review-undecided").click();
         await page.keyboard.press("k");
         await ready();
@@ -2664,15 +2664,13 @@ describe("review page: Finish", () => {
         const gate = new Promise((resolve) => (release = resolve));
         // The commit status waits until the test releases it, so the Finish is caught running.
         await open((r) => {
-            const gh = twoPrs(r);
-            return {
-                gh: async (args, input) => {
-                    if (args[1]?.includes("/statuses/")) {
-                        await gate;
-                    }
-                    return gh(args, input);
-                },
+            const f = twoPrs(r);
+            const { setStatus } = f.codeHost;
+            f.codeHost.setStatus = async (...args) => {
+                await gate;
+                return setStatus(...args);
             };
+            return f;
         });
         await page.locator(".component").first().waitFor();
         confirmFinish = true;
@@ -2748,19 +2746,17 @@ describe("review page: Finish", () => {
         let failed = false;
         // The first commit status fails on DNS; the retry waits until the test releases it.
         await open((r) => {
-            const gh = twoPrs(r);
-            return {
-                gh: async (args, input) => {
-                    if (args[1]?.includes("/statuses/")) {
-                        if (!failed) {
-                            failed = true;
-                            throw new Error("error connecting to api.github.com");
-                        }
-                        await gate;
-                    }
-                    return gh(args, input);
-                },
+            const f = twoPrs(r);
+            const { setStatus } = f.codeHost;
+            f.codeHost.setStatus = async (...args) => {
+                if (!failed) {
+                    failed = true;
+                    throw new Error("error connecting to api.github.com");
+                }
+                await gate;
+                return setStatus(...args);
             };
+            return f;
         });
         await page.locator(".component").first().waitFor();
         confirmFinish = true;
@@ -2788,7 +2784,7 @@ describe("review page: update from master", () => {
     it("warns on opening a project master has newer baselines for, and updates the branch from the warning", async () => {
         const r = await open((repo) => {
             pushCommit(repo.remote, "master", "visual-baselines/compact-mantine/other.png");
-            return { gh: onePr()(repo) };
+            return { ...onePrFakes()(repo) };
         });
         const stale = page.locator("#stale");
         await stale.waitFor();
@@ -2810,7 +2806,7 @@ describe("review page: update from master", () => {
     });
 
     it("shows no warning when the branch has master's baselines", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator(".component").first().waitFor();
         expect(await page.locator("#stale").count()).toBe(0);
     });
@@ -2837,7 +2833,7 @@ describe("review page: against the default branch", () => {
                 "visual-compact-mantine-1": { commit: head, headSha: head, items },
                 "visual-graphty-element-1": { commit: head, headSha: head },
             };
-            return { config: FIXTURE_CONFIG, gh: onePr({ results })({ ...r, head }) };
+            return { config: FIXTURE_CONFIG, ...onePrFakes({ results })({ ...r, head }) };
         });
         await page.locator(".component").first().waitFor();
         await expect.poll(progress).toBe("0 of 7 decided");
@@ -2978,7 +2974,7 @@ describe("review page: the passkey", () => {
     });
 
     it("signs the decisions of a Finish with a reject in one prompt, and leaves the baselines unsigned", async () => {
-        const r = await open((repo) => ({ config: FIXTURE_CONFIG, gh: onePr()(repo) }), {
+        const r = await open((repo) => ({ config: FIXTURE_CONFIG, ...onePrFakes()(repo) }), {
             review: false,
             host: "localhost",
         });
@@ -3033,7 +3029,7 @@ describe("review page: the passkey", () => {
     });
 
     it("signs an earlier Finish's unsigned record when Finish is pressed with nothing new to decide", async () => {
-        const r = await open((repo) => ({ config: FIXTURE_CONFIG, gh: onePr()(repo) }), {
+        const r = await open((repo) => ({ config: FIXTURE_CONFIG, ...onePrFakes()(repo) }), {
             review: false,
             host: "localhost",
         });
@@ -3089,7 +3085,7 @@ describe("review page: the passkey", () => {
     });
 
     it("says plainly that accepts are not yet protected while no passkey is registered", async () => {
-        const r = await open((repo) => ({ gh: onePr()(repo) }), { review: false });
+        const r = await open((repo) => ({ ...onePrFakes()(repo) }), { review: false });
         await expect
             .poll(() => page.locator(".passkey-line").textContent())
             .toBe(
@@ -3116,7 +3112,7 @@ describe("review page: the passkey", () => {
         await open(
             (r) => {
                 passkeysOnMaster(r, []);
-                return { gh: onePr()(r) };
+                return { ...onePrFakes()(r) };
             },
             { review: true },
         );
@@ -3162,7 +3158,7 @@ describe("review page: narrow windows, touch and wording", () => {
         );
 
     it("marks the tools and messages rows as named regions and the message line as a native output", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator(".component").first().waitFor();
         expect(await page.getByRole("region", { name: "Tools" }).evaluate((e) => e.tagName)).toBe("SECTION");
         const messages = page.getByRole("region", { name: "Messages" });
@@ -3173,7 +3169,7 @@ describe("review page: narrow windows, touch and wording", () => {
     });
 
     it("keeps the decision bar and the header on screen at every width", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator(".component").first().waitFor();
         await openStory(2);
         await ready();
@@ -3185,7 +3181,7 @@ describe("review page: narrow windows, touch and wording", () => {
     });
 
     it("gives the project menu room on an iPad held upright", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 } });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 820, height: 1180 } });
         await page.locator(".component").first().waitFor();
         const name = await page.locator("#pick-project option:checked").textContent();
         expect(name).toBe("compact-mantine (6)");
@@ -3216,7 +3212,7 @@ describe("review page: narrow windows, touch and wording", () => {
         ["sideways", { width: 1366, height: 1024 }],
     ]) {
         it(`held ${held} with hundreds of items: whole menu names, a whole position, and a tile's Undo a finger can press`, async () => {
-            await open((r) => ({ gh: withMoved(r, MANY) }), { viewport, touch: true });
+            await open((r) => ({ ...withMoved(r, MANY) }), { viewport, touch: true });
             await page.locator(".component").first().waitFor();
             expect(await page.locator("#pick-project option:checked").textContent()).toBe("compact-mantine (186)");
             expect(await cut(["#pick-target", "#pick-project"])).toEqual([]);
@@ -3235,7 +3231,7 @@ describe("review page: narrow windows, touch and wording", () => {
     }
 
     it("makes every control at least 44 px tall on a touch screen", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 820, height: 1180 }, touch: true });
         await page.locator(".component").first().waitFor();
         const short = () =>
             page.evaluate(() =>
@@ -3250,7 +3246,7 @@ describe("review page: narrow windows, touch and wording", () => {
     });
 
     it("keeps Accept's label and key whole while the images load", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { viewport: { width: 1280, height: 800 } });
+        await open((r) => ({ ...onePrFakes()(r) }), { viewport: { width: 1280, height: 800 } });
         await page.locator(".component").first().waitFor();
         let release;
         const held = new Promise((resolve) => (release = resolve));
@@ -3286,7 +3282,7 @@ describe("review page: narrow windows, touch and wording", () => {
     });
 
     it("never takes a stray key in the Keys overlay, says when shortcuts are off, and counts Z presses right", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await page.locator(".component").first().waitFor();
         await page.keyboard.press("?");
         const keys = page.locator("dialog.keys");
@@ -3319,7 +3315,7 @@ describe("review page: narrow windows, touch and wording", () => {
     });
 
     it("says 1 pixel and 1 line, not 1 pixels and 1 lines", async () => {
-        await open((r) => ({ gh: onePr()(r) }), { review: false });
+        await open((r) => ({ ...onePrFakes()(r) }), { review: false });
         await page.route("**/api/pr/123/compact-mantine", async (route) => {
             const res = await route.fetch();
             const body = await res.json();
@@ -3341,7 +3337,7 @@ describe("review page: narrow windows, touch and wording", () => {
     });
 
     it("selects the story name to copy without moving the buttons", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         await openStory(2);
         const name = page.locator(".itemline .name");
         const box = () => page.locator(".viewbar").boundingBox();
@@ -3376,7 +3372,7 @@ describe("review page: flaky captures", () => {
         await open((r) => {
             const at = { commit: r.head, headSha: r.head };
             return {
-                gh: onePr({
+                ...onePrFakes({
                     results: { "visual-compact-mantine-1": { ...at, items }, "visual-graphty-element-1": at },
                 })(r),
             };
@@ -3414,7 +3410,7 @@ describe("review page: renamed stories", () => {
             reason: REASON,
             console: [],
         };
-        await open((r) => ({ gh: withMoved(r, [broken]) }));
+        await open((r) => ({ ...withMoved(r, [broken]) }));
         await page.locator(".component").first().waitFor();
     });
 
@@ -3516,7 +3512,7 @@ describe("review page: a pending push", () => {
 
 describe("review page: a local preview", () => {
     beforeEach(async () => {
-        await open(() => ({ gh: async () => "", results: FIXTURE }));
+        await open(() => ({ ...fakeAdapters(), results: FIXTURE }));
         await page.locator(".component").first().waitFor();
     });
 
@@ -3556,7 +3552,7 @@ async function openStoryFromGrid(number) {
 
 describe("review page: the inbox", () => {
     it("opens on what waits, counts it in the title, opens the first undecided image, and keeps the token", async () => {
-        await open((r) => ({ gh: twoPrs(r, capturedItems()) }), { review: false });
+        await open((r) => ({ ...twoPrs(r, capturedItems()) }), { review: false });
         await listSettled();
         const rows = page.locator(".inbox-row");
         expect(await rows.count()).toBe(2);
@@ -3575,7 +3571,7 @@ describe("review page: the inbox", () => {
     });
 
     it("shows coupled pull requests as one group, and Review together decides a shared image on both", async () => {
-        await open((r) => ({ gh: twoPrs(r, capturedItems()) }), { review: false });
+        await open((r) => ({ ...twoPrs(r, capturedItems()) }), { review: false });
         const group = page.locator(".inbox-group");
         await group.waitFor();
         expect(await group.locator(".group-head strong").textContent()).toBe("Coupled: #123, #124 (oldest first)");
@@ -3595,7 +3591,7 @@ describe("review page: the inbox", () => {
     });
 
     it("lists a pull request with a failed story under Not ready with its reason, never as ready", async () => {
-        await open((r) => ({ gh: twoPrs(r) }), { review: false });
+        await open((r) => ({ ...twoPrs(r) }), { review: false });
         await listSettled();
         const bad = page.locator(".inbox-bad");
         expect(await bad.count()).toBe(2);
@@ -3612,7 +3608,7 @@ describe("review page: the inbox", () => {
             i.status === "failed" ? { ...i, baseline: "a".repeat(64), console: [] } : i,
         );
         await open((r) => ({
-            gh: onePr({
+            ...onePrFakes({
                 results: {
                     "visual-compact-mantine-1": { commit: r.head, headSha: r.head, items },
                     "visual-graphty-element-1": { commit: r.head, headSha: r.head },
@@ -3717,7 +3713,7 @@ describe("review page: safe filters and the pull request's context", () => {
     });
 
     it("spotlights and zooms every tile from two switches, each remembered in this browser and off at first", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         const tile = page.locator('.tile[data-file="button--primary.dark.png"] img');
         await tile.waitFor({ state: "visible" });
         const look = async () => [
@@ -3766,7 +3762,7 @@ describe("review page: safe filters and the pull request's context", () => {
     });
 
     it("loads spotlit tiles the server made, and makes the same tile itself when the server cannot", async () => {
-        await open((r) => ({ gh: onePr()(r) }));
+        await open((r) => ({ ...onePrFakes()(r) }));
         const tile = page.locator('.tile[data-file="button--primary.dark.png"] img');
         await tile.waitFor({ state: "visible" });
         const lit = () => tile.evaluate((n) => n.classList.contains("spot") && n.classList.contains("zoomed"));

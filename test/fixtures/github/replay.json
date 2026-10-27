@@ -1,0 +1,147 @@
+{
+    "note": "gh's answers for the GitHub adapters' contract test, keyed by gh's arguments; shaped as GitHub's REST API answers them. The pull request poll is pulls-poll.json.",
+    "calls": {
+        "api user": {
+            "login": "apowers",
+            "id": 1001,
+            "type": "User"
+        },
+        "api repos/{owner}/{repo}": {
+            "id": 871234567,
+            "name": "graphty-monorepo",
+            "full_name": "graphty-org/graphty-monorepo"
+        },
+        "api repos/{owner}/{repo}/pulls/3486": {
+            "number": 3486,
+            "state": "open",
+            "title": "Storybook 9 upgrade for every package and its stories",
+            "body": "Moves every package to Storybook 9.",
+            "user": {
+                "login": "apowers"
+            },
+            "created_at": "2026-10-25T09:00:00Z",
+            "head": {
+                "ref": "feat/3486-storybook-9",
+                "sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876"
+            },
+            "base": {
+                "ref": "master",
+                "repo": {
+                    "owner": {
+                        "login": "graphty-org",
+                        "type": "Organization"
+                    }
+                }
+            }
+        },
+        "api repos/{owner}/{repo}/issues/3486/comments?per_page=100": [
+            {
+                "user": {
+                    "login": "apowers"
+                },
+                "created_at": "2026-10-25T09:30:00Z",
+                "body": "Ready for review."
+            }
+        ],
+        "api repos/{owner}/{repo}/issues/3486/comments --input -": {
+            "id": 555,
+            "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3486#issuecomment-555"
+        },
+        "api repos/{owner}/{repo}/statuses/6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876 --input -": {
+            "id": 777,
+            "state": "success",
+            "context": "Visual review"
+        },
+        "api repos/{owner}/{repo}/issues --input -": {
+            "number": 3500,
+            "html_url": "https://github.com/graphty-org/graphty-monorepo/issues/3500"
+        },
+        "api repos/{owner}/{repo}/pulls --input -": {
+            "number": 3501,
+            "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3501"
+        },
+        "api repos/{owner}/{repo}/pulls?state=open&head={owner}:visual/approve-6dfc21d0c4": [
+            {
+                "number": 3501,
+                "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3501",
+                "head": {
+                    "ref": "visual/approve-6dfc21d0c4"
+                }
+            }
+        ],
+        "api repos/{owner}/{repo}/pulls?state=open&head={owner}:no-such-branch": [],
+        "api -X PATCH repos/{owner}/{repo}/pulls/3501 --input -": {
+            "number": 3501
+        },
+        "api -X PATCH repos/{owner}/{repo}/pulls/3501 -f state=closed": {
+            "number": 3501,
+            "state": "closed"
+        },
+        "api repos/{owner}/{repo}/actions/runs/18800002": {
+            "id": 18800002,
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800002",
+            "head_sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876",
+            "updated_at": "2026-10-25T10:30:00Z"
+        },
+        "api repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876&per_page=1": {
+            "total_count": 1,
+            "workflow_runs": [
+                {
+                    "id": 18800002,
+                    "run_attempt": 1,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800002",
+                    "head_sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876",
+                    "updated_at": "2026-10-25T10:30:00Z"
+                }
+            ]
+        },
+        "api repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=0000000000000000000000000000000000000000&per_page=1": {
+            "total_count": 0,
+            "workflow_runs": []
+        },
+        "api repos/{owner}/{repo}/actions/runs/18800002/attempts/1/jobs?per_page=100&page=1": {
+            "total_count": 2,
+            "jobs": [
+                {
+                    "name": "visual (compact-mantine)",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800002/job/1"
+                },
+                {
+                    "name": "Build",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800002/job/2"
+                }
+            ]
+        },
+        "api repos/{owner}/{repo}/actions/runs/18800002/artifacts?per_page=100": {
+            "total_count": 2,
+            "artifacts": [
+                {
+                    "name": "visual-compact-mantine-1",
+                    "size_in_bytes": 1048576,
+                    "expired": false,
+                    "expires_at": "2027-01-23T10:30:00Z"
+                },
+                {
+                    "name": "packages",
+                    "size_in_bytes": 99,
+                    "expired": false,
+                    "expires_at": "2027-01-23T10:30:00Z"
+                }
+            ]
+        },
+        "api repos/{owner}/{repo}/commits?sha=master&per_page=10": [
+            {
+                "sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876"
+            }
+        ]
+    }
+}

@@ -92,6 +92,9 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         }, {}),
         badges: [],
         stale: t.stale ?? 0,
+        // The disk budget evicted its images: the bytes opening it downloads again (design 11.1).
+        evicted: t.evicted && !t.evicted.deleted ? t.evicted.bytes : null,
+        deleted: t.evicted?.deleted === true,
     };
     // The state, its mark and its words (design 3.5). A look-only change is look only whatever its
     // projects' state: it is viewed, never decided.
@@ -153,9 +156,23 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
     } else {
         Object.assign(row, { state: "review", mark: ["open", "c-new"], count: `${fmt(undecided)} undecided` });
     }
+    if (row.deleted && row.state !== "look") {
+        Object.assign(row, {
+            state: "deleted",
+            mark: ["failed", "c-failed"],
+            count: "Images deleted by the code host: capture again",
+        });
+    } else if (row.evicted !== null && ["review", "half", "decided", "finished", "nothing"].includes(row.state)) {
+        // Its counts as before, an open circle, and what opening it costs.
+        row.mark = ["open", "c-ink2"];
+        row.badges.push({ text: `Images not on disk: opening downloads ${megabytes(row.evicted)}` });
+    } else {
+        row.evicted = null;
+    }
     // Nothing to review until its captures are in: a project still downloading or capturing, or one
     // whose capture failed or expired. A capture with failed stories has those stories to review.
-    row.notReady = ["downloading", "capturing", "incomplete"].includes(row.state) || states.includes("failed");
+    row.notReady =
+        ["downloading", "capturing", "incomplete", "deleted"].includes(row.state) || states.includes("failed");
     row.dismissKey = `${t.id} ${row.runKey}`;
     row.dismissable = row.state === "finished" && !dismissed.has(row.dismissKey);
     row.section =
@@ -163,7 +180,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
             ? "look"
             : ["downloading", "capturing"].includes(row.state)
               ? "busy"
-              : ["failed", "incomplete"].includes(row.state)
+              : ["failed", "incomplete", "deleted"].includes(row.state)
                 ? "notready"
                 : ["nothing", "finished"].includes(row.state)
                   ? "nothing"

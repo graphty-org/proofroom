@@ -129,20 +129,11 @@ import {
     updateFromMaster,
     updateReportLines,
 } from "./accept.mjs";
+import { evict, evictedAt, evictionOrder, sizes as diskSizes } from "./budget.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
-import {
-    downloadCaptures,
-    exec,
-    getRun,
-    hurry,
-    openPullRequests,
-    pullRequestContext,
-    repositoryNumber,
-    retrying,
-    reviewerLogin,
-    visualJobs,
-} from "./github.mjs";
+import { captureStoreFor, codeHostFor, localFolderStore } from "./adapters/index.mjs";
+import { exec, retrying } from "./github.mjs";
 import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
 import {
@@ -268,6 +259,10 @@ const UNKNOWN_REFRESH = 60000;
 // With `warm`, the list is refreshed this often, so a CI run that finished meanwhile is downloaded
 // before the owner opens it.
 const POLL = 2 * 60000;
+
+// What an image of an evicted change answers, and its changes row once the code host deleted them.
+const EVICTED_TEXT = "Images not on disk: open the change to download them again";
+const DELETED_TEXT = "Images deleted by the code host: capture again";
 
 /**
  * The newest gh call waiting to retry after a network failure, for the page.
@@ -524,15 +519,20 @@ async function blobsOf(repo, names) {
  * @param {string} input.project the project
  * @param {string} input.dir the capture's directory
  * @param {{ items: object[] }} input.results its results.json, validated
+ * @param {boolean} [input.images] write the images too; false for a directory the disk budget
+ *     evicted, whose items still change (the hashes come from git) but whose images stay away
  * @returns {Promise<void>} resolves once the items and images are in place; rejects when the
  *     default branch's baselines or images cannot be read
  */
-async function againstBase({ repo, ref, head, baselines, project, dir, results }) {
+async function againstBase({ repo, ref, head, baselines, project, dir, results, images = true }) {
     const prefix = `${baselines}/${project}/`;
     const blobs = await pngBlobs(repo, ref, prefix);
     const contents = await blobsOf(repo, [...new Set(blobs.values())]);
     const hashOf = (file) => (blobs.has(file) ? contentHash(contents.get(blobs.get(file))) : null);
     const shown = compareWithBase(results, blobs, hashOf);
+    if (!images) {
+        return;
+    }
     for (const file of shown) {
         await putImage(repo, join(dir, "baselines", file), contents.get(blobs.get(file)), hashOf(file));
     }
@@ -686,7 +686,10 @@ async function loadResults(dir, name) {
  * Builds the request handler.
  * @param {object} options the server's settings
  * @param {string} options.repo the repository accepts are committed in
- * @param {Function} options.gh the gh runner
+ * @param {(args: string[], input?: string) => Promise<string>} [options.gh] the gh runner the config's code host and capture store run on
+ * @param {import("./adapters/index.mjs").CodeHost} [options.codeHost] the code host; wins over `gh`
+ * @param {import("./adapters/index.mjs").CaptureStore} [options.captureStore] where CI's captures are;
+ *     wins over `gh`
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} options.config the
  *     repository's settings (visual-review.config.json)
  * @param {string} options.tmp where artifacts are downloaded
@@ -728,6 +731,8 @@ async function loadResults(dir, name) {
 export function createApp({
     repo,
     gh,
+    codeHost,
+    captureStore,
     config,
     tmp,
     token,
@@ -745,6 +750,11 @@ export function createApp({
     ui = "review",
 }) {
     const stateDir = join(tmp, "state");
+    const host = codeHost ?? codeHostFor(config, { gh });
+    const store = captureStore ?? captureStoreFor(config, { gh, keep: tmp, warn: (m) => warnOnce(m) });
+    // Local previews (`previews`) and a local results directory (`results`) are local folder stores.
+    const previewStore = previews ? localFolderStore(previews) : null;
+    const resultsStore = results ? localFolderStore(results) : null;
     const { projects, defaultBranch } = config;
     const names = Object.keys(projects);
     const repository = repositoryName(repo);
@@ -901,12 +911,12 @@ export function createApp({
     };
     /**
      * Whose key is being registered, for the self-approval rule (docs/approval-format.md): the
-     * code host login gh is signed in as and the git e-mail of this server's repository, each when
+     * code host login the reviewer is signed in as and the git e-mail of this server's repository, each when
      * known; null when neither is.
      * @returns {Promise<{ user?: string, emails?: string[] } | null>} the identity
      */
     async function keyIdentity() {
-        reviewer ??= reviewerLogin(gh).catch(() => null);
+        reviewer ??= host.whoAmI().catch(() => null);
         const [user, email] = await Promise.all([
             reviewer,
             execFileAsync("git", ["config", "--get", "user.email"], { cwd: repo }).then(
@@ -1269,10 +1279,7 @@ export function createApp({
      * @returns {Promise<string | null>} the id
      */
     async function repositoryId() {
-        githubId ??= await repositoryNumber(gh).then(
-            (id) => (id === null ? null : `github:${id}`),
-            () => undefined,
-        );
+        githubId ??= await host.repositoryId().catch(() => undefined);
         return githubId ?? config.repositoryId ?? null;
     }
 
@@ -1404,6 +1411,8 @@ export function createApp({
     // pull request's capture (`vsBase`) is also compared with the default branch's baselines.
     async function project(name, dir, problem, vsBase = false) {
         const loaded = dir ? await loadResults(dir, name) : { results: null, problem: null };
+        // Evicted by the disk budget: its counts are here, its images are not (budget.mjs).
+        const evicted = dir ? evictedAt(dir) : null;
         if (loaded.results && vsBase) {
             const ref = `refs/remotes/origin/${defaultBranch}`;
             const { headSha: head } = loaded.results;
@@ -1415,6 +1424,7 @@ export function createApp({
                 project: name,
                 dir,
                 results: loaded.results,
+                images: !evicted,
             }).catch((err) => {
                 loaded.results = null;
                 loaded.problem = `not compared with ${defaultBranch}'s baselines: ${err.message}`;
@@ -1427,40 +1437,26 @@ export function createApp({
         }
         if (loaded.results) {
             itemIndex.set(loaded.results, itemsByFile(loaded.results.items));
-            indexImages(dir, loaded.results);
-            prewarm(dir, loaded.results);
+            if (!evicted) {
+                indexImages(dir, loaded.results);
+                prewarm(dir, loaded.results);
+            }
         }
-        return { project: name, dir, results: loaded.results, problem: problem ?? loaded.problem, logUrl: null };
+        return {
+            project: name,
+            dir,
+            results: loaded.results,
+            problem: problem ?? loaded.problem,
+            logUrl: null,
+            evicted,
+        };
     }
 
-    /**
-     * The gh runner for one finished run: what GitHub says about it (its jobs, its artifacts) no
-     * longer changes, so each answer is asked once and kept on disk beside the run's downloads,
-     * and pruned with them. A refresh then asks GitHub only for the pull requests and their newest
-     * runs. ponytail: an artifact that expires later is still listed as there; its download fails
-     * and says so, which only matters for a capture never downloaded in its 90 days.
-     * @param {{ id: number, attempt: number }} run the finished run
-     * @returns {Function} the gh runner
-     */
-    const kept = (run) => async (args, input) => {
-        if (args[0] !== "api") {
-            return gh(args, input);
+    // An evicted project whose artifact the code host deleted: its images cannot come back.
+    const markDeleted = (p, got) => {
+        if (p.evicted && got?.deleted) {
+            p.evicted = { ...p.evicted, deleted: true };
         }
-        const name = sha256(args.join(" ")).slice(0, 16);
-        const file = join(tmp, `${run.id}-${run.attempt}`, "gh", `${name}.json`);
-        const saved = await readFile(file, "utf8").catch(() => null);
-        if (saved !== null) {
-            return saved;
-        }
-        const answer = await gh(args, input);
-        try {
-            mkdirSync(dirname(file), { recursive: true });
-            writeFileSync(`${file}.tmp`, answer);
-            renameSync(`${file}.tmp`, file);
-        } catch (err) {
-            warnOnce(`could not keep GitHub's answers in ${dirname(file)}: ${err.message}`);
-        }
-        return answer;
     };
 
     /**
@@ -1477,7 +1473,7 @@ export function createApp({
         }
         const stamp = `${run.status} ${run.conclusion} ${run.updatedAt}`;
         const was = runsRead.get(run.id);
-        const got = was?.stamp === stamp ? was.run : await getRun(gh, run.id);
+        const got = was?.stamp === stamp ? was.run : await store.run(run.id);
         // Kept only when REST agrees with the list, so an answer that lags it is asked again.
         if (got.status === run.status && got.conclusion === run.conclusion) {
             read.set(run.id, { stamp, run: got });
@@ -1485,9 +1481,15 @@ export function createApp({
         return got;
     }
 
-    async function build(info, run) {
-        const g = run.status === "completed" ? kept(run) : gh;
-        const jobs = await visualJobs(g, run, run.attempt, names);
+    /**
+     * A target as of one CI run: each project's capture, downloaded (or as on disk).
+     * @param {object} info the target's listing
+     * @param {object} run the run
+     * @param {boolean} [again] download the projects the disk budget evicted again
+     * @returns {Promise<object>} the target
+     */
+    async function build(info, run, again = false) {
+        const jobs = await store.jobs(run, names);
         // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
         // gave none there (a CI app the filter misses), the jobs call this build makes anyway:
         // the job's status, or, where the answer has none, running while it has no conclusion.
@@ -1517,12 +1519,12 @@ export function createApp({
             p.logUrl = jobs[name]?.url ?? run.url;
             p.ci = ciOf(name);
             p.bytes = sizes[name] ?? null;
+            markDeleted(p, landed.get(name));
             partial.projects[names.indexOf(name)] = p;
             await withPreviews(partial);
             await decorate(partial);
         };
-        const downloads = downloadCaptures(
-            g,
+        const downloads = store.fetch(
             run,
             names,
             tmp,
@@ -1542,6 +1544,7 @@ export function createApp({
                 download.total = Object.keys(planned).length;
                 download.bytes = Object.values(planned).reduce((a, b) => a + b, 0);
             },
+            again,
         );
         downloads.catch(() => {}); // A download still running after `patience` fails on a later refresh.
         const downloaded = await (patience === Infinity
@@ -1587,6 +1590,7 @@ export function createApp({
             );
             p.logUrl = jobs[name]?.url ?? run.url;
             p.ci = ciOf(name);
+            markDeleted(p, downloaded[name]);
             list.push(p);
         }
         const warnings = others.map(
@@ -1645,9 +1649,7 @@ export function createApp({
             return null;
         }
         let best = null;
-        for (const name of pendingNames()) {
-            const dir = join(previews, name);
-            const status = readStatusIn(dir);
+        for (const { dir, status } of previewStore.pending()) {
             if (status?.pr !== t.pr || !sha(status.head) || status.head === t.head || status.state === "failed") {
                 continue;
             }
@@ -1687,8 +1689,8 @@ export function createApp({
     // One project of a target with its local preview in place when CI has not captured it and the
     // preview is of this head; as it was otherwise (or saying a draft needs a new preview).
     async function withPreview(t, p) {
-        const dir = join(previews, String(t.pr), p.project);
-        if (p.results || p.downloading || !existsSync(join(dir, "results.json"))) {
+        const dir = previewStore.dir(t.pr, p.project);
+        if (p.results || p.downloading || !previewStore.has(t.pr, p.project)) {
             return p;
         }
         const local = await project(p.project, dir, null, true);
@@ -1709,7 +1711,7 @@ export function createApp({
     // Marks each project a preview of this head is still capturing, or finished without loading,
     // as not loaded (from the preview's status.json).
     async function markPreviewStatus(t) {
-        const status = readPreviewStatus(t.pr);
+        const status = previewStore.status(t.pr);
         if (!status?.head || !(await onlyFinishCommits(repo, status.head, t.head, config))) {
             return;
         }
@@ -1726,37 +1728,9 @@ export function createApp({
         }
     }
 
-    const previewStatusFile = (pr) => join(previews, String(pr), "status.json");
-    const readStatusIn = (dir) => {
-        try {
-            return JSON.parse(readFileSync(join(dir, "status.json"), "utf8"));
-        } catch {
-            return null;
-        }
-    };
-    const readPreviewStatus = (pr) => readStatusIn(join(previews, String(pr)));
-    // The captures the pre-push gate staged under the commit it checks (pendingPreview).
-    const pendingNames = () => {
-        try {
-            return readdirSync(previews).filter((n) => n.startsWith(".pending-"));
-        } catch {
-            return [];
-        }
-    };
-    const mtimeOf = (file) => {
-        try {
-            return statSync(file).mtimeMs;
-        } catch {
-            return null;
-        }
-    };
     // When a pull request's preview status.json, or any staged capture's, last changed: a staged
     // capture may be a pending push of this pull request.
-    const previewStamp = (pr) =>
-        [
-            mtimeOf(previewStatusFile(pr)),
-            ...pendingNames().map((n) => `${n}:${mtimeOf(join(previews, n, "status.json"))}`),
-        ].join(",");
+    const previewStamp = (pr) => previewStore.stamp(pr);
     // Whether a listed pull request's local preview changed since the list read it, each change
     // counted once: a refresh that cannot reach GitHub keeps the old list, and must not start another.
     const previewSeen = new Map();
@@ -1779,6 +1753,17 @@ export function createApp({
         }
         if (t.pendingPush) {
             return [409, { error: pendingPushText(t) }];
+        }
+        // A Finish keeps the change on disk for the next hour (the budget's OPENED_KEEP_MS), and
+        // one the budget already evicted reads its images only once they are downloaded again.
+        markOpened(t.id);
+        const away = t.projects.filter((p) => p.evicted);
+        if (away.some((p) => p.evicted.deleted)) {
+            return [410, { error: DELETED_TEXT }];
+        }
+        if (away.length > 0) {
+            refetch(t);
+            return [409, { error: "Images not on disk: downloading them again; Finish once they are in" }];
         }
         return null;
     };
@@ -1856,6 +1841,8 @@ export function createApp({
                 refreshing = null;
                 refreshedAt = Date.now();
                 progress = null;
+                // After the refresh, and after the downloads it waited for.
+                keepBudget();
             }
         })());
 
@@ -1881,7 +1868,7 @@ export function createApp({
             info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${pick.queued.length} queued)`;
             info.candidate = { commit, runId, queued: pick.queued.map((c) => ({ commit: c.commit, runId: c.runId })) };
         }
-        return getRun(gh, runId)
+        return store.run(runId)
             // When CI last touched the run, as a pull request's "4 min ago".
             .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
             .catch((err) => keptOr(info, err));
@@ -1892,9 +1879,7 @@ export function createApp({
         if (results) {
             const list = await Promise.all(
                 names.map((n) =>
-                    existsSync(join(results, n, "results.json"))
-                        ? project(n, join(results, n), null)
-                        : project(n, null, "no capture"),
+                    resultsStore.has(null, n) ? project(n, resultsStore.dir(null, n), null) : project(n, null, "no capture"),
                 ),
             );
             const r = list.find((p) => p.results)?.results;
@@ -1921,7 +1906,7 @@ export function createApp({
             step("listing pull requests");
             // This refresh's runs (runOf); a failed list keeps what the last one learned.
             let read = new Map();
-            const prs = await openPullRequests(gh, config).catch((err) => {
+            const prs = await host.listChanges(config).catch((err) => {
                 if (!masterRun && !candidates && kept.length === 0) {
                     throw err;
                 }
@@ -2053,7 +2038,7 @@ export function createApp({
     // Closes the accept pull requests a rejecting Finish could not close; a failure stays a warning.
     const closeLeftOpen = async () => {
         for (const commit of toClose) {
-            const { closeError } = await closeCandidatePullRequest(gh, { candidate: commit });
+            const { closeError } = await closeCandidatePullRequest(host, { candidate: commit });
             if (closeError) {
                 listWarnings.push(
                     `the accept pull request of rejected candidate ${commit.slice(0, 10)} is still open: ${closeError}`,
@@ -2226,7 +2211,11 @@ export function createApp({
         const loaded = there ? await project(p.project, p.dir, p.problem, t.pr !== null && !t.local) : null;
         return p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
             ? { ...p, dir: null, results: null, problem: null, downloading: true }
-            : { ...p, results: loaded?.results ?? null };
+            : {
+                  ...p,
+                  results: loaded?.results ?? null,
+                  evicted: loaded?.evicted ? { ...p.evicted, ...loaded.evicted } : null,
+              };
     }
 
     /**
@@ -2394,6 +2383,165 @@ export function createApp({
         }
     }
 
+    /**
+     * The disk budget (config `diskBudget`, in GB): after each refresh, one walk of the work
+     * directory, in the background; while it holds more than the budget, the full images of whole
+     * changes are evicted (budget.mjs), never their results.json or decisions. Never the change a
+     * page has open or pinned (`held`, `pins`), one opened in the last hour, a local preview, or
+     * one still downloading.
+     */
+    const budget = config.diskBudget * 1e9;
+    /** What the work directory held at the last walk, in bytes; null before the first. */
+    let diskUsed = null;
+    let budgeting = null;
+    const openedFile = join(stateDir, "opened.json");
+    /** When a page last opened each change, by id (kept on disk, written at most once a minute each). */
+    const opened = new Map();
+    try {
+        for (const [id, at] of Object.entries(JSON.parse(readFileSync(openedFile, "utf8")))) {
+            opened.set(id, Number(at) || 0);
+        }
+    } catch {
+        // None opened yet.
+    }
+    const markOpened = (id) => {
+        const was = opened.get(id) ?? 0;
+        opened.set(id, Date.now());
+        if (Date.now() - was > 60000) {
+            try {
+                writeJson(openedFile, Object.fromEntries(opened));
+            } catch (err) {
+                warnOnce(`could not keep when each change was opened: ${err.message}`);
+            }
+        }
+    };
+    // A capture directory this server downloaded from CI: `<tmp>/<run>-<attempt>/<project>`.
+    const downloaded = (p) =>
+        Boolean(p.dir) && !p.preview && dirname(dirname(p.dir)) === tmp && /^\d+-\d+$/.test(basename(dirname(p.dir)));
+    const keepBudget = () => {
+        if (results || budgeting) {
+            return;
+        }
+        budgeting = enforceBudget()
+            .catch((err) => console.error(`proofroom: the disk budget: ${err.message}`))
+            .finally(() => (budgeting = null));
+    };
+    async function enforceBudget() {
+        const files = await diskSizes(tmp);
+        let used = [...files.values()].reduce((a, b) => a + b, 0);
+        diskUsed = used;
+        if (used <= budget || finishing) {
+            return;
+        }
+        // First the downloads of runs no change lists any more, which prune() leaves while some
+        // change has no run (waiting for CI, or not loaded): nothing shows them.
+        const runs = new Set([...targets.values(), ...held.values()].map((t) => t.runId));
+        for (const d of readdirSync(tmp)) {
+            const run = /^(\d+)-\d+$/.exec(d)?.[1];
+            const dir = join(tmp, d);
+            // Not while a refresh may be downloading a run it has not listed yet.
+            if (used <= budget || refreshing || !run || runs.has(Number(run))) {
+                continue;
+            }
+            // Evicted like a change, never removed: a target that could not load this refresh
+            // (no run) may still be this run's, and its counts are in results.json.
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+                const sub = join(dir, e.name);
+                if (e.isDirectory() && e.name !== "gh" && !evictedAt(sub)) {
+                    used -= evict(sub, files, Date.now());
+                }
+            }
+            forgetImages(dir);
+        }
+        const pinned = new Set([...held.values()].map((t) => t.id));
+        for (const key of pins.keys()) {
+            if (pinFresh(key)) {
+                pinned.add(key.slice(0, key.indexOf(" ")));
+            }
+        }
+        const live = (t) => t.projects.filter((p) => p.results && !p.evicted && downloaded(p));
+        const shown = [...targets.values()];
+        const candidates = shown
+            .filter((t) => !t.local && !t.downloading && live(t).length > 0)
+            .map((t) => {
+                const s = summary(t);
+                const needsYou = s.unpublished > 0 || s.projects.some((p) => p.undecided > 0);
+                return { id: t.id, needsYou, openedAt: opened.get(t.id) ?? 0, keep: pinned.has(t.id) };
+            });
+        // The pictures by the pair or image they are made of (spots/<baseline>-<capture>-...,
+        // thumbs/<hash>.png), so a change's own are found without another walk.
+        const pictureFiles = new Map();
+        const [spots, thumbs] = [join(tmp, "spots", "_"), join(tmp, "thumbs", "_")].map((d) => d.slice(0, -1));
+        for (const f of files.keys()) {
+            const name = f.startsWith(spots)
+                ? f.slice(spots.length).split("-").slice(0, 2).join("-")
+                : f.startsWith(thumbs) && f.endsWith(".png")
+                  ? basename(f, ".png")
+                  : null;
+            if (name) {
+                pictureFiles.set(name, [...(pictureFiles.get(name) ?? []), f]);
+            }
+        }
+        const namesOf = (t) =>
+            t.projects.flatMap((p) =>
+                (p.results?.items ?? []).flatMap((i) => [
+                    i.capture,
+                    i.baseline,
+                    `${i.baseline ?? "none"}-${i.capture ?? "none"}`,
+                ]),
+            );
+        for (const id of evictionOrder(candidates, Date.now())) {
+            const t = targets.get(id);
+            if (used <= budget || !t || finishing) {
+                break;
+            }
+            for (const p of live(t)) {
+                used -= evict(p.dir, files, Date.now());
+                p.evicted = evictedAt(p.dir);
+                forgetImages(p.dir);
+            }
+            // Its pictures, but not one another change still shows.
+            const kept = new Set(
+                [...targets.values(), ...held.values()]
+                    .filter((o) => o !== t && o.projects.some((p) => p.results && !p.evicted))
+                    .flatMap(namesOf),
+            );
+            for (const name of new Set(namesOf(t))) {
+                if (name && !kept.has(name)) {
+                    for (const f of pictureFiles.get(name) ?? []) {
+                        rmSync(f, { force: true });
+                        used -= files.get(f) ?? 0;
+                    }
+                }
+            }
+        }
+        diskUsed = used;
+        save();
+    }
+
+    /**
+     * Opening an evicted change downloads its images again, in the background; the page asks
+     * again until its rows are back.
+     */
+    const refetching = new Set();
+    const refetch = (t) => {
+        if (refetching.has(t.id)) {
+            return;
+        }
+        refetching.add(t.id);
+        const run = { id: t.runId, attempt: t.runAttempt, url: t.runUrl, status: "completed" };
+        build(t, run, true)
+            .then(async (built) => {
+                await decorate(built);
+                if (targets.get(t.id) === t) {
+                    targets.set(t.id, built);
+                    save();
+                }
+            })
+            .catch((err) => console.error(`proofroom: downloading ${t.id} again failed: ${err.message}`))
+            .finally(() => refetching.delete(t.id));
+    };
+
     const summary = (t) => {
         const warnings = [...(t.warnings ?? [])];
         let decided = new Map();
@@ -2436,6 +2584,14 @@ export function createApp({
             // The commit a pending push's capture is of (withPending): decisions yes, Finish not yet.
             pendingPush: t.pendingPush ?? null,
             downloading: t.downloading === true,
+            // The disk budget evicted its images: `bytes` downloads them again when it is opened,
+            // unless the code host deleted them (`deleted`).
+            evicted: t.projects.some((p) => p.evicted)
+                ? {
+                      bytes: t.projects.reduce((n, p) => n + (p.evicted?.bytes ?? 0), 0),
+                      deleted: t.projects.some((p) => p.evicted?.deleted),
+                  }
+                : null,
             // While downloading: how many artifacts and bytes have landed of how many, and since when
             // (server time). `bytes` is null until GitHub has listed the artifacts.
             download: t.downloading
@@ -3466,6 +3622,9 @@ export function createApp({
     }
 
     async function readImage({ path, hash, file, dir }) {
+        if (evictedAt(dir)) {
+            return [410, { error: `${file}: ${EVICTED_TEXT}` }];
+        }
         const bytes = await readFile(path).catch(() => null);
         if (!bytes || sha256(bytes) !== hash) {
             // The directory was written again since it was loaded (a new preview, moved
@@ -3504,6 +3663,11 @@ export function createApp({
             // also starts a refresh. Neither waits for GitHub. After a first load that failed, only
             // ?refresh=1 (the page's Retry) tries again.
             await restored;
+            // The change a page has open (`open`): the disk budget keeps it while it is polled.
+            const open = query?.get("open");
+            if (open && targets.has(open)) {
+                markOpened(open);
+            }
             const cachedOnly = query?.get("cached") === "1" || query?.get("refresh") === "1";
             if (cachedOnly) {
                 // A local preview that moved on (a project's capture written, or the preview done)
@@ -3529,6 +3693,8 @@ export function createApp({
                     updatedAt: refreshedAt || null,
                     now: Date.now(),
                     refreshing: progress,
+                    // The disk budget and what the work directory held at the last walk, in bytes.
+                    disk: { budget, used: diskUsed },
                     // Why the last refresh got no list at all; a gh call waiting to retry.
                     error: failure,
                     network: networkTrouble(),
@@ -3562,9 +3728,20 @@ export function createApp({
             if (!t) {
                 return gone(id, run);
             }
+            markOpened(id);
+            // The change downloads again as a whole, whichever of its projects the page asks about.
+            const away = t.projects.filter((x) => x.evicted);
+            if (away.some((x) => x.evicted.deleted)) {
+                return [410, { error: DELETED_TEXT }];
+            }
+            if (away.length > 0) {
+                // Evicted by the disk budget: its images download again, and the page asks again.
+                refetch(t);
+                return [202, { downloading: true, target: summary(t), network: networkTrouble(), now: Date.now() }];
+            }
             if (t.projects.find((x) => x.project === name)?.downloading) {
                 // The reviewer is waiting for this one: it downloads next. The page asks again.
-                hurry((dir) => basename(dir) === name && dir.startsWith(join(tmp, `${t.runId}-`)));
+                store.hurry((dir) => basename(dir) === name && dir.startsWith(join(tmp, `${t.runId}-`)));
                 return [202, { downloading: true, target: summary(t), network: networkTrouble(), now: Date.now() }];
             }
             if (!p) {
@@ -3616,10 +3793,10 @@ export function createApp({
             }
             const key = `${t.pr} ${t.head ?? t.headSha}`;
             if (!contexts.has(key)) {
-                reviewer ??= reviewerLogin(gh).catch(() => null);
+                reviewer ??= host.whoAmI().catch(() => null);
                 contexts.set(
                     key,
-                    reviewer.then((login) => pullRequestContext(gh, t.pr, login)),
+                    reviewer.then((login) => host.describe(t.pr, login)),
                 );
             }
             try {
@@ -3972,7 +4149,7 @@ export function createApp({
             };
             let proposed;
             try {
-                proposed = await proposeKey({ repo, gh, entry, config });
+                proposed = await proposeKey({ repo, codeHost: host, entry, config });
             } catch (err) {
                 if (err instanceof AcceptError) {
                     return [409, { error: err.message }];
@@ -4119,7 +4296,7 @@ export function createApp({
             );
             runFinish(job, t, list, {
                 repo,
-                gh,
+                codeHost: host,
                 target: finishTarget(t),
                 projects: captures,
                 decisions: list,
@@ -4491,8 +4668,9 @@ export function createApp({
      * @returns {Promise<void>}
      */
     handler.idle = async () => {
-        while (making.size) {
+        while (making.size || budgeting) {
             await Promise.allSettled([...making.values()].map((m) => m.done));
+            await budgeting;
         }
     };
     handler.serverId = serverId;

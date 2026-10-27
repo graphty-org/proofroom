@@ -15,7 +15,8 @@ import { verifyApproval } from "../trusted/lib/approval.mjs";
 import { statementPath } from "../trusted/lib/change-approval.mjs";
 import { CONFIG_FILE } from "../trusted/lib/config.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { FIXTURE_CONFIG, git, interceptedPage, isolateGit, makeRepo, onePr } from "./helpers.mjs";
+import { onePrFakes } from "./fakes/adapters.mjs";
+import { FIXTURE_CONFIG, git, interceptedPage, isolateGit, makeRepo } from "./helpers.mjs";
 
 const TOKEN = "f".repeat(43);
 const APPROVALS = "visual-review-approvals";
@@ -41,7 +42,10 @@ it("asks for the passkey once, says it signs this Finish's decisions, and pushes
     // A repository in change mode with no key yet: the reader registers one on the page.
     const r = makeRepo();
     const own = JSON.parse(readFileSync(join(r.repo, CONFIG_FILE), "utf8"));
-    writeFileSync(join(r.repo, CONFIG_FILE), JSON.stringify({ ...own, approvalFormat: "change", repositoryId: "id-1" }));
+    writeFileSync(
+        join(r.repo, CONFIG_FILE),
+        JSON.stringify({ ...own, approvalFormat: "change", repositoryId: "id-1" }),
+    );
     git(r.repo, "commit", "-q", "-am", "change statements");
     git(r.repo, "push", "-q", "origin", "master");
 
@@ -50,7 +54,7 @@ it("asks for the passkey once, says it signs this Finish's decisions, and pushes
     // A host name: WebAuthn never takes an IP address as a passkey's site.
     const origin = `http://localhost:${server.address().port}`;
     const tmp = join(r.repo, "tmp/visual-review");
-    app = createApp({ repo: r.repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, gh: onePr()(r) });
+    app = createApp({ repo: r.repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, ...onePrFakes()(r) });
     server.on("request", app);
     page = await interceptedPage(browser, { viewport: { width: 1000, height: 800 } });
     await page.addInitScript(() => {

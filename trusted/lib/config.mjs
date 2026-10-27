@@ -25,6 +25,7 @@ const DEFAULTS = {
     candidates: null,
     usage: false,
     ignoreBranches: [],
+    diskBudget: 10,
 };
 
 // Project ids name artifacts, jobs, directories and regular expressions, so they stay plain; and
@@ -36,8 +37,8 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
 /**
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
- * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, selfApproval?: "allow" | "forbid", workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
+ * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, selfApproval?: "allow" | "forbid", codeHost?: string, captureStore?: string, stories?: string, renderer?: string, workDir: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, usage: boolean, ignoreBranches: string[], diskBudget: number, projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -72,7 +73,15 @@ export function normalizeConfig(input) {
         }
         out.ignoreBranches = raw.ignoreBranches;
     }
+    // How much the work directory may hold, in GB: `serve` evicts the images of changes beyond it.
+    if (raw.diskBudget !== undefined) {
+        if (typeof raw.diskBudget !== "number" || !(raw.diskBudget > 0) || !Number.isFinite(raw.diskBudget)) {
+            fail("diskBudget must be a number of GB above 0");
+        }
+        out.diskBudget = raw.diskBudget;
+    }
     approvalSettings(raw, out, fail);
+    adapterSettings(raw, out, fail);
     out.projects = projectsSetting(raw.projects, fail);
     return out;
 }
@@ -105,6 +114,35 @@ function approvalSettings(raw, out, fail) {
             fail('selfApproval must be "allow" or "forbid"');
         }
         out.selfApproval = raw.selfApproval;
+    }
+}
+
+/**
+ * The built-in adapters each adapter key may name, the first its default (README, "Configuration").
+ * Only one of each is built today.
+ */
+export const ADAPTERS = Object.freeze({
+    codeHost: ["github"],
+    captureStore: ["github-actions"],
+    stories: ["storybook"],
+    renderer: ["playwright-chromium"],
+});
+
+/**
+ * The optional adapter settings, set only when the config names them: each picks a built-in
+ * adapter by name (ADAPTERS).
+ * @param {any} raw the parsed config
+ * @param {any} out the settings being filled in
+ * @param {(msg: string) => never} fail throws the config error
+ */
+function adapterSettings(raw, out, fail) {
+    for (const [key, names] of Object.entries(ADAPTERS)) {
+        if (raw[key] !== undefined) {
+            if (!names.includes(raw[key])) {
+                fail(`${key} must be ${names.map((n) => `"${n}"`).join(" or ")}`);
+            }
+            out[key] = raw[key];
+        }
     }
 }
 

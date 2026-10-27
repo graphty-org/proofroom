@@ -1,6 +1,6 @@
 /*
  * Settings (design 2.2): the passkeys registered for Finish and Register passkey..., letter keys
- * on or off, the Highlight color and the theme. The reader's choices are kept in this browser; the
+ * on or off, the Highlight color, the theme and the server's disk budget. The reader's choices are kept in this browser; the
  * passkeys are the server's (GET /api/passkeys), and registering one goes through today's flow in
  * passkey.js: the challenge is fetched first, so the button that creates the passkey can start
  * Face ID inside its own press, as iPad Safari requires.
@@ -10,7 +10,7 @@ import { passkeyName, passkeyWrongHost, prepareRegistration, registerPasskey } f
 import { control, runAction } from "./actions.js";
 import { api } from "./api.js";
 import { letterKeysOn, setLetterKeys, syncHints } from "./keys.js";
-import { el } from "./ui.js";
+import { el, megabytes } from "./ui.js";
 
 const HIGHLIGHT_KEY = "proofroom:highlight";
 const THEME_KEY = "proofroom:theme";
@@ -239,6 +239,23 @@ export function cancelPasskey(app, { row }) {
     app.say("Passkey not created: nothing was changed.");
 }
 
+// A size in GB, to one decimal place (10 GB, 3.2 GB); under 0.1 GB in MB.
+const gigabytes = (b) => (b < 1e8 ? megabytes(b) : `${Number((b / 1e9).toFixed(1))} GB`);
+
+/**
+ * The Disk budget row's words, from the list's `disk` (the server's budget and what its work
+ * directory held at the last walk).
+ * @param {{ budget: number, used: number | null } | null | undefined} disk the list's answer
+ * @returns {string} the words
+ */
+export function diskText(disk) {
+    if (!disk) {
+        return "Not known yet.";
+    }
+    const used = disk.used === null ? "Not measured yet." : `${gigabytes(disk.used)} in use.`;
+    return `${gigabytes(disk.budget)}, least recently opened removed first. ${used}`;
+}
+
 /**
  * Opens Settings.
  * @param {any} app the page
@@ -266,6 +283,7 @@ export function settingsSheet(app) {
                 radio(app, "theme", { name: "theme", value: v, label: l, current: theme, ctx: { theme: v } }),
             ),
         ),
+        el("div", { class: "q", id: "set-disk" }, el("b", {}, "Disk budget"), diskText(app.list?.disk)),
     );
     readPasskeys(app, row);
 }

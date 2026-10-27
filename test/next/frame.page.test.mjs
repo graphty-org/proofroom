@@ -325,7 +325,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     expect(credentials).toHaveLength(1);
                     const id = Buffer.from(credentials[0].credentialId, "base64").toString("base64url");
                     expect(await message(page)).toContain(
-                        `credential id ${id}. Opened https://gh/pull/650: check it names this id`,
+                        `credential id ${id}. Opened https://fake/changes/900: check it names this id`,
                     );
                     await expect
                         .poll(() => row.innerText())

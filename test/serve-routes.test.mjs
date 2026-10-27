@@ -12,16 +12,15 @@ import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "
 
 import { openPullRequests } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
+import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
 import {
     capturedItems,
-    fakeGh,
     FIXTURE_CONFIG,
     git,
     isolateGit,
     job,
     keepTiles,
     makeRepo,
-    onePr,
     seedTiles,
     until,
 } from "./helpers.mjs";
@@ -54,7 +53,7 @@ afterEach(async () => {
 let tiles = null;
 beforeAll(async () => {
     isolateGit();
-    const s = await start({ gh: onePr(), tiles: false });
+    const s = await start({ fakes: onePrFakes(), tiles: false });
     tiles = await keepTiles({ ...s, token: TOKEN }, 123);
     await new Promise((resolve) => server.close(() => resolve()));
     await app.idle();
@@ -79,7 +78,15 @@ async function start({ tiles: seed = true, ...options }) {
     server = createServer((req, res) => box.app(req, res));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const origin = `http://127.0.0.1:${server.address().port}`;
-    box.app = createApp({ repo, tmp, config: FIXTURE_CONFIG, token: TOKEN, origin, ...options, gh: options.gh(r) });
+    box.app = createApp({
+        repo,
+        tmp,
+        config: FIXTURE_CONFIG,
+        token: TOKEN,
+        origin,
+        ...options,
+        ...(options.fakes ? options.fakes(r) : { gh: options.gh(r) }),
+    });
     app = box.app;
     const api = async (method, path, body) => {
         const res = await fetch(`${origin}${path}`, {
@@ -118,7 +125,7 @@ describe("serve: bulk Undo", () => {
     it("undoes 1,000 decisions in one request and one rewrite of the decisions file", async () => {
         const items = newItems(1000);
         const s = await start({
-            gh: (r) => onePr({ results: { "visual-compact-mantine-1": at(r, items) } })(r),
+            fakes: (r) => onePrFakes({ results: { "visual-compact-mantine-1": at(r, items) } })(r),
         });
         await s.api("GET", "/api/prs");
         const body = { id: "123", project: "compact-mantine" };
@@ -137,7 +144,7 @@ describe("serve: bulk Undo", () => {
     });
 
     it("needs the list of files, and undoes only the listed ones", async () => {
-        const s = await start({ gh: onePr() });
+        const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
         const body = { id: "123", project: "compact-mantine" };
         await s.api("POST", "/api/accept-all", body);
@@ -183,7 +190,7 @@ describe("serve: bulk Undo", () => {
         git(r.repo, "add", "-A");
         git(r.repo, "commit", "-q", "-m", "an earlier approval");
         git(r.repo, "push", "-q", "origin", "master");
-        const s = await start({ ...r, gh: onePr() });
+        const s = await start({ ...r, fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
         const body = { id: "123", project: "compact-mantine" };
         await s.api("POST", "/api/decide", { ...body, file: "badge--default.light.png", decision: "accept" });
@@ -200,7 +207,7 @@ describe("serve: bulk Undo", () => {
     it("never undoes an accept an earlier Finish published, by either route", async () => {
         vi.spyOn(console, "log").mockImplementation(() => {});
         onTestFinished(() => vi.restoreAllMocks());
-        const s = await start({ gh: onePr() });
+        const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
         const one = { id: "123", project: "compact-mantine", file: "badge--default.light.png" };
         await s.api("POST", "/api/decide", { ...one, decision: "accept" });
@@ -335,8 +342,8 @@ describe("serve: the pull request poll", () => {
 
     it("lists each change's author and each project's capture job, from the jobs when the poll has none", async () => {
         const s = await start({
-            gh: (r) =>
-                fakeGh({
+            fakes: (r) =>
+                fakeAdapters({
                     prs: [{ number: 123, head: r.head, branch: "feature", author: "apowers" }],
                     runs: {
                         [r.head]: {
@@ -367,8 +374,8 @@ describe("serve: the pull request poll", () => {
 
     it("reports a capture job the poll has none of as queued while the jobs call says it is queued", async () => {
         const s = await start({
-            gh: (r) =>
-                fakeGh({
+            fakes: (r) =>
+                fakeAdapters({
                     prs: [{ number: 123, head: r.head, branch: "feature" }],
                     runs: { [r.head]: { id: 1000, head: r.head } },
                     jobs: {
@@ -379,13 +386,16 @@ describe("serve: the pull request poll", () => {
                 }),
         });
         const t = (await s.api("GET", "/api/prs")).body.targets.find((x) => x.id === "123");
-        expect(t.projects.find((p) => p.project === "graphty-element").ci).toEqual({ status: "queued", conclusion: null });
+        expect(t.projects.find((p) => p.project === "graphty-element").ci).toEqual({
+            status: "queued",
+            conclusion: null,
+        });
     });
 });
 
 describe("serve: the list's rows", () => {
     it("sends only what a row shows, with each pair's picture name and areas", async () => {
-        const s = await start({ gh: onePr() });
+        const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
         const full = (await s.api("GET", "/api/pr/123/compact-mantine")).body;
         const { body } = await s.api("GET", "/api/pr/123/compact-mantine?rows=1");
@@ -409,7 +419,7 @@ describe("serve: a run a page has open", () => {
     /**
      * Pull request #123 with ten new stories in run 1000, and `next()` making run 1001 the newest,
      * in which three of them show another image.
-     * @returns {(r: object) => Function} the gh runner, with `next` on the returned object
+     * @returns {(r: object) => object} the adapters for a repository, with `next` on the returned object
      */
     function twoRuns() {
         const data = {};
@@ -433,21 +443,21 @@ describe("serve: a run a page has open", () => {
                     newItems(10, (i) => (i < 3 ? SLIDER : BADGE)),
                 );
             };
-            return fakeGh(data);
+            return fakeAdapters(data);
         };
         return make;
     }
 
     it("keeps serving it after a newer run lands, names the newer one, and says which decisions carry over", async () => {
-        const gh = twoRuns();
-        const s = await start({ gh });
+        const fakes = twoRuns();
+        const s = await start({ fakes });
         await s.api("GET", "/api/prs");
         const old = await s.api("GET", "/api/pr/123/compact-mantine?run=1000-1");
         expect(old.body.target).toMatchObject({ runId: 1000, newerRun: null });
         const body = { id: "123", project: "compact-mantine", run: "1000-1" };
         const files = old.body.items.filter((i) => i.id.startsWith("many--")).map((i) => i.file);
         expect((await s.api("POST", "/api/accept-all", { ...body, files })).body.accepted).toBe(10);
-        gh.next();
+        fakes.next();
         await s.api("GET", "/api/prs");
         // The list moved on.
         expect((await s.api("GET", "/api/target/123")).body).toMatchObject({ runId: 1001, newerRun: null });
@@ -479,14 +489,14 @@ describe("serve: a run a page has open", () => {
     });
 
     it("refuses a single Undo on a pinned run of a decision taken on the newer run's other image", async () => {
-        const gh = twoRuns();
-        const s = await start({ gh });
+        const fakes = twoRuns();
+        const s = await start({ fakes });
         await s.api("GET", "/api/prs");
         await s.api("GET", "/api/pr/123/compact-mantine?run=1000-1");
         const file = "many--story-0.light.png";
         const old = { id: "123", project: "compact-mantine", file, run: "1000-1" };
         expect((await s.api("POST", "/api/decide", { ...old, decision: "accept" })).status).toBe(200);
-        gh.next();
+        fakes.next();
         await s.api("GET", "/api/prs");
         await s.api("GET", "/api/pr/123/compact-mantine?run=1001-1");
         const now = { ...old, run: "1001-1" };
@@ -504,12 +514,12 @@ describe("serve: a run a page has open", () => {
     });
 
     it("lets go of a run no page has open: its downloads go, and asking for it says so", async () => {
-        const gh = twoRuns();
-        const s = await start({ gh });
+        const fakes = twoRuns();
+        const s = await start({ fakes });
         await s.api("GET", "/api/prs");
         await s.api("GET", "/api/pr/123/compact-mantine");
         expect(existsSync(join(s.tmp, "1000-1"))).toBe(true);
-        gh.next();
+        fakes.next();
         await s.api("GET", "/api/prs");
         expect(existsSync(join(s.tmp, "1000-1"))).toBe(false);
         const old = await s.api("GET", "/api/pr/123/compact-mantine?run=1000-1");
