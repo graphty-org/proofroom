@@ -66,7 +66,7 @@ import {
     settingsSheet,
     startRegistration,
 } from "./settings.js";
-import { el, fmt, ic, kb } from "./ui.js";
+import { el, fmt, ic, kb, megabytes } from "./ui.js";
 import { installSelect } from "./select.js";
 import { installUndo } from "./undo.js";
 import { createViewer } from "./viewer.js";
@@ -111,6 +111,7 @@ const app = {
     secOpen: new Set(SECTIONS.filter((s) => s[2]).map((s) => s[0])),
     curId: null, // the current changes row
     pendingId: null, // the change being opened, current while its snapshots load
+    reopenId: null, // an evicted change clicked, opened once the list shows its images back
     openId: null, // the open change
     snaps: [], // the open change's snapshots (list.js snapsOf)
     snap: null, // the current snapshot, "<project>/<file>"
@@ -585,6 +586,11 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
     if (!c) {
         return;
     }
+    app.reopenId = null;
+    if (c.evicted !== null) {
+        await fetchAgain(c);
+        return;
+    }
     const seq = ++app.opening;
     app.curId = id;
     // A change opened later supersedes any load still running: its change is no longer current.
@@ -655,6 +661,24 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
         say(`Opened ${c.label} ${c.title}: ${fmt(snaps.filter((s) => !s.decision).length)} undecided.`);
     }
 };
+
+// Opening a change the disk budget evicted: the server downloads its images again (asked once,
+// by its first project), its row shows the download, and it opens once they are in.
+async function fetchAgain(c) {
+    const t = app.list.targets.find((x) => x.id === c.id);
+    try {
+        await api(`/api/pr/${encodeURIComponent(c.id)}/${encodeURIComponent(t.projects[0].project)}?rows=1`);
+    } catch (err) {
+        say(`${c.label} could not be opened: ${err.message}`, "err", [
+            control(app, "retry", { zone: "msgline", ctx: { run: () => app.openChange(c.id) } }),
+        ]);
+        return;
+    }
+    say(`Downloading the images of ${c.label} again (${megabytes(c.evicted)}).`);
+    app.reopenId = c.id;
+    await loadList();
+    draw();
+}
 
 app.nextChange = () => {
     const n = nextNeeding(app.changes, app.sort, app.openId);
@@ -1176,7 +1200,9 @@ function rebuild() {
 async function loadList(query = "?cached=1", asked = false) {
     const wasOffline = app.offline();
     try {
-        app.list = await api(`/api/prs${query}`);
+        // The open change is named, so the server keeps its images on disk while it stays open.
+        const open = app.openId ? `&open=${encodeURIComponent(app.openId)}` : "";
+        app.list = await api(`/api/prs${query}${open}`);
         app.listAt = Date.now();
         app.failed = null;
     } catch (err) {
@@ -1197,7 +1223,20 @@ async function loadList(query = "?cached=1", asked = false) {
         return false; // the first load is still running
     }
     rebuild();
+    reopen();
     return true;
+}
+
+// The evicted change the reader clicked, opened once the list shows its images back.
+function reopen() {
+    const c = app.reopenId && app.change(app.reopenId);
+    if (c && (c.evicted !== null || c.state === "downloading")) {
+        return;
+    }
+    app.reopenId = null;
+    if (c && c.state !== "deleted") {
+        app.openChange(c.id);
+    }
 }
 
 app.refresh = async () => {

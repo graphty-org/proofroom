@@ -129,6 +129,7 @@ import {
     updateFromMaster,
     updateReportLines,
 } from "./accept.mjs";
+import { evict, evictedAt, evictionOrder, sizes as diskSizes } from "./budget.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
 import {
@@ -268,6 +269,10 @@ const UNKNOWN_REFRESH = 60000;
 // With `warm`, the list is refreshed this often, so a CI run that finished meanwhile is downloaded
 // before the owner opens it.
 const POLL = 2 * 60000;
+
+// What an image of an evicted change answers, and its changes row once the code host deleted them.
+const EVICTED_TEXT = "Images not on disk: open the change to download them again";
+const DELETED_TEXT = "Images deleted by the code host: capture again";
 
 /**
  * The newest gh call waiting to retry after a network failure, for the page.
@@ -524,15 +529,20 @@ async function blobsOf(repo, names) {
  * @param {string} input.project the project
  * @param {string} input.dir the capture's directory
  * @param {{ items: object[] }} input.results its results.json, validated
+ * @param {boolean} [input.images] write the images too; false for a directory the disk budget
+ *     evicted, whose items still change (the hashes come from git) but whose images stay away
  * @returns {Promise<void>} resolves once the items and images are in place; rejects when the
  *     default branch's baselines or images cannot be read
  */
-async function againstBase({ repo, ref, head, baselines, project, dir, results }) {
+async function againstBase({ repo, ref, head, baselines, project, dir, results, images = true }) {
     const prefix = `${baselines}/${project}/`;
     const blobs = await pngBlobs(repo, ref, prefix);
     const contents = await blobsOf(repo, [...new Set(blobs.values())]);
     const hashOf = (file) => (blobs.has(file) ? contentHash(contents.get(blobs.get(file))) : null);
     const shown = compareWithBase(results, blobs, hashOf);
+    if (!images) {
+        return;
+    }
     for (const file of shown) {
         await putImage(repo, join(dir, "baselines", file), contents.get(blobs.get(file)), hashOf(file));
     }
@@ -1404,6 +1414,8 @@ export function createApp({
     // pull request's capture (`vsBase`) is also compared with the default branch's baselines.
     async function project(name, dir, problem, vsBase = false) {
         const loaded = dir ? await loadResults(dir, name) : { results: null, problem: null };
+        // Evicted by the disk budget: its counts are here, its images are not (budget.mjs).
+        const evicted = dir ? evictedAt(dir) : null;
         if (loaded.results && vsBase) {
             const ref = `refs/remotes/origin/${defaultBranch}`;
             const { headSha: head } = loaded.results;
@@ -1415,6 +1427,7 @@ export function createApp({
                 project: name,
                 dir,
                 results: loaded.results,
+                images: !evicted,
             }).catch((err) => {
                 loaded.results = null;
                 loaded.problem = `not compared with ${defaultBranch}'s baselines: ${err.message}`;
@@ -1427,11 +1440,27 @@ export function createApp({
         }
         if (loaded.results) {
             itemIndex.set(loaded.results, itemsByFile(loaded.results.items));
-            indexImages(dir, loaded.results);
-            prewarm(dir, loaded.results);
+            if (!evicted) {
+                indexImages(dir, loaded.results);
+                prewarm(dir, loaded.results);
+            }
         }
-        return { project: name, dir, results: loaded.results, problem: problem ?? loaded.problem, logUrl: null };
+        return {
+            project: name,
+            dir,
+            results: loaded.results,
+            problem: problem ?? loaded.problem,
+            logUrl: null,
+            evicted,
+        };
     }
+
+    // An evicted project whose artifact the code host deleted: its images cannot come back.
+    const markDeleted = (p, got) => {
+        if (p.evicted && got?.deleted) {
+            p.evicted = { ...p.evicted, deleted: true };
+        }
+    };
 
     /**
      * The gh runner for one finished run: what GitHub says about it (its jobs, its artifacts) no
@@ -1485,7 +1514,14 @@ export function createApp({
         return got;
     }
 
-    async function build(info, run) {
+    /**
+     * A target as of one CI run: each project's capture, downloaded (or as on disk).
+     * @param {object} info the target's listing
+     * @param {object} run the run
+     * @param {boolean} [again] download the projects the disk budget evicted again
+     * @returns {Promise<object>} the target
+     */
+    async function build(info, run, again = false) {
         const g = run.status === "completed" ? kept(run) : gh;
         const jobs = await visualJobs(g, run, run.attempt, names);
         // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
@@ -1517,6 +1553,7 @@ export function createApp({
             p.logUrl = jobs[name]?.url ?? run.url;
             p.ci = ciOf(name);
             p.bytes = sizes[name] ?? null;
+            markDeleted(p, landed.get(name));
             partial.projects[names.indexOf(name)] = p;
             await withPreviews(partial);
             await decorate(partial);
@@ -1542,6 +1579,7 @@ export function createApp({
                 download.total = Object.keys(planned).length;
                 download.bytes = Object.values(planned).reduce((a, b) => a + b, 0);
             },
+            again,
         );
         downloads.catch(() => {}); // A download still running after `patience` fails on a later refresh.
         const downloaded = await (patience === Infinity
@@ -1587,6 +1625,7 @@ export function createApp({
             );
             p.logUrl = jobs[name]?.url ?? run.url;
             p.ci = ciOf(name);
+            markDeleted(p, downloaded[name]);
             list.push(p);
         }
         const warnings = others.map(
@@ -1780,6 +1819,17 @@ export function createApp({
         if (t.pendingPush) {
             return [409, { error: pendingPushText(t) }];
         }
+        // A Finish keeps the change on disk for the next hour (the budget's OPENED_KEEP_MS), and
+        // one the budget already evicted reads its images only once they are downloaded again.
+        markOpened(t.id);
+        const away = t.projects.filter((p) => p.evicted);
+        if (away.some((p) => p.evicted.deleted)) {
+            return [410, { error: DELETED_TEXT }];
+        }
+        if (away.length > 0) {
+            refetch(t);
+            return [409, { error: "Images not on disk: downloading them again; Finish once they are in" }];
+        }
         return null;
     };
     const pendingPushText = (t) =>
@@ -1856,6 +1906,8 @@ export function createApp({
                 refreshing = null;
                 refreshedAt = Date.now();
                 progress = null;
+                // After the refresh, and after the downloads it waited for.
+                keepBudget();
             }
         })());
 
@@ -2226,7 +2278,11 @@ export function createApp({
         const loaded = there ? await project(p.project, p.dir, p.problem, t.pr !== null && !t.local) : null;
         return p.dir && !loaded?.results && loaded?.problem !== NOT_AFFECTED
             ? { ...p, dir: null, results: null, problem: null, downloading: true }
-            : { ...p, results: loaded?.results ?? null };
+            : {
+                  ...p,
+                  results: loaded?.results ?? null,
+                  evicted: loaded?.evicted ? { ...p.evicted, ...loaded.evicted } : null,
+              };
     }
 
     /**
@@ -2394,6 +2450,165 @@ export function createApp({
         }
     }
 
+    /**
+     * The disk budget (config `diskBudget`, in GB): after each refresh, one walk of the work
+     * directory, in the background; while it holds more than the budget, the full images of whole
+     * changes are evicted (budget.mjs), never their results.json or decisions. Never the change a
+     * page has open or pinned (`held`, `pins`), one opened in the last hour, a local preview, or
+     * one still downloading.
+     */
+    const budget = config.diskBudget * 1e9;
+    /** What the work directory held at the last walk, in bytes; null before the first. */
+    let diskUsed = null;
+    let budgeting = null;
+    const openedFile = join(stateDir, "opened.json");
+    /** When a page last opened each change, by id (kept on disk, written at most once a minute each). */
+    const opened = new Map();
+    try {
+        for (const [id, at] of Object.entries(JSON.parse(readFileSync(openedFile, "utf8")))) {
+            opened.set(id, Number(at) || 0);
+        }
+    } catch {
+        // None opened yet.
+    }
+    const markOpened = (id) => {
+        const was = opened.get(id) ?? 0;
+        opened.set(id, Date.now());
+        if (Date.now() - was > 60000) {
+            try {
+                writeJson(openedFile, Object.fromEntries(opened));
+            } catch (err) {
+                warnOnce(`could not keep when each change was opened: ${err.message}`);
+            }
+        }
+    };
+    // A capture directory this server downloaded from CI: `<tmp>/<run>-<attempt>/<project>`.
+    const downloaded = (p) =>
+        Boolean(p.dir) && !p.preview && dirname(dirname(p.dir)) === tmp && /^\d+-\d+$/.test(basename(dirname(p.dir)));
+    const keepBudget = () => {
+        if (results || budgeting) {
+            return;
+        }
+        budgeting = enforceBudget()
+            .catch((err) => console.error(`proofroom: the disk budget: ${err.message}`))
+            .finally(() => (budgeting = null));
+    };
+    async function enforceBudget() {
+        const files = await diskSizes(tmp);
+        let used = [...files.values()].reduce((a, b) => a + b, 0);
+        diskUsed = used;
+        if (used <= budget || finishing) {
+            return;
+        }
+        // First the downloads of runs no change lists any more, which prune() leaves while some
+        // change has no run (waiting for CI, or not loaded): nothing shows them.
+        const runs = new Set([...targets.values(), ...held.values()].map((t) => t.runId));
+        for (const d of readdirSync(tmp)) {
+            const run = /^(\d+)-\d+$/.exec(d)?.[1];
+            const dir = join(tmp, d);
+            // Not while a refresh may be downloading a run it has not listed yet.
+            if (used <= budget || refreshing || !run || runs.has(Number(run))) {
+                continue;
+            }
+            // Evicted like a change, never removed: a target that could not load this refresh
+            // (no run) may still be this run's, and its counts are in results.json.
+            for (const e of readdirSync(dir, { withFileTypes: true })) {
+                const sub = join(dir, e.name);
+                if (e.isDirectory() && e.name !== "gh" && !evictedAt(sub)) {
+                    used -= evict(sub, files, Date.now());
+                }
+            }
+            forgetImages(dir);
+        }
+        const pinned = new Set([...held.values()].map((t) => t.id));
+        for (const key of pins.keys()) {
+            if (pinFresh(key)) {
+                pinned.add(key.slice(0, key.indexOf(" ")));
+            }
+        }
+        const live = (t) => t.projects.filter((p) => p.results && !p.evicted && downloaded(p));
+        const shown = [...targets.values()];
+        const candidates = shown
+            .filter((t) => !t.local && !t.downloading && live(t).length > 0)
+            .map((t) => {
+                const s = summary(t);
+                const needsYou = s.unpublished > 0 || s.projects.some((p) => p.undecided > 0);
+                return { id: t.id, needsYou, openedAt: opened.get(t.id) ?? 0, keep: pinned.has(t.id) };
+            });
+        // The pictures by the pair or image they are made of (spots/<baseline>-<capture>-...,
+        // thumbs/<hash>.png), so a change's own are found without another walk.
+        const pictureFiles = new Map();
+        const [spots, thumbs] = [join(tmp, "spots", "_"), join(tmp, "thumbs", "_")].map((d) => d.slice(0, -1));
+        for (const f of files.keys()) {
+            const name = f.startsWith(spots)
+                ? f.slice(spots.length).split("-").slice(0, 2).join("-")
+                : f.startsWith(thumbs) && f.endsWith(".png")
+                  ? basename(f, ".png")
+                  : null;
+            if (name) {
+                pictureFiles.set(name, [...(pictureFiles.get(name) ?? []), f]);
+            }
+        }
+        const namesOf = (t) =>
+            t.projects.flatMap((p) =>
+                (p.results?.items ?? []).flatMap((i) => [
+                    i.capture,
+                    i.baseline,
+                    `${i.baseline ?? "none"}-${i.capture ?? "none"}`,
+                ]),
+            );
+        for (const id of evictionOrder(candidates, Date.now())) {
+            const t = targets.get(id);
+            if (used <= budget || !t || finishing) {
+                break;
+            }
+            for (const p of live(t)) {
+                used -= evict(p.dir, files, Date.now());
+                p.evicted = evictedAt(p.dir);
+                forgetImages(p.dir);
+            }
+            // Its pictures, but not one another change still shows.
+            const kept = new Set(
+                [...targets.values(), ...held.values()]
+                    .filter((o) => o !== t && o.projects.some((p) => p.results && !p.evicted))
+                    .flatMap(namesOf),
+            );
+            for (const name of new Set(namesOf(t))) {
+                if (name && !kept.has(name)) {
+                    for (const f of pictureFiles.get(name) ?? []) {
+                        rmSync(f, { force: true });
+                        used -= files.get(f) ?? 0;
+                    }
+                }
+            }
+        }
+        diskUsed = used;
+        save();
+    }
+
+    /**
+     * Opening an evicted change downloads its images again, in the background; the page asks
+     * again until its rows are back.
+     */
+    const refetching = new Set();
+    const refetch = (t) => {
+        if (refetching.has(t.id)) {
+            return;
+        }
+        refetching.add(t.id);
+        const run = { id: t.runId, attempt: t.runAttempt, url: t.runUrl, status: "completed" };
+        build(t, run, true)
+            .then(async (built) => {
+                await decorate(built);
+                if (targets.get(t.id) === t) {
+                    targets.set(t.id, built);
+                    save();
+                }
+            })
+            .catch((err) => console.error(`proofroom: downloading ${t.id} again failed: ${err.message}`))
+            .finally(() => refetching.delete(t.id));
+    };
+
     const summary = (t) => {
         const warnings = [...(t.warnings ?? [])];
         let decided = new Map();
@@ -2436,6 +2651,14 @@ export function createApp({
             // The commit a pending push's capture is of (withPending): decisions yes, Finish not yet.
             pendingPush: t.pendingPush ?? null,
             downloading: t.downloading === true,
+            // The disk budget evicted its images: `bytes` downloads them again when it is opened,
+            // unless the code host deleted them (`deleted`).
+            evicted: t.projects.some((p) => p.evicted)
+                ? {
+                      bytes: t.projects.reduce((n, p) => n + (p.evicted?.bytes ?? 0), 0),
+                      deleted: t.projects.some((p) => p.evicted?.deleted),
+                  }
+                : null,
             // While downloading: how many artifacts and bytes have landed of how many, and since when
             // (server time). `bytes` is null until GitHub has listed the artifacts.
             download: t.downloading
@@ -3466,6 +3689,9 @@ export function createApp({
     }
 
     async function readImage({ path, hash, file, dir }) {
+        if (evictedAt(dir)) {
+            return [410, { error: `${file}: ${EVICTED_TEXT}` }];
+        }
         const bytes = await readFile(path).catch(() => null);
         if (!bytes || sha256(bytes) !== hash) {
             // The directory was written again since it was loaded (a new preview, moved
@@ -3504,6 +3730,11 @@ export function createApp({
             // also starts a refresh. Neither waits for GitHub. After a first load that failed, only
             // ?refresh=1 (the page's Retry) tries again.
             await restored;
+            // The change a page has open (`open`): the disk budget keeps it while it is polled.
+            const open = query?.get("open");
+            if (open && targets.has(open)) {
+                markOpened(open);
+            }
             const cachedOnly = query?.get("cached") === "1" || query?.get("refresh") === "1";
             if (cachedOnly) {
                 // A local preview that moved on (a project's capture written, or the preview done)
@@ -3529,6 +3760,8 @@ export function createApp({
                     updatedAt: refreshedAt || null,
                     now: Date.now(),
                     refreshing: progress,
+                    // The disk budget and what the work directory held at the last walk, in bytes.
+                    disk: { budget, used: diskUsed },
                     // Why the last refresh got no list at all; a gh call waiting to retry.
                     error: failure,
                     network: networkTrouble(),
@@ -3561,6 +3794,17 @@ export function createApp({
             const { t, p } = await projectOf(id, name, run);
             if (!t) {
                 return gone(id, run);
+            }
+            markOpened(id);
+            // The change downloads again as a whole, whichever of its projects the page asks about.
+            const away = t.projects.filter((x) => x.evicted);
+            if (away.some((x) => x.evicted.deleted)) {
+                return [410, { error: DELETED_TEXT }];
+            }
+            if (away.length > 0) {
+                // Evicted by the disk budget: its images download again, and the page asks again.
+                refetch(t);
+                return [202, { downloading: true, target: summary(t), network: networkTrouble(), now: Date.now() }];
             }
             if (t.projects.find((x) => x.project === name)?.downloading) {
                 // The reviewer is waiting for this one: it downloads next. The page asks again.
@@ -4491,8 +4735,9 @@ export function createApp({
      * @returns {Promise<void>}
      */
     handler.idle = async () => {
-        while (making.size) {
+        while (making.size || budgeting) {
             await Promise.allSettled([...making.values()].map((m) => m.done));
+            await budgeting;
         }
     };
     handler.serverId = serverId;

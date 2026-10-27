@@ -155,6 +155,7 @@ Every command has `--help`; `proofroom --help` lists them.
 | `candidates`     | none                      | A shell command `serve --candidate next` runs to list the default branch's full runs (see "Candidates")             |
 | `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
 | `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                        |
+| `diskBudget`     | `10`                      | How many GB `serve` may keep in `workDir`; beyond it, it removes images (see "Troubleshooting")                     |
 | `projects`       | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:
@@ -1503,6 +1504,18 @@ PNGs move: a settings file (`<old id>.json`) is not renamed; rename it in the sa
 
 ## Troubleshooting
 
+- **Where the disk space goes, and "Images not on disk: opening downloads 68 MB".** `serve`
+  keeps every capture it downloads in `workDir` (`<run>-<attempt>/<project>/`), with the
+  pictures it makes from them (`thumbs/`, `spots/`) and your decisions (`state/`). After each
+  refresh it adds up what `workDir` holds; Settings on the new page shows it beside the budget
+  (`diskBudget`, 10 GB by default). Over the budget, it first deletes the downloads of runs no
+  change lists any more, then removes the full images and pictures of whole changes: those that
+  need nothing from you (finished, or nothing to decide) first, then the least recently opened.
+  It never removes a change's `results.json` or your decisions, so its row keeps its counts, and
+  it never touches a change a page has open or one opened in the last hour. Opening such a change
+  downloads its images again. Once the code host has deleted the artifacts (GitHub keeps them 90
+  days by default), its row says "Images deleted by the code host: capture again": re-run its
+  capture job. To keep more on disk, raise `diskBudget`.
 - **"baseline is an LFS pointer; run git lfs pull".** The checkout was made without git-lfs, so
   the baselines are small pointer files. Install git-lfs, run `git lfs install`, then
   `git lfs pull`.
