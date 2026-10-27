@@ -264,6 +264,32 @@ describe("the self-approval rule, plain git", () => {
         expect((await check(t)).self).toEqual([refused(mine, "alice")]);
     });
 
+    it("counts a Finish-shaped commit whose statement does not verify, or names another change", async () => {
+        const keys = [people.alice.passkey, people.rita.passkey, people.bob.passkey];
+        const copied = (statement) => {
+            const r = repoWith(keys);
+            commitAs(
+                r,
+                { [CARD_FILE]: "bob's image", [statementPath(APPROVALS, statement(r))]: statement(r) },
+                { as: people.bob },
+            );
+            return { r, bobs: finishAs(r, people.bob, { image: "bob's image" }) };
+        };
+        const entry = (r) => ({
+            path: CARD,
+            from: hashAt(r, "master", CARD),
+            to: contentHash(Buffer.from("x")),
+            decision: "accept",
+        });
+        // Another change's statement, signed by a base key.
+        const other = copied((r) => sign(statementOf(r, [entry(r)], { change: "pr:9" }), people.rita.passkey));
+        expect((await check(other.r)).self).toEqual([refused(other.bobs, "bob")]);
+        // This change's statement, signed by a key the base does not hold.
+        const stranger = makeKey();
+        const unknown = copied((r) => sign(statementOf(r, [entry(r)]), stranger));
+        expect((await check(unknown.r)).self).toEqual([refused(unknown.bobs, "bob")]);
+    });
+
     it("needs no signature on a clean merge of the default branch", async () => {
         const r = repoWith();
         commitAs(r, { "src.txt": "code" }, { as: people.alice });
@@ -370,6 +396,28 @@ describe("the self-approval rule on GitHub", () => {
         commitAs(r, { "src.txt": "code" }, { as: people.rita, signed: false });
         const withCode = github(r, { opener: "rita", commit: () => ({ author: { login: "rita" } }) });
         expect((await check(r, { env: GITHUB, fetchJson: withCode.fetchJson })).self).toEqual([refused(seed, "rita")]);
+    });
+
+    it("refuses a reviewer who opens a copy of another pull request's seed with swapped images, then Finishes it", async () => {
+        // rita's genuine seed of pr:9; bob copies it into his own pr:7 with an image of his own.
+        const r = repoWith([people.alice.passkey, people.rita.passkey, people.bob.passkey]);
+        const e = {
+            path: CARD,
+            from: hashAt(r, "master", CARD),
+            to: contentHash(Buffer.from("seed")),
+            decision: "accept",
+        };
+        const more = { type: "seed-approval", change: "pr:9", capturedHead: git(r.repo, "rev-parse", "master") };
+        const s1 = sign(statementOf(r, [e], more), people.rita.passkey);
+        commitAs(
+            r,
+            { [CARD_FILE]: "bob's image", [statementPath(APPROVALS, s1)]: s1 },
+            { as: people.bob, signed: false },
+        );
+        const bobs = finishAs(r, people.bob, { image: "bob's image" });
+        // GitHub links the copy to alice: the opener alone is what refuses bob.
+        const { fetchJson } = github(r, { opener: "bob" });
+        expect((await check(r, { env: GITHUB, fetchJson })).self).toEqual([refused(bobs, "bob")]);
     });
 
     it("counts a seed commit that changes a story settings file other than as Finish's exclusion does", async () => {

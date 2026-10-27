@@ -81,6 +81,7 @@ import {
     changeCommits,
     contentHash,
     gitIn,
+    SEED_TYPE,
     selfApprovalProblems,
     withdrawnStatements,
 } from "./lib/change-approval.mjs";
@@ -606,8 +607,9 @@ export function approvalProblems({ base, head, cwd, baselines, approvals, keys, 
  * Who contributed to each change, for the self-approval rule: the opener and each commit's
  * verified signer, author and committer. The tool's own commits and merges that add nothing are
  * left out (change-approval.mjs changeCommits); every other commit must be signed, or the change
- * fails closed. A change with no commit of its own left (a seed: only Finish's commits) has no
- * contributors, its opener included.
+ * fails closed. A change with no commit of its own left whose every Finish commit is a seed
+ * statement of this very change, captured on the base (a seed pull request), has no contributors,
+ * its opener included; any other change keeps its opener.
  *
  * On GitHub Actions the commits and the opener come from GitHub (the event payload, and the
  * pull request's commits through the API with GITHUB_TOKEN), and a commit's signer is its
@@ -644,7 +646,7 @@ export async function contributorsOf({
     const out = new Map();
     let commits;
     try {
-        commits = changeCommits(git, { base, head, baselines, approvals });
+        commits = changeCommits(git, { base, head, baselines, approvals, keys, changes });
     } catch (err) {
         for (const change of changes) {
             out.set(change, {
@@ -681,9 +683,7 @@ export async function contributorsOf({
         }
         try {
             const pr = await githubPullRequest(change, env, fetchJson ?? githubApi(env));
-            // A change none of whose commits counts (only Finish's own commits and merges that add
-            // nothing, as a seed's) brings no code, so it has no contributors, its opener included.
-            if ([...commits.values()].some((c) => c.counts)) {
+            if (!seedOnly(git, commits, change, base)) {
                 add(who.logins, pr.opener);
             }
             for (const c of pr.commits) {
@@ -721,6 +721,36 @@ export async function contributorsOf({
         }
     }
     return out;
+}
+
+/**
+ * Whether a change is a seed pull request and nothing more: no commit counts, and every one of
+ * Finish's commits adds a seed statement of this very change whose capturedHead is on the base.
+ * Such a change brings no code, so its opener contributed nothing. Anything else (a Finish commit
+ * of a change statement, or of a seed of another change) keeps the opener: fail closed.
+ * @param {(args: string[]) => Buffer} git the runner
+ * @param {Map<string, { counts: boolean, statement?: any }>} commits changeCommits' result
+ * @param {string} change the change (`pr:7`)
+ * @param {string} base the base
+ * @returns {boolean} whether it is
+ */
+function seedOnly(git, commits, change, base) {
+    const all = [...commits.values()];
+    const own = all.filter((c) => c.statement);
+    if (own.length === 0 || all.some((c) => c.counts)) {
+        return false;
+    }
+    return own.every(({ statement: s }) => {
+        if (s.type !== SEED_TYPE || s.change !== change) {
+            return false;
+        }
+        try {
+            git(["merge-base", "--is-ancestor", s.capturedHead, base]);
+            return true;
+        } catch {
+            return false;
+        }
+    });
 }
 
 /**

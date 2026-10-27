@@ -701,8 +701,9 @@ const hasControl = (text) => [...text].some((ch) => ch.charCodeAt(0) < 0x20 || c
 /**
  * The commits of a change, each with its parents and its author and committer e-mails, and
  * whether it counts as a contribution. Two kinds do not: the tool's own commit (Finish's),
- * recognized by what it changes, never by who made it -- it adds one statement and changes nothing
- * but the baseline files that statement's entries name -- and a merge that adds nothing of its own
+ * recognized by what it changes, never by who made it -- it adds one statement that a base key's
+ * passkey signed and that names one of these changes, and changes nothing but the baseline files
+ * that statement's entries name -- and a merge that adds nothing of its own
  * (every file is one parent's, as in a clean merge of the default branch or a merge result CI
  * builds).
  *
@@ -716,10 +717,13 @@ const hasControl = (text) => [...text].some((ch) => ch.charCodeAt(0) < 0x20 || c
  * @param {string} at.head the head
  * @param {string} at.baselines the baselines directory
  * @param {string} at.approvals the approvals directory
- * @returns {Map<string, { counts: boolean, parents: string[], emails: string[] }>} by commit
+ * @param {object[] | null} at.keys the base's keys; with none, every statement commit counts
+ * @param {string[]} at.changes the changes gated (`pr:7`); a statement naming another counts
+ * @returns {Map<string, { counts: boolean, parents: string[], emails: string[], statement?: object }>}
+ *     by commit; `statement` is the tool's own commit's statement
  * @throws {Error} when git's output does not match the commit list, or an e-mail holds a control character
  */
-export function changeCommits(git, { base, head, baselines, approvals }) {
+export function changeCommits(git, { base, head, baselines, approvals, keys, changes }) {
     const range = `${base}..${head}`;
     const parentsOf = new Map();
     for (const line of git(["rev-list", "--parents", range]).toString("utf8").split("\n").filter(Boolean)) {
@@ -751,8 +755,13 @@ export function changeCommits(git, { base, head, baselines, approvals }) {
     for (const [sha, { file, files, parent }] of stated) {
         const bytes = blobs.get(`${sha}:${file}`);
         const excludes = (f) => finishExclusion(blobs.get(`${parent}:${f}`), blobs.get(`${sha}:${f}`));
-        if (bytes && toolsOwn(bytes, files, file, baselines) && settings(files).every(excludes)) {
-            commits.get(sha).counts = false;
+        const statement = bytes && toolsOwn(bytes, files, file, baselines);
+        // Fail closed: a statement no base key verifies, or one of another change (a copy of
+        // someone else's Finish), is the committer's contribution, not the tool's.
+        const genuine =
+            statement && keys && verifyApproval(statement, keys) === null && changes.includes(statement.change);
+        if (genuine && settings(files).every(excludes)) {
+            Object.assign(commits.get(sha), { counts: false, statement });
         }
     }
     return commits;
@@ -864,20 +873,20 @@ function commitEmails(git, range, parentsOf) {
  * @param {string[]} files every file the commit changes
  * @param {string} file the statement's path
  * @param {string} baselines the baselines directory
- * @returns {boolean} whether it is the tool's own commit
+ * @returns {object | null} the statement when the commit has the tool's shape, else null
  */
 function toolsOwn(bytes, files, file, baselines) {
     let s;
     try {
         s = JSON.parse(bytes.toString("utf8"));
     } catch {
-        return false;
+        return null;
     }
     if (statementProblem(s) !== null) {
-        return false;
+        return null;
     }
     const named = new Set(s.entries.map((e) => `${baselines}/${e.path}`));
-    return files.every((f) => f === file || named.has(f));
+    return files.every((f) => f === file || named.has(f)) ? s : null;
 }
 
 /**
