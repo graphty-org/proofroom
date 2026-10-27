@@ -14,7 +14,8 @@ import { el, kb } from "./ui.js";
 // Where a control sits, in the order that decides which of two controls showing the same key
 // carries its key box (design 8.1.7): an open box or menu, the end card, the decision bar, the
 // selection bar, the item line, the Changes pane header, the Snapshots pane header, rows and the
-// message line, then the top bar.
+// message line, then the top bar. The viewer's toolbar shares no key with another zone; it sits
+// beside the item line.
 export const ZONES = [
     "box",
     "menu",
@@ -22,6 +23,7 @@ export const ZONES = [
     "decision",
     "selection",
     "iline",
+    "toolbar",
     "changes-head",
     "snaps-head",
     "rows",
@@ -147,6 +149,113 @@ export const ACTIONS = {
     picretry: { label: "Retry", title: "Ask for the picture again", run: (app, ctx) => app.retryPicture(ctx.key) },
     loadnewer: { label: "Load it", title: "Show the newer capture's rows", run: (app) => app.loadNewer() },
 
+    // The viewer (design 5, viewer.js): the four views, Blink, zoom, Baseline, the display group and
+    // its menus, Next area, the locator, and Previous and Next on the decision bar.
+    "view-side": {
+        label: "Side by side",
+        key: "V",
+        title: (app) => app.viewer.viewTitle("side"),
+        run: (app) => app.viewer.pressView("side"),
+        available: (app) => app.viewer.viewOK("side"),
+    },
+    "view-flash": {
+        label: "Flash",
+        key: "F",
+        title: (app) => app.viewer.viewTitle("flash"),
+        run: (app) => app.viewer.pressView("flash"),
+        available: (app) => app.viewer.viewOK("flash"),
+    },
+    "view-highlight": {
+        label: "Highlight",
+        key: "H",
+        title: (app) => app.viewer.viewTitle("highlight"),
+        run: (app) => app.viewer.pressView("highlight"),
+        available: (app) => app.viewer.viewOK("highlight"),
+    },
+    "view-spotlight": {
+        label: "Spotlight",
+        key: "S",
+        title: (app) => app.viewer.viewTitle("spotlight"),
+        run: (app) => app.viewer.pressView("spotlight"),
+        available: (app) => app.viewer.viewOK("spotlight"),
+    },
+    blink: {
+        label: "Blink",
+        key: "L",
+        title: "Blink: the highlight on and off",
+        run: (app) => app.viewer.toggle("blink"),
+        available: (app) => (app.viewer.shownView() === "highlight" ? true : "Blink works in Highlight [H]"),
+    },
+    zoomcycle: {
+        label: "Zoom",
+        key: "Z",
+        title: "Zoom: cycles Fit, 1x, 2x, 4x, 8x",
+        run: (app) => app.viewer.cycleZoom(),
+    },
+    "zoom-fit": { label: "Fit", key: "0", title: "Fit", run: (app) => app.viewer.setZoom("fit") },
+    "zoom-1": { label: "1x", key: "1", title: "1x", run: (app) => app.viewer.setZoom(1) },
+    "zoom-2": { label: "2x", key: "2", title: "2x", run: (app) => app.viewer.setZoom(2) },
+    "zoom-4": { label: "4x", key: "4", title: "4x", run: (app) => app.viewer.setZoom(4) },
+    "zoom-8": { label: "8x", key: "8", title: "8x", run: (app) => app.viewer.setZoom(8) },
+    baseline: {
+        label: (app) => (app.viewer.twoImages() ? "Baseline" : "Baseline: none"),
+        key: "P",
+        title: (app) => (app.viewer.state.showBase ? "Baseline shown" : "Baseline hidden"),
+        run: (app) => app.viewer.toggle("showBase"),
+        available: (app) => (app.viewer.twoImages() ? true : "This snapshot has only one image"),
+    },
+    imageonly: {
+        label: "Image only",
+        key: "Shift+3",
+        title: (app) =>
+            app.viewer.imageOnly() ? "Both side panes are rails: Shift+3 brings them back" : "Hide both side panes",
+        run: (app) => app.viewer.pressImageOnly(),
+    },
+    layoutmenu: {
+        label: (app) => `Layout: ${app.viewer.layoutName()}`,
+        key: "Y",
+        title: (app) => app.viewer.layoutTitle(),
+        run: (app, ctx) => app.viewer.layoutMenu(ctx.el),
+    },
+    "layout-auto": { label: "Auto", run: (app) => app.viewer.setLayout("auto") },
+    "layout-side": { label: "Side by side", run: (app) => app.viewer.setLayout("side") },
+    "layout-stacked": { label: "Over and under", run: (app) => app.viewer.setLayout("stacked") },
+    options: {
+        label: "Options",
+        run: (app, ctx) => app.viewer.optionsMenu(ctx.el),
+    },
+    more: { label: "More", title: "Image only, Layout, Options", run: (app, ctx) => app.viewer.moreMenu(ctx.el) },
+    outline: { label: "Outline", key: "B", run: (app) => app.viewer.toggle("outline") },
+    centerarea: { label: "Open centered on the area", key: "O", run: (app) => app.viewer.toggle("center") },
+    details: { label: "Details", run: (app) => app.viewer.toggle("details") },
+    flashheld: {
+        label: "Flash while held",
+        run: (app) => app.say("Hold Space to flash the current view; release to stop."),
+    },
+    nextarea: {
+        label: "Next area",
+        key: "N",
+        title: "Steps through the changed areas, scrolling each into the center",
+        run: (app) => app.viewer.nextArea(),
+    },
+    locator: {
+        label: "",
+        title: "The whole image: click to move the view there",
+        run: (app, ctx) => app.viewer.locate(ctx.el),
+    },
+    prev: {
+        label: "Previous",
+        key: "Left / J",
+        title: "Previous snapshot",
+        run: (app) => app.viewer.step(-1),
+    },
+    next: {
+        label: "Next",
+        key: "Right / K",
+        title: "Next snapshot",
+        run: (app) => app.viewer.step(1),
+    },
+
     // Boxes and the message line.
     closebox: { label: "Close", key: "Esc", run: (app) => app.closeBox() },
     // The message line's own button: Retry after a failed list or a failed open (ctx.run retries it).
@@ -190,7 +299,7 @@ export function runAction(app, id, ctx, via) {
     app.logUsage("action", { a: id, via });
     const ok = availability(app, id, ctx);
     if (ok !== true) {
-        app.say(`${labelOf(app, id, ctx)}: ${ok}.`);
+        app.say(`${labelOf(app, id, ctx)}: ${ok}${String(ok).endsWith(".") ? "" : "."}`);
         return;
     }
     ACTIONS[id].run(app, ctx);

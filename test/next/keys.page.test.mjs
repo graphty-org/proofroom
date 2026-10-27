@@ -69,7 +69,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             "a small change open (one level)": async () => {
                 const page = await open({});
                 await page.locator('.chg[data-chg="3484"]').click();
-                await page.locator(".iline").waitFor();
+                await page.locator(".iline").waitFor({ state: "attached" });
                 return page;
             },
             "a large change, list level": async () => {
@@ -88,7 +88,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             "back at the changes with a change open": async () => {
                 const page = await open({});
                 await page.locator('.chg[data-chg="3486"]').click();
-                await page.locator(".iline").waitFor();
+                await page.locator(".iline").waitFor({ state: "attached" });
                 await page.keyboard.press("Escape");
                 await expect.poll(() => message(page)).toBe("Back to the changes.");
                 return page;
@@ -177,7 +177,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         it("never changes the level with Esc in a field, and closes a menu before going back", async () => {
             const page = await open({});
             await page.locator('.chg[data-chg="3486"]').click();
-            await page.locator(".iline").waitFor();
+            await page.locator(".iline").waitFor({ state: "attached" });
             await page.keyboard.press("Shift+Digit1");
             await expect.poll(() => page.locator("#chg-find").isVisible()).toBe(true);
             await page.keyboard.press("Slash");
@@ -200,7 +200,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         it("closes a menu with Esc after Tab took focus out of it, then goes back", async () => {
             const page = await open({});
             await page.locator('.chg[data-chg="3486"]').click();
-            await page.locator(".iline").waitFor();
+            await page.locator(".iline").waitFor({ state: "attached" });
             expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe("Back to changes [Esc]");
             await page.keyboard.press("Shift+Digit1");
             await expect.poll(() => page.locator("#chg-find").isVisible()).toBe(true);
@@ -248,7 +248,13 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.locator("#chg-list").focus();
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toBe("Opened #3484 Legend overlay: 3 undecided.");
-            expect(await visibleKeys(page)).toEqual([{ act: "back", key: "Esc" }]);
+            // The viewer's boxes keep only their arrow and Space halves.
+            expect(await visibleKeys(page)).toEqual([
+                { act: "view-flash", key: "hold Space" },
+                { act: "back", key: "Esc" },
+                { act: "prev", key: "Left" },
+                { act: "next", key: "Right" },
+            ]);
             await page.keyboard.press("Escape");
             await expect.poll(() => message(page)).toBe("Back to the changes.");
         });
@@ -256,7 +262,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         it.skipIf(name !== "chromium")("reads AZERTY's digit row by key position", async () => {
             const page = await open({});
             await page.locator('.chg[data-chg="3484"]').click();
-            await page.locator(".iline").waitFor();
+            await page.locator(".iline").waitFor({ state: "attached" });
             const cdp = await page.context().newCDPSession(page);
             // AZERTY: Shift+Digit1 types "1", Digit1 alone types "&".
             const key = async (k, code, vk, shift) => {
@@ -277,7 +283,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await expect.poll(() => message(page)).toBe("Changes shown.");
             await key("2", "Digit2", 50, true);
             await expect.poll(() => message(page)).toMatch(/^Snapshots shown\./);
-            expect((await settled(page, from)).map((a) => a.a)).toEqual(["pane1", "pane2"]);
+            // Digit1 alone ("&") is the 1 key: zoom 1x. With Shift ("1") it is the Changes pane.
+            expect((await settled(page, from)).map((a) => a.a)).toEqual(["zoom-1", "pane1", "pane2"]);
         });
 
         // WebKit has no DevTools protocol to type AZERTY's characters, so Shift stays held while the
@@ -285,7 +292,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         it.skipIf(name !== "webkit")("reads the digit row by key position while Shift is held", async () => {
             const page = await open({});
             await page.locator('.chg[data-chg="3484"]').click();
-            await page.locator(".iline").waitFor();
+            await page.locator(".iline").waitFor({ state: "attached" });
             const from = t.actions.length;
             await page.keyboard.down("Shift");
             await page.keyboard.press("Digit1");

@@ -3296,6 +3296,8 @@ export function createApp({
                     inbox: summaries && !results ? inbox(summaries) : null,
                     warning: listWarnings.join("\n") || null,
                     defaultBranch,
+                    // The baselines folder, where the new page's Details finds a story's settings file.
+                    baselines: config.baselines,
                     // The repository's name, for the new page's top bar.
                     repository: await repository,
                     updatedAt: refreshedAt || null,

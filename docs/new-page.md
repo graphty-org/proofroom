@@ -32,8 +32,17 @@ PORT=4800 proofroom serve --ui next
   the panes the review does not need, and the viewer is never narrower than 800 px. **Back [Esc]**
   says where it goes: back to the list, or back to the changes. The page remembers your pane
   choices in this browser, separately for small changes (10 snapshots or fewer) and large ones.
-- **The snapshots of a change**, as a plain list for now. The pictures, the viewer and the decision
-  keys come next; until then, decide on today's page.
+- **The snapshots of a change**, as a plain list for now.
+- **The viewer.** The current snapshot in four views: **Side by side [V]**, **Flash [F]** (or hold
+  Space), **Highlight [H]** (with **Blink [L]**) and **Spotlight [S]**; pressing a view's key again
+  goes back to Side by side. **Zoom [Z]** and Fit [0], 1x [1], 2x [2], 4x [4] and 8x [8] zoom both
+  images together, and from 2x a small map of the whole image at the lower right moves the view
+  where you click it. **Baseline [P]** hides the baseline to see the new image alone; **Image only
+  [Shift+3]** folds both side panes; **Layout [Y]** puts the two images side by side or over and
+  under (Auto picks whichever draws them larger); **Options** has Outline [B], Open centered on the
+  area [O], Details and Copy link. **Next area [N]** steps through the changed areas, and
+  **Previous [Left / J]** and **Next [Right / K]** move between snapshots. Decisions come next;
+  until then, decide on today's page.
 - **Addresses.** Every change and snapshot you open is in the address, so a copied link opens it
   again and the browser's Back and Forward move between them. Links today's page wrote, such as
   those in pull request comments, open the same change and snapshot here.

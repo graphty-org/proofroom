@@ -167,7 +167,12 @@ export async function diffImages(a, b, { threshold, includeAA }) {
  * @param {() => void} host.retry draws the snapshot again, after a failed load
  * @param {(item: object) => void} host.drawn told when a snapshot's images are on the stage
  * @param {(item: object, at: number) => void} host.appeared told when they have been painted
- * @param {(text: string) => void} host.boxCount shows which changed area Next change is on, or that there is none
+ * @param {(text: string, count: number) => void} host.boxCount shows which changed area Next change is on, or that there is none
+ * @param {(item: object, view: string) => { leftLabel?: string, rightLabel?: string, flash?: [string, string], note?: string | null }} [host.labels]
+ *   the frames' labels in place of the stage's own: each frame's, the two a flashing frame takes
+ *   turns with, and a note beside them
+ * @param {number} [host.flashMs] how long Flash and Spotlight's flash show each image (FLASH_MS)
+ * @param {number} [host.blinkMs] how long Blink shows, then hides, the overlays (FLASH_MS)
  * @returns {object} the stage's controls
  */
 export function createStage(host) {
@@ -237,11 +242,16 @@ export function createStage(host) {
         }
     }
 
-    const pane = (text, content, empty = false) =>
+    // A frame and its label; with a note (host.labels), the label's text is its own span beside it.
+    const pane = (text, content, empty = false, note = null) =>
         el(
             "figure",
             {},
-            el("div", { class: "label" }, text),
+            el(
+                "div",
+                { class: "label" },
+                note === null ? text : [el("span", { class: "lt" }, text), el("span", { class: "note" }, note)],
+            ),
             el("div", { class: empty ? "frame empty" : "frame" }, content),
         );
     const paneWait = (what) => el("p", { class: "wait" }, spinner(), `Loading ${what}...`);
@@ -325,19 +335,20 @@ export function createStage(host) {
         } else if (viewName === "spotlight") {
             rightLabel = "Spotlight: the new image, dimmed except around each change";
         }
-        return { marked, flashing, leftLabel, rightLabel };
+        const own = { marked, flashing, leftLabel, rightLabel, flash: null, note: null };
+        return host.labels ? { ...own, ...host.labels(item, viewName) } : own;
     }
 
     // The two panes as they wait for their pictures. A failed capture's artifact holds no copy of
     // its baseline, so none is fetched.
-    function waitingPanes(item, { leftLabel, rightLabel }) {
+    function waitingPanes(item, { leftLabel, rightLabel, note }) {
         let left = pane("No baseline", null, true);
         if (item.status === "failed") {
             left = pane("Baseline not shown: the capture failed", null, true);
         } else if (item.baseline) {
-            left = pane(leftLabel, paneWait("baseline"));
+            left = pane(leftLabel, paneWait("baseline"), false, note);
         }
-        const right = item.capture ? pane(rightLabel, paneWait("new image")) : noCapturePane(item);
+        const right = item.capture ? pane(rightLabel, paneWait("new image"), false, note) : noCapturePane(item);
         return { left, right };
     }
 
@@ -423,7 +434,7 @@ export function createStage(host) {
     // The views that compare the two images (highlight, flash, spotlight): both panes drawn at once
     // from the item's diff. Null when the stage moved on meanwhile.
     async function drawCompared({ item, view: viewName, seq, stage, panes, labels }) {
-        const { marked, flashing, leftLabel, rightLabel } = labels;
+        const { marked, flashing, leftLabel, rightLabel, note } = labels;
         const diff = await stageDiff(item);
         const leftPics = [await stageImage(item, "baseline"), ...(marked ? [overlay(diff)] : [])];
         let rightPics;
@@ -441,11 +452,11 @@ export function createStage(host) {
         if (seq !== stageRender) {
             return null;
         }
-        const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics));
-        const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics));
+        const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics), false, note);
+        const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics), false, note);
         stage.replaceChildren(...panes(l, r));
         if (flashing) {
-            startFlash(r, rightPics, viewName);
+            startFlash(r, rightPics, viewName, labels.flash);
         }
         if (marked && opt().blink && opt().motion) {
             startBlink(stage);
@@ -454,24 +465,25 @@ export function createStage(host) {
     }
 
     // Flash and flashing Spotlight: the two pictures take turns in the right pane.
-    function startFlash(r, [base, next], viewName) {
+    function startFlash(r, [base, next], viewName, names = null) {
         next.style.visibility = "hidden";
         r.classList.add("flashing");
         if (!opt().motion) {
             return;
         }
         const name = viewName === "flash" ? "Flash" : "Spotlight";
-        const tag = r.querySelector(".label");
+        const [onBase, onNew] = names ?? [`${name}: baseline`, `${name}: new`];
+        const tag = r.querySelector(".label .lt") ?? r.querySelector(".label");
         let showingNew = false;
         flashTimer = setInterval(() => {
             showingNew = !showingNew;
             base.style.visibility = showingNew ? "hidden" : "visible";
             next.style.visibility = showingNew ? "visible" : "hidden";
-            tag.textContent = showingNew ? `${name}: new` : `${name}: baseline`;
-        }, FLASH_MS);
+            tag.textContent = showingNew ? onNew : onBase;
+        }, host.flashMs ?? FLASH_MS);
     }
 
-    // Both panes' overlays on and off together, at Flash's pace.
+    // Both panes' overlays on and off together.
     function startBlink(stage) {
         const marks = [...stage.querySelectorAll(".diffmark")];
         let on = true;
@@ -480,7 +492,7 @@ export function createStage(host) {
             for (const m of marks) {
                 m.style.visibility = on ? "visible" : "hidden";
             }
-        }, FLASH_MS);
+        }, host.blinkMs ?? FLASH_MS);
     }
 
     // An image or the diff failed to load: the compared views show the error in both panes; side
@@ -542,6 +554,7 @@ export function createStage(host) {
             diff.boxes.length === 0
                 ? "No changed area at this threshold"
                 : `${Math.min(view.box, diff.boxes.length - 1) + 1} of ${diff.boxes.length}`,
+            diff.boxes.length,
         );
         showBox(stage, diff.boxes, false, !keep);
     }
@@ -731,7 +744,7 @@ export function createStage(host) {
             return "No changed area at this threshold.";
         }
         view.box = (view.box + 1) % boxes.length;
-        host.boxCount(`${view.box + 1} of ${boxes.length}`);
+        host.boxCount(`${view.box + 1} of ${boxes.length}`, boxes.length);
         showBox(stage, boxes, true);
         return null;
     }
