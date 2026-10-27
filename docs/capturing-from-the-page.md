@@ -1,7 +1,8 @@
 # Starting a capture from the page
 
 The review page at `/next/` can capture on the machine the review server runs on, so you can look
-at your own work before CI does, or review and finish a branch that never goes through CI.
+at your own work before CI does, or review and finish a branch that never goes through CI. It can
+also ask CI to capture a pull request again.
 
 ## New capture
 
@@ -15,11 +16,13 @@ capture [Enter]** is one key:
    commit you name.
 3. **Which projects and stories**: every project by default; untick the ones you do not need. A
    story id prefix (`button--, badge--`) captures only the stories whose id starts with one.
-4. **Where**: this machine. CI is shown unavailable, with the reason, when your capture store
-   cannot start a CI job.
+4. **Where**: this machine, or CI (see [Asking CI for a capture](#asking-ci-for-a-capture)). A pull
+   request is captured on CI by default when CI can be asked; CI is shown unavailable, with the
+   reason, when it cannot.
 
 The capture's row is in the changes pane at once, under **Capturing or downloading**, and says how
-many stories are done. Captures on this machine run one at a time; the others wait in order.
+many stories are done (on CI, how many project jobs). Captures on this machine run one at a time;
+the others wait in order.
 
 ## The Captures screen
 
@@ -28,6 +31,41 @@ and Earlier. Pick one to see, for each project, how many stories are done of how
 being captured, the stories that failed so far with their reason, and the log. **Cancel** stops a
 capture and every browser it started. Once it has finished, **Review results [Enter]** opens what it
 made on the Review screen.
+
+## Asking CI for a capture
+
+With GitHub Actions as the capture store, **Where: CI** asks CI to capture a pull request: the
+review server dispatches your capturing workflow (the config's `workflow`) on the pull request's
+branch, at the head the page showed. Nothing runs on this machine. The run is that pull request's
+newest capture, so once it ends you review and finish it as any CI capture of the pull request.
+
+- **What CI captures**: a pull request, or a local branch (or the clean working tree) at the head of
+  an open pull request, which is that pull request. It always captures every project and every
+  story against the pull request's own baselines, because the run replaces the pull request's
+  capture. To capture some projects or stories, or against other baselines, capture on this
+  machine. Uncommitted changes are never on CI: commit and push them first.
+- **Following it**: the Captures screen shows each project's job, `visual (<project>)`, as queued,
+  running, passed or failed, with a link to its log once it has one, and a link to the whole run.
+  GitHub gives a job's log only after the job ends, so story progress is shown when the job ends,
+  not while it runs. A project whose capture found differences still passed: the differences are
+  for you to review. **Cancel** cancels the run. **Review results [Enter]** opens the pull request
+  once the run has ended.
+- **How often the server asks**: only about captures that wait or run, and at most once every 20
+  seconds each, however often the page asks.
+
+CI is offered only when your capturing workflow on the default branch takes capture requests: a
+`workflow_dispatch` trigger with the inputs `ref`, `projects`, `stories` and `request`. The
+workflow `proofroom init` writes has them; a workflow written before them shows CI unavailable,
+with the reason, until you update it:
+
+```sh
+npx proofroom init --force
+```
+
+and merge the new `.github/workflows/visual-review.yml`. A workflow you wrote by hand takes requests
+once it has the four inputs, checks out `inputs.ref`, passes `inputs.projects` and `inputs.stories`
+on to the capture, and puts `inputs.request` in its run name (`run-name`), which is how the server
+finds the run it started. The plain git code host has no CI: every capture runs on this machine.
 
 ## What can be reviewed and finished
 

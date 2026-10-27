@@ -233,6 +233,11 @@ branch instead of commenting. How to set it up, capture, review and finish:
   batch's changes. Every capture must still equal a baseline, so a batch passes only on images
   already approved on its pull requests.
 
+It can also be started by hand or by the review page (**New capture...**, Where: CI), with the
+inputs `ref` (the commit to capture), `projects`, `stories` and `request`; see [Asking CI for a
+capture](docs/capturing-from-the-page.md#asking-ci-for-a-capture). A workflow written by an older
+`init` lacks them: `npx proofroom init --force` writes the new one.
+
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
 rather capture inside an existing CI workflow (to reuse a Storybook your build job already made),
