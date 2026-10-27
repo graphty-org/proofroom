@@ -466,7 +466,8 @@ describe("compare and run on a Storybook", () => {
             "demo--always-excluded.png": "excluded",
         });
         expect(after.items.some((i) => i.status === "unstable")).toBe(false);
-        const withoutFlaky = (items) => items.map((i) => ({ ...i, flaky: undefined }));
+        // `exact` is new since 0.9: whether every RGBA byte of the capture is the baseline's.
+        const withoutFlaky = (items) => items.map((i) => ({ ...i, flaky: undefined, exact: undefined }));
         expect(withoutFlaky(after.items)).toEqual(withoutFlaky(before.items));
         expect(after.items.every((i) => i.flaky === false)).toBe(true);
         for (const key of ["version", "project", "seeded", "reference", "complete", "expected", "scale"]) {

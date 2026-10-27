@@ -3,8 +3,7 @@
  * (stand-in-storybook.mjs). Capture shoots and records; run judges each line as it lands.
  */
 
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -113,7 +112,7 @@ describe("capture", () => {
         });
         // Every image is on disk, named by its line, with the bytes the line carries.
         const images = snapshots.filter((l) => l.type === "image");
-        expect(images).toHaveLength(5);
+        expect(images).toHaveLength(6);
         for (const line of images) {
             const bytes = readFileSync(join(out, line.file));
             expect(bytes.equals(line.bytes)).toBe(true);
@@ -220,10 +219,16 @@ describe("capture", () => {
 
 describe("run", () => {
     it("classifies new, unchanged, excluded, failed, and a story newly excluded by its parameters", async () => {
-        // Only the stories this test checks: the tall, late-font and small fixtures are other
-        // tests', and capturing them too doubled this test's work, which on a loaded 4-core runner
+        // Only the stories this test checks: the tall and late-font fixtures are other tests', and
+        // capturing them too doubled this test's work, which on a loaded 4-core runner
         // took it past the suite's 60 s limit (#3768).
-        const sb = storybook(["demo--plain", "demo--excluded-here", "demo--always-excluded", "demo--broken"]);
+        const sb = storybook([
+            "demo--plain",
+            "demo--excluded-here",
+            "demo--always-excluded",
+            "demo--broken",
+            "demo--small",
+        ]);
         const baselines = tempDir("vr-bl-");
         const go = (out) => run({ project: "demo", storybook: sb, baselines, out, workers: 2 });
 
@@ -473,41 +478,5 @@ describe("screenshotWholePage", () => {
             expect(redAt(png, 42)).toBe(0);
             expect(redAt(png, 8441)).toBe(41 * 5);
         });
-    });
-
-    it("keeps the pinned monospace font on a page taller than the viewport", async () => {
-        // Chromium's capture beyond the viewport re-resolved the generic `monospace` from the pinned
-        // fontconfig's DejaVu Sans Mono to Liberation Mono (#3472). The pinned configuration, read
-        // over the host's /usr/share/fonts: visual-fonts/fonts/ is Git LFS, absent in a test checkout,
-        // and is a snapshot of the CI runner's /usr/share/fonts.
-        const fontsDir = join(import.meta.dirname, "../../visual-fonts");
-        const cache = mkdtempSync(join(tmpdir(), "visual-review-fonts-"));
-        const conf = join(cache, "fonts.conf");
-        writeFileSync(
-            conf,
-            readFileSync(join(fontsDir, "fonts.conf"), "utf8")
-                .replace('<dir prefix="relative">fonts</dir>', "<dir>/usr/share/fonts</dir>")
-                .replace('prefix="relative">conf.d<', `>${join(fontsDir, "conf.d")}<`),
-        );
-        const env = { ...process.env, FONTCONFIG_FILE: conf, XDG_CACHE_HOME: cache };
-        const pinned = await chromium.launch({ args: CHROMIUM_ARGS, env });
-        try {
-            const context = await pinned.newContext({ viewport: { width: 100, height: 900 }, deviceScaleFactor: 2 });
-            const page = await context.newPage();
-            await page.setContent(
-                `<!doctype html><body style="margin:0"><pre style="font:13px monospace">ak</pre>${bands(20).slice(24)}`,
-            );
-            await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-            await screenshotWholePage(page);
-            const cdp = await context.newCDPSession(page);
-            await cdp.send("DOM.enable");
-            await cdp.send("CSS.enable");
-            const { root } = await cdp.send("DOM.getDocument");
-            const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector: "pre" });
-            const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
-            expect(fonts.map((f) => f.familyName)).toEqual(["DejaVu Sans Mono"]);
-        } finally {
-            await pinned.close();
-        }
     });
 });

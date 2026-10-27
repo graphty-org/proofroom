@@ -53,7 +53,7 @@ function stubPage() {
  * @param {object} options the adapter's options (`fail`, `retries`)
  * @param {Buffer[]} shots the screenshots the page returns, in order
  * @returns {Promise<{ error: unknown, renders: number, lines: object[] }>} what the story test's
- *     afterEach threw (null when nothing), how often the story was rendered again, and the
+ *     afterEach hooks threw (null when nothing), how often the story was rendered again, and the
  *     result lines written
  */
 async function storyTest(options, shots) {
@@ -69,10 +69,10 @@ async function storyTest(options, shots) {
         visualShot: (a) => v.commands.visualShot(ctx, a),
         visualFail: (a) => v.commands.visualFail(ctx, a),
     };
-    const hooks = {};
+    const hooks = { after: [] };
     installVisualStoryTest({
         beforeEach: (fn) => (hooks.before = fn),
-        afterEach: (fn) => (hooks.after = fn),
+        afterEach: (fn) => hooks.after.push(fn),
         commands,
     });
     let renders = 0;
@@ -80,7 +80,10 @@ async function storyTest(options, shots) {
     await hooks.before();
     let error = null;
     try {
-        await hooks.after({ story, task: { result: { state: "pass" } } });
+        // As Vitest runs them (sequence.hooks "stack"): the last registered first, until one throws.
+        for (const after of hooks.after.toReversed()) {
+            await after({ story, task: { result: { state: "pass" } } });
+        }
     } catch (err) {
         error = err;
     }

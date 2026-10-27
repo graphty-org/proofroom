@@ -17,16 +17,7 @@ import { assertPassed, compareSnapshot } from "../trusted/lib/compare.mjs";
 import { fileName, loadSettings, provenance, storySettings, toolVersion } from "../trusted/lib/compare-run.mjs";
 import { loadConfig, repoRoot } from "../trusted/lib/config.mjs";
 import { MAX_ATTEMPTS } from "../trusted/lib/results.mjs";
-import {
-    CHROMIUM_ARGS,
-    CLOCK_START,
-    pinnedFonts,
-    SCALE,
-    SHOT,
-    shootTiles,
-    twoFrames,
-    VIEWPORT,
-} from "./capture.mjs";
+import { CHROMIUM_ARGS, CLOCK_START, pinnedFonts, SCALE, SHOT, shootTiles, twoFrames, VIEWPORT } from "./capture.mjs";
 
 /** Test runs this process wrote a run file for, which name the run files. */
 let runs = 0;

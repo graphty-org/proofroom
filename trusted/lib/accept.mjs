@@ -162,7 +162,17 @@ export async function lfsProblem(repo) {
  *     statement ("Approval"), and the default branch candidate it accepts
  * @returns {string} a conventional commit message
  */
-export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, local = [], label = "Record", candidate = null }) {
+export function commitMessage({
+    pr,
+    counts,
+    runId,
+    runAttempt,
+    record,
+    prefix,
+    local = [],
+    label = "Record",
+    candidate = null,
+}) {
     const subject = pr === null ? masterSubject(prefix, candidate) : `${prefix}: accept visual baselines for #${pr}`;
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     return [
@@ -759,7 +769,16 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  *     branch's config, docs/approval-format.md) no record but the change `statement` to sign,
  *     which pushApproval adds to the commit
  */
-export async function prepareApproval({ repo, target, projects, decisions, now, config, retryDelays, repository = null }) {
+export async function prepareApproval({
+    repo,
+    target,
+    projects,
+    decisions,
+    now,
+    config,
+    retryDelays,
+    repository = null,
+}) {
     const { accepts, rejects } = check(projects, decisions, target.pr);
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first || accepts.length === 0) {
@@ -786,7 +805,9 @@ export async function prepareApproval({ repo, target, projects, decisions, now, 
     });
     if (built.statement !== undefined) {
         if (built.alreadyFinished || built.statement === null) {
-            throw new AcceptError("an earlier Finish of this change already holds these decisions: nothing is left to sign");
+            throw new AcceptError(
+                "an earlier Finish of this change already holds these decisions: nothing is left to sign",
+            );
         }
         return {
             commit: built.commit,
@@ -1104,7 +1125,10 @@ async function pushSignedChange(input) {
             `Approval: ${path}`,
         );
         await git(tree, ["commit", "-q", "--no-verify", "--amend", "-F", "-"], `${message}\n`);
-        const pushed = await pushChange({ repo, progress, net, config }, { tree, writes: [], branch, statement, fetch });
+        const pushed = await pushChange(
+            { repo, progress, net, config },
+            { tree, writes: [], branch, statement, fetch },
+        );
         return { commit: pushed, branch, record: null };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
@@ -1418,7 +1442,10 @@ const rejectEntries = (rejects) =>
  */
 function chainEnds(chain) {
     const named = new Set(chain.flatMap((st) => (st.previous === null ? [] : [st.previous].flat())));
-    const ends = chain.map((st) => st.id).filter((id) => !named.has(id)).sort();
+    const ends = chain
+        .map((st) => st.id)
+        .filter((id) => !named.has(id))
+        .sort();
     return ends.length === 0 ? null : ends.length === 1 ? ends[0] : ends;
 }
 
@@ -1493,7 +1520,9 @@ async function changeParent(repo, config, at) {
         const finishOnly = (await onlyFinishCommits(repo, base, tip, config)) && !since.some((f) => differ.includes(f));
         const why = finishOnly ? null : await masterMergeProblem(repo, base, tip, ownRef(config.defaultBranch), differ);
         if (why) {
-            throw new AcceptError(`capture is stale, wait for CI: the branch has moved past the captured head (${why})`);
+            throw new AcceptError(
+                `capture is stale, wait for CI: the branch has moved past the captured head (${why})`,
+            );
         }
     }
     // Once the default branch holds a key, a statement it does not verify (one committed unsigned
@@ -1560,7 +1589,9 @@ async function pushChange(input, { tree, writes, branch, statement, fetch }) {
         const clash = mine.find((f) => theirs.has(f));
         if (clash !== undefined || !(await gitOk(repo, ["merge-base", "--is-ancestor", statement.capturedHead, tip]))) {
             const why = clash === undefined ? "the branch no longer holds the captured head" : `it changed ${clash}`;
-            throw new AcceptError(`capture is stale, wait for CI: the branch moved while Finish ran (${why}); nothing was pushed`);
+            throw new AcceptError(
+                `capture is stale, wait for CI: the branch moved while Finish ran (${why}); nothing was pushed`,
+            );
         }
         // The same files on the new tip: it copies nobody's commit, so nothing is rebased.
         await git(tree, ["checkout", "-q", "--detach", tip]);
@@ -2279,7 +2310,14 @@ async function planWrites(repo, base, writes, baselines) {
     const files = [];
     // A change statement's entry for the same decision: its path inside the baselines directory.
     const entry = (path, from, to, decision, reason, more = {}) =>
-        entries.push({ path: path.slice(baselines.length + 1), from, to, decision, ...(reason !== null && { reason }), ...more });
+        entries.push({
+            path: path.slice(baselines.length + 1),
+            from,
+            to,
+            decision,
+            ...(reason !== null && { reason }),
+            ...more,
+        });
     const counts = { accept: 0, exclude: 0, remove: 0 };
     // A settings file written earlier in this Finish (two modes of one story) is read as written.
     const written = new Map();
