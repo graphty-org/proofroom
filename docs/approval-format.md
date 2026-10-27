@@ -405,7 +405,9 @@ below).
 Every seed Finish retires the earlier OPEN seeds of the same capture and kind: a seed run's Finish
 those of the same run (`run<run id>` in the branch name), a candidate's Finish the candidate's other
 accept pull requests. Another run's seed, and a seed run's seed against a candidate's of the same
-commit, decided images this Finish never saw, so it is left alone. An open pull request is a seed
+commit, decided images this Finish never saw, so it is not retired; but each image this Finish
+rejects is rejected in every other open seed run of the commit that decided it, as a Finish of
+rejects alone does (below), before the seed is pushed. An open pull request is a seed
 of the capture only when its own `visual/` branch adds a statement, verified by the default
 branch's keys, that carries the same captured commit and names that very pull request (`pr:N` with
 its own number N). A branch started from a seed branch, or one that merged it, carries the seed's
@@ -438,10 +440,14 @@ as it is. So a later reject of an image an earlier Finish accepted always wins, 
 that Finish accepted is lost.
 
 The earlier seeds are read again after your touch: if one appeared, gained a statement or moved
-since the Finish was prepared, Finish refuses and changes nothing (press Finish again).
+since the Finish was prepared, Finish refuses and changes nothing (press Finish again). After the
+seed is pushed they are read once more: if another Finish of the same run, on another server,
+pushed a signed seed in the meantime, Finish says so, and the next Finish retires it.
 
 Finding seeds reads the code host (the open pull requests, and each one whose branch names it) and
-git (their branches). If any of that cannot be read, Finish refuses, names what failed, and
+git (their branches). On plain git, which has no list of open changes, the `visual/` branches are
+fetched from origin first, with the ones deleted there pruned, so a seed another clone pushed is
+found and a branch gone from origin never stops a Finish. If any of that cannot be read, Finish refuses, names what failed, and
 changes nothing: press Finish again. It never retires only what it could read.
 
 What that guarantees: GitHub keeps a closed pull request's last head (`refs/pull/N/head`) and

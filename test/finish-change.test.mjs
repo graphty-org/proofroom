@@ -654,6 +654,53 @@ describe("Finish of a seed in change mode", () => {
         expect(git(r.remote, "ls-tree", "--name-only", host.opened[0].branch, "--", badge)).toBe(badge);
     });
 
+    it("rejects an image in another run's seed when a seed Finish accepts some images and rejects it", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        await seedFinish(r, host, [[BADGE], [BUTTON]], { projects: capture(r, 501) });
+        const [old] = host.opened;
+        const { touches } = await seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], {
+            projects: capture(r, 502),
+        });
+        // One more touch rejects BADGE in run 501's seed, which stays open with BUTTON.
+        expect(touches).toBe(2);
+        expect(host.opened.map((o) => o.state)).toEqual(["open", "open"]);
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(git(r.remote, "ls-tree", "--name-only", old.branch, "--", badge)).toBe("");
+        expect(seedStatements(r, old.branch).at(-1)).toBeDefined();
+        expect(gateOn(r, old.branch, "pr:900")).toEqual([]);
+        expect(gateOn(r, host.opened[1].branch, "pr:901")).toEqual([]);
+    });
+
+    it("refuses after pushing a seed when another Finish of the run pushed one meanwhile, and the next retires it", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [other] = host.opened;
+        // A second server: no record of the first seed, and the first seed not yet seen by its reads.
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        let hidden = true;
+        const list = host.listChanges;
+        host.listChanges = async (o) => (await list(o)).filter((c) => !hidden || c.branch !== other.branch);
+        const change = host.change;
+        host.change = async (n) => {
+            // The seed's own pull request is read right before its push: the other one shows up then.
+            if (n !== other.number) {
+                hidden = false;
+            }
+            return change(n);
+        };
+        await expect(seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], { projects })).rejects.toThrow(
+            "another seed of this run, was pushed while this Finish was being made: press Finish again to retire it",
+        );
+        expect(other.state).toBe("open");
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(host.opened).toHaveLength(2);
+        expect(other.state).toBe("closed");
+        expect(gateOn(r, host.opened[1].branch, "pr:901")).toEqual([]);
+    });
+
     it("never lets a candidate Finish of a commit retire a seed run's seed of it, or the other way round", async () => {
         const r = changeRepo();
         const host = seedHost(r);
@@ -1438,6 +1485,43 @@ describe("Finish of a seed in change mode", () => {
         await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(
             `${prepared.branch} holds an earlier seed of this capture: close or delete it, then press Finish again`,
         );
+    });
+
+    it("on plain git, finds a seed another clone pushed without a fetch first", async () => {
+        const r = changeRepo();
+        const host = plainGitCodeHost(r.repo, FIXTURE_CONFIG);
+        const projects = capture(r);
+        const { prepared } = await seedFinish(r, host, [[BADGE]], { projects });
+        // This clone never saw the seed branch: as if another clone had pushed it.
+        git(r.repo, "update-ref", "-d", `refs/remotes/origin/${prepared.branch}`);
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(
+            `${prepared.branch} holds an earlier seed of this capture: close or delete it, then press Finish again`,
+        );
+    });
+
+    it("on plain git, never lets a seed branch deleted on origin block a later Finish", async () => {
+        const r = changeRepo();
+        const host = plainGitCodeHost(r.repo, FIXTURE_CONFIG);
+        const projects = capture(r);
+        const { prepared } = await seedFinish(r, host, [[BADGE]], { projects });
+        git(r.repo, "fetch", "-q", "origin");
+        git(r.remote, "branch", "-q", "-D", prepared.branch);
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const input = {
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null },
+            projects,
+            decisions: [{ project: "compact-mantine", file: BADGE, decision: "reject", reason: "clipped" }],
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+            now: new Date(),
+        };
+        // Nothing is left to retire: the stale branch is pruned, not fetched.
+        expect(await prepareApproval(input)).toBeNull();
+        expect(git(r.repo, "for-each-ref", `refs/remotes/origin/${prepared.branch}`)).toBe("");
     });
 });
 
