@@ -155,6 +155,10 @@ Every command has `--help`; `proofroom --help` lists them.
 | `candidates`     | none                      | A shell command `serve --candidate next` runs to list the default branch's full runs (see "Candidates")             |
 | `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
 | `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                        |
+| `codeHost`       | `github`                  | Where your pull requests are; `github` is the only value (see [docs/configuration.md](docs/configuration.md))       |
+| `captureStore`   | `github-actions`          | Where CI's captures are; `github-actions` is the only value                                                         |
+| `stories`        | `storybook`               | Where the stories come from; `storybook` is the only value                                                          |
+| `renderer`       | `playwright-chromium`     | What draws each story; `playwright-chromium` is the only value                                                      |
 | `projects`       | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
 
 Per project:
