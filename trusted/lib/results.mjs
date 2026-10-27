@@ -20,7 +20,7 @@ export const MAX_ITEMS = 5000;
 const MAX_STRING = 2000;
 const MAX_CONSOLE = 100;
 /** The most changed areas, picture kinds and earlier attempts one item may name. */
-const MAX_AREAS = 1000;
+export const MAX_AREAS = 1000;
 const MAX_PICTURES = 20;
 export const MAX_ATTEMPTS = 20;
 
@@ -225,11 +225,12 @@ export function validateResults(r) {
     check(isObj(r.environment), "environment must be an object");
     // Device pixels per CSS pixel. Captures made before it was recorded were at 1.
     check(r.scale === undefined || r.scale === 1 || r.scale === 2, "scale must be 1 or 2");
-    // The browser that drew the images, as capture records it. Absent in captures made before it was.
-    check(
-        r.renderer === undefined || (isObj(r.renderer) && isStr(r.renderer.name) && isStr(r.renderer.version)),
-        "renderer must be { name, version }",
-    );
+    // The browser that drew the images, as capture records it, and the one that drew the default
+    // branch's capture compare was given (its baselines'). Absent in captures made before either was.
+    for (const key of ["renderer", "baselineRenderer"]) {
+        const v = r[key];
+        check(v === undefined || (isObj(v) && isStr(v.name) && isStr(v.version)), `${key} must be { name, version }`);
+    }
 
     if (!Array.isArray(r.items)) {
         errors.push("items must be an array");

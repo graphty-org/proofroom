@@ -466,8 +466,10 @@ describe("compare and run on a Storybook", () => {
             "demo--always-excluded.png": "excluded",
         });
         expect(after.items.some((i) => i.status === "unstable")).toBe(false);
-        // `exact` is new since 0.9: whether every RGBA byte of the capture is the baseline's.
-        const withoutFlaky = (items) => items.map((i) => ({ ...i, flaky: undefined, exact: undefined }));
+        // New since 0.9: `exact`, whether every RGBA byte of the capture is the baseline's, and each
+        // item's changed areas and list pictures (capture-pictures.test.mjs checks them).
+        const withoutFlaky = (items) =>
+            items.map((i) => ({ ...i, flaky: undefined, exact: undefined, areas: undefined, pictures: undefined }));
         expect(withoutFlaky(after.items)).toEqual(withoutFlaky(before.items));
         expect(after.items.every((i) => i.flaky === false)).toBe(true);
         for (const key of ["version", "project", "seeded", "reference", "complete", "expected", "scale"]) {
