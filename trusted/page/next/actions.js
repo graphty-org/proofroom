@@ -74,7 +74,8 @@ export const ACTIONS = {
     "sort-newest": { label: "Newest", run: (app) => app.setSort("newest") },
     "sort-most": { label: "Most undecided", run: (app) => app.setSort("most") },
     "sort-author": { label: "Author", run: (app) => app.setSort("author") },
-    chgfind: { label: "Find", key: "/", run: (app) => app.focusFind() },
+    // Find [/], in the changes pane and in the snapshot list: the box of the pane the reader is in.
+    find: { label: "Find", key: "/", run: (app, ctx) => app.focusFind(ctx.el) },
     section: { label: (app, ctx) => ctx.label, run: (app, ctx) => app.toggleSection(ctx.section) },
     pickchg: { label: "", run: (app, ctx) => app.pickChange(ctx.id) },
     openchg: { label: "Open", key: "Enter", run: (app, ctx) => app.openChange(ctx.id) },
@@ -112,6 +113,39 @@ export const ACTIONS = {
         run: (app) => app.openSnapshot(),
     },
     pickrow: { label: "", run: (app, ctx) => app.pickSnapshot(ctx.snap) },
+
+    // The snapshot list (design 4).
+    statshow: {
+        label: (app, ctx) => ctx.status,
+        title: "Show only this status; pressed again, Undecided",
+        run: (app, ctx) => app.setShowStatus(ctx.status),
+    },
+    statmore: { label: "+ more", title: "The other statuses", run: (app, ctx) => app.listMenu("more", ctx.el) },
+    clearfind: { label: "Clear", title: "Empty Find", run: (app) => app.clearFind() },
+    showmenu: { label: "Show", title: "Show", run: (app, ctx) => app.listMenu("show", ctx.el) },
+    groupmenu: { label: "Group", title: "Group", run: (app, ctx) => app.listMenu("group", ctx.el) },
+    picsmenu: { label: "Pictures", title: "Pictures", run: (app, ctx) => app.listMenu("pics", ctx.el) },
+    listmenu: { label: "...", title: "More for this list", run: (app, ctx) => app.listMenu("list", ctx.el) },
+    viewopts: { label: "View options", run: (app, ctx) => app.listMenu("view", ctx.el) },
+    show: { label: (app, ctx) => `Show: ${ctx.show}`, run: (app, ctx) => app.setShow(ctx.show) },
+    group: { label: (app, ctx) => ctx.grouping, run: (app, ctx) => app.setGrouping(ctx.grouping) },
+    picspot: {
+        label: "Spotlight rows (switch)",
+        run: (app) => app.setPictures({ spot: !(app.lv.pics.spot && !app.lv.pics.none), none: false }),
+    },
+    piczoom: { label: (app, ctx) => ctx.zoom, run: (app, ctx) => app.setPictures({ zoom: ctx.zoom, none: false }) },
+    picnone: { label: "No pictures (text rows)", run: (app) => app.setPictures({ none: !app.lv.pics.none }) },
+    listlink: { label: "Copy link", run: (app) => app.copyListLink() },
+    gtoggle: { label: "", run: (app, ctx) => app.toggleGroup(ctx.group) },
+    gshowall: { label: "Show all", run: (app, ctx) => app.toggleGroup(ctx.group, true) },
+    rowundo: {
+        label: "Undo",
+        title: "Undo this decision",
+        run: (app, ctx) => app.undoRow(ctx.key),
+        available: (app) => (app.open()?.lookOnly ? "A look-only capture is viewed, never decided" : true),
+    },
+    picretry: { label: "Retry", title: "Ask for the picture again", run: (app, ctx) => app.retryPicture(ctx.key) },
+    loadnewer: { label: "Load it", title: "Show the newer capture's rows", run: (app) => app.loadNewer() },
 
     // Boxes and the message line.
     closebox: { label: "Close", key: "Esc", run: (app) => app.closeBox() },

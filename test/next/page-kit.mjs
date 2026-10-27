@@ -4,13 +4,21 @@
  * the browsers to run in, and the actions the page logged as pressed.
  */
 
+import { PNG } from "pngjs";
 import { chromium, webkit } from "playwright";
 
 import { startApp } from "../faults.mjs";
 import { fakeGh, makeRepo } from "../helpers.mjs";
 import { listAnswer, rowsAnswer } from "./fixtures.mjs";
 
-export { fiftyChanges, listAnswer, project, rowsAnswer, target } from "./fixtures.mjs";
+export { fiftyChanges, listAnswer, project, richRows, row, rowsAnswer, target } from "./fixtures.mjs";
+
+// The picture every /api/pic request is answered with: a small gray PNG.
+const PICTURE = (() => {
+    const png = new PNG({ width: 40, height: 16 });
+    png.data.fill(160);
+    return PNG.sync.write(png);
+})();
 
 export const TOKEN = "n".repeat(43);
 
@@ -41,11 +49,13 @@ export const BROWSERS = { chromium, webkit };
  * @param {import("playwright").Browser} browser the browser
  * @param {{ targets?: object[], list?: object, rows?: (id: string, project: string) => object,
  *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string>,
- *     clock?: boolean, ui?: "review" | "next", path?: string, failList?: number }} [options]
+ *     clock?: boolean, ui?: "review" | "next", path?: string, failList?: number,
+ *     pictures?: (name: string) => boolean, decide?: (body: object) => object }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
  *     project's reviewable), the window, the address after #, local storage to start with,
  *     whether the test controls the page's clock, the server's page at /, the path to open, and
- *     how many of the first asks for the list answer HTTP 500
+ *     how many of the first asks for the list answer HTTP 500, which pictures to answer (the rest
+ *     fail with HTTP 500), and the answer to each POST /api/decide (by default `{ ok: true }`)
  * @returns {Promise<{ page: import("playwright").Page, context: import("playwright").BrowserContext,
  *     close: () => Promise<void>, actions: object[],
  *     requests: string[], origin: string, setList: (answer: object) => void }>} the tab, how to
@@ -87,11 +97,23 @@ export async function openNext(browser, options = {}) {
         return route.fulfill({ json: list });
     });
     await page.route("**/api/pr/**", (route) => {
-        const [, , , id, name] = new URL(route.request().url()).pathname.split("/").map(decodeURIComponent);
+        const u = new URL(route.request().url());
+        const [, , , id, name] = u.pathname.split("/").map(decodeURIComponent);
         const t = list.targets.find((x) => x.id === id);
         const p = t?.projects.find((x) => x.project === name);
-        return route.fulfill({ json: options.rows ? options.rows(id, name) : rowsAnswer(name, p?.reviewable ?? 0) });
+        return route.fulfill({
+            json: options.rows ? options.rows(id, name, u.searchParams) : rowsAnswer(name, p?.reviewable ?? 0),
+        });
     });
+    await page.route("**/api/pic/**", (route) => {
+        const name = new URL(route.request().url()).pathname.split("/").pop();
+        return options.pictures && !options.pictures(name)
+            ? route.fulfill({ status: 500, json: { error: "the picture failed" } })
+            : route.fulfill({ status: 200, contentType: "image/png", body: PICTURE });
+    });
+    await page.route("**/api/decide", (route) =>
+        route.fulfill({ json: options.decide ? options.decide(route.request().postDataJSON()) : { ok: true } }),
+    );
     await page.route("**/api/pr-context/**", (route) =>
         route.fulfill({
             json: {

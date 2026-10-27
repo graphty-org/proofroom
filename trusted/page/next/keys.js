@@ -56,7 +56,15 @@ export function matches(printed, e) {
 export const isLetterKey = (printed) => !NONLETTER.has(printed);
 
 const visible = (node) => node.getClientRects().length > 0;
+// Find [/] goes to the Find box of the pane the reader is in (body's data-pane, set by the page),
+// so it outranks the other pane's box.
+const inFocusedPane = (node) =>
+    node.dataset.find !== undefined &&
+    node.closest(".pane")?.id === (document.body.dataset.pane === "changes" ? "changes" : "snaps");
 const rank = (node) => {
+    if (inFocusedPane(node)) {
+        return -1;
+    }
     const i = ZONES.indexOf(node.dataset.zone);
     return i < 0 ? ZONES.length : i;
 };
@@ -105,10 +113,13 @@ export function syncHints() {
             box.hidden = !mine;
         }
     }
-    // The Find boxes print their key in the placeholder.
+    // The Find boxes print their key in the placeholder: the one the key goes to.
+    const finder = ownerOf("/");
     for (const f of document.querySelectorAll("input[data-find]")) {
-        f.placeholder = `${f.dataset.find}${letterKeysOn() ? "  [/]" : ""}`;
+        f.placeholder = `${f.dataset.find}${letterKeysOn() && f === finder ? "  [/]" : ""}`;
     }
+    // While the list's Find has focus, its Clear shows the Esc that clears it.
+    document.body.classList.toggle("infind", ae?.id === "snap-find");
 }
 
 /**

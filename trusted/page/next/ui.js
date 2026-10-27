@@ -3,6 +3,8 @@
  * key hint boxes, and number and age formatting. Text from a pull request is always set as text.
  */
 
+import { SHAPES } from "./marks.js";
+
 /**
  * An element with attributes and children; `on<event>` attributes become listeners, and a null,
  * undefined or false child or attribute is left out.
@@ -20,22 +22,24 @@ export function el(tag, attrs = {}, ...children) {
             node.setAttribute(key, value === true ? "" : value);
         }
     }
-    node.append(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
+    append(node, children);
     return node;
 }
 
-// One silhouette per meaning, 12 px, drawn in currentColor.
+// Appends children, arrays flattened, null, undefined and false left out.
+function append(node, children) {
+    for (const c of children) {
+        if (Array.isArray(c)) {
+            append(node, c);
+        } else if (c !== null && c !== undefined && c !== false) {
+            node.append(c);
+        }
+    }
+}
+
+// The page's other marks, beside the status and decision shapes (marks.js), 12 px, in currentColor.
 const MARKS = {
-    changed: '<path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/>',
-    moved: '<path d="M6 1.3 10.7 6 6 10.7 1.3 6Z" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="6" r="1.6" fill="currentColor"/>',
-    new: '<circle cx="6" cy="6" r="5.5" fill="currentColor"/><path d="M6 3v6M3 6h6" stroke="#fff" stroke-width="1.6"/>',
-    unseeded:
-        '<circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="2 1.6"/><path d="M6 3.4v5.2M3.4 6h5.2" stroke="currentColor" stroke-width="1.5"/>',
-    removed:
-        '<rect x=".7" y=".7" width="10.6" height="10.6" rx="2.6" fill="currentColor"/><path d="M3 6h6" stroke="#fff" stroke-width="1.8"/>',
-    failed: '<path d="M6 .8 11.5 10.8H.5Z" fill="currentColor"/><path d="M6 4.2v3.4" stroke="#fff" stroke-width="1.4"/><circle cx="6" cy="9.1" r=".8" fill="#fff"/>',
-    wavy: '<path d="M.8 7c1.3-3 2.7-3 4 0s2.7 3 4 0 1.8-2.4 2.4-2.4" fill="none" stroke="currentColor" stroke-width="1.5"/>',
-    accept: '<path d="M1.8 6.3 4.7 9.1 10.3 3" fill="none" stroke="currentColor" stroke-width="1.9"/>',
+    ...SHAPES,
     open: '<circle cx="6" cy="6" r="4.8" fill="none" stroke="currentColor" stroke-width="1.5"/>',
     half: '<circle cx="6" cy="6" r="4.8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 1.2a4.8 4.8 0 0 1 0 9.6Z" fill="currentColor"/>',
     full: '<circle cx="6" cy="6" r="5.3" fill="currentColor"/>',
