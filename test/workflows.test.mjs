@@ -41,6 +41,26 @@ describe("the monorepo's workflows", () => {
         expect(job(workflow("ci.yml"), "story-tests-merge", "all-checks")).toContain(name);
     });
 
+    it("ci.yml's story tests take a pull request's pictures with the base branch's capture code", () => {
+        const ci = job(workflow("ci.yml"), "story-tests", "story-tests-merge");
+        const step = ci.slice(ci.indexOf("- name: Use the base branch's capture code"));
+        expect(step).toMatch(/^[^\n]*\n\s+if: [^\n]*github\.event_name == 'pull_request'/);
+        expect(step).toContain("CAPTURE_CODE: visual-review/capture visual-review/trusted");
+        expect(step).toContain("git archive HEAD^1 $CAPTURE_CODE | tar -x");
+        // every package export (the vitest integration the stories import) lives in the swapped directories
+        const exports = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).exports;
+        for (const [key, target] of Object.entries(exports)) {
+            if (key === "./package.json") continue;
+            expect(target.default).toMatch(/^\.\/(capture|trusted)\//);
+        }
+        // the swap comes after the checkout (which fetches HEAD^1) and before anything installs or runs
+        const swap = ci.indexOf("- name: Use the base branch's capture code");
+        expect(ci.indexOf("fetch-depth: 0")).toBeGreaterThan(0);
+        expect(ci.indexOf("fetch-depth: 0")).toBeLessThan(swap);
+        expect(ci.indexOf("pnpm install")).toBeGreaterThan(swap);
+        expect(ci.indexOf("VISUAL_REVIEW_STORY_OUT")).toBeGreaterThan(swap);
+    });
+
     it("ci.yml's gate step runs the base branch's gate with the template's arguments", () => {
         const args = /gate (--captures .*)$/m.exec(renderTemplate("visual-review.yml", values))[1];
         const ci = workflow("ci.yml");
