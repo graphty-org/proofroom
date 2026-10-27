@@ -470,7 +470,48 @@ async function shootOnce(browser, url, { delay, waitFor }) {
 export const MAX_SHOT_HEIGHT = 8192;
 
 /** What every screenshot is taken with. */
-export const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+
+/**
+ * Makes a story iframe's document scrollable by one pixel below everything it draws, or takes
+ * that back. A top frame (iframe.html shot as the page) always scrolls on the compositor, so
+ * Chromium draws its `position: fixed` elements (a popover, a menu, a toast) in layers of their
+ * own, apart from the scrolling page; an iframe whose content fits does not scroll, so it drew
+ * them into the page's layer and their blurred shadows came out one level darker. The pixel is
+ * added after the frame was measured and lies outside every shot; headless Chromium draws no
+ * scrollbar, so nothing moves.
+ *
+ * A scrolling document gets a layer of its own, and an iframe's is transparent where the top frame's
+ * is white (its base background), so the anti-aliased edges of a rounded border were blended onto
+ * transparency and came out one level off. A document that paints no background of its own (html
+ * and body both transparent) gets the top frame's white while the pixel is there.
+ * @param {boolean} on add the pixel, or remove it
+ * @returns {void}
+ */
+function scrollLikeTopFrame(on) {
+    const ID = "visual-review-scroll-pixel";
+    const MARK = "visualReviewBase";
+    const root = document.documentElement;
+    document.getElementById(ID)?.remove();
+    if (MARK in root.dataset) {
+        root.style.backgroundColor = root.dataset[MARK];
+        delete root.dataset[MARK];
+    }
+    if (on) {
+        const clear = (el) => {
+            const style = document.defaultView.getComputedStyle(el);
+            return style.backgroundImage === "none" && /^rgba\(.*,\s*0\)$|^transparent$/.test(style.backgroundColor);
+        };
+        if (clear(root) && (!document.body || clear(document.body))) {
+            root.dataset[MARK] = root.style.backgroundColor;
+            root.style.backgroundColor = "white";
+        }
+        const pixel = document.createElement("div");
+        pixel.id = ID;
+        pixel.style.cssText = `position:absolute;left:0;top:${Math.max(root.scrollHeight, root.clientHeight)}px;width:1px;height:1px;visibility:hidden`;
+        root.append(pixel);
+    }
+}
 
 /**
  * A screenshot of the whole page, however big. A page within the viewport is one screenshot of
@@ -493,10 +534,21 @@ export async function screenshotWholePage(page, frame = page) {
         return { width: most("Width"), height: most("Height") };
     });
     const vp = page.viewportSize();
-    if (size.width <= vp.width && size.height <= vp.height) {
-        return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+    const inFrame = frame !== page;
+    if (inFrame) {
+        await frame.evaluate(scrollLikeTopFrame, true);
+        await frame.evaluate(twoFramesInPage);
     }
-    return shootTiles(page, frame, size, vp);
+    try {
+        if (size.width <= vp.width && size.height <= vp.height) {
+            return await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+        }
+        return await shootTiles(page, frame, size, vp);
+    } finally {
+        if (inFrame) {
+            await frame.evaluate(scrollLikeTopFrame, false);
+        }
+    }
 }
 
 /**
@@ -504,7 +556,7 @@ export async function screenshotWholePage(page, frame = page) {
  * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @returns {Promise<void>} once they are drawn
  */
-export const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
+const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
 
 /**
  * In the page: waits for two frames to be drawn.
@@ -693,7 +745,7 @@ export function pinFixedInPage(undo) {
  *     for a frame), shot from the page's top left
  * @returns {Promise<Buffer>} the PNG
  */
-export async function shootTiles(page, frame, size, vp) {
+async function shootTiles(page, frame, size, vp) {
     const tiles = [];
     try {
         // Inside the try, so a failure still puts every style back (an undo of nothing does nothing).

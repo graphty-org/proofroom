@@ -30,29 +30,12 @@ import {
     pinnedFonts,
     provenance,
     SCALE,
-    SHOT,
-    shootTiles,
+    screenshotWholePage,
     storySettings,
     toolVersion,
-    twoFrames,
     VIEWPORT,
 } from "./capture.mjs";
 import { unstableLine } from "./story-outcomes.mjs";
-
-/* global document -- read only inside the page */
-
-/**
- * The size a full-page screenshot of the frame's document would have, as capture.mjs measures it.
- * @param {import("playwright").Frame} frame the tester iframe
- * @returns {Promise<{ width: number, height: number }>} in CSS px
- */
-const measure = (frame) =>
-    frame.evaluate(() => {
-        const [b, d] = [document.body, document.documentElement];
-        const most = (key) =>
-            Math.max(...[b, d].flatMap((e) => [e[`scroll${key}`], e[`offset${key}`], e[`client${key}`]]));
-        return { width: most("Width"), height: most("Height") };
-    });
 
 /**
  * A play function's real pointer stays where it last was and hovers whatever is under it;
@@ -63,73 +46,15 @@ const measure = (frame) =>
 const park = (page) => page.mouse.move(-1, -1);
 
 /**
- * The tester iframe's whole document, as capture.mjs's screenshotWholePage shoots iframe.html:
- * a throwaway shot, two frames, measure, then the outer page clipped to the iframe, which sits at
- * the top left at scale 1 when the page's viewport is the iframe's size. A story taller or wider
- * than the viewport is shot in viewport-sized tiles, scrolling the iframe's document to each and
- * stitching them, so its layout keeps the 1200 x 900 viewport (its `vh` units too), as
- * capture.mjs's full-page shot does; growing the frame instead made `vh` follow it.
+ * The tester iframe's whole document, shot as capture.mjs shoots its story iframe, with the
+ * pointer moved off the page first.
  * @param {import("playwright").Page} page vitest's orchestrator page
  * @param {import("playwright").Frame} frame the tester iframe
  * @returns {Promise<Buffer>} the PNG
  */
 async function shootFrame(page, frame) {
     await park(page);
-    await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, width: 1, height: 1 } });
-    await twoFrames(frame);
-    const size = await measure(frame);
-    await frame.evaluate(scrollLikeTopFrame, true);
-    try {
-        await twoFrames(frame);
-        const view = { x: 0, y: 0, ...VIEWPORT };
-        if (size.width <= VIEWPORT.width && size.height <= VIEWPORT.height) {
-            return await page.screenshot({ ...SHOT, clip: { ...view, ...size } });
-        }
-        return await shootTiles(page, frame, size, VIEWPORT);
-    } finally {
-        await frame.evaluate(scrollLikeTopFrame, false);
-    }
-}
-
-/**
- * Makes the tester iframe's document scrollable by one pixel below everything it draws, or takes
- * that back. iframe.html, the top frame capture.mjs shoots, always scrolls on the compositor, so
- * Chromium draws its `position: fixed` elements (a popover, a menu, a toast) in layers of their
- * own, apart from the scrolling page; an iframe whose content fits does not scroll, so it drew
- * them into the page's layer and their blurred shadows came out one level darker. The pixel is
- * added after the frame was measured and lies outside every shot; headless Chromium draws no
- * scrollbar, so nothing moves.
- *
- * A scrolling document gets a layer of its own, and an iframe's is transparent where the top frame's
- * is white (its base background), so the anti-aliased edges of a rounded border were blended onto
- * transparency and came out one level off. A document that paints no background of its own (html
- * and body both transparent) gets the top frame's white while the pixel is there.
- * @param {boolean} on add the pixel, or remove it
- * @returns {void}
- */
-function scrollLikeTopFrame(on) {
-    const ID = "visual-review-scroll-pixel";
-    const MARK = "visualReviewBase";
-    const root = document.documentElement;
-    document.getElementById(ID)?.remove();
-    if (MARK in root.dataset) {
-        root.style.backgroundColor = root.dataset[MARK];
-        delete root.dataset[MARK];
-    }
-    if (on) {
-        const clear = (el) => {
-            const style = document.defaultView.getComputedStyle(el);
-            return style.backgroundImage === "none" && /^rgba\(.*,\s*0\)$|^transparent$/.test(style.backgroundColor);
-        };
-        if (clear(root) && (!document.body || clear(document.body))) {
-            root.dataset[MARK] = root.style.backgroundColor;
-            root.style.backgroundColor = "white";
-        }
-        const pixel = document.createElement("div");
-        pixel.id = ID;
-        pixel.style.cssText = `position:absolute;left:0;top:${Math.max(root.scrollHeight, root.clientHeight)}px;width:1px;height:1px;visibility:hidden`;
-        root.append(pixel);
-    }
+    return screenshotWholePage(page, frame);
 }
 
 /**
