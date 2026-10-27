@@ -321,7 +321,15 @@ export function installFinish(app) {
                       id === app.openId ? [" ", control(app, "gofirst", { zone: "box" })] : null,
                   )
                 : null,
-            el("p", {}, el("b", {}, "Will commit:"), ` ${commitLine(t)}`),
+            el("p", {}, el("b", {}, "Will commit:"), ` ${commitLine(t, prepared)}`),
+            prepared?.opened
+                ? el(
+                      "p",
+                      {},
+                      el("b", {}, "Opened first:"),
+                      ` ${prepared.opened}, holding the images; it cannot merge until you sign.`,
+                  )
+                : null,
             rejects.length > 0 || (!seed && f.acceptNotes > 0)
                 ? [
                       toFile(t)
@@ -346,13 +354,17 @@ export function installFinish(app) {
         ];
     }
 
-    function commitLine(t) {
+    function commitLine(t, prepared) {
         const f = t.finish;
         // Under plain git the rejects file is committed too, so the line is the branch's even then.
         if (f.accepts + f.excludes === 0 && !(toFile(t) && f.rejects > 0)) {
             return f.rejects > 0 ? "nothing; only rejects are posted." : "nothing.";
         }
         const what = `${fmt(f.accepts)} accepted (${fmt(f.notOpened)} not opened), ${fmt(f.excludes)} excluded`;
+        if (t.pr === null && !t.localBranch && prepared?.signs === "change") {
+            // A seed statement: the run's own seed branch (a new one has a random name), opened first.
+            return `${what}, to this run's seed branch as ${committer(t)}, with its pull request.`;
+        }
         if (t.pr === null && !t.localBranch) {
             const branch = t.candidate
                 ? `visual/approve-${t.candidate.commit.slice(0, 12)}`
@@ -615,7 +627,9 @@ export function installFinish(app) {
                     running = null;
                     app.say(
                         err?.name === "NotAllowedError" || err?.name === "AbortError"
-                            ? "Passkey cancelled: nothing was changed."
+                            ? prepared.opened
+                                ? `Passkey cancelled: ${prepared.opened} is open with the images and no approval, so it cannot merge. Finish again to sign it.`
+                                : "Passkey cancelled: nothing was changed."
                             : (passkeyWrongHost(t.passkey?.keys ?? []) ??
                                   `Passkey failed (${err?.message ?? err}): nothing was changed.`),
                         "err",
