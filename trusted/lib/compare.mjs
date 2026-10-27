@@ -18,10 +18,12 @@ import { threadId } from "node:worker_threads";
 // ponytail: pngjs until milestone 3 needs a dependency-free decoder
 import { PNG } from "pngjs";
 
+import { grow, regions } from "../page/spot.js";
 import pixelmatch from "../vendor/pixelmatch.mjs";
 import { checkLine, fileName, judgeLine, judgeSources, loadSettings, storySettings } from "./compare-run.mjs";
 import { CONFIG_FILE, loadConfig, repoRoot } from "./config.mjs";
 import { outcome, resultLine } from "./result-line.mjs";
+import { MAX_AREAS } from "./results.mjs";
 
 /** Chromatic's default `diffThreshold`, used when a story sets none. */
 export const DEFAULT_THRESHOLD = 0.063;
@@ -66,14 +68,17 @@ export async function readBaseline(path) {
  * Compares a capture with its baseline.
  * @param {Buffer} baseline PNG bytes
  * @param {Buffer} capture PNG bytes
- * @param {{ threshold: number, includeAA: boolean }} options pixelmatch's threshold (0..1) and
- *     whether anti-aliased pixels count as changed
+ * @param {{ threshold: number, includeAA: boolean, areas?: boolean, moved?: boolean }} options
+ *     pixelmatch's threshold (0..1) and whether anti-aliased pixels count as changed; `areas` also
+ *     finds the changed areas of a pair with changed pixels (or of any pair whose bytes differ,
+ *     with `moved`), as the server's pictures find them
  * @returns {{ status: "unchanged" | "changed", baseline: string, capture: string,
  *     size: number[] | null, baselineSize: number[] | null, changedPixels: number,
- *     bbox: number[] | null, exact: boolean }} sizes are [width, height]; `exact` is whether every
- *     RGBA byte of the capture is the baseline's, which equal bytes imply and the threshold ignores
+ *     bbox: number[] | null, exact: boolean, areas?: number[][] }} sizes are [width, height];
+ *     `exact` is whether every RGBA byte of the capture is the baseline's, which equal bytes imply
+ *     and the threshold ignores; `areas` the changed areas, largest first, when asked for
  */
-export function compareImages(baseline, capture, { threshold, includeAA }) {
+export function compareImages(baseline, capture, { threshold, includeAA, areas = false, moved = false }) {
     const hashes = { baseline: sha256(baseline), capture: sha256(capture) };
     if (hashes.baseline === hashes.capture) {
         const size = pngSize(capture);
@@ -81,7 +86,16 @@ export function compareImages(baseline, capture, { threshold, includeAA }) {
     }
     const a = PNG.sync.read(baseline);
     const b = PNG.sync.read(capture);
-    const { changedPixels, bbox } = diffPixels(a, b, { threshold, includeAA });
+    const { changedPixels, bbox, mask } = diffPixels(a, b, { threshold, includeAA });
+    const sameSize = a.width === b.width && a.height === b.height;
+    // Of the mask the diff already made when both are one size; otherwise of both padded, as the
+    // server's picture job pads them.
+    const found =
+        areas && (changedPixels > 0 || moved)
+            ? sameSize
+                ? areasOf(mask, a.width, a.height)
+                : areasOf(paddedPair(a, b, { threshold, includeAA }).mask, Math.max(a.width, b.width), Math.max(a.height, b.height))
+            : null;
     return {
         status: changedPixels === 0 ? "unchanged" : "changed",
         ...hashes,
@@ -89,8 +103,47 @@ export function compareImages(baseline, capture, { threshold, includeAA }) {
         baselineSize: [a.width, a.height],
         changedPixels,
         bbox,
-        exact: a.width === b.width && a.height === b.height && a.data.equals(b.data),
+        exact: sameSize && a.data.equals(b.data),
+        ...(found && { areas: found }),
     };
+}
+
+/**
+ * The changed areas of a pixelmatch mask: its changed pixels grown by GROW (spot.js), each separate
+ * region's box, largest first, at most as many as results.json holds.
+ * @param {ArrayLike<number>} mask RGBA, a changed pixel opaque
+ * @param {number} w its width
+ * @param {number} h its height
+ * @returns {number[][]} the boxes, each [x, y, width, height]
+ */
+export const areasOf = (mask, w, h) => regions(grow(mask, w, h), w, h).slice(0, MAX_AREAS);
+
+/**
+ * Both decoded images padded top-left with transparent pixels to the larger size, as the page pads
+ * them, and pixelmatch's mask of the two.
+ * @param {{ width: number, height: number, data: Buffer }} a the decoded baseline
+ * @param {{ width: number, height: number, data: Buffer }} b the decoded capture
+ * @param {{ threshold: number, includeAA: boolean }} options pixelmatch's settings
+ * @returns {{ width: number, height: number, pa: Buffer, pb: Buffer, mask: Buffer }} the size, both
+ *     padded images' RGBA, and the mask (a changed pixel opaque)
+ */
+export function paddedPair(a, b, { threshold, includeAA }) {
+    const width = Math.max(a.width, b.width);
+    const height = Math.max(a.height, b.height);
+    const pad = (img) => {
+        if (img.width === width && img.height === height) {
+            return img.data;
+        }
+        const out = Buffer.alloc(width * height * 4);
+        for (let y = 0; y < img.height; y++) {
+            img.data.copy(out, y * width * 4, y * img.width * 4, (y + 1) * img.width * 4);
+        }
+        return out;
+    };
+    const [pa, pb] = [pad(a), pad(b)];
+    const mask = Buffer.alloc(width * height * 4);
+    pixelmatch(pa, pb, mask, width, height, { threshold, includeAA, diffMask: true });
+    return { width, height, pa, pb, mask };
 }
 
 /**
@@ -99,7 +152,8 @@ export function compareImages(baseline, capture, { threshold, includeAA }) {
  * @param {PNG} a the decoded baseline
  * @param {PNG} b the decoded capture
  * @param {{ threshold: number, includeAA: boolean }} options pixelmatch's settings
- * @returns {{ changedPixels: number, bbox: number[] | null }} the count and the box around them
+ * @returns {{ changedPixels: number, bbox: number[] | null, mask: Buffer }} the count, the box
+ *     around them, and pixelmatch's mask of the overlap
  */
 function diffPixels(a, b, options) {
     const w = Math.min(a.width, b.width);
@@ -110,7 +164,7 @@ function diffPixels(a, b, options) {
     let changedPixels = pixelmatch(crop(a, w, h), crop(b, w, h), mask, w, h, { ...options, diffMask: true });
 
     let [x0, y0, x1, y1] = [W, H, -1, -1];
-    const grow = (x, y) => {
+    const extend = (x, y) => {
         x0 = Math.min(x0, x);
         y0 = Math.min(y0, y);
         x1 = Math.max(x1, x);
@@ -120,7 +174,7 @@ function diffPixels(a, b, options) {
         // With diffMask, pixelmatch paints only the counted pixels, so opaque means changed.
         for (let i = 3; i < mask.length; i += 4) {
             if (mask[i] !== 0) {
-                grow(((i - 3) / 4) % w, Math.floor((i - 3) / 4 / w));
+                extend(((i - 3) / 4) % w, Math.floor((i - 3) / 4 / w));
             }
         }
     }
@@ -129,15 +183,15 @@ function diffPixels(a, b, options) {
         changedPixels += padding;
         // The padding is the canvas outside the overlap: right of it, below it, or both.
         if (W > w) {
-            grow(w, 0);
-            grow(W - 1, H - 1);
+            extend(w, 0);
+            extend(W - 1, H - 1);
         }
         if (H > h) {
-            grow(0, h);
-            grow(W - 1, H - 1);
+            extend(0, h);
+            extend(W - 1, H - 1);
         }
     }
-    return { changedPixels, bbox: x1 < 0 ? null : [x0, y0, x1 - x0 + 1, y1 - y0 + 1] };
+    return { changedPixels, bbox: x1 < 0 ? null : [x0, y0, x1 - x0 + 1, y1 - y0 + 1], mask };
 }
 
 /**
@@ -175,8 +229,9 @@ function crop(img, w, h) {
  *     when the story is gone (named as when a story was shot twice)
  * @returns {{ status: "unchanged" | "moved" | "changed" | "new" | "unseeded" | "removed", flaky: boolean,
  *     baseline: string | null, capture: string | null, size: number[] | null,
- *     baselineSize: number[] | null, changedPixels: number | null, bbox: number[] | null }}
- *     `flaky` is always false, kept for the gates of older versions, which require it
+ *     baselineSize: number[] | null, changedPixels: number | null, bbox: number[] | null,
+ *     areas?: number[][] }} `flaky` is always false, kept for the gates of older versions, which
+ *     require it; `areas` are a changed (or moved, other bytes) pair's changed areas, largest first
  */
 export function classify({ baseline, first, reference = null, threshold, includeAA, moved = false }) {
     const options = { threshold, includeAA };
@@ -194,7 +249,8 @@ export function classify({ baseline, first, reference = null, threshold, include
             size: pngSize(first),
         };
     }
-    const r = compareImages(baseline, first, options);
+    // The changed areas of a pair the page shows as one: changed, or moved with other bytes.
+    const r = compareImages(baseline, first, { ...options, areas: true, moved });
     const status = r.status === "unchanged" && moved ? "moved" : r.status;
     return { ...r, status, flaky: false };
 }

@@ -92,11 +92,15 @@ each snapshot is its result; earlier lines for the same snapshot are its earlier
 Besides the fields every capture has, an item can carry:
 
 - `areas`: the changed areas, each `[x, y, width, height]` in image pixels, largest first.
-- `pictures`: the pictures made for the item, as `{ "<kind>": "<file>.webp" }`, beside the images.
+- `pictures`: the list pictures `run` made for the item, as `{ "<kind>": "<file>.webp" }`, beside
+  the images. The kinds are `plain` (the new image, or a removed snapshot's baseline), and for a
+  changed pair also `spot` (spotlit), `zoom` and `both` (zoomed toward the change, plain and
+  spotlit), and `row-plain` and `row-spot` (cropped to the largest change, at the list row's shape).
 - `attempts`: the earlier attempts of the run, oldest first, each `{ status, capture, changedPixels,
 reason, console }` (and `from` for a renamed story).
 
-and the file can name the browser that drew the images, `renderer: { name, version }`. All of them
+and the file can name the browser that drew the images, `renderer: { name, version }`, and the one
+that drew the reference capture compare was given, `baselineRenderer`, in the same form. All of them
 are optional: a reader must work without them. `flaky` is always written, and always `false`:
 proofroom shoots each snapshot once per attempt and never calls one flaky. Captures made by older
 versions, which shot a story twice when it differed, can hold `true` there.

@@ -42,6 +42,7 @@ export const COVERS = {
         "usetoken",
         "retry",
     ],
+    "renderer.page.test.mjs": ["rendereranyway", "recapture", "listmenu", "junit"],
     "keys.page.test.mjs": ["pane1", "pane2", "back", "openrow", "openchg", "nextchange", "find"],
     "viewer.page.test.mjs": [
         "view-side",

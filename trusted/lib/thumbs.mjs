@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 
 import { cropOf, dimmed, grow, regions, ROW, rowCrop } from "../page/spot.js";
-import pixelmatch from "../vendor/pixelmatch.mjs";
+import { paddedPair } from "./compare.mjs";
+import { MAX_AREAS } from "./results.mjs";
 
 // A grid tile is about 190 CSS pixels wide: 400 image pixels keep it sharp on a 2x screen, at
 // about a thirtieth of a 2400 x 1800 capture's memory once decoded.
@@ -29,12 +30,11 @@ const THUMB_WIDTH = 400;
  * @returns {Buffer} the smaller PNG
  */
 export function thumbnail(bytes, width = THUMB_WIDTH) {
-    return plainOf(PNG.sync.read(bytes), width);
+    return PNG.sync.write(plainOf(PNG.sync.read(bytes), width));
 }
 
-// A decoded image whole, at most `width` pixels across.
-const plainOf = (src, width = THUMB_WIDTH) =>
-    PNG.sync.write(shrink(src, [0, 0, src.width, src.height], Math.min(width, src.width)));
+// A decoded image whole, at most `width` pixels across, as RGBA pixels.
+const plainOf = (src, width = THUMB_WIDTH) => shrink(src, [0, 0, src.width, src.height], Math.min(width, src.width));
 
 /**
  * The part `[x, y, width, height]` (fractions allowed) of decoded RGBA pixels, scaled to `w` pixels
@@ -111,44 +111,33 @@ export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 export const autoKind = (facts) => (facts.areas > 0 && facts.zoom >= 2 ? "row-spot" : "spot");
 
 /**
- * One job's pictures, as the page draws them (spotThumb in page/review.js). For a pair: decoded
- * once, both padded top-left to the larger size as the page pads them, compared, the changed
- * pixels grown by GROW, and every kind of PAIR_KINDS made from that, with what the row needs to
- * know about its areas.
+ * One job's pictures, as the page draws them (spotThumb in page/review.js), as RGBA pixels. For a
+ * pair: decoded once, both padded top-left to the larger size as the page pads them, compared, the
+ * changed pixels grown by GROW, and every kind of PAIR_KINDS made from that, with what the row
+ * needs to know about its areas. The server encodes them as PNG (`pictures`); `run` as WebP, in
+ * capture's Chromium.
  * @param {{ image: Uint8Array } | { baseline: Uint8Array, capture: Uint8Array, threshold: number,
  *     includeAA: boolean }} job one image, or a pair with pixelmatch's options as the item has them
- * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number } }}
- *     a PNG per kind; for a pair, the row crop, its zoom against the unzoomed picture, and how many
- *     separate areas changed
+ * @returns {{ images: Record<string, { width: number, height: number, data: Uint8Array }>,
+ *     facts?: { crop: number[], zoom: number, areas: number } }} the pixels per kind; for a pair,
+ *     the row crop, its zoom against the unzoomed picture, and how many separate areas changed
  */
-export function pictures(job) {
+export function pictureParts(job) {
     if (!("baseline" in job)) {
-        return { images: { plain: thumbnail(Buffer.from(job.image)) } };
+        return { images: { plain: plainOf(PNG.sync.read(Buffer.from(job.image))) } };
     }
     const [a, b] = [PNG.sync.read(Buffer.from(job.baseline)), PNG.sync.read(Buffer.from(job.capture))];
-    const width = Math.max(a.width, b.width);
-    const height = Math.max(a.height, b.height);
-    const pad = (img) => {
-        if (img.width === width && img.height === height) {
-            return img.data;
-        }
-        const out = Buffer.alloc(width * height * 4);
-        for (let y = 0; y < img.height; y++) {
-            img.data.copy(out, y * width * 4, y * img.width * 4, (y + 1) * img.width * 4);
-        }
-        return out;
-    };
-    const [pa, pb] = [pad(a), pad(b)];
-    const mask = Buffer.alloc(width * height * 4);
-    pixelmatch(pa, pb, mask, width, height, { threshold: job.threshold, includeAA: job.includeAA, diffMask: true });
+    const { width, height, pb, mask } = paddedPair(a, b, job);
     const grown = grow(mask, width, height);
-    const boxes = regions(grown, width, height);
+    // At most as many areas as compare writes into results.json, so a row's facts are the same
+    // whichever made them.
+    const boxes = regions(grown, width, height).slice(0, MAX_AREAS);
     const near = cropOf(boxes, width, height);
     const { crop, zoom } = rowCrop(boxes, width, height);
     const whole = [0, 0, width, height];
     const plain = { width, height, data: pb };
     const lit = { width, height, data: dimmed(pb, grown) };
-    const tile = (src, rect, h) => PNG.sync.write(shrink(src, rect, THUMB_WIDTH, h));
+    const tile = (src, rect, h) => shrink(src, rect, THUMB_WIDTH, h);
     return {
         images: {
             spot: tile(lit, whole),
@@ -161,6 +150,34 @@ export function pictures(job) {
         },
         facts: { crop, zoom, areas: boxes.length },
     };
+}
+
+/**
+ * One job's pictures as PNG files (pictureParts).
+ * @param {Parameters<typeof pictureParts>[0]} job one image, or a pair
+ * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number } }}
+ *     a PNG per kind, and for a pair what pictureParts found
+ */
+export function pictures(job) {
+    const { images, facts } = pictureParts(job);
+    const png = Object.fromEntries(Object.entries(images).map(([k, img]) => [k, PNG.sync.write(img)]));
+    return facts ? { images: png, facts } : { images: png };
+}
+
+/**
+ * What the row needs to know about a changed pair's areas (its row crop, zoom and area count),
+ * from the areas compare wrote into its item, without a picture job.
+ * @param {{ areas?: number[][], size?: number[] | null, baselineSize?: number[] | null }} item the item
+ * @returns {{ crop: number[], zoom: number, areas: number } | null} the facts, or null when the
+ *     item has no areas or sizes
+ */
+export function factsOf(item) {
+    if (!Array.isArray(item.areas) || !item.size || !item.baselineSize) {
+        return null;
+    }
+    const w = Math.max(item.size[0], item.baselineSize[0]);
+    const h = Math.max(item.size[1], item.baselineSize[1]);
+    return { ...rowCrop(item.areas, w, h), areas: item.areas.length };
 }
 
 const FLAG = "--visual-review-thumbnails";

@@ -31,7 +31,14 @@
  *
  * The output directory gets the capture of every changed, moved, new and unseeded item, and
  * `baselines/<file>`: the baseline each changed and removed item was compared with (and a moved
- * item's, when its bytes differ from the capture's).
+ * item's, when its bytes differ from the capture's). Each changed item carries its changed areas
+ * (`areas`). Given an encoder (`run` passes capture's Chromium), every item that needs a decision
+ * also gets its list pictures, `<file without .png>.<kind>.webp` beside its image, named in its
+ * `pictures`, so the review server makes none for it.
+ *
+ * The capture's start line names the browser that drew it (`renderer`), which results.json keeps;
+ * the reference capture's, when it names one, is kept as `baselineRenderer`: the renderer the
+ * default branch's captures, and so its baselines, were drawn with.
  */
 
 import { execFileSync } from "node:child_process";
@@ -46,6 +53,7 @@ import { classify, DEFAULT_THRESHOLD, pngSize, readBaseline, sha256 } from "./co
 import { junitFromResults } from "./junit.mjs";
 import { itemsFromLines, resultLine } from "./result-line.mjs";
 import { validateResults } from "./results.mjs";
+import { PAIR_KINDS, pictureParts } from "./thumbs.mjs";
 
 const MAX_CONSOLE = 100;
 const MAX_LINE = 2000;
@@ -290,7 +298,9 @@ export async function provenance() {
  * Only complete, valid results are used, and only `new` and `unseeded` items whose file hashes to
  * the capture results.json names.
  * @param {string | null} dir the earlier capture's directory, or null
- * @returns {Promise<{ images: Map<string, Buffer>, runId: number | null }>} images by file name
+ * @returns {Promise<{ images: Map<string, Buffer>, runId: number | null,
+ *     renderer: { name: string, version: string } | null }>} images by file name, and the
+ *     capture's run and renderer
  */
 export async function loadReference(dir) {
     const images = new Map();
@@ -301,7 +311,7 @@ export async function loadReference(dir) {
         // No reference downloaded: every story without a baseline is new.
     }
     if (!results || validateResults(results).length > 0 || !results.complete) {
-        return { images, runId: null };
+        return { images, runId: null, renderer: null };
     }
     // Both statuses mean "captured with no baseline, hash recorded". Reading only `new` made a story
     // alternate: a run that matched its reference says `unseeded`, so the next run found no image
@@ -312,7 +322,7 @@ export async function loadReference(dir) {
             images.set(item.file, bytes);
         }
     }
-    return { images, runId: results.runId };
+    return { images, runId: results.runId, renderer: results.renderer ?? null };
 }
 
 /**
@@ -555,6 +565,52 @@ export async function judgeLine(ctx, line) {
     return { ...withFrom, ...r, reason: null, console };
 }
 
+/** The statuses whose items the review page lists with a picture. */
+const PICTURED = new Set(["changed", "moved", "new", "unseeded", "removed"]);
+
+/**
+ * Makes the list pictures of one judged item from the images compare kept in `out`, as the review
+ * server's picture job would (thumbs.mjs pictureParts), and writes them beside them: every kind of
+ * a pair whose bytes differ, the plain picture of an item with one image, none for an item the
+ * page does not picture.
+ * @param {string} out the output directory, holding the item's images
+ * @param {object} item the judged item
+ * @param {(images: Record<string, { width: number, height: number, data: Uint8Array }>) =>
+ *     Promise<Record<string, Buffer> | null>} encode encodes each kind's pixels as WebP, or
+ *     answers null to make none for this item
+ * @param {boolean} again an earlier attempt of the snapshot may have left pictures: delete them first
+ * @returns {Promise<object>} the item, with `pictures` naming the files when it has any
+ */
+export async function writePictures(out, item, encode, again) {
+    const stem = item.file.slice(0, -".png".length);
+    const name = (kind) => `${stem}.${kind}.webp`;
+    if (again) {
+        await Promise.all(PAIR_KINDS.map((k) => rm(join(out, name(k)), { force: true })));
+    }
+    if (!PICTURED.has(item.status)) {
+        return item;
+    }
+    const pair = item.baseline && item.capture && item.baseline !== item.capture;
+    const job = pair
+        ? {
+              baseline: await readFile(join(out, "baselines", item.file)),
+              capture: await readFile(join(out, item.file)),
+              threshold: item.threshold,
+              includeAA: item.includeAA,
+          }
+        : { image: await readFile(item.capture ? join(out, item.file) : join(out, "baselines", item.file)) };
+    const encoded = await encode(pictureParts(job).images);
+    if (!encoded) {
+        return item;
+    }
+    const pictures = {};
+    for (const [kind, bytes] of Object.entries(encoded)) {
+        await writeFile(join(out, name(kind)), bytes);
+        pictures[kind] = name(kind);
+    }
+    return { ...item, pictures };
+}
+
 /**
  * Writes how far a run is, counted from its result lines: `done` snapshots of `total` (the
  * capture's planned count, or more once a removed baseline is reported), the snapshot judged last,
@@ -591,14 +647,16 @@ async function writeProgress(file, start, written, ended) {
  *     lines: AsyncIterable<any>, reference?: string | null, ids?: Set<string> | null,
  *     junit?: string | null, prune?: boolean, print?: (line: object) => void,
  *     onResult?: (result: object, line: object | null) => void,
- *     log?: (line: string) => void, progress?: string | null }} options `captures` is where an image line's PNG is when it
+ *     log?: (line: string) => void, progress?: string | null,
+ *     encode?: Parameters<typeof writePictures>[2] | null }} options `captures` is where an image line's PNG is when it
  *     carries no bytes; `ids` judges only these snapshots (`<id>` or `<id>.<mode>`), and then
  *     neither removed baselines, results.json nor JUnit are written; `junit` is the JUnit file's
  *     path (default `<out>/junit.xml`, null for none); `prune` deletes the capture of a snapshot
  *     that needs no image from `out`, for a capture that wrote it there (`run`); `onResult` sees
  *     every result line with the capture line it judged (null for a removed baseline or a broken
  *     rename) before the next line is read; `progress` is a file rewritten after every result line
- *     with how far the run is (writeProgress), for a page following it
+ *     with how far the run is (writeProgress), for a page following it; `encode` makes each item's
+ *     list pictures (writePictures), none without it
  * @returns {Promise<{ results: object | null, passed: boolean, lines: object[] }>} results.json's
  *     contents (null with `ids`), whether every snapshot passed, and every result line
  */
@@ -616,6 +674,7 @@ export async function compareRun({
     onResult = () => {},
     log = console.error,
     progress = null,
+    encode = null,
 }) {
     await mkdir(join(out, "baselines"), { recursive: true });
     // A run of a few snapshots (`ids`) adds its lines to the run they belong to.
@@ -627,12 +686,28 @@ export async function compareRun({
     const seeded = existing.size > 0;
     const written = [];
     const attempts = new Map();
+    // Pictures save the server work and are never needed: an encoder that fails is reported once
+    // and makes none for the rest of the run, which the server then makes as for compare alone.
+    let encodeFailed = false;
+    const encodeOnce = async (images) => {
+        if (encodeFailed) {
+            return null;
+        }
+        try {
+            return await encode(images);
+        } catch (err) {
+            encodeFailed = true;
+            log(`warning: no list pictures made, the review server makes them: ${err?.message ?? err}`);
+            return null;
+        }
+    };
     let start = null;
     let end = null;
 
-    const report = async (item, line) => {
-        const attempt = (attempts.get(item.file) ?? 0) + 1;
-        attempts.set(item.file, attempt);
+    const report = async (judged, line) => {
+        const attempt = (attempts.get(judged.file) ?? 0) + 1;
+        attempts.set(judged.file, attempt);
+        const item = encode ? await writePictures(out, judged, encodeOnce, attempt > 1) : judged;
         const result = resultLine(item, { project, attempt });
         written.push(result);
         await appendFile(join(out, RESULT_LINES), `${JSON.stringify(result)}\n`);
@@ -706,6 +781,7 @@ export async function compareRun({
         const results = {
             version: 1,
             ...header,
+            ...(refs.renderer && { baselineRenderer: refs.renderer }),
             project,
             seeded,
             reference: refs.runId,

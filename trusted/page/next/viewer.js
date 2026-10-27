@@ -11,7 +11,7 @@
 
 import { createStage } from "../viewer/stage.js";
 import { control, labelOf } from "./actions.js";
-import { badgesOf, decisionWords, layoutOf, sizeText } from "./list.js";
+import { badgeNode, badgesOf, decisionWords, layoutOf, sizeText } from "./list.js";
 import { makeLocator, moveToPressed } from "./locator.js";
 import { STATUS, statusMark } from "./marks.js";
 import { PANES, applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow, twoLevels } from "./panes.js";
@@ -516,7 +516,7 @@ export function createViewer(app, o = {}) {
             count > 1
                 ? [control(app, "nextarea", { zone: "iline" }), el("span", { class: "num keep", id: "area-at" }, text)]
                 : null,
-            badgesOf(app, s).map((b) => el("span", { class: "badge", title: b.title ?? null }, b.text)),
+            badgesOf(app, s).map(badgeNode),
             words ? el("span", { class: "keep" }, words) : null,
             el("span", { class: "muted asay" }, STATUS[s.status]?.say ?? ""),
             el("span", { class: "grow" }),

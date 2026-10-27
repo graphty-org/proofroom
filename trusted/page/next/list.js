@@ -98,6 +98,8 @@ export function snapsOf(answers, reviewable) {
                 // The capture's scale (CSS pixels per image pixel), for the viewer's real size.
                 scale: a.results?.scale ?? 1,
                 renderer: a.results?.renderer ?? null,
+                baselineRenderer: a.results?.baselineRenderer ?? null,
+                disagree: i.disagree === true,
                 look: look.get(i.file) ?? null,
                 decision: null,
                 before: false,
@@ -330,6 +332,7 @@ export function openList(app, model, wanted = {}) {
     lv.collapsed = collapsedAtStart(layoutOf({ ...lv, collapsed: new Set() }, model.snaps).groups, lv.show);
     lv.built = null;
     lv.newer = null;
+    lv.rendererAnyway = false;
     findBox().value = lv.find;
 }
 
@@ -352,6 +355,7 @@ export function listState() {
         visible: [],
         rowEls: new Map(),
         newer: null,
+        rendererAnyway: false,
         noMatch: false,
     };
 }
@@ -800,6 +804,7 @@ export function drawHead(app, h1) {
     }
     foldStatus(app, small ? h2 : h3);
     drawBanner(app);
+    drawRenderer(app);
     drawStale(app);
     $("snaps").classList.toggle("nopics", lv.pics.none);
 }
@@ -845,6 +850,58 @@ function drawStale(app) {
                   control(app, "updatefrom", { zone: "snaps-head", ctx: { id: c.id } }),
               ]
             : []),
+    );
+}
+
+const rendererName = (r, major) => `${r.name} ${major ? r.version.split(".")[0] : r.version}`;
+
+/**
+ * The first project of the open change whose capture was drawn by another renderer than its
+ * baselines (design 10), or null; never when either side does not say which drew it.
+ * @param {any} app the page
+ * @returns {{ capture: { name: string, version: string }, baselines: { name: string, version: string } } | null}
+ *     the two renderers
+ */
+export function rendererChange(app) {
+    const s = app.snaps.find(
+        (x) =>
+            x.renderer &&
+            x.baselineRenderer &&
+            (x.renderer.name !== x.baselineRenderer.name || x.renderer.version !== x.baselineRenderer.version),
+    );
+    return s ? { capture: s.renderer, baselines: s.baselineRenderer } : null;
+}
+
+/**
+ * Whether the renderer banner stands in for the rows: the renderers differ and the reader has not
+ * chosen Show the changes anyway for this change.
+ * @param {any} app the page
+ * @returns {boolean} the rows are hidden behind the banner
+ */
+export const rendererBlocked = (app) => !app.lv.rendererAnyway && rendererChange(app) !== null;
+
+// "These captures used Chromium 131; the baselines used Chromium 128": in place of the rows.
+function drawRenderer(app) {
+    const b = $("snap-renderer");
+    const r = rendererBlocked(app) ? rendererChange(app) : null;
+    b.hidden = !r;
+    $("snap-list").hidden = Boolean(r);
+    if (!r) {
+        b.replaceChildren();
+        return;
+    }
+    // The major versions say it, unless only a later part differs.
+    const major =
+        r.capture.name !== r.baselines.name || r.capture.version.split(".")[0] !== r.baselines.version.split(".")[0];
+    b.replaceChildren(
+        ic("failed", "c-changed"),
+        el(
+            "span",
+            { class: "grow" },
+            `These captures used ${rendererName(r.capture, major)}; the baselines used ${rendererName(r.baselines, major)}. Every image may differ.`,
+        ),
+        control(app, "rendereranyway", { zone: "snaps-head" }),
+        control(app, "recapture", { zone: "snaps-head" }),
     );
 }
 
@@ -978,7 +1035,8 @@ function pictureOf(app, s) {
  * A snapshot's badges, as its row and the viewer's item line show them.
  * @param {any} app the page
  * @param {any} s the snapshot
- * @returns {{ text: string, title?: string }[]} the badges
+ * @returns {{ text: string, title?: string, cls?: string, mark?: string }[]} the badges, with a
+ *     color class and a mark when they have one
  */
 export function badgesOf(app, s) {
     const out = [];
@@ -991,6 +1049,14 @@ export function badgesOf(app, s) {
             title: `Re-review: your earlier accept was replaced by ${app.list?.defaultBranch ?? "master"}'s baseline`,
         });
     }
+    if (s.disagree) {
+        out.push({
+            text: "attempts disagree",
+            title: "Its attempts in this run did not agree: Attempts in the details lists each",
+            cls: "other",
+            mark: "wavy",
+        });
+    }
     // Last, as the mockup orders them: the identical change's count.
     const pair = pairOf(s);
     if (pair && app.lv.grouping !== "same" && (app.lv.pairs.get(pair) ?? 0) > 1) {
@@ -998,6 +1064,20 @@ export function badgesOf(app, s) {
     }
     return out;
 }
+
+/**
+ * One badge, as its row and the viewer's item line draw it.
+ * @param {{ text: string, title?: string, cls?: string, mark?: string }} b the badge
+ * @returns {HTMLElement} the badge
+ */
+export const badgeNode = (b) =>
+    el(
+        "span",
+        { class: b.cls ? `badge ${b.cls}` : "badge", title: b.title ?? null },
+        // The mark carries the status color; the words stay in ink, as every status's do.
+        b.mark ? mark(b.mark, "c-other") : null,
+        b.text,
+    );
 
 // Line 4's badges: the first that fits after the change size, the rest as one "+N" chip.
 function badgeNodes(badges, room) {
@@ -1011,7 +1091,7 @@ function badgeNodes(badges, room) {
         return [chip(badges)];
     }
     return [
-        el("span", { class: "badge", title: badges[0].title ?? null }, badges[0].text),
+        badgeNode(badges[0]),
         badges.length > 1 ? chip(badges.slice(1)) : null,
     ];
 }
@@ -1641,13 +1721,15 @@ export function pictureItems(app) {
 }
 
 /**
- * The list menu's items: Accept all shown (N)..., Undo all decisions..., Copy link.
+ * The list menu's items: Accept all shown (N)..., Undo all decisions..., Download the comparison
+ * report (JUnit), Copy link.
  * @param {any} app the page
  * @returns {any[]} the items
  */
 export const listItems = (app) => [
     { id: "acceptshown", label: `Accept all shown (${fmt(shownUndecided(app).length)})...` },
     { id: "undoall", label: "Undo all decisions..." },
+    { id: "junit", label: "Download the comparison report (JUnit)" },
     { id: "listlink", label: "Copy link" },
 ];
 

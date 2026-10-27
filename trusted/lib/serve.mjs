@@ -67,7 +67,10 @@
  * processes as soon as a capture lands and kept on disk: one job per item, every kind of a changed
  * pair from one decode, queued in list order (component, then number), the change just opened
  * first. Each pair's row crop, zoom and area count are kept in memory and appended to one file,
- * `<tmp>/spots/areas.jsonl`, read once at start.
+ * `<tmp>/spots/areas.jsonl`, read once at start. A capture `run` made arrives with each item's
+ * pictures (its `pictures`, WebP files beside its images) and changed areas (`areas`): those are
+ * served as they are and no job is made for them. `GET /api/junit/<id>` answers a change's
+ * comparison report as a JUnit file to save.
  *
  * Safe filters (filters.mjs): an item whose capture is an image the owner already approved for the
  * same story and mode, in a review record or a change statement on the default branch or an open
@@ -150,7 +153,8 @@ import {
 } from "./filters.mjs";
 import { coupledGroups, inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
-import { autoKind, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
+import { junitXml } from "./junit.mjs";
+import { autoKind, factsOf, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
 import { USAGE_FILE } from "./usage.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -607,6 +611,9 @@ function compareWithBase(results, blobs, hashOf) {
             bbox: null,
             vsBase: true,
         });
+        // What compare found and made was of the other pair.
+        delete item.areas;
+        delete item.pictures;
         if (base !== null) {
             shown.push(item.file);
         }
@@ -3478,17 +3485,42 @@ export function createApp({
     };
 
     /**
-     * A changed item's picture of one kind, its pair's every kind made at once. `auto` is the
-     * spotlit picture, zoomed or not as autoKind decides from what the job found.
+     * A picture `run` made beside a capture's images, when the item names one (its `pictures`).
+     * @param {{ pictures?: Record<string, string> } | undefined} item the item
+     * @param {string} dir the capture's directory
+     * @param {string} kind the picture's kind
+     * @returns {Promise<Array<unknown> | null>} the answer, or null when there is none to read
+     */
+    const madeByRun = async (item, dir, kind) => {
+        const file = item?.pictures?.[kind];
+        const bytes = file ? await readFile(join(dir, file)).catch(() => null) : null;
+        return bytes ? [200, bytes, file.endsWith(".webp") ? "image/webp" : "image/png"] : null;
+    };
+
+    /**
+     * A changed item's picture of one kind, its pair's every kind made at once, unless `run` made
+     * them. `auto` is the spotlit picture, zoomed or not as autoKind decides from what the job
+     * found, or from the areas compare wrote into the item.
      * @param {{ path: string, hash: string, file: string, dir: string }} a where the baseline is
      * @param {{ path: string, hash: string, file: string, dir: string }} b where the capture is
-     * @param {{ threshold: number, includeAA: boolean }} item the item's diff settings
+     * @param {{ threshold: number, includeAA: boolean, areas?: number[][], size?: number[] | null,
+     *     baselineSize?: number[] | null, pictures?: Record<string, string> }} item the item (its diff
+     *     settings, and what compare and run wrote into it)
      * @param {string} kind one of PICTURE_KINDS
      * @param {"now" | "ahead"} when see `createPool`
-     * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
+     * @returns {Promise<Array<unknown>>} the answer: the picture, or why not
      */
-    const spotOf = async (a, b, { threshold, includeAA }, kind, when) => {
+    const spotOf = async (a, b, item, kind, when) => {
+        const { threshold, includeAA } = item;
         const key = pairKey(a.hash, b.hash, { threshold, includeAA });
+        // Only a capture `run` made is read first: another's job is queued at once, in list order.
+        if (item.pictures) {
+            const known = areas.get(key) ?? factsOf(item);
+            const made = await madeByRun(item, b.dir, kind === "auto" && known ? autoKind(known) : kind);
+            if (made) {
+                return made;
+            }
+        }
         const files = spotFiles(a.hash, b.hash, { threshold, includeAA });
         const make = (want, again = false) =>
             keptOnce(
@@ -3526,7 +3558,9 @@ export function createApp({
      */
     function prewarm(dir, r) {
         const warn = (path) => (err) => warnOnce(`could not make the thumbnail of ${path}: ${err.message}`);
-        for (const item of listOrder(r.items.filter((i) => REVIEWABLE.has(i.status) && i.status !== "failed"))) {
+        // A capture `run` made arrives with its pictures: nothing to make.
+        const needed = (i) => REVIEWABLE.has(i.status) && i.status !== "failed" && !i.pictures;
+        for (const item of listOrder(r.items.filter(needed))) {
             const kind = item.capture ? "capture" : "baseline";
             const hash = item[kind];
             const own = kind === "capture" || item.baseline === item.capture;
@@ -3565,11 +3599,14 @@ export function createApp({
         const row = Object.fromEntries(ROW_FIELDS.filter((k) => item[k] !== undefined).map((k) => [k, item[k]]));
         const imaged = item.status !== "failed" && (item.baseline || item.capture);
         const key = imaged ? pairKey(item.baseline ?? "none", item.capture ?? "none", item) : null;
-        const found = key && areas.get(key);
+        const found = key && (areas.get(key) ?? factsOf(item));
+        // Attempts of this run that saw another status or image: a badge, never a status of its own.
+        const disagree = (item.attempts ?? []).some((a) => a.status !== item.status || a.capture !== item.capture);
         return {
             ...row,
             pic: key,
             areas: found ? { crop: found.crop, zoom: found.zoom, count: found.areas } : null,
+            ...(disagree && { disagree: true }),
         };
     };
 
@@ -3761,7 +3798,10 @@ export function createApp({
         if (a && b && a.hash !== b.hash) {
             return spotOf(a, b, item, kind, "now");
         }
-        return kind === "plain" ? thumbOf(b ?? a, true) : [404, { error: "nothing changed" }];
+        if (kind !== "plain") {
+            return [404, { error: "nothing changed" }];
+        }
+        return (item.pictures && (await madeByRun(item, (b ?? a).dir, kind))) ?? thumbOf(b ?? a, true);
     }
 
     async function readImage({ path, hash, file, dir }) {
@@ -4336,6 +4376,26 @@ export function createApp({
                 const { hostName, changeNoun } = host.vocabulary;
                 return [502, { error: `${hostName} did not give the ${changeNoun}'s description: ${err.message}` }];
             }
+        },
+        // The comparison report of a change's run, as a JUnit file to save: one suite per project,
+        // the items as the list shows them.
+        "GET /api/junit": async ([id], _, query) => {
+            const run = query?.get("run") ?? null;
+            const t = await targetAt(id, run);
+            if (!t) {
+                return gone(id, run);
+            }
+            const loaded = t.projects.filter((p) => p.results);
+            if (loaded.length === 0) {
+                return [404, { error: "this change has no comparison results yet" }];
+            }
+            const name = `proofroom-${String(id).replace(/[^A-Za-z0-9-]/g, "-")}.junit.xml`;
+            return [
+                200,
+                junitXml(loaded.map((p) => [p.project, p.results.items])),
+                "application/xml; charset=utf-8",
+                { "content-disposition": `attachment; filename="${name}"` },
+            ];
         },
         "GET /api/img": async ([id, name, kind, file], _, query) => {
             const where = await imageOf(id, name, kind, file, query?.get("run"));
