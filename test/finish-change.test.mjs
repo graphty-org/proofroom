@@ -435,7 +435,11 @@ describe("Finish of a seed in change mode", () => {
      * @param {object} r the repository
      * @returns {ReturnType<typeof fakeCodeHost>} the host
      */
-    const seedHost = (r) => fakeCodeHost({ listOpened: true, headOf: (b) => git(r.remote, "rev-parse", "--verify", "-q", `refs/heads/${b}`) });
+    const seedHost = (r) =>
+        fakeCodeHost({
+            listOpened: true,
+            headOf: (b) => git(r.remote, "rev-parse", "--verify", "-q", `refs/heads/${b}`),
+        });
 
     /**
      * One seed Finish as the page runs it: prepare (which opens the pull request when the run has
@@ -824,7 +828,13 @@ describe("Finish of a seed in change mode", () => {
         const [old] = host.opened;
         old.head = git(r.remote, "rev-parse", old.branch);
         old.state = "closed";
-        host.opened.push({ number: 950, html_url: "https://fake/changes/950", branch: old.branch, state: "open", body: "" });
+        host.opened.push({
+            number: 950,
+            html_url: "https://fake/changes/950",
+            branch: old.branch,
+            state: "open",
+            body: "",
+        });
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
         const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
         expect(prepared.retire.map((x) => x.number)).toEqual([900]);
@@ -848,6 +858,33 @@ describe("Finish of a seed in change mode", () => {
             `https://fake/changes/900 cannot be reopened (state cannot be changed)`,
         );
         await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(`delete its branch ${old.branch}`);
+    });
+
+    it("ignores a forged unsigned statement on a visual/ branch, asking for no extra touch", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [{ branch }] = host.opened;
+        const [accepted] = seedStatements(r, branch);
+        const forged = { ...accepted, change: "pr:960", previous: null };
+        delete forged.file;
+        delete forged.approval;
+        const other = join(r.dir, "forger");
+        git(r.dir, "clone", "-q", "-b", "master", r.remote, other);
+        git(other, "checkout", "-q", "-b", "visual/x-1");
+        writeFileSync(join(other, "x.txt"), "x\n");
+        mkdirSync(join(other, statementPath(APPROVALS, forged), ".."), { recursive: true });
+        writeFileSync(join(other, statementPath(APPROVALS, forged)), `${JSON.stringify(forged, null, 2)}\n`);
+        git(other, "add", "-A");
+        git(other, "-c", "user.name=F", "-c", "user.email=f@example.com", "commit", "-q", "-m", "forged");
+        git(other, "push", "-q", "origin", "visual/x-1");
+        host.opened.push({ number: 960, html_url: "https://fake/changes/960", branch: "visual/x-1", state: "closed" });
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const { prepared, touches } = await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(prepared.retire.map((x) => x.number)).toEqual([900]);
+        expect(touches).toBe(2);
+        expect(host.posted.some((p) => p.number === 960)).toBe(false);
     });
 
     it("adds a candidate's second Finish as one commit on its branch's tip, chained after the first", async () => {
@@ -883,6 +920,72 @@ describe("Finish of a seed in change mode", () => {
         // "Restore branch", then reopen: the head GitHub kept holds the retiring statement.
         git(r.remote, "branch", old.branch, heads.get(900));
         expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+    });
+
+    it("refuses a candidate reject when its accept branch cannot be fetched, keeping the pull request and its record", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, candidate: r.master });
+        const [old] = host.opened;
+        // The branch moves and a held lock makes fetching it fail while the remote still lists it.
+        const lock = join(
+            git(r.repo, "rev-parse", "--absolute-git-dir"),
+            `refs/visual-review/origin/${old.branch}.lock`,
+        );
+        const reject = (meanwhile) =>
+            seedFinish(r, host, [[BADGE, "reject", "clipped"]], { projects, candidate: r.master, meanwhile });
+        await expect(
+            reject(() => {
+                const other = join(r.dir, "mover");
+                git(r.dir, "clone", "-q", "-b", old.branch, r.remote, other);
+                git(
+                    other,
+                    "-c",
+                    "user.name=M",
+                    "-c",
+                    "user.email=m@example.com",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "move",
+                );
+                git(other, "push", "-q", "origin", old.branch);
+                mkdirSync(join(lock, ".."), { recursive: true });
+                writeFileSync(lock, "");
+            }),
+        ).rejects.toThrow("could not be read");
+        expect(old.state).toBe("open");
+        expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
+        rmSync(lock);
+        const { result } = await reject();
+        expect(result).toMatchObject({ closedPullRequest: "https://fake/changes/900" });
+        expect(old.state).toBe("closed");
+        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+    });
+
+    it("forgets a candidate's merged accept pull request instead of retiring it", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, candidate: r.master });
+        const [old] = host.opened;
+        old.merged = true;
+        const input = {
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null, candidate: r.master },
+            projects,
+            decisions: [{ project: "compact-mantine", file: BADGE, decision: "reject", reason: "clipped" }],
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+        };
+        expect(await prepareApproval({ ...input, now: new Date() })).toBeNull();
+        await finish(input);
+        expect(host.posted.filter((p) => p.number === 900 && ["reopen", "close"].includes(p.kind))).toEqual([]);
+        expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
     });
 
     it("signs nothing for a Finish rejecting an image of a candidate with no accept pull request", async () => {

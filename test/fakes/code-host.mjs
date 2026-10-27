@@ -79,7 +79,7 @@ export function fakeCodeHost({
         openChange: call("openChange", ({ title, head, base, body }) => {
             const number = 900 + opened.length;
             const html_url = `https://fake/changes/${number}`;
-            opened.push({ number, html_url, branch: head, state: "open", body });
+            opened.push({ number, html_url, branch: head, base, state: "open", body });
             posted.push({ kind: "change", title, head, base, body });
             return html_url;
         }),
@@ -96,7 +96,14 @@ export function fakeCodeHost({
             if (o) {
                 const repo = { id: 1 };
                 const sha = o.state === "open" ? tip(o.branch) : o.head;
-                return { number, html_url: o.html_url, state: o.state, head: { ref: o.branch, sha, repo }, base: { repo } };
+                return {
+                    number,
+                    html_url: o.html_url,
+                    state: o.state,
+                    merged: o.merged === true,
+                    head: { ref: o.branch, sha, repo },
+                    base: { repo },
+                };
             }
             const c = changes.find((x) => x.number === number);
             return c ? { number, state: "open", head: { ref: c.branch, sha: c.headSha } } : { number, state: "closed" };
@@ -124,6 +131,17 @@ export function fakeCodeHost({
             if (o) {
                 if (headOf && tip(o.branch) === undefined) {
                     throw new Error("the head branch is gone");
+                }
+                if (o.merged) {
+                    throw new Error("a merged pull request cannot be reopened");
+                }
+                // As GitHub: one open pull request per head and base (a missing base matches any).
+                const same = (x) =>
+                    x !== o &&
+                    x.branch === o.branch &&
+                    (x.base === undefined || o.base === undefined || x.base === o.base);
+                if (opened.some((x) => x.state === "open" && same(x)) || changes.some(same)) {
+                    throw new Error("a pull request already exists for this head and base");
                 }
                 o.state = "open";
             }

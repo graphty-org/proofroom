@@ -734,14 +734,18 @@ export async function closeCandidatePullRequest(host, target, at = null) {
 /**
  * The accept pull request a change mode Finish opened for a candidate, and the statements of it on
  * its branch: what a Finish rejecting an image of the candidate retires.
- * @param {{ repo: string, config: object, target: { candidate?: string }, net: any }} input the
- *     repository, the settings, the candidate and the network runner
- * @returns {Promise<{ recorded: { branch: string, number: number, url: string | null }, tip: string,
- *     chain: object[] } | null>} it, with its branch's tip (empty when the branch is gone); null
- *     when there is none, or the default branch uses tree statements
+ * A merged one is forgotten. Refuses when its branch cannot be read and the remote does not
+ * confirm it is gone.
+ * @param {{ repo: string, config: object, target: { candidate?: string }, net: any, host?: any }} input
+ *     the repository, the settings, the candidate, the network runner and the code host
+ * @returns {Promise<{ recorded: { branch: string, number: number, url: string | null }, tip?: string,
+ *     chain?: object[], merged?: boolean } | null>} it, with its branch's tip (empty when the branch
+ *     is gone) and its verified statements, or `merged`; null when there is none, or the default
+ *     branch uses tree statements
  */
-async function candidateSeed({ repo, config, target, net }) {
-    const recorded = (await seedRecords(repo, config))[`candidate:${target.candidate}`];
+async function candidateSeed({ repo, config, target, net, host }) {
+    const key = `candidate:${target.candidate}`;
+    const recorded = (await seedRecords(repo, config))[key];
     if (!recorded?.number) {
         return null;
     }
@@ -750,23 +754,48 @@ async function candidateSeed({ repo, config, target, net }) {
     if (approvalFormatAt(ownRef(config.defaultBranch), repo).format !== "change") {
         return null;
     }
-    await fetch(recorded.branch).catch(() => {});
-    const tip = await git(repo, ["rev-parse", "--verify", "-q", ownRef(recorded.branch)]).catch(() => "");
-    const chain = tip ? await statementsAt(repo, tip, config, `pr:${recorded.number}`) : [];
+    const what = recorded.url ?? recorded.branch;
+    if (host?.change) {
+        const c = await net("reading the accept pull request", () => host.change(recorded.number));
+        if (c?.merged || c?.merged_at) {
+            // A merged one is history: there is nothing left to retire.
+            await keepSeedRecord(repo, config, key, null);
+            return { recorded, merged: true };
+        }
+    }
+    let tip;
+    try {
+        await fetch(recorded.branch);
+        tip = await git(repo, ["rev-parse", "--verify", "-q", ownRef(recorded.branch)]);
+    } catch (err) {
+        // Only a branch the remote confirms is gone holds nothing to retire; any other failure
+        // could hide a signed accept on it.
+        const from = await remoteOf(repo, null, recorded.branch);
+        const listed = await net("git ls-remote", () =>
+            git(repo, ["ls-remote", "--heads", from, `refs/heads/${recorded.branch}`]),
+        ).catch(() => null);
+        if (listed !== "") {
+            throw new AcceptError(
+                `${what}, the accept pull request of this candidate, could not be read (${err.message}): press Finish again`,
+            );
+        }
+        tip = "";
+    }
+    const chain = tip ? await trustedStatementsAt(repo, tip, config, `pr:${recorded.number}`) : [];
     return { recorded, tip, chain };
 }
 
 /**
  * What a Finish rejecting an image of a candidate signs: the statement retiring the candidate's
  * accept pull request, or null when there is nothing to retire.
- * @param {{ repo: string, config: object, target: { candidate?: string }, net: any, now: Date }} input
+ * @param {{ repo: string, config: object, target: { candidate?: string }, net: any, now: Date, host?: any }} input
  *     the repository, the settings, the candidate, the network runner and the time
  * @returns {Promise<{ commit: string, branch: string, statement: object } | null>} the statement,
  *     with the branch tip it goes on
  */
 async function candidateRetirement(input) {
     const found = await candidateSeed(input);
-    if (!found || found.chain.length === 0) {
+    if (!found || found.merged || found.chain.length === 0) {
         return null;
     }
     const { recorded, tip, chain } = found;
@@ -794,9 +823,12 @@ async function candidateRetirement(input) {
  *     the candidate has none a change mode Finish recorded
  */
 async function retireCandidate(host, target, { repo, config, net, now, approval }) {
-    const found = await candidateSeed({ repo, config, target, net });
+    const found = await candidateSeed({ repo, config, target, net, host });
     if (!found) {
         return null;
+    }
+    if (found.merged) {
+        return {};
     }
     const { recorded, tip, chain } = found;
     const key = `candidate:${target.candidate}`;
@@ -1009,7 +1041,7 @@ export async function prepareApproval({
     if (first && accepts.length === 0 && target.pr === null && target.candidate) {
         // A Finish rejecting an image of a candidate signs only the retirement of its accept pull request.
         const { net } = stepRunner(() => {}, retryDelays ?? RETRY_DELAYS);
-        const r = await candidateRetirement({ repo, config, target, net, now });
+        const r = await candidateRetirement({ repo, config, target, net, now, host: codeHost });
         return r === null
             ? null
             : {
@@ -2039,6 +2071,8 @@ async function oldSeeds(input, { base, fetch, except }) {
     }
     const tracking = ownRef(config.defaultBranch);
     const retires = Boolean(host.change && host.reopenChange && host.closeChange);
+    // A statement the default branch's keys do not verify already fails the gate: it needs no retiring.
+    const keys = await keysAt(repo, tracking);
     // The changes the statements of this capture a branch adds name (null: it adds none).
     const statedOn = async (ref) => {
         const added = (
@@ -2058,7 +2092,11 @@ async function oldSeeds(input, { base, fetch, except }) {
         const numbers = new Set();
         for (const file of added) {
             const st = await git(repo, ["show", `${ref}:${file}`]).then(JSON.parse, () => null);
-            if (statementProblem(st) === null && st.capturedHead === base) {
+            if (
+                statementProblem(st) === null &&
+                st.capturedHead === base &&
+                (keys.length === 0 || verifyApproval(st, keys) === null)
+            ) {
                 holds = true;
                 const n = /^pr:(\d+)$/.exec(st.change)?.[1];
                 if (n !== undefined) {
@@ -2154,7 +2192,7 @@ async function retireStatements(input, branches, { base, repository }) {
         const before = out.length;
         for (const { number, url } of numbers) {
             const change = `pr:${number}`;
-            const chain = await statementsAt(repo, tip, config, change);
+            const chain = await trustedStatementsAt(repo, tip, config, change);
             if (chain.length > 0) {
                 out.push({ branch, number, url, tip, statement: retiring(chain, { base, repository, config, now }) });
             }
@@ -2211,7 +2249,7 @@ function retiring(chain, { base, repository, config, now }) {
  * the head never reaches the pushed commit.
  * @param {object} input what Finish works with
  * @param {string} input.repo the repository
- * @param {{ workDir: string, approvals: string, commitPrefix: string }} input.config the settings
+ * @param {{ workDir: string, approvals: string, commitPrefix: string, workflow: string }} input.config the settings
  * @param {import("./adapters/index.mjs").CodeHost} input.host the code host
  * @param {any} input.net the network runner, with the `delays` its retries wait
  * @param {{ branch: string, number: number, url: string | null, tip: string, statement: object }[]} seeds
@@ -2224,7 +2262,30 @@ async function retireSeeds({ repo, config, host, net }, seeds) {
     }
     for (const [branch, list] of branches) {
         const pushed = await pushRetiring({ repo, config, net }, branch, list);
-        for (const seed of list) {
+        // GitHub keeps one open pull request per head and base: every open one from the branch is
+        // closed before a closed seed is reopened. The open seeds first, once their heads hold the
+        // retiring commit; then the rest.
+        const listed = host.listChanges
+            ? await net("listing the open changes", () => host.listChanges({ ...config, ignoreBranches: [] }))
+            : [];
+        const open = new Set(
+            listed.filter((c) => c.branch === branch && !c.fork && Number.isInteger(c.number)).map((c) => c.number),
+        );
+        const isOpen = (seed) => open.has(seed.number);
+        for (const seed of list.filter(isOpen)) {
+            await retireChange({ host, net }, seed, pushed);
+            open.delete(seed.number);
+        }
+        for (const number of open) {
+            try {
+                await net("closing a pull request of the earlier seed's branch", () => host.closeChange(number));
+            } catch (err) {
+                throw new AcceptError(
+                    `closing #${number}, open from ${branch}, failed (${err.message}); its branch is kept with the retiring statement: press Finish again`,
+                );
+            }
+        }
+        for (const seed of list.filter((s) => !isOpen(s))) {
             await retireChange({ host, net }, seed, pushed);
         }
         await deleteClosedBranch(repo, branch);
@@ -2443,6 +2504,22 @@ async function statementsAt(repo, ref, config, change) {
         }
     }
     return out;
+}
+
+/**
+ * statementsAt, keeping only the statements the default branch's keys verify (all of them while
+ * it holds none): the ones the gate counts, so the only ones a retiring statement must answer.
+ * @param {string} repo the repository
+ * @param {string} ref the commit
+ * @param {{ approvals: string, defaultBranch: string }} config the settings
+ * @param {string} change the change id
+ * @returns {Promise<object[]>} them
+ */
+async function trustedStatementsAt(repo, ref, config, change) {
+    const keys = await keysAt(repo, ownRef(config.defaultBranch));
+    const all = await statementsAt(repo, ref, config, change);
+    const docOf = (st) => Object.fromEntries(Object.entries(st).filter(([k]) => k !== "file" && k !== "id"));
+    return keys.length === 0 ? all : all.filter((st) => verifyApproval(docOf(st), keys) === null);
 }
 
 const sameDecision = (a, b) =>
