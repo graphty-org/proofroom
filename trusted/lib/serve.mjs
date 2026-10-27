@@ -3568,33 +3568,25 @@ export function createApp({
     };
 
     /**
-     * Each capture set's Look alike groups, with what they were computed from: they depend on the
-     * images and the images approved before, never on the decisions, so they are computed once per
-     * load (and again only when a refresh replaces the approvals), not once per list request.
-     * They depend on nothing else of the target than whether it can be accepted (approved before),
-     * so pages on two runs that share a capture set share its groups.
-     * @type {WeakMap<object, { ok: boolean, approved: Map<string, object>,
-     *     grouped: ReturnType<typeof clusters> }>}
+     * Each capture set's Look alike groups: they depend on its images only, never on the decisions
+     * or the target, so they are computed once per load, not once per list request, and pages on
+     * two runs that share a capture set share its groups.
+     * @type {WeakMap<object, ReturnType<typeof clusters>>}
      */
     const lookAlikes = new WeakMap();
     /**
-     * A project's Look alike groups. They leave out what has a group of its own, approved before,
-     * whatever the item's decision.
-     * @param {object} t the target
-     * @param {string} name the project
+     * A project's Look alike groups, of every reviewable item, whatever its decision: computed once
+     * per capture set. The page puts an image approved before in a group of its own first, so it
+     * joins its look-alikes only once a decision since takes it out of that group.
      * @param {object} results its results.json
      * @param {object[]} shown its items as the list shows them
      * @returns {ReturnType<typeof clusters>} the groups
      */
-    const lookAlike = (t, name, results, shown) => {
-        const ok = acceptable(t, name);
-        const kept = lookAlikes.get(results);
-        if (kept?.ok === ok && kept.approved === approved) {
-            return kept.grouped;
+    const lookAlike = (results, shown) => {
+        if (!lookAlikes.has(results)) {
+            lookAlikes.set(results, clusters(shown.filter((i) => REVIEWABLE.has(i.status))));
         }
-        const grouped = clusters(shown.filter((i) => REVIEWABLE.has(i.status) && !approvedBefore(t, name, i)));
-        lookAlikes.set(results, { ok, approved, grouped });
-        return grouped;
+        return lookAlikes.get(results);
     };
 
     /**
@@ -4200,7 +4192,7 @@ export function createApp({
                 return { ...i, ...(to !== undefined && to !== i.baseline && { reReview: true }) };
             });
             const decided = new Map(mine.map(([k, v]) => [k.slice(prefix.length), v]));
-            const grouped = lookAlike(t, name, p.results, shown);
+            const grouped = lookAlike(p.results, shown);
             const since = query?.get("since");
             const earlier = typeof since === "string" && since !== runKey(t) ? held.get(`${id} ${since}`) : null;
             return [
