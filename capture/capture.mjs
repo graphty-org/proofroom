@@ -89,13 +89,17 @@ const MAX_LINE = 2000;
 
 /**
  * The iframe URL of one story, relative to the Storybook root. `chromatic=true` makes
- * `isChromatic()` true inside the stories.
+ * `isChromatic()` true inside the stories. `query` (VISUAL_REVIEW_STORY_QUERY, such as
+ * `features=all`) is appended as is, so a Storybook that reads its own URL parameters can be
+ * captured in another configuration and compared with the same baselines.
  * @param {string} id the story id
  * @param {Record<string, string> | null} globals the mode's Storybook globals
+ * @param {string} [query] extra query parameters, without a leading `&`
  * @returns {string} the relative URL
  */
-export function storyUrl(id, globals) {
-    const url = `iframe.html?id=${encodeURIComponent(id)}&viewMode=story&chromatic=true`;
+export function storyUrl(id, globals, query = process.env.VISUAL_REVIEW_STORY_QUERY ?? "") {
+    const extra = query ? "&" + query : "";
+    const url = `iframe.html?id=${encodeURIComponent(id)}&viewMode=story&chromatic=true${extra}`;
     if (!globals) {
         return url;
     }

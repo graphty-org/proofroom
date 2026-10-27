@@ -46,6 +46,13 @@ describe("storyUrl", () => {
             "iframe.html?id=a--b&viewMode=story&chromatic=true&globals=theme:light;direction:rtl",
         );
     });
+
+    it("appends an extra query (VISUAL_REVIEW_STORY_QUERY), and nothing without one", () => {
+        expect(storyUrl("a--b", { theme: "dark" }, "features=all")).toBe(
+            "iframe.html?id=a--b&viewMode=story&chromatic=true&features=all&globals=theme:dark",
+        );
+        expect(storyUrl("a--b", null, "")).toBe("iframe.html?id=a--b&viewMode=story&chromatic=true");
+    });
 });
 
 describe("storyIds", () => {
