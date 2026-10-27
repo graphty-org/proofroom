@@ -423,8 +423,11 @@ statements of the candidate's commit on every open pull request's branch, and al
 pull request from a `visual/approve-<commit>-` branch that holds no statement yet (a cancelled
 touch), deleting its branch. You sign each retiring statement with one touch (unsigned without a
 registered key). A seed Finish that only rejects images (it accepts nothing, so it opens no seed of
-its own) retires the earlier open seeds of its capture the same way, before it opens the issue for
-the rejects, so a later reject of an image an earlier Finish accepted always wins.
+its own) does not retire whole seeds: each earlier open seed of its capture that decided one of the
+images rejected now gets a signed statement rejecting only those images, before the issue for the
+rejects is opened, and stays open with its other accepts. A seed that decided none of them is left
+as it is. So a later reject of an image an earlier Finish accepted always wins, and nothing else
+that Finish accepted is lost.
 
 Earlier seeds that Finish only closes (no statement of theirs to retire, such as a seed whose touch
 was cancelled) are checked again after your touch: if one gained a statement or moved since the

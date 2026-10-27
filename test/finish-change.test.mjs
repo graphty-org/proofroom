@@ -567,6 +567,39 @@ describe("Finish of a seed in change mode", () => {
         expect(gateOn(r, branch, "pr:901")[0]).toContain("not reviewed");
     });
 
+    it("uses the pull request GitHub opened when the answer to opening it was lost", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const open = host.openChange;
+        host.openChange = async (change) => {
+            await open(change);
+            throw new Error("connection reset");
+        };
+        const { prepared, result } = await seedFinish(r, host, [[BADGE]]);
+        expect(prepared.statement.change).toBe("pr:900");
+        expect(host.opened).toHaveLength(1);
+        expect(result.pullRequest).toBe("https://fake/changes/900");
+        expect(gateOn(r, host.opened[0].branch, "pr:900")).toEqual([]);
+    });
+
+    it("refuses to push a signed seed whose pull request was closed while the touch waited", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await expect(
+            seedFinish(r, host, [[BADGE]], {
+                projects,
+                meanwhile: () => {
+                    host.opened[0].state = "closed";
+                },
+            }),
+        ).rejects.toThrow("https://fake/changes/900, the pull request of this seed, was closed");
+        expect(seedStatements(r, host.opened[0].branch)).toEqual([]);
+        // The next Finish starts a fresh seed branch.
+        await seedFinish(r, host, [[BADGE]], { projects });
+        expect(host.opened.map((o) => o.state)).toEqual(["closed", "open"]);
+    });
+
     it("leaves the pull request failing as not reviewed after a cancelled touch, and the next Finish replaces X", async () => {
         const r = changeRepo();
         const host = seedHost(r);
@@ -991,20 +1024,53 @@ describe("Finish of a seed in change mode", () => {
         expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
     });
 
-    it("retires an earlier seed of the run when a later Finish of it only rejects that image", async () => {
+    it("rejects that image in an earlier seed of the run when a later Finish of it only rejects it", async () => {
         const r = changeRepo();
         const host = seedHost(r);
-        const heads = keptHeads(r, host);
         const projects = capture(r);
-        await seedFinish(r, host, [[BADGE]], { projects });
+        await seedFinish(r, host, [[BADGE], [BUTTON]], { projects });
         const [old] = host.opened;
         const { prepared, result, touches } = await seedFinish(r, host, [[BADGE, "reject", "clipped"]], { projects });
-        expect(prepared.statement).toMatchObject({ change: "pr:900", entries: [{ decision: "reject" }] });
+        expect(prepared.statement).toMatchObject({
+            change: "pr:900",
+            entries: [{ path: `compact-mantine/${BADGE}`, decision: "reject" }],
+        });
         expect(touches).toBe(1);
-        expect(result).toMatchObject({ rejects: 1, closedPullRequest: "https://fake/changes/900" });
-        expect(old.state).toBe("closed");
-        git(r.remote, "branch", old.branch, heads.get(900));
-        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+        expect(result).toMatchObject({ rejects: 1 });
+        expect(result.closedPullRequest).toBeUndefined();
+        // The seed stays open with BUTTON accepted and BADGE rejected.
+        expect(old.state).toBe("open");
+        expect(gateOn(r, old.branch, "pr:900")).toEqual([
+            `${BASELINES}/compact-mantine/${BADGE}: rejected (rejected by a later Finish of this capture); a rejected item needs a code change, not another review`,
+        ]);
+    });
+
+    it("leaves an earlier seed of the run alone when a later Finish of it only rejects another image", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE], [BUTTON]], { projects });
+        const [old] = host.opened;
+        const tip = git(r.remote, "rev-parse", old.branch);
+        const before = host.posted.length;
+        const input = {
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null },
+            projects,
+            decisions: [{ project: "compact-mantine", file: "slider--sizes.png", decision: "reject", reason: "cut" }],
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+            now: new Date(),
+        };
+        // Nothing of the seed is signed: the image rejected now is not in it.
+        expect(await prepareApproval(input)).toBeNull();
+        expect(await finish(input)).toMatchObject({ rejects: 1 });
+        expect(old.state).toBe("open");
+        expect(git(r.remote, "rev-parse", old.branch)).toBe(tip);
+        expect(host.posted.slice(before).filter((p) => p.number === 900)).toEqual([]);
+        expect(gateOn(r, old.branch, "pr:900")).toEqual([]);
     });
 
     it("ignores a forged unsigned statement on a visual/ branch, asking for no extra touch", async () => {
