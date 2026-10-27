@@ -628,7 +628,9 @@ export function createViewer(app) {
     const imageOnly = () => imageOnlyPressed(shownNow());
     const redraw = () => app.draw();
     const layoutTitle = () =>
-        vs.layout === "auto" ? `Auto chose ${stacked ? "over and under" : "side by side"} for this window` : "Layout";
+        vs.layout === "auto"
+            ? `Auto chose ${stacked ? "over and under" : "side by side"} for this window`
+            : "Layout";
 
     function menuItem(id, label, checked) {
         return { id, label, checked, check: true };
@@ -715,38 +717,33 @@ export function createViewer(app) {
         // Below a viewer width of 900 px More also holds Flash while held, and below 800 px Zoom.
         moreMenu: (anchor) => {
             const vw = document.getElementById("viewer")?.clientWidth ?? innerWidth;
-            app.showMenu(
-                anchor,
-                [
-                    vw < 900
-                        ? [{ head: "View" }, { id: "flashheld", label: "Flash while held", key: "hold Space" }]
-                        : [],
-                    vw < 800
-                        ? [
-                              { head: "Zoom" },
-                              ...ZOOMS.map((z) => ({
-                                  id: `zoom-${z}`,
-                                  label: z === "fit" ? "Fit" : `${z}x`,
-                                  checked: vs.zoom === z,
-                              })),
-                          ]
-                        : [],
-                    { head: "Display" },
-                    menuItem("imageonly", "Image only", imageOnly()),
-                    Object.entries(LAYOUTS).map(([k, l]) => ({
-                        id: `layout-${k}`,
-                        label: `Layout: ${l}`,
-                        key: "Y",
-                        checked: vs.layout === k,
-                    })),
-                    { sep: true },
-                    { head: "Options" },
-                    menuItem("outline", "Outline", vs.outline),
-                    menuItem("centerarea", "Open centered on the area", vs.center),
-                    menuItem("details", "Details", vs.details),
-                    { id: "listlink", label: "Copy link" },
-                ].flat(),
-            );
+            app.showMenu(anchor, [
+                vw < 900 ? [{ head: "View" }, { id: "flashheld", label: "Flash while held", key: "hold Space" }] : [],
+                vw < 800
+                    ? [
+                          { head: "Zoom" },
+                          ...ZOOMS.map((z) => ({
+                              id: `zoom-${z}`,
+                              label: z === "fit" ? "Fit" : `${z}x`,
+                              checked: vs.zoom === z,
+                          })),
+                      ]
+                    : [],
+                { head: "Display" },
+                menuItem("imageonly", "Image only", imageOnly()),
+                Object.entries(LAYOUTS).map(([k, l]) => ({
+                    id: `layout-${k}`,
+                    label: `Layout: ${l}`,
+                    key: "Y",
+                    checked: vs.layout === k,
+                })),
+                { sep: true },
+                { head: "Options" },
+                menuItem("outline", "Outline", vs.outline),
+                menuItem("centerarea", "Open centered on the area", vs.center),
+                menuItem("details", "Details", vs.details),
+                { id: "listlink", label: "Copy link" },
+            ].flat());
         },
         pressImageOnly: () => {
             const at = app.at();
