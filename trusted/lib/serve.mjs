@@ -730,6 +730,8 @@ async function loadResults(dir, name) {
  * @param {string} [options.serverId] what names this server's session cookie; random per start
  * @param {"review" | "next"} [options.ui] the page served at /: today's ("review", the default) or the
  *     new one ("next"), which is served at /next/ either way
+ * @param {number} [options.ciEvery] the least time, in milliseconds, between two asks of a CI
+ *     capture's state (captures.mjs)
  * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string, stopCaptures: () => void }}
  *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
  *     tile is being made in the background, and `serverId`
@@ -754,6 +756,7 @@ export function createApp({
     pictures = pool,
     serverId = randomBytes(8).toString("hex"),
     ui = "review",
+    ciEvery,
 }) {
     const stateDir = join(tmp, "state");
     const host = codeHost ?? codeHostFor(config, { gh, repo });
@@ -782,11 +785,26 @@ export function createApp({
             plainGit
                 ? [...hostBranches.values()]
                       .filter((b) => b.remote)
-                      .map((b) => ({ pr: null, remote: b.remote, head: b.headSha, branch: b.branch, title: b.title, author: b.author }))
+                      .map((b) => ({
+                          pr: null,
+                          remote: b.remote,
+                          head: b.headSha,
+                          branch: b.branch,
+                          title: b.title,
+                          author: b.author,
+                      }))
                 : [...targets.values()]
                       .filter((t) => t.pr !== null && !t.local)
-                      .map((t) => ({ pr: t.pr, head: t.head, branch: t.branch, title: t.title, author: t.author ?? null })),
+                      .map((t) => ({
+                          pr: t.pr,
+                          head: t.head,
+                          branch: t.branch,
+                          title: t.title,
+                          author: t.author ?? null,
+                      })),
         whoAmI: () => (reviewer ??= host.whoAmI().catch(() => null)),
+        store,
+        ciEvery,
         onEnd: () => {
             refresh().catch((err) => console.error(`proofroom: refresh after a capture failed: ${err.message}`));
         },
@@ -2491,9 +2509,7 @@ export function createApp({
     // Not while a Finish reads its captures, nor after a refresh that could not load some target.
     function prune() {
         // A capture made from the page has no CI run, and keeps none of these folders.
-        const runs = new Set(
-            [...targets.values(), ...held.values()].filter((t) => !t.capture).map((t) => t.runId),
-        );
+        const runs = new Set([...targets.values(), ...held.values()].filter((t) => !t.capture).map((t) => t.runId));
         if (results || finishing || runs.has(null) || !existsSync(tmp)) {
             return;
         }
@@ -4131,16 +4147,15 @@ export function createApp({
         return [/** @type {number} */ (status), /** @type {{ error?: string, files?: string[] }} */ (answer)];
     };
     // The page's captures, and what the New capture sheet says about where they can run: CI only
-    // when the capture store can start a job (none can yet), a change from the code host here only
-    // through the config's captureCommand.
+    // when the capture store can start a job and the capturing workflow takes requests, a change
+    // from the code host here only through the config's captureCommand.
     const CI_NAMES = { "github-actions": "GitHub Actions" };
     const captureList = (watch = null) => ({
         ...captures.list(watch),
         ci: {
-            available: false,
+            ...captures.ci(),
             // A store with no CI of its own (plain git's local folder) names none.
             label: store.name === "local-folder" ? "CI" : `CI (${CI_NAMES[store.name] ?? store.name})`,
-            why: "your capture store cannot start CI jobs",
         },
         changeHere: Boolean(config.captureCommand),
         projects: names,
@@ -4192,13 +4207,14 @@ export function createApp({
                     error: failure,
                     network: networkTrouble(),
                     // The captures started from the page, without their logs.
-                    captures: captureList(),
+                    captures: (await captures.poll(), captureList()),
                 },
             ];
         },
         // The page's captures (captures.mjs): every one, or (with an id) one with its progress and
         // its log since `since`; with ?sources=1, what the New capture sheet offers.
         "GET /api/captures": async ([id], _, query) => {
+            await captures.poll();
             if (id !== undefined) {
                 const one = captures.get(Number(id), Number(query?.get("since") ?? 0));
                 return one ? [200, one] : [404, { error: `no capture ${id}` }];
@@ -4213,14 +4229,14 @@ export function createApp({
         },
         // Starts a capture, or (POST /api/captures/<id>/cancel) cancels one.
         "POST /api/captures": async ([id, verb], body) => {
-            if (id !== undefined) {
-                if (verb !== "cancel") {
-                    return [404, { error: "not found" }];
-                }
-                const j = captures.cancel(Number(id));
-                return j ? [200, { id: j.id, state: j.state }] : [404, { error: `no capture ${id}` }];
+            if (id !== undefined && verb !== "cancel") {
+                return [404, { error: "not found" }];
             }
             try {
+                if (id !== undefined) {
+                    const j = await captures.cancel(Number(id));
+                    return j ? [200, { id: j.id, state: j.state }] : [404, { error: `no capture ${id}` }];
+                }
                 const j = await captures.start(body);
                 return [202, { id: j.id, target: j.target }];
             } catch (err) {
