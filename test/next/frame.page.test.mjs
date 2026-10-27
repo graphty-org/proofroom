@@ -380,7 +380,11 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 expect(await message(page)).toMatch(
                     /^Offline: the server is unreachable\. Showing what was loaded at \d\d:\d\d; decisions cannot be saved\.$/,
                 );
-                expect(await writers()).toEqual([["rowundo", "true", OFFLINE_WHY]]);
+                // Finish in the top bar and the decided row's Undo, both shown and neither enabled.
+                expect(await writers()).toEqual([
+                    ["finish", "true", OFFLINE_WHY],
+                    ["rowundo", "true", OFFLINE_WHY],
+                ]);
                 // A press by key and by pointer: nothing sent, nothing queued, and the reason said.
                 const decides = () => t.requests.filter((r) => r.startsWith("/api/decide")).length;
                 const sent = decides();
@@ -412,7 +416,10 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
                 await expect.poll(() => message(page)).toBe("Refreshed.");
                 expect(await status()).toMatch(/^Updated \d+ s ago$/);
-                expect(await writers()).toEqual([["rowundo", null, "Undo this decision"]]);
+                expect(await writers()).toEqual([
+                    ["finish", null, ""],
+                    ["rowundo", null, "Undo this decision"],
+                ]);
                 await undo.click();
                 await expect.poll(() => message(page)).toBe("Undone: #1.");
                 expect(decides()).toBe(sent + 1);

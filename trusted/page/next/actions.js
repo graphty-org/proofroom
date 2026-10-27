@@ -35,6 +35,7 @@ export const ZONES = [
 
 const NO_CHANGES = "No changes yet";
 const paneName = (app, i) => (app.screen === "baselines" ? ["Projects", "Baselines"] : ["Changes", "Snapshots"])[i];
+const RUNNING = "A Finish is running: wait for it to end";
 const master = (app) => app.list?.defaultBranch ?? "master";
 // How many snapshots the selection holds while the current row is in it (then A, R and E act on
 // the selection), else 0.
@@ -57,6 +58,14 @@ export const ACTIONS = {
     refresh: { label: (app) => app.statusText(), title: "Refresh now", run: (app) => app.refresh() },
     keys: { label: "Keys", key: "?", title: "Every key, and the last 20 messages", run: (app) => app.keysSheet() },
     settings: { label: "Settings", run: (app) => app.settingsSheet() },
+    finish: {
+        label: (app) => app.finishLabel(),
+        // A numbered change's label is short and whole on the button; any other's full name.
+        title: (app) => (/^#/.test(app.open()?.label ?? "#") ? null : `Finish ${app.open().label}`),
+        writes: true,
+        run: (app) => app.finishOpen(),
+        available: (app) => app.finishOK(),
+    },
 
     // Settings and the Keys sheet (settings.js, keys-sheet.js).
     letterkeys: { label: "Letter keys", run: (app, ctx) => app.setLetters(ctx.el.checked) },
@@ -155,6 +164,43 @@ export const ACTIONS = {
         run: (app, ctx) => app.dismiss(ctx.id),
     },
     joblog: { label: "Job log", run: (app, ctx) => app.jobLog(ctx.id) },
+    // Finish from the changes pane (design 7.4): one change, every decided change, and the run.
+    finishchg: {
+        label: "Finish...",
+        title: "Opens the summary sheet for this change without opening it",
+        writes: true,
+        run: (app, ctx) => app.finishSheet([ctx.id]),
+        available: (app) => (app.finishing() ? RUNNING : true),
+    },
+    finishall: {
+        label: (app) => `Finish all ${app.finishable().length}...`,
+        writes: true,
+        run: (app) => app.finishSheet(app.finishable().map((r) => r.id)),
+        available: (app) => (app.finishing() ? RUNNING : true),
+    },
+    stopfinish: {
+        label: "Stop",
+        title: "Ends the run after the change that is finishing now",
+        run: (app) => app.stopFinish(),
+    },
+    signfinish: {
+        label: (app, ctx) => app.signLabel(ctx.id),
+        title: "Starts the passkey prompt for this change's turn in Finish all",
+        writes: true,
+        run: (app) => app.signFinish(),
+    },
+    unqueue: {
+        label: "Remove from the run",
+        title: "Takes this change out of the Finish all run",
+        run: (app, ctx) => app.unqueue(ctx.id),
+    },
+    retryfinish: {
+        label: "Retry",
+        title: "Opens the summary sheet again: every decision is kept",
+        writes: true,
+        run: (app, ctx) => app.finishSheet([ctx.id]),
+        available: (app) => (app.finishing() ? RUNNING : true),
+    },
     // The Snapshots pane's summary of the current change, while none is open.
     summaryopen: {
         label: "Open",
@@ -429,8 +475,11 @@ export const ACTIONS = {
     endfinish: {
         label: (app) => app.endFinishLabel(),
         key: "Enter",
-        title: "Finish runs on today's page until this page has its own: it shares these decisions",
-        run: (app) => app.endFinish(),
+        // A numbered change's label is short and whole on the button; any other's full name.
+        title: (app) => (/^#/.test(app.open()?.label ?? "#") ? null : `Finish ${app.open().label}`),
+        writes: true,
+        run: (app) => app.finishOpen(),
+        available: (app) => app.finishOK(),
     },
     endback: {
         label: (app) => (app.level === 2 ? "Back to list" : "Back to changes"),
@@ -462,6 +511,20 @@ export const ACTIONS = {
     },
     confirmok: { label: (app, ctx) => ctx.label, key: "Enter", run: (app) => app.confirmOK() },
     confirmcancel: { label: "Cancel", key: "Esc", run: (app) => app.closeBox() },
+    // The Finish summary sheet (design 7.2).
+    finishgo: {
+        label: (app) => app.finishGoLabel(),
+        key: "Enter",
+        writes: true,
+        run: (app) => app.finishGo(),
+        available: (app) => app.finishGoOK(),
+    },
+    gofirst: { label: "Go to the first undecided", run: (app) => app.goFirstUndecided() },
+    finishregister: {
+        label: "Register passkey...",
+        title: "Opens Settings; closing it brings this sheet back",
+        run: (app) => app.finishRegister(),
+    },
     // The message line's own button: Retry after a failed list or a failed open (ctx.run retries it).
     retry: { label: "Retry", run: (app, ctx) => ctx.run() },
     messages: { label: "Messages", title: "The last 20 messages", run: (app) => app.messagesBox() },

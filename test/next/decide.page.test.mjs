@@ -863,12 +863,14 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         expect(next).toContain((await message(page)).match(/^Opened (#\d+) /)[1]);
     });
 
-    it("finishes on today's page from the end card, with the same decisions", async () => {
+    it("opens this change's Finish summary sheet from the end card by Enter", async () => {
         const page = await toEndCard();
-        // Enter on the focused Finish: today's page finishes this change, until this page has its own.
+        // Enter on the focused Finish: the summary sheet says what Finish will do, before anything.
         await page.keyboard.press("Enter");
-        await expect.poll(() => new URL(page.url()).hash).toBe(`#target=${SMALL}`);
-        expect(new URL(page.url()).pathname).toBe("/");
+        const sheet = page.locator("dialog.finish[open]");
+        await sheet.waitFor();
+        expect(await sheet.locator("h3").innerText()).toBe(`Finish #${SMALL} Three`);
+        expect(await page.evaluate(() => globalThis.document.activeElement.dataset.act)).toBe("finishgo");
     });
 });
 

@@ -25,6 +25,7 @@ import {
 } from "./api.js";
 import { installBaselines } from "./baselines.js";
 import { installDecide } from "./decide.js";
+import { installFinish } from "./finish.js";
 import { SORTS, changeOf, drawChanges, nextNeeding, sectionsOf, SECTIONS, sharesOf, walkOrder } from "./changes.js";
 import { keysSheet } from "./keys-sheet.js";
 import { startKeys, syncHints } from "./keys.js";
@@ -166,7 +167,14 @@ function drawTop() {
             ],
         }),
     );
-    $("frame-slot").replaceChildren(control(app, "keys", { zone: "top" }), control(app, "settings", { zone: "top" }));
+    // Finish, with a change open: always in this place, so it is found without searching (design 2.2).
+    $("frame-slot").replaceChildren(
+        control(app, "keys", { zone: "top" }),
+        control(app, "settings", { zone: "top" }),
+        ...(app.openId !== null
+            ? [control(app, "finish", { zone: "top", attrs: { class: "primary", id: "finish" } })]
+            : []),
+    );
 }
 
 // The offline sentence (design 10): the message line's joins its last two clauses with a
@@ -1210,12 +1218,14 @@ function rebuild() {
     const l = app.list;
     const shares = sharesOf(l.inbox?.groups);
     app.changes = (l.targets ?? []).map((t) =>
-        changeOf(t, {
-            defaultBranch: l.defaultBranch ?? "master",
-            now: l.now ?? Date.now(),
-            shares,
-            dismissed: app.dismissed ?? new Set(),
-        }),
+        app.withFinish(
+            changeOf(t, {
+                defaultBranch: l.defaultBranch ?? "master",
+                now: l.now ?? Date.now(),
+                shares,
+                dismissed: app.dismissed ?? new Set(),
+            }),
+        ),
     );
     if (app.dismissed === null) {
         // A first visit: the changes finished before it are not news, so only later finishes offer
@@ -1259,6 +1269,9 @@ async function loadList(query = "?cached=1", asked = false) {
     reopen();
     return true;
 }
+
+// The list asked again without a word on the message line (after a Finish).
+app.reload = () => loadList();
 
 // The evicted change the reader clicked, opened once the list shows its images back.
 function reopen() {
@@ -1471,6 +1484,7 @@ app.runAction = (id, ctx, via) => runAction(app, id, ctx, via);
 installSelect(app);
 installUndo(app);
 installDecide(app);
+installFinish(app);
 app.viewer = createViewer(app);
 app.baselines = installBaselines(app);
 app.holdSpace = (on) => (app.screen === "baselines" ? app.baselines.viewer : app.viewer).holdSpace(on);

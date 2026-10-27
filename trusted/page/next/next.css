@@ -504,6 +504,25 @@ body.held [data-zone="end"] kbd {
 .sec .ic {
     color: var(--ink-2);
 }
+/* Decided, not finished: Finish all N... (or Stop) sits in the header, before its count. */
+.sechead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+.sechead > .sec {
+    position: static;
+}
+.sechead > .fa {
+    position: absolute;
+    top: 50%;
+    right: calc(16px + var(--numw));
+    transform: translateY(-50%);
+    min-height: 24px;
+    height: 24px;
+    font-size: 11px;
+    padding: 0 6px;
+}
 .chg {
     height: 52px;
     padding: 1px 10px 1px 12px;
@@ -537,22 +556,22 @@ body.held [data-zone="end"] kbd {
     color: var(--ink-2);
 }
 .chg .l2 button,
-.chg .l1 button,
-.chg .l2 a {
+.chg .l1 button {
     min-height: 24px;
     height: 24px;
     padding: 0 6px;
     font-size: 11px;
     flex: none;
 }
+/* A finished row's links give way before its count does: the count is the row's state. */
 .chg .l2 a {
-    display: inline-flex;
-    align-items: center;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
     color: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--surface);
-    text-decoration: none;
 }
 .chg .cnt {
     font-size: 12px;
@@ -1879,4 +1898,41 @@ body:not([data-screen="baselines"]) .bl {
     height: 22px;
     padding: 0 7px;
     font-size: 12px;
+}
+
+/* The Finish summary sheet: the mockup's 520px and 580px content widths, plus padding and border. */
+dialog.finish {
+    width: 562px;
+}
+dialog.finish.many {
+    width: 622px;
+}
+dialog.finish p {
+    margin: 6px 0;
+}
+dialog.finish pre {
+    background: var(--bg);
+    padding: 6px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.warnbox {
+    background: color-mix(in srgb, var(--warn) 14%, var(--surface));
+    border: 1px solid var(--warn);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+}
+dialog.finish .warnbox {
+    margin-bottom: 8px;
+}
+.finlist {
+    max-height: 40vh;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+}
+.finlist > div {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--line);
 }

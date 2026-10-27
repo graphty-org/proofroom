@@ -45,6 +45,9 @@ PORT=4800 proofroom serve --ui next
   until then, decide on today's page.
 - **The Baselines tab.** Every approved baseline, at the default branch or at any change's head:
   see [Browsing baselines](../README.md#browsing-baselines).
+- **Finish.** **Finish** in the top bar, Finish... on each decided change and Finish all, with a
+  summary sheet that says what each Finish will commit, post and set first. See
+  [Finish on the new page](finish.md).
 - **Addresses.** Every change and snapshot you open is in the address, so a copied link opens it
   again and the browser's Back and Forward move between them. Links today's page wrote, such as
   those in pull request comments, open the same change and snapshot here.
