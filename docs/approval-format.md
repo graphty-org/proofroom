@@ -108,9 +108,10 @@ reviewer key.
 
 On the merge result against the base:
 
-1. **Settings come from the base's config only**: `approvals`, `baselines`, `approvalFormat` and
-   `repositoryId`. A change that moves `approvals` or `baselines`, or changes `repositoryId`,
-   fails. A change may set `approvalFormat`; it takes effect once it is on the default branch.
+1. **Settings come from the base's config only**: `approvals`, `baselines`, `approvalFormat`,
+   `repositoryId` and `selfApproval`. A change that moves `approvals` or `baselines`, or changes
+   `repositoryId`, fails. A change may set `approvalFormat` or `selfApproval`; the setting takes
+   effect once it is on the default branch.
 2. **Keys** come only from `visual-review/passkeys.json` on the base. A change that edits it fails
    once the base holds a key, and so does one that would leave no key. While the base holds no
    key, no signature is checked: that is how a repository registers its first key.
@@ -145,6 +146,7 @@ On the merge result against the base:
       the change and decide it again.
     - Two ends of a closed fork that decided the file differently, with no later decision, fail.
 8. Entries for files the change does not alter are ignored.
+9. **Self-approval**, when the base's config forbids it (see "Forbidding self-approval" below).
 
 So an approval cannot move to another story (the path is matched exactly), another repository or
 another change, and a superseded image cannot come back: once the default branch accepts Z over Y,
@@ -163,6 +165,86 @@ proofroom gate --captures <dir> --base <ref> [--head <ref>] [--change <id> | --p
 ```
 
 `--pr N` is the same as `--change pr:N`.
+
+## Keys and identity
+
+`visual-review/passkeys.json` lists the keys a statement may be signed by:
+
+```json
+{
+    "version": 1,
+    "keys": [
+        {
+            "id": "<credential id>",
+            "publicKey": "<base64url SubjectPublicKeyInfo, P-256>",
+            "rpId": "dev.example.com",
+            "label": "iPad passkey, 2026-10-01",
+            "registeredAt": "2026-10-01T09:12:44.000Z",
+            "identity": {
+                "user": "rita",
+                "emails": ["rita@example.com"],
+                "signingKeys": ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."]
+            }
+        }
+    ]
+}
+```
+
+`identity` is optional. It says whose key this is: `user`, the person's user name on the code host
+(GitHub); `emails`, the e-mail addresses they commit with; and `signingKeys`, the SSH public keys
+they sign commits with, used only outside GitHub (below). It names a user, an e-mail address, or
+both. Registering a key on the review page fills in `user` from the account `gh` is signed in as
+and `emails` from git's `user.email`, when they are known; check them in the key's pull request,
+and add `signingKeys` by hand if you need them. Adding or changing a key is an administrator's
+merge, as always.
+
+## Forbidding self-approval
+
+With `"selfApproval": "forbid"` in `visual-review.config.json` on the default branch (the default
+is `"allow"`), the gate refuses a change statement signed by a key whose identity contributed to
+the change:
+
+```
+::error::self-approval -- visual-review-approvals/pr-7/20261025T140211Z-3f9a1c0b2d4e.json: signed by rita (<key id>), who contributed to pr:7; this repository forbids approving your own change
+```
+
+The contributors of a change are:
+
+- on GitHub Actions, the account that opened the pull request, and for each of its commits the
+  author's and the committer's accounts and e-mail addresses. A commit's signer is its committer:
+  GitHub verifies a signature only against the committer's own keys. The gate reads the pull
+  request through the GitHub API, so give the gate step the workflow's token:
+
+    ```yaml
+    - name: Check visual changes were accepted
+      env:
+          GITHUB_TOKEN: ${{ github.token }}
+      run: npx --yes proofroom@<version> gate ...
+    ```
+
+- anywhere else, for each commit of the change, the author's and the committer's e-mail
+  addresses, and the identity whose `signingKeys` signed it.
+
+Two kinds of commit do not count: Finish's own commit, recognized by what it changes (one
+statement, and only the baseline files that statement's entries name), never by who made it; and a
+merge that adds nothing of its own, such as a clean merge of the default branch.
+
+The policy fails closed. With it on, the gate fails when:
+
+- any key in the base's `visual-review/passkeys.json` has no `identity`, since a key without one
+  could be anyone's;
+- a commit of the change, other than the two kinds above, carries no signature the code host
+  verifies (outside GitHub: no SSH signature by one of the `signingKeys` an identity names), since
+  anyone can write any name and e-mail address into a commit;
+- GitHub cannot be asked (no `GITHUB_TOKEN`, an error, or a pull request of 250 commits or more,
+  more than GitHub lists);
+- a version 1 tree statement approves the change, since its signer is not checked: use change
+  statements (`"approvalFormat": "change"`).
+
+The policy is only as strong as the code host's identities. It trusts GitHub to say who opened the
+pull request and whose key signed a commit, and it trusts each key's `identity` as an administrator
+merged it. Someone with two accounts on the code host, or a key whose identity names the wrong
+person, gets past it.
 
 ## Tree statements (coming from @graphty/visual-review)
 

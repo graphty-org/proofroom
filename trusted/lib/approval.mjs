@@ -22,6 +22,10 @@ const FIELDS = ["credentialId", "authenticatorData", "clientDataJSON", "signatur
 const UP = 0x01;
 const UV = 0x04;
 const AT = 0x40;
+const LOGIN = /^[^\s@]+$/;
+const EMAIL = /^[^\s@]+@[^\s@]+$/;
+const SSH_KEY = /^(ssh-|ecdsa-|sk-)[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,3}$/;
+const IDENTITY_FIELDS = new Set(["user", "emails", "signingKeys"]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest();
 const b64u = (s) => Buffer.from(s, "base64url");
@@ -76,8 +80,8 @@ function loadKey(spki) {
 /**
  * Parses passkeys.json. One bad entry makes the whole file invalid, so the gate fails closed.
  * @param {string} text the file
- * @returns {{ id: string, publicKey: string, rpId: string, label?: string, registeredAt?: string }[]}
- *     the keys
+ * @returns {{ id: string, publicKey: string, rpId: string, label?: string, registeredAt?: string,
+ *     identity?: { user?: string, emails?: string[], signingKeys?: string[] } }[]} the keys
  */
 export function parsePasskeys(text) {
     const doc = JSON.parse(text);
@@ -108,8 +112,43 @@ export function parsePasskeys(text) {
         } catch (err) {
             throw new Error(`${where}.publicKey: ${err.message}`);
         }
+        const bad = k.identity === undefined ? null : identityProblem(k.identity);
+        if (bad) {
+            throw new Error(`${where}.identity: ${bad}`);
+        }
     }
     return doc.keys;
+}
+
+/**
+ * Why a key's `identity` is malformed, or null: the person the key belongs to, as the code host
+ * and git name them (docs/approval-format.md, "Keys and identity").
+ * @param {any} id the identity (untrusted)
+ * @returns {string | null} why not, or null
+ */
+function identityProblem(id) {
+    if (typeof id !== "object" || id === null || Array.isArray(id)) {
+        return "must be an object";
+    }
+    const extra = Object.keys(id).find((f) => !IDENTITY_FIELDS.has(f));
+    if (extra !== undefined) {
+        return `unknown field ${JSON.stringify(extra)}`;
+    }
+    if (id.user !== undefined && (typeof id.user !== "string" || !LOGIN.test(id.user))) {
+        return "user must be a code host user name";
+    }
+    const lists = { emails: EMAIL, signingKeys: SSH_KEY };
+    for (const [f, re] of Object.entries(lists)) {
+        if (id[f] !== undefined && !(Array.isArray(id[f]) && id[f].every((v) => typeof v === "string" && re.test(v)))) {
+            return f === "emails"
+                ? "emails must be e-mail addresses"
+                : 'signingKeys must be SSH public keys ("ssh-ed25519 AAAA...")';
+        }
+    }
+    if (id.user === undefined && !(id.emails?.length > 0)) {
+        return "must name a user or an e-mail address";
+    }
+    return null;
 }
 
 /**

@@ -940,7 +940,10 @@ administrator past the failing check. Removing every key is refused the same way
 
 `visual-review/passkeys.json` sits at that path in every repository that uses this tool. It
 holds public keys only: `{ "version": 1, "keys": [{ "id", "publicKey", "rpId", "label",
-"registeredAt" }] }`, with the public key as base64url SubjectPublicKeyInfo (P-256).
+"registeredAt", "identity" }] }`, with the public key as base64url SubjectPublicKeyInfo (P-256).
+The optional `identity` says whose key it is (a code host user name, e-mail addresses), which
+`"selfApproval": "forbid"` uses to refuse approvals of your own change; see
+[the approval format](docs/approval-format.md#forbidding-self-approval).
 
 ## Updating from the default branch
 

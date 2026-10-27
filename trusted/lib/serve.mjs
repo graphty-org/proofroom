@@ -903,6 +903,27 @@ export function createApp({
             passkeyState = { main: [], pending: [], problem: err.message };
         }
     };
+    /**
+     * Whose key is being registered, for the self-approval rule (docs/approval-format.md): the
+     * code host login gh is signed in as and the git e-mail of this server's repository, each when
+     * known; null when neither is.
+     * @returns {Promise<{ user?: string, emails?: string[] } | null>} the identity
+     */
+    async function keyIdentity() {
+        reviewer ??= reviewerLogin(gh).catch(() => null);
+        const [user, email] = await Promise.all([
+            reviewer,
+            execFileAsync("git", ["config", "--get", "user.email"], { cwd: repo }).then(
+                (r) => r.stdout.trim(),
+                () => "",
+            ),
+        ]);
+        const identity = {
+            ...(user && /^[^\s@]+$/.test(user) && { user }),
+            ...(/^[^\s@]+@[^\s@]+$/.test(email) && { emails: [email] }),
+        };
+        return Object.keys(identity).length > 0 ? identity : null;
+    }
     /** An open pull request that registers a passkey, waiting for the owner to merge it. */
     let passkeyPr = null;
     /** The passkey pull request this server opened: listed until GitHub's list or the file has it. */
@@ -4156,12 +4177,14 @@ export function createApp({
                 return [409, { error: "a Finish is running: register when it ends" }];
             }
             const label = typeof body.label === "string" ? body.label.replaceAll(/\s+/g, " ").trim().slice(0, 60) : "";
+            const identity = await keyIdentity();
             const entry = {
                 id: body.credentialId,
                 publicKey: body.publicKey,
                 rpId,
                 label: label || "passkey",
                 registeredAt: new Date().toISOString(),
+                ...(identity && { identity }),
             };
             let proposed;
             try {
