@@ -2,7 +2,8 @@
  * Decisions on their way to the server, and Undo (design 6.5). Every decision, single or bulk, is
  * a list of changes `{ s, to, model }`: the snapshot, what the server stores for it (a decision or
  * null), and what the page shows after (by default `to`). One change is one POST /api/decide; more
- * are one POST /api/accept-all per project (and per decision and reason), never one per snapshot.
+ * are one POST /api/accept-all per project (and per decision, reason and whether an accept was
+ * opened), never one per snapshot.
  * A failed project leaves its snapshots as they were and is named, with the error.
  *
  * Undo [U] takes back the last step, single or bulk, in one step. A step is the changes as they
@@ -14,7 +15,8 @@
 import { api } from "./api.js";
 import { setDecision, updateHeads, updateRow } from "./list.js";
 
-const sig = (to) => (to === null ? "" : `${to.decision}\n${to.reason ?? ""}`);
+// A bulk accept and an opened one go in separate requests: the server stores which it was.
+const sig = (to) => (to === null ? "" : `${to.decision}\n${to.reason ?? ""}\n${to.bulk ? "bulk" : ""}`);
 
 // The loaded run, as the routes take it: the decisions are checked against the capture shown.
 function runFields(app) {
@@ -32,7 +34,8 @@ function runFields(app) {
  * project (and per decision and reason within it).
  * @param {any} app the page
  * @param {{ s: any, to: object | null }[]} changes the changes
- * @returns {Promise<{ done: any[], failed: { project: string, error: string, changes: any[] }[],
+ * @returns {Promise<{ done: any[], failed: { project: string, error: string, status: number | null,
+ *     changes: any[] }[],
  *     unpublished: number | null }>} the changes the server applied, the projects that failed, and the
  *     server's count of decisions the next Finish publishes
  */
@@ -56,7 +59,7 @@ export async function send(app, changes) {
             unpublished = answer.unpublished ?? null;
             done.push(c);
         } catch (err) {
-            failed.push({ project: c.s.project, error: err.message, changes });
+            failed.push({ project: c.s.project, error: err.message, status: err.status ?? null, changes });
         }
         return { done, failed, unpublished };
     }
@@ -74,6 +77,8 @@ export async function send(app, changes) {
                 project,
                 decision: to?.decision ?? null,
                 ...(to && to.decision !== "accept" && { reason: to.reason }),
+                // An accept taken back by Undo and given again stays opened when it was.
+                ...(to?.decision === "accept" && !to.bulk && { bulk: false }),
                 files: batch.map((c) => c.s.file),
                 ...runFields(app),
             });
@@ -81,7 +86,7 @@ export async function send(app, changes) {
             done.push(...batch.filter((c) => files.has(c.s.file)));
             unpublished = answer.unpublished ?? unpublished;
         } catch (err) {
-            failed.push({ project, error: err.message, changes: batch });
+            failed.push({ project, error: err.message, status: err.status ?? null, changes: batch });
         }
     }
     return { done, failed, unpublished };

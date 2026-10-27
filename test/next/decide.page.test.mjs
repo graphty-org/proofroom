@@ -11,19 +11,20 @@
  * menu's Accept all shown and Undo all; the stale capture and Update from the default branch; and
  * the counted work: one request per project for every bulk action, and for its Undo.
  *
- * The decision keys run in Chromium and in WebKit (half of the owner's reviews are in iPad Safari
- * with a keyboard); the rest in Chromium. One test runs on the review server itself and reads the
- * decisions file back.
+ * The decision keys, the selection, the group headers and the list menu, the decision bar and the
+ * end card, and the stale capture run in Chromium and in WebKit (half of the owner's reviews are in
+ * iPad Safari with a keyboard); the layout and the counted work in Chromium. Two tests run on the
+ * review server itself: one reads the decisions file back, one runs Update from master on a branch.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { PNG } from "pngjs";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { startApp } from "../faults.mjs";
-import { isolateGit, makeRepo, onePr } from "../helpers.mjs";
+import { git, isolateGit, makeRepo, onePr, pushCommit } from "../helpers.mjs";
 import { COVERS } from "./covers.mjs";
 import {
     BROWSERS,
@@ -189,6 +190,21 @@ const shows = (loc) =>
     });
 const barText = (page, act) => shows(bar(page, act));
 
+/**
+ * Runs a describe's tests in one browser, skipped where it cannot start here (WebKit on some Linux
+ * machines; CI always has it).
+ * @param {"chromium" | "webkit"} name the browser
+ * @returns {(id: string, options?: object) => Promise<import("playwright").Page>} openChange in it
+ */
+function inBrowser(name) {
+    beforeEach((ctx) => {
+        if (!browsers[name]) {
+            ctx.skip();
+        }
+    });
+    return (id, options = {}) => openChange(id, { ...options, browser: browsers[name] });
+}
+
 describe.each(["chromium", "webkit"])("the decision keys in %s", (name) => {
     const open = async (id, options = {}) => {
         if (!browsers[name]) {
@@ -316,7 +332,7 @@ describe.each(["chromium", "webkit"])("the decision keys in %s", (name) => {
         ]);
         // Undo goes back to #3 and puts its reason back in the box.
         await page.keyboard.press("KeyU");
-        await expect.poll(() => message(page)).toBe("Undone: the reject of #3.");
+        await expect.poll(() => message(page)).toBe("Undone: #3.");
         expect(await currentN(page)).toBe("#3");
         await ready(page);
         await page.keyboard.press("KeyR");
@@ -366,9 +382,11 @@ const fileOf = (id, n, project = "graphty-element") => rows(id, project).items[n
 // The visible key boxes of one key, by the action each is on.
 const keyOwners = async (page, key) => (await visibleKeys(page)).filter((k) => k.key === key).map((k) => k.act);
 
-describe("what A acts on, and the selection", () => {
+describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s", (name) => {
+    const openIn = inBrowser(name);
+
     it("A decides the row in front of you when it is not selected, and the selection when it is; the key hint is only on the button A triggers", async () => {
-        const page = await openChange(MAIN);
+        const page = await openIn(MAIN);
         await page.keyboard.press("KeyX");
         await expect.poll(() => selBar(page).innerText()).toMatch(/^1 selected/);
         expect(await shows(page.locator('.iline [data-act="select"]'))).toBe("Unselect [X]");
@@ -399,7 +417,7 @@ describe("what A acts on, and the selection", () => {
     });
 
     it("selects by checkbox, shift-click ranges across groups and over a collapsed one, Ctrl/Cmd-click, Extend up and down by menu and key; the bar replaces line 5 and no row moves", async () => {
-        const page = await openChange(MAIN);
+        const page = await openIn(MAIN);
         await head(page, "component-1").locator(".caret").click();
         await expect.poll(() => row$(page, 6).count()).toBe(0);
         // Where row #20 sits in the list's content: a click scrolls the list, a moved row would not.
@@ -443,7 +461,7 @@ describe("what A acts on, and the selection", () => {
         expect(await currentN(page)).toBe("#2");
         // Extend down and Extend up, from the bar's menu, do what the keys do.
         await selBar(page).locator('[data-act="selmenu"]').click();
-        expect(await menuItem(page, "Extend down").innerText()).toMatch(/^Extend down\s*Shift\+Down$/);
+        expect((await menuItem(page, "Extend down").innerText()).trim()).toMatch(/^Extend down\s*Shift\+Down$/);
         await menuItem(page, "Extend down").click();
         await expect.poll(() => selBar(page).locator(".selcount").innerText()).toBe("3 selected");
         expect(await currentN(page)).toBe("#3");
@@ -467,7 +485,7 @@ describe("what A acts on, and the selection", () => {
 
     it("decides a selection over two projects with one request per project, by Accept, Reject and Exclude, and Undo is one request per project too", async () => {
         let failGraphty = false;
-        const page = await openChange(TWO, {
+        const page = await openIn(TWO, {
             acceptAll: (b) =>
                 failGraphty && b.project === "graphty"
                     ? { status: 500, json: { error: "the disk is full" } }
@@ -493,7 +511,7 @@ describe("what A acts on, and the selection", () => {
         ]);
         // Undo after a bulk accept restores every row: one request per project.
         await page.keyboard.press("KeyU");
-        await expect.poll(() => message(page)).toBe("Undone: 24 decisions.");
+        await expect.poll(() => message(page)).toBe("Undone: 24 snapshots.");
         expect(byProject(posts("/api/accept-all").slice(2))).toEqual([
             ["graphty", null, 12],
             ["graphty-element", null, 12],
@@ -537,9 +555,11 @@ describe("what A acts on, and the selection", () => {
     });
 });
 
-describe("group headers and the list menu", () => {
+describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (name) => {
+    const openIn = inBrowser(name);
+
     it("labels its scope Accept 1 shown (4 hidden) under Find and never sends a hidden row", async () => {
-        const page = await openChange(MAIN);
+        const page = await openIn(MAIN);
         await page.keyboard.press("Slash");
         await page.keyboard.type("story-1");
         // The current snapshot is the first one shown, #2, so this group's Accept prints Shift+A.
@@ -552,8 +572,35 @@ describe("group headers and the list menu", () => {
         expect(posts("/api/accept-all")[0].body.files).toEqual([fileOf(MAIN, 2)]);
     });
 
+    it("leaves a project not seeded from master out of a bulk accept, names it, and sends nothing for it", async () => {
+        const page = await openIn(TWO, {
+            targets: targets().map((x) =>
+                x.id === TWO
+                    ? {
+                          ...x,
+                          projects: [
+                              project("graphty-element", { reviewable: 12 }),
+                              project("graphty", { reviewable: 12, acceptable: false }),
+                          ],
+                      }
+                    : x,
+            ),
+        });
+        await page.locator('#snaps-head [data-act="listmenu"]').click();
+        await menuItem(page, "Accept all shown (24)...").click();
+        await page.keyboard.press("Enter");
+        await expect
+            .poll(() => message(page))
+            .toBe(
+                "Accepted 12 snapshots. graphty left out: not seeded from master; its first review is on a pull request.",
+            );
+        expect(posts("/api/accept-all").map((p) => [p.body.project, p.body.files.length])).toEqual([
+            ["graphty-element", 12],
+        ]);
+    });
+
     it("Accept all shown... and Undo all decisions... from the list menu ask first, one request each", async () => {
-        const page = await openChange(MAIN);
+        const page = await openIn(MAIN);
         await page.locator('#snaps-head [data-act="listmenu"]').click();
         await menuItem(page, "Accept all shown (30)...").click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Accept 30 matching?");
@@ -582,8 +629,27 @@ describe("group headers and the list menu", () => {
         ]);
     });
 
+    it("Undo [U] after a group's Undo gives back accepts made one at a time as opened, in one request", async () => {
+        const page = await openIn(MAIN);
+        for (const n of [1, 2]) {
+            await ready(page);
+            await page.keyboard.press("KeyA");
+            await expect.poll(() => message(page)).toBe(`Accepted #${n}.`);
+        }
+        await head(page, "component-0").locator('[data-act="gundo"]').click();
+        await page.keyboard.press("Enter");
+        await expect.poll(() => message(page)).toBe("Undone: 2 decisions in graphty-element > component-0.");
+        await page.keyboard.press("KeyU");
+        await expect.poll(() => posts("/api/accept-all").length).toBe(2);
+        expect(posts("/api/accept-all").map((p) => [p.body.decision, p.body.files.length, p.body.bulk])).toEqual([
+            [null, 2, undefined],
+            ["accept", 2, false],
+        ]);
+        await expect.poll(() => row$(page, 1).textContent()).not.toContain("not opened");
+    });
+
     it("a group's Undo N asks first and is one step for Undo [U]; its menu rejects, excludes and selects the group", async () => {
-        const page = await openChange(MAIN);
+        const page = await openIn(MAIN);
         await head(page, "component-0").locator('[data-act="gaccept"]').click();
         await expect.poll(() => shows(head(page, "component-0").locator('[data-act="gundo"]'))).toBe("Undo 5");
         await head(page, "component-0").locator('[data-act="gundo"]').click();
@@ -593,10 +659,11 @@ describe("group headers and the list menu", () => {
         // Undo [U] takes the group's Undo back: the five accepted again, in one request.
         await page.keyboard.press("KeyU");
         await expect.poll(() => posts("/api/accept-all").length).toBe(3);
-        expect(posts("/api/accept-all").map((p) => [p.body.decision, p.body.files.length])).toEqual([
-            ["accept", 5],
-            [null, 5],
-            ["accept", 5],
+        // A bulk accept given back stays a bulk accept (no `bulk: false`): marked not opened.
+        expect(posts("/api/accept-all").map((p) => [p.body.decision, p.body.files.length, p.body.bulk])).toEqual([
+            ["accept", 5, undefined],
+            [null, 5, undefined],
+            ["accept", 5, undefined],
         ]);
         // The group menu: Reject 5..., Exclude 5... and Select all 5.
         await head(page, "component-1").locator('[data-act="gmenu"]').click();
@@ -626,7 +693,7 @@ describe("group headers and the list menu", () => {
 
     it("after a group accept the focus is on the new current row and Enter does what the printed [Enter] says", async () => {
         // Two levels at 1280: the item line prints Open [Enter].
-        const page = await openChange(MAIN, { viewport: { width: 1280, height: 800 } });
+        const page = await openIn(MAIN, { viewport: { width: 1280, height: 800 } });
         expect(await shows(head(page, "component-0").locator('[data-act="gaccept"]'))).toBe("Accept 5 [Shift+A]");
         expect(await shows(head(page, "component-1").locator('[data-act="gaccept"]'))).toBe("Accept 5");
         await page.keyboard.press("Shift+KeyA");
@@ -655,7 +722,7 @@ describe("group headers and the list menu", () => {
     });
 
     it("asks before accepting over 20 in a group, naming it; Esc sends nothing and Enter then does what [Enter] says", async () => {
-        const page = await openChange(WIDE);
+        const page = await openIn(WIDE);
         await page.keyboard.press("Shift+KeyA");
         expect(await dialog(page).locator("h3").innerText()).toBe(
             "Accept 25 in graphty-element > widgets without opening them?",
@@ -675,9 +742,9 @@ describe("group headers and the list menu", () => {
     });
 
     it("Approved before has Reject and Exclude but no Undo; Rejected before is replaced by Accept", async () => {
-        const page = await openChange(RICH);
+        const page = await openIn(RICH);
         const before = page.locator(`.ghead[data-group="!before"]`);
-        expect(await before.innerText()).toMatch(/^Approved before\s+2\s+\(already accepted\)/);
+        expect((await before.innerText()).trim()).toMatch(/^Approved before\s+2\s+\(already accepted\)/);
         expect(await before.locator('[data-act="gundo"]').count()).toBe(0);
         await before.getByRole("button", { name: "Show", exact: true }).click();
         const approved = page.locator("#snap-list .srow", { hasText: "Accepted (approved before #1356)" });
@@ -718,9 +785,11 @@ describe("group headers and the list menu", () => {
     });
 });
 
-describe("the decision bar and the end card", () => {
+describe.each(["chromium", "webkit"])("the decision bar and the end card in %s", (name) => {
+    const openIn = inBrowser(name);
+
     it("a click on a decision button returns focus to the list; Space never presses a decision button", async () => {
-        const page = await openChange(MAIN);
+        const page = await openIn(MAIN);
         await bar(page, "accept").click();
         await expect.poll(() => message(page)).toBe("Accepted #1.");
         expect(await activeId(page)).toBe("snap-list");
@@ -742,7 +811,7 @@ describe("the decision bar and the end card", () => {
     });
 
     it("says why a button is unavailable, and Undo says there is nothing to undo", async () => {
-        const page = await openChange(MAIN);
+        const page = await openIn(MAIN);
         expect(await bar(page, "undo").getAttribute("title")).toBe("Nothing to undo");
         // An unavailable control stays in place and says why when pressed.
         await bar(page, "undo").click({ force: true });
@@ -758,7 +827,7 @@ describe("the decision bar and the end card", () => {
 
     // Decides the small change's three snapshots by key: the end card shows.
     async function toEndCard() {
-        const page = await openChange(SMALL);
+        const page = await openIn(SMALL);
         for (const n of [1, 2, 3]) {
             await ready(page);
             await page.keyboard.press("KeyA");
@@ -852,15 +921,18 @@ describe("the decision bar's layout", () => {
     }
 });
 
-describe("a stale capture", () => {
+describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
+    const openIn = inBrowser(name);
+
     it("says master has newer baselines, lists them, and Update from master runs the job, shows its steps and reloads the list", async () => {
         let done = false;
-        const page = await openChange(STALE, {
+        const page = await openIn(STALE, {
             update: (b) => ({ job: { kind: "update", target: b.id, running: true, step: "starting", error: null } }),
             finishStatus: () => ({ kind: "update", target: STALE, running: !done, step: "merging", error: null }),
         });
         const banner = page.locator("#snap-stale");
-        expect(await banner.innerText()).toMatch(
+        // trim: WebKit's innerText puts a line break around the flex box's text.
+        expect((await banner.innerText()).trim()).toMatch(
             /^master has 3 newer baselines since this capture\.\s*Changed on master\s*Update from master\.\.\.$/,
         );
         await banner.getByRole("button", { name: "Changed on master" }).click();
@@ -887,7 +959,7 @@ describe("a stale capture", () => {
     });
 
     it("offers Update from master... in the changes row menu, for a pull request", async () => {
-        const page = await openChange(STALE);
+        const page = await openIn(STALE);
         if ((await page.locator("#changes").getAttribute("class")).includes("rail")) {
             await page.keyboard.press("Shift+Digit1");
         }
@@ -907,7 +979,7 @@ describe("counted work", () => {
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Accepted 1,000 snapshots.");
         await page.keyboard.press("KeyU");
-        await expect.poll(() => message(page)).toBe("Undone: 1,000 decisions.");
+        await expect.poll(() => message(page)).toBe("Undone: 1,000 snapshots.");
         expect(posts("/api/accept-all").map((p) => [p.body.decision, p.body.files.length])).toEqual([
             ["accept", 1000],
             [null, 1000],
@@ -946,6 +1018,75 @@ describe("on the review server", () => {
             expect(Object.keys(saved.decisions ?? saved).filter((k) => !k.startsWith("_"))).toEqual([
                 "compact-mantine/slider--sizes.png",
             ]);
+        } finally {
+            await context.close();
+            await s.close();
+        }
+    });
+});
+
+describe("Update from master on the review server", () => {
+    it("runs the job on the branch, shows its progress, and reloads the list with the stale banner gone", async () => {
+        // The server logs the update, and the thumbnail it cannot make of the newer baseline (text,
+        // not an image): neither is this test's subject.
+        const out = vi.spyOn(console, "log").mockImplementation(() => {});
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => {
+            out.mockRestore();
+            err.mockRestore();
+        });
+        isolateGit();
+        const r = makeRepo();
+        // master moves on: a newer baseline in compact-mantine since the pull request's capture.
+        pushCommit(r.remote, "master", "visual-baselines/compact-mantine/other.png");
+        const masterTip = git(r.remote, "rev-parse", "master");
+        // The code host reports the branch's head as it is now, so after the push the pull request
+        // shows its new head, waiting for CI.
+        const gh = (args, input) =>
+            onePr({ prs: [{ number: 123, head: git(r.remote, "rev-parse", "feature"), branch: "feature" }] })(r)(
+                args,
+                input,
+            );
+        const s = await startApp(r, { gh, token: TOKEN });
+        const context = await browsers.chromium.newContext({ viewport: { width: 1440, height: 900 } });
+        const page = await context.newPage();
+        page.setDefaultTimeout(0);
+        try {
+            await expect
+                .poll(async () => {
+                    const list = (await s.api("GET", "/api/prs")).body;
+                    const t123 = list.targets?.find((x) => x.id === "123");
+                    return Boolean(t123 && !t123.downloading && t123.projects.every((p) => !p.downloading));
+                })
+                .toBe(true);
+            await page.goto(`${s.origin}/next/#token=${TOKEN}&change=123`);
+            await showList(page);
+            const banner = page.locator("#snap-stale");
+            await banner.waitFor();
+            expect(await banner.innerText()).toMatch(/^master has 1 newer baseline since this capture\./);
+            // Every message the line shows, in order.
+            await page.evaluate(() => {
+                const line = globalThis.document.getElementById("msg-t");
+                globalThis.said = [];
+                new globalThis.MutationObserver(() => globalThis.said.push(line.textContent.trim())).observe(line, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true,
+                });
+            });
+            await banner.getByRole("button", { name: "Update from master..." }).click();
+            expect(await dialog(page).locator("h3").innerText()).toBe("Update #123 from master?");
+            await page.keyboard.press("Enter");
+            await expect.poll(() => message(page)).toBe("Updated #123 from master: CI captures it again.");
+            const said = await page.evaluate(() => globalThis.said);
+            expect(
+                said.filter((m) => /^Updating #123: .+\.\.\.$/.test(m)),
+                said.join(" / "),
+            ).not.toEqual([]);
+            expect(await banner.isVisible()).toBe(false);
+            // The branch holds the merge of master: its first parent the old head, its second master.
+            expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.head);
+            expect(git(r.remote, "rev-parse", "feature^2")).toBe(masterTip);
         } finally {
             await context.close();
             await s.close();

@@ -644,7 +644,7 @@ describe("rows", () => {
         });
         const key = await rejected.getAttribute("data-snap");
         await rejected.getByRole("button", { name: "Undo" }).click();
-        await expect.poll(() => message(page)).toMatch(/^Undone: the reject of #\d+\.$/);
+        await expect.poll(() => message(page)).toMatch(/^Undone: #\d+\.$/);
         const changedRows = await page.evaluate(() => globalThis.changedRows);
         expect(changedRows).toEqual([key, key]); // one row element out, its replacement in
         expect(await page.locator(`#snap-list .srow[data-snap="${key}"]`).getAttribute("class")).not.toContain(
@@ -674,7 +674,7 @@ describe("rows", () => {
         const rejected = page.locator("#snap-list .srow", { hasText: "Rejected: Legend overlaps" });
         const key = await rejected.getAttribute("data-snap");
         await rejected.getByRole("button", { name: "Undo" }).click();
-        await expect.poll(() => message(page)).toMatch(/^Undone: the reject of #\d+\.$/);
+        await expect.poll(() => message(page)).toMatch(/^Undone: #\d+\.$/);
         expect(await page.evaluate(() => globalThis.changedRows)).toEqual([key, key]);
         expect(await page.locator("#snap-list .srow").count()).toBe(2);
     });

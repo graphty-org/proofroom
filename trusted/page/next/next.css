@@ -1043,6 +1043,14 @@ body.infind .fk {
     height: 24px;
     font-weight: 400;
 }
+.ghead .acc {
+    border-color: var(--accept);
+    color: var(--ink);
+    font-weight: 700;
+}
+.ghead .acc .ic {
+    color: var(--accept);
+}
 .ghead .split {
     font-weight: 400;
     display: inline-flex;
@@ -1070,11 +1078,16 @@ body.infind .fk {
     align-items: center;
     gap: 4px;
 }
+/* The split never wraps the buttons onto a third line: it starts at no width and takes the room
+   the buttons leave, shrinking (its title holds every word) when even the folded split is too wide. */
 .ghead.two .split {
-    flex: 0 1 auto;
+    flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
+}
+.ghead.two .split + .gsp {
+    display: none;
 }
 .ghead.before {
     background: color-mix(in srgb, var(--accept) 8%, var(--ghead));

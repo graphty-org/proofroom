@@ -178,13 +178,22 @@ export function installDecide(app) {
 
     const undoButton = () => [control(app, "undo", { zone: "msgline", keyed: false })];
 
-    // Says which projects were left undecided, with Retry for them.
+    // Says which projects were left undecided, with Retry for them; none for a refusal (HTTP 403),
+    // which a second try cannot change.
     function sayFailed(failed, retry) {
         const names = failed.map((f) => f.project).join(", ");
+        const again = failed.filter((f) => f.status !== 403);
         app.say(
             `Not saved: ${failed[0].error}. ${names} left as ${failed.length === 1 ? "it was" : "they were"}.`,
             "err",
-            [control(app, "retry", { zone: "msgline", ctx: { run: () => retry(failed.flatMap((f) => f.changes)) } })],
+            again.length > 0
+                ? [
+                      control(app, "retry", {
+                          zone: "msgline",
+                          ctx: { run: () => retry(again.flatMap((f) => f.changes)) },
+                      }),
+                  ]
+                : [],
         );
     }
 
@@ -258,32 +267,41 @@ export function installDecide(app) {
      * @param {"accept" | "reject" | "exclude"} kind the decision
      * @param {any[]} list the rows
      * @param {string | null} reason the reason (Reject and Exclude)
-     * @param {{ said?: (done: any[]) => void }} [opts] what to say once saved
+     * @param {{ said?: (done: any[], note: string) => void }} [opts] what to say once saved, given
+     *     the sentence naming the projects left out ("" when none)
      * @returns {Promise<any[] | null>} the changes saved
      */
     async function decideMany(kind, list, reason, opts = {}) {
+        // A project not seeded from the default branch is accepted (and excluded) only on a pull
+        // request, as for one snapshot: its rows are left out and named.
+        const refused = [...new Set(list.filter((s) => kind !== "reject" && !acceptable(s)).map((s) => s.project))];
+        const note =
+            refused.length > 0
+                ? ` ${refused.join(", ")} left out: not seeded from ${master()}; its first review is on a pull request.`
+                : "";
         const take = list.filter(
             (s) =>
                 !s.finished &&
                 (!s.decision || (replaceable(s) && s.decision.decision !== kind)) &&
-                (kind !== "accept" || undecided(s)),
+                (kind !== "accept" || undecided(s)) &&
+                (kind === "reject" || acceptable(s)),
         );
         if (take.length === 0) {
-            app.say("Nothing to decide there: those are decided already, or cannot be accepted.");
+            app.say(note ? note.trim() : "Nothing to decide there: those are decided already, or cannot be accepted.");
             return null;
         }
         const to = kind === "accept" ? { decision: "accept", reason: null, bulk: true } : { decision: kind, reason };
         const done = await commit(
             take.map((s) => ({ s, to })),
             {
-                said:
-                    opts.said ??
-                    ((d) =>
-                        app.say(
-                            `${WORD[kind]} ${d.length === 1 ? `#${d[0].s.n}` : plural(d.length, "snapshot")}.`,
-                            "",
-                            undoButton(),
-                        )),
+                said: opts.said
+                    ? (d) => opts.said(d, note)
+                    : (d) =>
+                          app.say(
+                              `${WORD[kind]} ${d.length === 1 ? `#${d[0].s.n}` : plural(d.length, "snapshot")}.${note}`,
+                              "",
+                              undoButton(),
+                          ),
             },
         );
         if (done) {
@@ -572,10 +590,7 @@ export function installDecide(app) {
         const first = step[0];
         app.endCard = false;
         app.stepTo(first.s.key);
-        const was = (first.model === undefined ? first.to : first.model)?.decision;
-        app.say(
-            step.length === 1 ? `Undone: the ${was} of #${first.s.n}.` : `Undone: ${plural(step.length, "decision")}.`,
-        );
+        app.say(step.length === 1 ? `Undone: #${first.s.n}.` : `Undone: ${plural(step.length, "snapshot")}.`);
         app.focusList();
     };
 
@@ -591,7 +606,7 @@ export function installDecide(app) {
             if (was.reason) {
                 drafts.set(key, was.reason);
             }
-            app.say(`Undone: the ${was.decision} of #${s.n}.`);
+            app.say(`Undone: #${s.n}.`);
         }
     };
 
@@ -617,12 +632,12 @@ export function installDecide(app) {
         const i = layoutOf(app.lv, app.snaps).groups.findIndex((g) => g.key === key);
         const run = () =>
             decideMany("accept", sc.und, null, {
-                said: (done) => {
+                said: (done, note) => {
                     const after = layoutOf(app.lv, app.snaps).groups;
                     const nx = [...after.slice(i + 1), ...after.slice(0, i)].find((g) => g.rows.some(undecided));
                     if (!nx) {
                         app.say(
-                            `Accepted ${fmt(done.length)} in ${name}. No group has anything left to accept.`,
+                            `Accepted ${fmt(done.length)} in ${name}. No group has anything left to accept.${note}`,
                             "",
                             undoButton(),
                         );
@@ -630,7 +645,7 @@ export function installDecide(app) {
                     }
                     app.stepTo(nx.rows.find(undecided).key);
                     app.say(
-                        `Accepted ${fmt(done.length)} in ${name}. Next: ${groupName(nx)} (${fmt(nx.rows.filter(undecided).length)}).`,
+                        `Accepted ${fmt(done.length)} in ${name}. Next: ${groupName(nx)} (${fmt(nx.rows.filter(undecided).length)}).${note}`,
                         "",
                         undoButton(),
                     );
@@ -859,30 +874,59 @@ export function installDecide(app) {
             app.say(`Update of ${c.label} failed: ${err.message}`, "err");
             return;
         }
+        await followJob(c, job);
+    }
+
+    // Follows an update job of change `c` to its end, as today's page follows Finish: a status ask
+    // that fails says so and tries again two seconds later.
+    async function followJob(c, job) {
+        const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const mine = (j) => j?.kind === "update" && j.target === c.id;
         let said = "";
-        while (job?.running) {
+        while (mine(job) && job.running) {
             const step = `Updating ${c.label}: ${job.step}...`;
             if (step !== said) {
                 app.say(step);
                 said = step;
             }
             // The status is an in-memory read on the server: a quarter second between asks.
-            await new Promise((resolve) => setTimeout(resolve, 250));
+            await pause(250);
             try {
                 job = (await api("/api/finish-status")).job;
             } catch (err) {
-                app.say(`Lost contact with the server (${err.message}); the update goes on there.`, "err");
-                return;
+                app.say(`Lost contact with the server (${err.message}); the update goes on there. Retrying...`, "err");
+                said = "";
+                await pause(2000);
             }
         }
-        if (job?.error) {
+        if (mine(job) && job.error) {
             app.say(`Update of ${c.label} failed: ${job.error}`, "err");
             return;
         }
-        // The server refreshes its list once the update is pushed: the page follows that refresh.
+        // The server refreshes its list once the update is pushed: the page follows that refresh,
+        // and says Updated only once it has the new list (a failed refresh has said why).
         await app.refresh();
-        app.say(`Updated ${c.label} from ${master()}: CI captures it again.`);
+        if (mine(job) && app.failed === null) {
+            app.say(`Updated ${c.label} from ${master()}: CI captures it again.`);
+        }
     }
+
+    /**
+     * Picks up an update the server is running (one started before a reload, or on another tab)
+     * and follows it to its end.
+     */
+    app.resumeUpdate = async () => {
+        let job;
+        try {
+            job = (await api("/api/finish-status")).job;
+        } catch {
+            return; // the list's own asks say when the server does not answer
+        }
+        const c = job?.kind === "update" && job.running ? app.change(job.target) : null;
+        if (c) {
+            await followJob(c, job);
+        }
+    };
 
     // Runs an action as a key press would (a box's default button by Enter, Cancel by Esc).
     app.runKey = (id) => app.runAction(id, {}, "key");

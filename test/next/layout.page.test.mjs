@@ -88,6 +88,31 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
         expect(widths.length).toBeGreaterThan(4);
     });
 
+    it("fits every group header of change 3486 in its height, with its name uncut", async () => {
+        const page = await open();
+        await page.locator('.chg[data-chg="3486"]').click();
+        await page.locator("#snap-list .srow.cur").waitFor();
+        const heads = await page.locator("#snap-list .ghead").evaluateAll((hs) =>
+            hs.map((h) => {
+                const name = h.querySelector(".gname, .gname1");
+                const hb = h.getBoundingClientRect();
+                const nb = name.getBoundingClientRect();
+                return {
+                    group: h.dataset.group,
+                    two: h.classList.contains("two"),
+                    overflow: h.scrollHeight - h.clientHeight,
+                    nameInside: nb.top >= hb.top && nb.bottom <= hb.bottom,
+                    nameCut: name.scrollWidth - name.clientWidth,
+                };
+            }),
+        );
+        expect(heads.length).toBeGreaterThan(0);
+        expect(heads.some((h) => h.two)).toBe(true);
+        for (const h of heads) {
+            expect(h, h.group).toMatchObject({ overflow: 0, nameInside: true, nameCut: 0 });
+        }
+    });
+
     it("holds the frame's fixed sizes", async () => {
         const page = await open();
         expect((await box(page, "#top")).height).toBe(36);

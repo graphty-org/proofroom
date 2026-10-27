@@ -938,10 +938,8 @@ app.rowMenu = (id, anchor) => {
     showMenu(anchor, [
         ...(c.url ? [{ id: "onhost", label: "Open on GitHub", ctx: { id } }] : []),
         { id: "about", label: "About this change", ctx: { id } },
-        // Only a pull request is updated from the default branch.
-        ...(c.kind === "PR"
-            ? [{ id: "updatefrom", label: `Update from ${app.list?.defaultBranch ?? "master"}...`, ctx: { id } }]
-            : []),
+        // On every change: anything but a pull request shows it unavailable, saying why.
+        { id: "updatefrom", label: `Update from ${app.list?.defaultBranch ?? "master"}...`, ctx: { id } },
         { id: "copylink", label: "Copy link", ctx: { id } },
     ]);
 };
@@ -1254,6 +1252,7 @@ async function boot() {
     draw();
     await firstLoad();
     schedulePoll();
+    app.resumeUpdate();
 }
 
 // Until the first list is in, it is asked for every half second. A failed ask stops there, its
