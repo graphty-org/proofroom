@@ -444,6 +444,27 @@ describe("Show, Find and the status summary", () => {
     });
 });
 
+describe("projects with no capture", () => {
+    it("shows the snapshots of the one project captured when the config's other projects have none", async () => {
+        const others = ["graphty", "layout", "algorithms", "compact-mantine", "cytoscape", "docs"];
+        const partial = target(8000, {
+            title: "One project captured",
+            projects: [
+                project("graphty-element", { reviewable: 2 }),
+                ...others.map((n) => project(n, { problem: n === "docs" ? "not affected" : "no capture" })),
+            ],
+        });
+        const page = await openChange("8000", {
+            targets: [...targets(), partial],
+            rows: (id, name) => rowsAnswer(name, 2),
+        });
+        await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(2);
+        expect(await page.locator(".chg[data-chg=\"8000\"]").innerText()).toContain("2 undecided");
+        expect(await message(page)).not.toMatch(/Nothing to review yet/);
+        await currentIsShown(page);
+    });
+});
+
 describe("groups", () => {
     it("draws each of the five groupings, Identical change and Look alike labeled apart", async () => {
         const page = await openChange(RICH);
