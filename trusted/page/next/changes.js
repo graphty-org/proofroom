@@ -288,6 +288,7 @@ function rowOf(app, r) {
     if (["failed", "capturing"].includes(r.state) && r.logUrl) {
         acts.push(control(app, "joblog", { zone: "rows", ctx: { id: r.id } }));
     }
+    acts.push(...app.finishControls(r));
     if (r.dismissable) {
         acts.push(control(app, "dismiss", { zone: "rows", ctx: { id: r.id } }));
     }
@@ -370,18 +371,24 @@ export function drawChanges(app) {
                 continue;
             }
             const open = app.sectionOpen(key);
-            out.push(
-                control(app, "section", {
-                    zone: "rows",
-                    ctx: { section: key, label },
-                    attrs: { class: "sec", "data-sec": key, "aria-expanded": open ? "true" : "false" },
-                    children: [
-                        ic(open ? "chevOpen" : "chevClosed"),
-                        el("span", { class: "grow" }, label),
-                        el("span", { class: "num" }, String(these.length)),
-                    ],
-                }),
-            );
+            const head = control(app, "section", {
+                zone: "rows",
+                ctx: { section: key, label },
+                attrs: { class: "sec", "data-sec": key, "aria-expanded": open ? "true" : "false" },
+                children: [
+                    ic(open ? "chevOpen" : "chevClosed"),
+                    el("span", { class: "grow" }, label),
+                    el("span", { class: "num" }, String(these.length)),
+                ],
+            });
+            // Decided, not finished carries Finish all N... (or Stop while it runs) before its count:
+            // a button of its own beside the header's, never inside it.
+            const fa = key === "decided" ? app.finishAllControl() : null;
+            if (fa) {
+                fa.classList.add("fa");
+                fa.style.setProperty("--numw", `${String(these.length).length}ch`);
+            }
+            out.push(fa ? el("div", { class: "sechead" }, head, fa) : head);
             if (open) {
                 out.push(...these.map((r) => rowOf(app, r)));
             }

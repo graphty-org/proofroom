@@ -792,13 +792,7 @@ export function installDecide(app) {
 
     // ------------------------------------------------------------ the end card
 
-    const finishable = () => app.snaps.filter((s) => s.decision && !s.finished && !s.rejectedBefore).length;
-    app.endFinishLabel = () => `Finish ${app.open()?.label ?? ""} (${fmt(finishable())})`;
-    /** The end card's Finish: today's page finishes this change, from the same decisions. */
-    app.endFinish = () => {
-        const q = new URLSearchParams({ target: app.openId });
-        location.assign(`/#${q}`);
-    };
+    app.endFinishLabel = () => app.finishLabel();
     app.endBack = () => {
         app.endCard = false;
         app.back();
@@ -912,8 +906,8 @@ export function installDecide(app) {
     }
 
     /**
-     * Picks up an update the server is running (one started before a reload, or on another tab)
-     * and follows it to its end.
+     * Picks up an update or a Finish the server is running (one started before a reload, or on
+     * another tab) and follows it to its end.
      */
     app.resumeUpdate = async () => {
         let job;
@@ -925,6 +919,8 @@ export function installDecide(app) {
         const c = job?.kind === "update" && job.running ? app.change(job.target) : null;
         if (c) {
             await followJob(c, job);
+        } else {
+            await app.resumeFinish(job);
         }
     };
 
