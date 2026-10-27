@@ -4146,7 +4146,7 @@ export function createApp({
             const answer = await keptOnce({ plain: join(tmp, "thumbs", `${hash}.png`) }, "plain", "now", async () => {
                 const full = await baselineImage(hash);
                 if (full[0] !== 200) {
-                    throw Object.assign(new Error(full[1].error), { answer: full });
+                    throw Object.assign(new Error(/** @type {{ error: string }} */ (full[1]).error), { answer: full });
                 }
                 return { image: full[1], label: baselineImages.get(hash).path };
             });

@@ -34,6 +34,7 @@ export const ZONES = [
 ];
 
 const NO_CHANGES = "No changes yet";
+const paneName = (app, i) => (app.screen === "baselines" ? ["Projects", "Baselines"] : ["Changes", "Snapshots"])[i];
 const master = (app) => app.list?.defaultBranch ?? "master";
 // How many snapshots the selection holds while the current row is in it (then A, R and E act on
 // the selection), else 0.
@@ -52,6 +53,7 @@ export const OFFLINE_WHY = "Offline: decisions cannot be saved";
 export const ACTIONS = {
     // The top bar.
     "screen-review": { label: "Review", run: (app) => app.showReview() },
+    "screen-baselines": { label: "Baselines", run: (app) => app.showBaselines() },
     refresh: { label: (app) => app.statusText(), title: "Refresh now", run: (app) => app.refresh() },
     keys: { label: "Keys", key: "?", title: "Every key, and the last 20 messages", run: (app) => app.keysSheet() },
     settings: { label: "Settings", run: (app) => app.settingsSheet() },
@@ -72,18 +74,49 @@ export const ACTIONS = {
     },
     cancelpasskey: { label: "Cancel", run: (app, ctx) => app.cancelPasskey(ctx) },
 
-    // Panes.
+    // Panes: Changes and Snapshots on Review, Projects and Baselines on Baselines.
     pane1: {
-        label: (app, ctx) => (ctx?.rail ? "Changes" : "Hide"),
+        label: (app, ctx) => (ctx?.rail ? paneName(app, 0) : "Hide"),
         key: "Shift+1",
-        title: "Show or hide Changes (Shift+1)",
+        title: (app) => `Show or hide ${paneName(app, 0)} (Shift+1)`,
         run: (app) => app.togglePane("changes"),
     },
     pane2: {
-        label: (app, ctx) => (ctx?.rail ? "Snapshots" : "Hide"),
+        label: (app, ctx) => (ctx?.rail ? paneName(app, 1) : "Hide"),
         key: "Shift+2",
-        title: "Show or hide Snapshots (Shift+2)",
+        title: (app) => `Show or hide ${paneName(app, 1)} (Shift+2)`,
         run: (app) => app.togglePane("snaps"),
+    },
+
+    // The Baselines screen (baselines.js).
+    blref: { label: "Baselines of", run: (app, ctx) => app.setBaselineRef(ctx.value) },
+    blnode: { label: "", run: (app, ctx) => app.pickNode(ctx.project, ctx.component) },
+    blrow: { label: "", run: (app, ctx) => app.pickBaseline(ctx.key) },
+    blgroupmenu: {
+        label: (app) => `Group: ${app.groupLabel()}`,
+        title: "Group",
+        run: (app, ctx) => app.groupMenu(ctx.el),
+    },
+    blgroup: { label: (app, ctx) => ctx.grouping, run: (app, ctx) => app.setBaselineGroup(ctx.grouping) },
+    bldl: {
+        label: "Download",
+        title: "Fetches exactly these images from Git LFS",
+        writes: true,
+        run: (app, ctx) => app.download(ctx.paths),
+        available: (app) => (app.downloadBusy() ? "A download is running" : true),
+    },
+    bldlver: {
+        label: "Download",
+        title: "Fetches this version from Git LFS",
+        writes: true,
+        run: (app, ctx) => app.downloadVersion(ctx.i),
+        available: (app) => (app.downloadBusy() ? "A download is running" : true),
+    },
+    blcmp: {
+        label: "Compare",
+        title: "Tick two versions to compare them",
+        run: (app, ctx) => app.toggleCompare(ctx.i),
+        available: (app, ctx) => (app.versionLocal(ctx.i) ? true : "Not downloaded: Download it first"),
     },
 
     // The changes pane.
@@ -485,6 +518,8 @@ export function runAction(app, id, ctx, via) {
 
 // Each control's context, for the key handler: the change or snapshot it stands for.
 const contexts = new WeakMap();
+// The screen each control acts for (the page, or the Baselines screen standing in for it).
+const hosts = new WeakMap();
 // Each control's tooltip while it is available.
 const titles = new WeakMap();
 
@@ -509,6 +544,13 @@ export function syncAvailability(app, root) {
  * @returns {any} its context
  */
 export const contextOf = (node) => contexts.get(node) ?? {};
+
+/**
+ * What a control acts on: the page, or the screen that built it in the page's place.
+ * @param {Element} node the control
+ * @returns {any} it, or undefined for a control not built by `control()`
+ */
+export const hostOf = (node) => hosts.get(node);
 
 /**
  * A control for an action: a button (or, with `tag`, another element) with the action's label and
@@ -546,6 +588,7 @@ export function control(
     );
     contexts.set(node, ctx);
     titles.set(node, own);
+    hosts.set(node, app);
     node.addEventListener("click", (e) => {
         e.stopPropagation();
         runAction(app, id, { ...ctx, el: node, ev: e }, "pointer");

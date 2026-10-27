@@ -7,7 +7,7 @@
  * Opening a change shows its snapshot list (list.js) and the current snapshot in the viewer
  * (viewer.js); the decisions, the selection and Undo are decide.js, select.js and undo.js. Around
  * them: Settings (settings.js), the Keys sheet (keys-sheet.js), the messages, the offline state and
- * the tab title.
+ * the tab title. The Baselines tab shows the Baselines screen (baselines.js).
  */
 
 import { ACTIONS, control, runAction, syncAvailability } from "./actions.js";
@@ -23,6 +23,7 @@ import {
     whenConnection,
     whenRefused,
 } from "./api.js";
+import { installBaselines } from "./baselines.js";
 import { installDecide } from "./decide.js";
 import { SORTS, changeOf, drawChanges, nextNeeding, sectionsOf, SECTIONS, sharesOf, walkOrder } from "./changes.js";
 import { keysSheet } from "./keys-sheet.js";
@@ -127,6 +128,7 @@ const app = {
     menu: null,
     opened: new Set(), // the snapshots the viewer showed: a bulk accept says how many were never opened
     endCard: false, // the end card shows in place of the image
+    screen: "review", // the screen shown: "review" or "baselines"
 
     logUsage,
     say,
@@ -146,7 +148,9 @@ const app = {
 
 function drawTop() {
     $("repo").textContent = app.list?.repository ?? "";
-    $("tabs").replaceChildren(control(app, "screen-review", { zone: "top", attrs: { "aria-current": "page" } }));
+    const tab = (name) =>
+        control(app, `screen-${name}`, { zone: "top", attrs: { "aria-current": app.screen === name ? "page" : null } });
+    $("tabs").replaceChildren(tab("review"), tab("baselines"));
     const trouble = app.failed !== null || Boolean(app.list?.error) || app.offline();
     $("status-slot").replaceChildren(
         control(app, "refresh", {
@@ -383,9 +387,13 @@ function draw() {
     const focus = focusedControl();
     drawTop();
     if (!drawWaiting()) {
-        drawChangesPane();
-        drawSnaps();
-        drawViewer();
+        if (app.screen === "baselines") {
+            app.baselines.draw(false);
+        } else {
+            drawChangesPane();
+            drawSnaps();
+            drawViewer();
+        }
         drawMsgButton();
     }
     refocus(focus);
@@ -740,6 +748,9 @@ app.copyLink = async (id) => {
 
 // Up and Down: in the changes, the current row; in the snapshot rows, the current snapshot.
 app.arrow = (d) => {
+    if (app.screen === "baselines") {
+        return app.baselines.arrow(d);
+    }
     if (app.focusPane === "changes" || app.level === 0) {
         const order = walkOrder(app);
         if (order.length === 0) {
@@ -807,6 +818,8 @@ app.escapeField = (f) => {
         f.value = "";
         if (f.id === "snap-find") {
             clearFind(app);
+        } else if (f.id === "bl-find") {
+            app.baselines.clearFind();
         } else {
             draw();
         }
@@ -823,6 +836,10 @@ app.escapeField = (f) => {
 // Focus never stays on the button that opened a menu or box: it returns to the current row of
 // the pane the reader was in (design 8.1.8).
 function restoreFocus() {
+    if (app.screen === "baselines") {
+        app.baselines.focus();
+        return;
+    }
     const [changesShown, snapsShown] = shownNow();
     if (app.focusPane === "changes" && changesShown) {
         $("chg-list").focus({ preventScroll: true });
@@ -839,8 +856,9 @@ function closeMenu() {
     app.menu = null;
 }
 
-// A menu of items from the action table; an item `{ head }` is a heading and `{ sep: true }` a rule.
-function showMenu(anchor, items) {
+// A menu of items from the action table, for the page or the screen that stands for it (`owner`);
+// an item `{ head }` is a heading and `{ sep: true }` a rule.
+function showMenu(anchor, items, owner = app) {
     closeMenu();
     const m = el("div", { class: "menu", role: "menu", tabindex: "-1" });
     for (const it of items) {
@@ -848,7 +866,7 @@ function showMenu(anchor, items) {
             m.append(it.sep ? el("div", { class: "sep", role: "separator" }) : el("div", { class: "mh" }, it.head));
             continue;
         }
-        const node = control(app, it.id, {
+        const node = control(owner, it.id, {
             zone: "menu",
             tag: "div",
             ctx: it.ctx ?? {},
@@ -1119,7 +1137,22 @@ whenConnection(() => {
 });
 
 app.showReview = () => {
+    const was = app.screen;
+    app.screen = "review";
+    document.body.dataset.screen = "review";
+    app.baselines.viewer.stop();
     draw();
+    if (was !== "review") {
+        restoreFocus();
+    }
+};
+
+app.showBaselines = () => {
+    app.screen = "baselines";
+    document.body.dataset.screen = "baselines";
+    app.viewer.stop();
+    drawTop();
+    app.baselines.show();
 };
 
 // ---------------------------------------------------------------- the token box
@@ -1330,6 +1363,11 @@ async function follow(wanted) {
 
 addEventListener("popstate", () => follow(parseAddress(location.hash)));
 addEventListener("resize", () => {
+    if (app.screen === "baselines") {
+        app.baselines.layout();
+        draw();
+        return;
+    }
     // A two-level change that becomes one level drops to the one level, the list shown.
     if (app.level === 2 && !twoLevels(app.snaps.length, innerWidth)) {
         app.level = 1;
@@ -1353,6 +1391,8 @@ document.addEventListener("focusin", (e) => {
         app.focusPane = "snaps";
     } else if (t.closest?.("#viewer")) {
         app.focusPane = "viewer";
+    } else if (t.closest?.(".bl")) {
+        app.focusPane = "baselines";
     }
     document.body.dataset.pane = app.focusPane;
     syncHints();
@@ -1432,7 +1472,8 @@ installSelect(app);
 installUndo(app);
 installDecide(app);
 app.viewer = createViewer(app);
-app.holdSpace = (on) => app.viewer.holdSpace(on);
+app.baselines = installBaselines(app);
+app.holdSpace = (on) => (app.screen === "baselines" ? app.baselines.viewer : app.viewer).holdSpace(on);
 
 logUsage("load", { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, page: "next" });
 startKeys(app);

@@ -1202,7 +1202,7 @@ body.nokeys kbd .lk {
     border-left: 0;
     padding-left: 0;
 }
-#morebtn {
+.morebtn {
     display: none;
 }
 .vtb .itemsum {
@@ -1229,7 +1229,7 @@ body.nokeys kbd .lk {
     .vtb .tg[data-g="display"] {
         display: none;
     }
-    #morebtn {
+    .morebtn {
         display: inline-block;
     }
 }
@@ -1262,7 +1262,7 @@ body.nokeys kbd .lk {
     .vtb.merged .tg[data-g="display"] {
         display: none;
     }
-    .vtb.merged #morebtn {
+    .vtb.merged .morebtn {
         display: inline-block;
     }
 }
@@ -1810,4 +1810,73 @@ dialog .body {
 }
 #screens[hidden] {
     display: none;
+}
+
+/* The Baselines screen: its panes and viewer instead of Review's while its tab is current. */
+body[data-screen="baselines"] #changes,
+body[data-screen="baselines"] #snaps,
+body[data-screen="baselines"] #viewer,
+body:not([data-screen="baselines"]) .bl {
+    display: none;
+}
+#bl-proj {
+    width: 280px;
+    background: var(--rail);
+}
+#bl-list-pane {
+    width: 420px;
+    background: var(--surface);
+}
+#bl-proj,
+#bl-list-pane {
+    overflow: hidden;
+}
+.tree {
+    padding: 4px 0;
+}
+.tree .node {
+    display: flex;
+    gap: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    align-items: center;
+    font-size: 12px;
+}
+.tree .node.sub {
+    padding-left: 26px;
+}
+.tree .node.cur {
+    background: var(--surface);
+    box-shadow: inset 3px 0 var(--focus);
+}
+.blrow .pic {
+    margin-left: 8px;
+}
+#bl-viewer .iline .iright {
+    margin-left: auto;
+    text-align: right;
+}
+.hist {
+    flex: none;
+    max-height: 150px;
+    overflow: auto;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+}
+.hist .h {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--line);
+}
+.hist .vname {
+    width: 70px;
+}
+.hist button {
+    min-height: 22px;
+    height: 22px;
+    padding: 0 7px;
+    font-size: 12px;
 }
