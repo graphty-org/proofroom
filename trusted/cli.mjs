@@ -147,7 +147,7 @@ test it ran, and for openCapture()'s directories, every openCapture() was closed
 snapshot it listed has a result; then every baseline no snapshot drew is reported removed (not
 after openCapture() with a stories filter). A directory with neither cannot say its run finished:
 pass --whole once the runner has run every snapshot to the end. Exits 1, writing it incomplete,
-otherwise. \`merge-results\` is another name for it, until 1.0.0.
+otherwise.
 
   --project <id>     a project of visual-review.config.json
   --out <dir>        where the capture goes
@@ -163,7 +163,8 @@ file, one test case per snapshot, for CI systems and flaky-test tools. A snapsho
 when its capture is the approved baseline; changed, moved, new, no baseline yet and removed are
 failures typed by status, a story that could not be shot is an error with its reason and console,
 and an excluded story is skipped. Exits 0 once the file is written, whatever the snapshots' results;
-2 when results.json is missing or invalid.`,
+2 when results.json is missing or invalid. \`run\`, \`compare\` and \`collect\` write this file
+themselves; this command is for a capture set that has none (one made by an older version).`,
 
     gate: null, // gate.mjs's own usage
 
@@ -218,7 +219,6 @@ const COMMANDS = {
     compare,
     parity,
     collect: collectCommand,
-    "merge-results": collectCommand,
     junit,
     serve,
     gate,
@@ -250,7 +250,7 @@ Commands:
   install-browser  install the Chromium capture uses
 
 \`proofroom <command> --help\` describes each command. Documentation:
-https://graphty.app/docs/visual-review/`;
+https://github.com/graphty-org/proofroom#readme`;
 
 /**
  * The repository and its config, loaded only by the commands that need them.
