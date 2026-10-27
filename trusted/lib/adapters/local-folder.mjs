@@ -57,7 +57,11 @@ export function localFolderStore(root) {
             return names
                 .filter((n) => !n.startsWith(".") && existsSync(join(folder(change), n, "results.json")))
                 .sort()
-                .map((project) => ({ project, dir: join(folder(change), project), ref: join(folder(change), project) }));
+                .map((project) => ({
+                    project,
+                    dir: join(folder(change), project),
+                    ref: join(folder(change), project),
+                }));
         },
         // A set is already where it is read from.
         fetch: async (ref) => ref,

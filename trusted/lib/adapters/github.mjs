@@ -43,12 +43,16 @@ export function githubCodeHost(gh) {
         // The open pull request of a branch of this repository, or null; throws when GitHub cannot say.
         async openChangeOf(branch) {
             const list = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls?state=open&head={owner}:${branch}`]));
-            return list.find((p) => p.head?.ref === branch) ?? null;
+            const open = list.find((p) => p.head?.ref === branch);
+            return open ? { number: open.number, html_url: open.html_url } : null;
         },
         // One pull request as REST answers it: state, head ref and sha.
         change: async (number) => JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls/${number}`])),
         async updateChange(number, { body }) {
-            await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "--input", "-"], JSON.stringify({ body }));
+            await gh(
+                ["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "--input", "-"],
+                JSON.stringify({ body }),
+            );
         },
         async closeChange(number) {
             await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-f", "state=closed"]);
