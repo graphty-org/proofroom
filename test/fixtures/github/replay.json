@@ -70,6 +70,21 @@
             }
         ],
         "api repos/{owner}/{repo}/pulls?state=open&head={owner}:no-such-branch": [],
+        "api repos/{owner}/{repo}/pulls?state=all&head={owner}:visual/approve-6dfc21d0c4": [
+            {
+                "number": 3501,
+                "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3501",
+                "state": "closed",
+                "merged_at": null,
+                "head": {
+                    "ref": "visual/approve-6dfc21d0c4"
+                }
+            }
+        ],
+        "api -X PATCH repos/{owner}/{repo}/pulls/3501 -f state=open": {
+            "number": 3501,
+            "state": "open"
+        },
         "api -X PATCH repos/{owner}/{repo}/pulls/3501 --input -": {
             "number": 3501
         },

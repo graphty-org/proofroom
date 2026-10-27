@@ -76,6 +76,10 @@ export function fakeCodeHost({
             const o = opened.find((x) => x.branch === branch && x.state === "open");
             return o ? { number: o.number, html_url: o.html_url } : null;
         }),
+        changeOf: call("changeOf", (branch) => {
+            const o = opened.findLast((x) => x.branch === branch);
+            return o ? { number: o.number, html_url: o.html_url, state: o.state, merged: o.merged === true } : null;
+        }),
         change: call("change", (number) => {
             const o = listOpened ? opened.find((x) => x.number === number) : undefined;
             if (o) {
@@ -97,6 +101,13 @@ export function fakeCodeHost({
             const o = opened.find((x) => x.number === number);
             if (o) {
                 o.state = "closed";
+            }
+        }),
+        reopenChange: call("reopenChange", (number) => {
+            posted.push({ kind: "reopen", number });
+            const o = opened.find((x) => x.number === number);
+            if (o) {
+                o.state = "open";
             }
         }),
         whoAmI: call("whoAmI", () => login),

@@ -307,6 +307,17 @@ describe.each(codeHosts)("the code host: %s", (_, make) => {
             await host.updateChange(open.number, { body: "accepts, again" });
             await host.closeChange(open.number);
             writes += 2;
+            // A closed change is found by its branch and reopened (Finish retires an earlier seed so).
+            if (has(host, "reopenChange")) {
+                expect(await host.changeOf("visual/approve-6dfc21d0c4")).toEqual({
+                    number: open.number,
+                    html_url: url,
+                    state: "closed",
+                    merged: false,
+                });
+                await host.reopenChange(open.number);
+                writes += 1;
+            }
         });
         if (!has(host, "openChange")) {
             expect(["openChangeOf", "updateChange", "closeChange"].filter((fn) => has(host, fn))).toEqual([]);

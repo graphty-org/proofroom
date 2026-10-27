@@ -470,14 +470,20 @@ describe("Finish of a seed in change mode", () => {
             return { prepared, touches: 0 };
         }
         const statement = { ...prepared.statement, approval: approve(prepared.statement, KEY, { origin: ORIGIN }) };
+        // One more touch for each earlier seed of the capture this one retires.
+        const retire = prepared.retire.map((r) => ({
+            ...r,
+            statement: { ...r.statement, approval: approve(r.statement, KEY, { origin: ORIGIN }) },
+        }));
         const approval = {
             statement,
             commit: prepared.commit,
             branch: prepared.branch,
             origin: ORIGIN,
             pendingKeys: [],
+            retire,
         };
-        return { prepared, result: await finish({ ...input, approval }), touches: 1 };
+        return { prepared, result: await finish({ ...input, approval }), touches: 1 + retire.length };
     }
 
     /**
@@ -646,9 +652,13 @@ describe("Finish of a seed in change mode", () => {
             `commit ${code.slice(0, 12)} is not a Finish commit of this seed (it changes src.txt)`,
         );
         expect(host.opened[0].state).toBe("closed");
-        // The next Finish starts a fresh seed branch with a pull request of its own.
-        await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(git(r.remote, "branch", "--list", branch)).not.toBe("");
+        // The next Finish starts a fresh seed branch with a pull request of its own, and retires
+        // the closed one on its branch, intruder's commit and all.
+        const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(prepared.retire.map((x) => [x.number, x.tip])).toEqual([[900, code]]);
         expect(host.opened.map((o) => o.state)).toEqual(["closed", "open"]);
+        expect(git(r.remote, "branch", "--list", branch)).toBe("");
     });
 
     it("refuses and closes a recorded seed whose pull request comes from another repository", async () => {
@@ -664,7 +674,7 @@ describe("Finish of a seed in change mode", () => {
         expect(host.opened[0].state).toBe("closed");
     });
 
-    it("deletes the branch of a seed pull request someone closed by hand, so its accept cannot be reopened", async () => {
+    it("retires a recorded seed pull request someone closed by hand, deleting its branch afterwards", async () => {
         const r = changeRepo();
         const host = fakeCodeHost({ listOpened: true });
         const projects = capture(r);
@@ -678,6 +688,79 @@ describe("Finish of a seed in change mode", () => {
             [900, "closed"],
             [901, "open"],
         ]);
+    });
+
+    /**
+     * The head GitHub keeps for each pull request (refs/pull/N/head): its branch's tip whenever it
+     * is closed, which "Restore branch" brings back after the branch is deleted.
+     * @param {object} r the repository
+     * @param {object} host the fake code host
+     * @returns {Map<number, string>} the heads, by number
+     */
+    function keptHeads(r, host) {
+        const heads = new Map();
+        const close = host.closeChange;
+        host.closeChange = async (number) => {
+            heads.set(number, git(r.remote, "rev-parse", host.opened.find((o) => o.number === number).branch));
+            return close(number);
+        };
+        return heads;
+    }
+
+    it("retires an earlier seed with a signed reject on its branch, so restoring and reopening it fails the gate", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const heads = keptHeads(r, host);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [old] = host.opened;
+        const [accepted] = seedStatements(r, old.branch);
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const { prepared, touches } = await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(prepared.retire.map((x) => [x.number, x.open])).toEqual([[900, true]]);
+        expect(touches).toBe(2);
+        expect(host.opened.map((o) => [o.number, o.state])).toEqual([
+            [900, "closed"],
+            [901, "open"],
+        ]);
+        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+        // "Restore branch", then reopen: the head GitHub kept holds the retiring statement.
+        git(r.remote, "branch", old.branch, heads.get(900));
+        const chain = seedStatements(r, old.branch);
+        const { file, ...doc } = accepted;
+        expect(chain.find((st) => st.file !== file)).toMatchObject({
+            change: "pr:900",
+            previous: statementId(doc),
+            entries: [{ path: `compact-mantine/${BADGE}`, decision: "reject" }],
+        });
+        expect(gateOn(r, old.branch, "pr:900")).toEqual([
+            `${BASELINES}/compact-mantine/${BADGE}: rejected (retired: a later Finish of this capture replaced this seed); a rejected item needs a code change, not another review`,
+        ]);
+        expect(gateOn(r, host.opened[1].branch, "pr:901")).toEqual([]);
+    });
+
+    it("retires a seed pull request closed by hand with its branch kept, after a restart lost its record", async () => {
+        const r = changeRepo();
+        const host = fakeCodeHost({ listOpened: true });
+        const heads = keptHeads(r, host);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [old] = host.opened;
+        old.state = "closed";
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(prepared.retire.map((x) => [x.number, x.open])).toEqual([[900, false]]);
+        // Pushed while closed, reopened so its head follows the branch, then closed again.
+        const before = host.posted.findIndex((p) => p.kind === "reopen");
+        expect(
+            host.posted
+                .slice(before)
+                .filter((p) => p.number === 900)
+                .map((p) => p.kind),
+        ).toEqual(["reopen", "close"]);
+        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+        git(r.remote, "branch", old.branch, heads.get(900));
+        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
     });
 
     it("adds a candidate's second Finish as one commit on its branch's tip, chained after the first", async () => {

@@ -616,13 +616,27 @@ export function installFinish(app) {
                     ? `Touch your passkey to sign ${label(id)}${after}. Stay on this page.`
                     : `Finishing ${label(id)}${after}.`,
                 "",
-                prepared.required && !item.approval ? [control(app, "signfinish", { zone: "msgline", ctx: { id } })] : [],
+                prepared.required && !item.approval
+                    ? [control(app, "signfinish", { zone: "msgline", ctx: { id } })]
+                    : [],
             );
             redraw();
             let approval = null;
+            const retire = [];
             if (prepared.required) {
                 try {
                     approval = await (item.approval ?? pressToSign(id, prepared));
+                    // A seed that replaces an earlier seed of the capture signs that one's retiring
+                    // statement too, one touch each, each from a press of its own.
+                    for (const r of prepared.retire ?? []) {
+                        app.say(
+                            `Touch your passkey again to retire ${r.pullRequest}, an earlier seed of this capture. Stay on this page.`,
+                            "",
+                            [control(app, "signfinish", { zone: "msgline", ctx: { id } })],
+                        );
+                        redraw();
+                        retire.push(await pressToSign(id, { ...prepared, challenge: r.challenge }));
+                    }
                 } catch (err) {
                     running = null;
                     app.say(
@@ -648,6 +662,7 @@ export function installFinish(app) {
                         id,
                         digest: f.digest,
                         ...(approval && { challenge: prepared.challenge, approval }),
+                        ...(retire.length > 0 && { retire }),
                     })
                 ).job;
             } catch (err) {

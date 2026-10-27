@@ -133,12 +133,7 @@ import { branchCaptures, branchTargetId, captureQueue, CaptureRefused, lookCaptu
 import { exec, retrying } from "./github.mjs";
 import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
-import {
-    approvalIndex,
-    baselineWriters,
-    clusters,
-    itemsByFile,
-} from "./filters.mjs";
+import { approvalIndex, baselineWriters, clusters, itemsByFile } from "./filters.mjs";
 import { inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { junitXml } from "./junit.mjs";
@@ -899,11 +894,12 @@ export function createApp({
     /**
      * The accept commit each target's Finish was prepared with, and what it waits for: the
      * record's approval (`stage` "record"), the tree statement's ("tree"), or nothing more
-     * ("signed"). `change` says the statement is a change statement accept.mjs built.
+     * ("signed"). `change` says the statement is a change statement accept.mjs built; `retire`, the
+     * earlier seeds a seed Finish retires, each with a statement to sign too.
      * @type {Map<string, { stage: "record" | "tree" | "signed", challenge: string, commit: string,
      *     branch: string, record: string, recordBody: object, pushed: boolean, tree: boolean,
-     *     change: boolean, resign: boolean, statement?: object, now: string, work: object, digest: string,
-     *     expires: number }>}
+     *     change: boolean, resign: boolean, statement?: object, retire?: { statement: object }[], now: string,
+     *     work: object, digest: string, expires: number }>}
      */
     const approvals = new Map();
     // Fails closed: only a missing file means no pending key; any other failure throws.
@@ -3101,7 +3097,8 @@ export function createApp({
      * the signed record.
      * @param {object} t the target
      * @param {{ digest: string, list: object[] }} work as finishWork returns now
-     * @param {{ challenge?: string, approval?: object }} body the request
+     * @param {{ challenge?: string, approval?: object, retire?: object[] }} body the request (`retire`:
+     *     the approvals of the retiring statements finish-prepare returned, in order)
      * @param {boolean} sign whether this Finish signs the tree (signingProblem)
      * @returns {Promise<{ refused?: Array<unknown>, approval?: object | null, work?: object }>} the
      *     answer refusing it, or finish's `approval` (null when none is needed) and the prepared
@@ -3138,13 +3135,24 @@ export function createApp({
             return STALE;
         }
         const statement = { ...p.statement, approval: body.approval };
-        const why = verifyApproval(statement, trusted, { origin });
-        if (why) {
-            return { refused: [403, { error: `the approval was refused: ${why}` }] };
+        // A seed retiring earlier seeds carries one more approval for each of their statements.
+        const given = Array.isArray(body.retire) ? body.retire : [];
+        if (given.length !== (p.retire ?? []).length) {
+            return STALE;
+        }
+        const retire = (p.retire ?? []).map((r, i) => ({ ...r, statement: { ...r.statement, approval: given[i] } }));
+        for (const st of [statement, ...retire.map((r) => r.statement)]) {
+            const why = verifyApproval(st, trusted, { origin });
+            if (why) {
+                return { refused: [403, { error: `the approval was refused: ${why}` }] };
+            }
         }
         approvals.delete(t.id);
         const { commit, branch, record } = p;
-        return { approval: { statement, commit, branch, record, pendingKeys, origin, now: p.now }, work: p.work };
+        return {
+            approval: { statement, commit, branch, record, pendingKeys, origin, now: p.now, retire },
+            work: p.work,
+        };
     }
 
     const STALE = {
@@ -4605,6 +4613,13 @@ export function createApp({
                     ...(unsigned && { unsigned }),
                     // A seed's pull request opens before the touch: it holds the images unsigned until then.
                     ...(prepared.opened && { opened: prepared.opened }),
+                    // Each earlier seed of the capture this seed retires: one more touch signs its statement.
+                    ...(prepared.retire?.length > 0 && {
+                        retire: prepared.retire.map((r) => ({
+                            challenge: recordHash(r.statement).toString("base64url"),
+                            pullRequest: r.url ?? r.branch,
+                        })),
+                    }),
                     challenge,
                     rpId,
                     allowCredentials: here.map((k) => k.id),
@@ -4966,9 +4981,7 @@ export function createApp({
         const name = pathname === "/" ? "index.html" : pathname.slice(1);
         const path = Object.hasOwn(VENDOR, name) ? VENDOR[name] : PAGE_FILE.test(name) ? join(PAGE_DIR, name) : null;
         const body = req.method === "GET" && path ? await readFile(join(HERE, path)).catch(() => null) : null;
-        return body
-            ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()])
-            : send(res, 404, { error: "not found" });
+        return body ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()]) : send(res, 404, { error: "not found" });
     }
 
     const handler = async (req, res) => {

@@ -33,6 +33,9 @@ import { noCiStore, plainGitCodeHost } from "./plain-git.mjs";
  * @property {(number: number) => Promise<any>} [change] one change: its state, head ref and sha
  * @property {(number: number, change: { body: string }) => Promise<void>} [updateChange] rewrites its description
  * @property {(number: number) => Promise<void>} [closeChange] closes it
+ * @property {(number: number) => Promise<void>} [reopenChange] reopens a closed one
+ * @property {(branch: string) => Promise<{ number: number, html_url: string, state: string, merged: boolean } | null>} [changeOf]
+ *     the newest change of a branch, in any state
  * @property {() => Promise<string | null>} [whoAmI] the reviewer's login
  * @property {() => Promise<string | null>} [repositoryId] the id change statements name the repository by
  */

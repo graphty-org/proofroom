@@ -46,6 +46,13 @@ export function githubCodeHost(gh) {
             const open = list.find((p) => p.head?.ref === branch);
             return open ? { number: open.number, html_url: open.html_url } : null;
         },
+        // The newest pull request of a branch of this repository in any state, or null; throws when
+        // GitHub cannot say.
+        async changeOf(branch) {
+            const list = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls?state=all&head={owner}:${branch}`]));
+            const p = list.find((x) => x.head?.ref === branch);
+            return p ? { number: p.number, html_url: p.html_url, state: p.state, merged: Boolean(p.merged_at) } : null;
+        },
         // One pull request as REST answers it: state, head ref and sha.
         change: async (number) => JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls/${number}`])),
         async updateChange(number, { body }) {
@@ -56,6 +63,9 @@ export function githubCodeHost(gh) {
         },
         async closeChange(number) {
             await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-f", "state=closed"]);
+        },
+        async reopenChange(number) {
+            await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-f", "state=open"]);
         },
         whoAmI: () => reviewerLogin(gh),
         // What change statements name this repository by (gate.mjs repositoryOf); null when unknown.
