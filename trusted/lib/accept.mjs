@@ -813,7 +813,10 @@ async function candidateSeeds({ repo, config, target, net, host, now, base, only
         return null;
     }
     const input = { repo, config, host, net, now };
-    const found = await seedsOf(input, { base, fetch: fetcher(repo, target, net) });
+    // A candidate's reject retires only its accept pull requests; a seed run's reject-only Finish
+    // rejects its images in the seeds of every run of the commit (it rejects nothing else there).
+    const scope = (branch) => branch.startsWith(target.candidate ? "visual/approve-" : "visual/seed-");
+    const found = await seedsOf(input, { base, fetch: fetcher(repo, target, net), scope });
     return retireStatements(input, found, { base, repository: null, only });
 }
 
@@ -1440,7 +1443,12 @@ async function pushSignedChange(input) {
         // The earlier seeds are read again now, after the touch: what is retired is what they are
         // now, and each must be exactly what was signed for at the prepare, so a seed that gained
         // a statement, moved or opened since refuses (as retireCandidate).
-        const seeds = await seedsOf(input, { base: statement.capturedHead, fetch, except: branch });
+        const seeds = await seedsOf(input, {
+            base: statement.capturedHead,
+            fetch,
+            except: branch,
+            scope: sameSeedAs(branch),
+        });
         const fresh = await retireStatements({ ...input, now: new Date() }, seeds, {
             base: statement.capturedHead,
             repository: null,
@@ -1812,12 +1820,17 @@ async function commitSeed(input, { base, plan, writes, fetch, repository }) {
     const { repo, target, rejects, now, config, push } = input;
     const key = seedKey(target, input.first, base);
     const found = await seedBranchOf(input, { key, base, fetch });
-    const old = await seedsOf(input, { base, fetch, except: found.branch });
+    const old = await seedsOf(input, { base, fetch, except: found.branch, scope: sameSeedAs(found.branch) });
     const retire = await retireStatements(input, old, { base, repository });
     const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, found.parent]);
     try {
+        // A reused seed branch may carry an image rejected now: it goes back to the captured
+        // commit's, so the seed stays mergeable with its other accepts.
+        for (const e of rejectEntries(rejects)) {
+            await dropBaseline(tree, base, `${config.baselines}/${e.path}`);
+        }
         const local = previewsOf([...rejects, ...writes], null);
         await writeAcceptCommit(input, { tree, plan, writes, body: null, local, statement: null });
         let { change, url, number, lease } = found;
@@ -1886,14 +1899,43 @@ const seedKey = (target, first, base) =>
  * @param {{ candidate?: string }} target as in finish
  * @param {string} base the captured commit
  * @param {Date} now the review time
+ * @param {{ runId?: number | null }} first the results.json of the first decided project
  * @returns {string} the branch
  */
-const freshSeedBranch = (target, base, now) => {
+const freshSeedBranch = (target, base, now, first) => {
     const random = randomBytes(16).toString("hex");
     return target.candidate
         ? `visual/approve-${base.slice(0, 12)}-${random}`
-        : `visual/seed-${now.toISOString().slice(0, 10)}-${base.slice(0, 12)}-${random}`;
+        : `visual/seed-${now.toISOString().slice(0, 10)}-${base.slice(0, 12)}-run${first?.runId ?? "local"}-${random}`;
 };
+
+/**
+ * Which seeds of a capture a seed Finish on `own` replaces: a candidate's other accept branches, or
+ * the other seed branches of the same run (freshSeedBranch). Another run's seeds, and a candidate's
+ * against a seed run's, decided images this Finish never saw: they are left alone.
+ * @param {string} own the Finish's seed branch
+ * @returns {(branch: string) => boolean} whether a branch is in its scope
+ */
+const sameSeedAs = (own) => {
+    const run = (b) => /^visual\/seed-.*-(run[^-]+)-[0-9a-f]{32}$/.exec(b)?.[1] ?? null;
+    return own.startsWith("visual/approve-")
+        ? (b) => b.startsWith("visual/approve-")
+        : (b) => b.startsWith("visual/seed-") && run(b) === run(own);
+};
+
+/**
+ * Puts one baseline file back as the captured commit has it (absent there: removed), staged.
+ * @param {string} tree the worktree
+ * @param {string} base the captured commit
+ * @param {string} file the path
+ */
+async function dropBaseline(tree, base, file) {
+    if (await gitOk(tree, ["cat-file", "-e", `${base}:${file}`])) {
+        await git(tree, ["restore", `--source=${base}`, "--staged", "--worktree", "--", file]);
+    } else {
+        await git(tree, ["rm", "-q", "--ignore-unmatch", "--", file]);
+    }
+}
 
 const seedRecordsFile = (repo, config) => join(repo, config.workDir, "seed-branches.json");
 
@@ -1986,7 +2028,7 @@ async function seedBranchOf(input, { key, base, fetch }) {
         }
     }
     return {
-        branch: freshSeedBranch(target, base, now),
+        branch: freshSeedBranch(target, base, now, input.first),
         change: null,
         url: null,
         number: null,
@@ -2132,13 +2174,14 @@ async function notFinishCommit(repo, sha, change, { base, keys, config }) {
  * branch cannot be read (a code host that cannot list its open changes included), or when an open
  * seed cannot be retired (a code host without `change` and `closeChange`, plain git).
  * @param {object} input the repository, the settings, the code host and the network runner
- * @param {{ base: string, fetch: (b: string) => Promise<any>, except?: string | null }} at the
- *     captured commit, the fetcher (the default branch fetched already) and a branch to leave out
- *     (a seed Finish's own)
+ * @param {{ base: string, fetch: (b: string) => Promise<any>, except?: string | null,
+ *     scope?: (branch: string) => boolean }} at the captured commit, the fetcher (the default branch
+ *     fetched already), a branch to leave out (a seed Finish's own) and which branches can be seeds
+ *     of this Finish's kind and run (sameSeedAs)
  * @returns {Promise<{ branch: string, tip: string, number: number, url: string | null }[]>} each
  *     seed pull request, with its branch's tip as fetched
  */
-async function seedsOf(input, { base, fetch, except = null }) {
+async function seedsOf(input, { base, fetch, except = null, scope = () => true }) {
     const { repo, config, host, net } = input;
     if (!host?.listChanges) {
         throw new AcceptError(
@@ -2195,7 +2238,9 @@ async function seedsOf(input, { base, fetch, except = null }) {
     const repoOf = (side) => side?.repo?.id ?? side?.repo?.full_name ?? null;
     const out = [];
     // Finish names every seed branch under visual/: the others are never read.
-    for (const c of open.filter((o) => o.branch?.startsWith("visual/") && !o.fork && o.branch !== except)) {
+    for (const c of open.filter(
+        (o) => o.branch?.startsWith("visual/") && scope(o.branch) && !o.fork && o.branch !== except,
+    )) {
         // A branch plain git lists as local (`remote: null`) is on no remote: it is read where it is.
         const ref = c.remote === null ? `refs/heads/${c.branch}` : ownRef(c.branch);
         if (!stated.has(c.branch)) {
@@ -2312,7 +2357,7 @@ function retiring(chain, { base, repository, config, now, only = null }) {
  * step fails, or the head never reaches the pushed commit.
  * @param {object} input what Finish works with
  * @param {string} input.repo the repository
- * @param {{ workDir: string, approvals: string, commitPrefix: string, workflow: string }} input.config the settings
+ * @param {{ workDir: string, approvals: string, baselines: string, commitPrefix: string, workflow: string }} input.config the settings
  * @param {import("./adapters/index.mjs").CodeHost} input.host the code host
  * @param {any} input.net the network runner, with the `delays` its retries wait
  * @param {{ branch: string, number: number, url: string | null, tip: string, statement: object }[]} seeds
@@ -2351,8 +2396,8 @@ async function retireSeeds({ repo, config, host, net }, seeds, { keepOpen = fals
 
 /**
  * Pushes one branch's retiring statements as one commit on its tip.
- * @param {{ repo: string, config: { workDir: string, approvals: string, commitPrefix: string }, net: any }} input
- *     the repository, the settings and the network runner
+ * @param {{ repo: string, config: { workDir: string, approvals: string, baselines: string, commitPrefix: string },
+ *     net: any }} input the repository, the settings and the network runner
  * @param {string} branch the branch
  * @param {{ number: number, url: string | null, tip: string, statement: object }[]} list its seeds
  * @param {boolean} [partly] the statements reject only some of the seed's images
@@ -2370,6 +2415,12 @@ async function pushRetiring({ repo, config, net }, branch, list, partly = false)
             await put(join(tree, path), `${JSON.stringify(statement, null, 2)}\n`);
             await git(tree, ["add", "--", path]);
             paths.push(path);
+            if (partly) {
+                // The images rejected now go back to the captured commit's: the seed stays mergeable.
+                for (const e of statement.entries) {
+                    await dropBaseline(tree, statement.capturedHead, `${config.baselines}/${e.path}`);
+                }
+            }
         }
         const why = partly
             ? `${config.commitPrefix}: reject images in the seed of ${what}\n\nA later Finish of the same capture rejected them.`

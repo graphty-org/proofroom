@@ -380,7 +380,8 @@ its baselines are the base of every later change.
 
 Finish puts a seed on a branch of its own, started at the captured commit, and opens that branch's
 pull request into the default branch. The branch is named by run and made unguessable:
-`visual/seed-<date>-<first 12 hex of the captured commit>-<32 random hex>`, or
+`visual/seed-<date>-<first 12 hex of the captured commit>-run<run id>-<32 random hex>` (`runlocal`
+for a local capture), or
 `visual/approve-<commit>-<32 random hex>` for a candidate. The review server records the branch it
 created for each run in `.visual-review/seed-branches.json` (the config's `workDir`) and only ever
 reuses that exact name. That record decides only which branch a later Finish of the same run adds
@@ -401,7 +402,10 @@ commit or the reason, and closes that pull request, since it may carry your earl
 Finish again to start a fresh seed branch. The closed pull request is not retired (see the limit
 below).
 
-Every seed Finish retires the earlier OPEN seeds of the same capture. An open pull request is a seed
+Every seed Finish retires the earlier OPEN seeds of the same capture and kind: a seed run's Finish
+those of the same run (`run<run id>` in the branch name), a candidate's Finish the candidate's other
+accept pull requests. Another run's seed, and a seed run's seed against a candidate's of the same
+commit, decided images this Finish never saw, so it is left alone. An open pull request is a seed
 of the capture only when its own `visual/` branch adds a statement, verified by the default
 branch's keys, that carries the same captured commit and names that very pull request (`pr:N` with
 its own number N). A branch started from a seed branch, or one that merged it, carries the seed's
@@ -426,7 +430,10 @@ seed: it fails the gate as not reviewed and is left as it is; close it by hand. 
 registered key). A seed Finish that only rejects images (it accepts nothing, so it opens no seed of
 its own) does not retire whole seeds: each earlier open seed of its capture that decided one of the
 images rejected now gets a signed statement rejecting only those images, before the issue for the
-rejects is opened, and stays open with its other accepts. A seed that decided none of them is left
+rejects is opened, and stays open with its other accepts: the same commit puts those images back as
+the captured commit has them, so the seed can still merge. This covers the seeds of every run of the
+commit (it rejects nothing else in them), never a candidate's. A later Finish of a run that rejects
+an image its own seed branch carries puts that image back the same way. A seed that decided none of them is left
 as it is. So a later reject of an image an earlier Finish accepted always wins, and nothing else
 that Finish accepted is lost.
 

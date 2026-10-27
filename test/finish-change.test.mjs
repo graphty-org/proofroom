@@ -408,7 +408,7 @@ describe("Finish in change mode", () => {
 });
 
 describe("Finish of a seed in change mode", () => {
-    const SEED_BRANCH = /^visual\/seed-\d{4}-\d{2}-\d{2}-[0-9a-f]{12}-[0-9a-f]{32}$/;
+    const SEED_BRANCH = /^visual\/seed-\d{4}-\d{2}-\d{2}-[0-9a-f]{12}-run501-[0-9a-f]{32}$/;
 
     /**
      * A capture of master by one CI run, as `serve --master-run` downloads it.
@@ -614,7 +614,7 @@ describe("Finish of a seed in change mode", () => {
         expect(gateOn(r, branch, "pr:900")).toEqual([]);
     });
 
-    it("chains a second Finish of the run onto its seed branch, and a later reject there fails the gate", async () => {
+    it("chains a second Finish of the run onto its seed branch, and a later reject there drops that image", async () => {
         const r = changeRepo();
         const host = seedHost(r);
         const projects = capture(r);
@@ -628,9 +628,14 @@ describe("Finish of a seed in change mode", () => {
         expect(chain.find((st) => st !== first).previous).toBe(statementId(doc));
         expect(gateOn(r, branch, "pr:900")).toEqual([]);
         await seedFinish(r, host, [[BADGE, "reject", "caught mid-animation"], [BUTTON]], { projects });
-        expect(gateOn(r, branch, "pr:900")).toEqual([
-            `${BASELINES}/compact-mantine/${BADGE}: rejected (caught mid-animation); a rejected item needs a code change, not another review`,
-        ]);
+        // The rejected image goes back to the captured commit's: BUTTON can still land.
+        expect(host.opened).toHaveLength(1);
+        expect(git(r.remote, "ls-tree", "--name-only", branch, "--", `${BASELINES}/compact-mantine/${BADGE}`)).toBe("");
+        expect(gateOn(r, branch, "pr:900")).toEqual([]);
+        // A later Finish of the run still goes on the same branch.
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(host.opened).toHaveLength(1);
+        expect(gateOn(r, branch, "pr:900")).toEqual([]);
         expect(file).toBeDefined();
     });
 
@@ -641,6 +646,24 @@ describe("Finish of a seed in change mode", () => {
         await seedFinish(r, host, [[BUTTON]], { projects: capture(r, 502) });
         expect(host.opened.map((o) => o.number)).toEqual([900, 901]);
         expect(new Set(host.opened.map((o) => o.branch)).size).toBe(2);
+        // Neither run retires the other: each keeps what it accepted.
+        expect(host.opened.map((o) => o.state)).toEqual(["open", "open"]);
+        expect(gateOn(r, host.opened[0].branch, "pr:900")).toEqual([]);
+        expect(gateOn(r, host.opened[1].branch, "pr:901")).toEqual([]);
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(git(r.remote, "ls-tree", "--name-only", host.opened[0].branch, "--", badge)).toBe(badge);
+    });
+
+    it("never lets a candidate Finish of a commit retire a seed run's seed of it, or the other way round", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r) });
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r), candidate: r.master });
+        expect(host.opened.map((o) => o.state)).toEqual(["open", "open"]);
+        await seedFinish(r, host, [[BUTTON, "reject", "cut"]], { projects: capture(r), candidate: r.master });
+        // The candidate never promotes; the seed run's accept stands.
+        expect(host.opened.map((o) => o.state)).toEqual(["open", "closed"]);
+        expect(gateOn(r, host.opened[0].branch, "pr:900")).toEqual([]);
     });
 
     it("after a restart without its records, goes to a fresh branch and closes the old seed pull request", async () => {
@@ -1112,11 +1135,15 @@ describe("Finish of a seed in change mode", () => {
         expect(touches).toBe(1);
         expect(result).toMatchObject({ rejects: 1 });
         expect(result.closedPullRequest).toBeUndefined();
-        // The seed stays open with BUTTON accepted and BADGE rejected.
+        // The seed stays open with BUTTON accepted, and BADGE back as the captured commit has it.
         expect(old.state).toBe("open");
-        expect(gateOn(r, old.branch, "pr:900")).toEqual([
-            `${BASELINES}/compact-mantine/${BADGE}: rejected (rejected by a later Finish of this capture); a rejected item needs a code change, not another review`,
-        ]);
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(git(r.remote, "ls-tree", "--name-only", old.branch, "--", badge)).toBe("");
+        expect(gateOn(r, old.branch, "pr:900")).toEqual([]);
+        // The next Finish of the run goes on that branch and can still land.
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(host.opened).toHaveLength(1);
+        expect(gateOn(r, old.branch, "pr:900")).toEqual([]);
     });
 
     it("leaves an earlier seed of the run alone when a later Finish of it only rejects another image", async () => {
