@@ -17,7 +17,7 @@ import { GITHUB_VOCABULARY } from "../../trusted/lib/adapters/github.mjs";
  *     as a real code host does
  * @param {(branch: string) => string} [state.headOf] a branch's tip on the remote: an opened change's
  *     head follows it while the change is open and stays where it was when it was closed, as
- *     GitHub's refs/pull/N/head does; reopening one whose branch is gone throws
+ *     GitHub's refs/pull/N/head does
  * @returns {import("../../trusted/lib/adapters/index.mjs").CodeHost & { calls: string[], posted: object[],
  *     opened: { number: number, html_url: string, branch: string, state: string, body: string }[] }}
  *     the adapter, with every call by name, every write, and the changes it opened
@@ -87,11 +87,6 @@ export function fakeCodeHost({
             const o = opened.find((x) => x.branch === branch && x.state === "open");
             return o ? { number: o.number, html_url: o.html_url } : null;
         }),
-        closedChanges: call("closedChanges", (prefix) =>
-            opened
-                .filter((x) => x.state === "closed" && x.merged !== true && x.branch.startsWith(prefix))
-                .map((x) => ({ number: x.number, url: x.html_url, branch: x.branch })),
-        ),
         change: call("change", (number) => {
             const o = listOpened ? opened.find((x) => x.number === number) : undefined;
             if (o) {
@@ -124,27 +119,6 @@ export function fakeCodeHost({
                     o.head = tip(o.branch);
                 }
                 o.state = "closed";
-            }
-        }),
-        reopenChange: call("reopenChange", (number) => {
-            posted.push({ kind: "reopen", number });
-            const o = opened.find((x) => x.number === number);
-            if (o) {
-                if (headOf && tip(o.branch) === undefined) {
-                    throw new Error("the head branch is gone");
-                }
-                if (o.merged) {
-                    throw new Error("a merged pull request cannot be reopened");
-                }
-                // As GitHub: one open pull request per head and base (a missing base matches any).
-                const same = (x) =>
-                    x !== o &&
-                    x.branch === o.branch &&
-                    (x.base === undefined || o.base === undefined || x.base === o.base);
-                if (opened.some((x) => x.state === "open" && same(x)) || changes.some(same)) {
-                    throw new Error("a pull request already exists for this head and base");
-                }
-                o.state = "open";
             }
         }),
         whoAmI: call("whoAmI", () => login),

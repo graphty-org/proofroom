@@ -46,33 +46,6 @@ export function githubCodeHost(gh) {
             const open = list.find((p) => p.head?.ref === branch);
             return open ? { number: open.number, html_url: open.html_url } : null;
         },
-        // Every closed, unmerged pull request of this repository whose branch starts with `prefix`,
-        // whether or not the branch still exists (GitHub keeps refs/pull/N/head); throws when
-        // GitHub cannot say.
-        // Newest updated first, stopping at the first one not updated since `since` (when given).
-        async closedChanges(prefix, { since = null } = {}) {
-            const out = [];
-            for (let page = 1; ; page++) {
-                const list = JSON.parse(
-                    await gh([
-                        "api",
-                        `repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
-                    ]),
-                );
-                for (const p of list) {
-                    if (since !== null && p.updated_at < since) {
-                        return out;
-                    }
-                    const own = p.head?.repo?.id !== undefined && p.head?.repo?.id === p.base?.repo?.id;
-                    if (!p.merged_at && own && p.head.ref.startsWith(prefix)) {
-                        out.push({ number: p.number, url: p.html_url, branch: p.head.ref });
-                    }
-                }
-                if (list.length < 100) {
-                    return out;
-                }
-            }
-        },
         // One pull request as REST answers it: state, head ref and sha.
         change: async (number) => JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls/${number}`])),
         async updateChange(number, { body }) {
@@ -83,9 +56,6 @@ export function githubCodeHost(gh) {
         },
         async closeChange(number) {
             await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-f", "state=closed"]);
-        },
-        async reopenChange(number) {
-            await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "-f", "state=open"]);
         },
         whoAmI: () => reviewerLogin(gh),
         // What change statements name this repository by (gate.mjs repositoryOf); null when unknown.

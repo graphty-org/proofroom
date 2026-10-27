@@ -667,12 +667,12 @@ describe("Finish of a seed in change mode", () => {
         );
         expect(host.opened[0].state).toBe("closed");
         expect(git(r.remote, "branch", "--list", branch)).not.toBe("");
-        // The next Finish starts a fresh seed branch with a pull request of its own, and retires
-        // the closed one on its branch, intruder's commit and all.
+        // The next Finish starts a fresh seed branch with a pull request of its own and leaves the
+        // closed one as it is.
         const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
-        expect(prepared.retire.map((x) => [x.number, x.tip])).toEqual([[900, code]]);
+        expect(prepared.retire).toEqual([]);
         expect(host.opened.map((o) => o.state)).toEqual(["closed", "open"]);
-        expect(git(r.remote, "branch", "--list", branch)).toBe("");
+        expect(git(r.remote, "rev-parse", branch)).toBe(code);
     });
 
     it("refuses and closes a recorded seed whose pull request comes from another repository", async () => {
@@ -688,25 +688,23 @@ describe("Finish of a seed in change mode", () => {
         expect(host.opened[0].state).toBe("closed");
     });
 
-    it("retires a recorded seed pull request someone closed by hand, deleting its branch afterwards", async () => {
-        const r = changeRepo();
-        const host = seedHost(r);
-        const projects = capture(r);
-        await seedFinish(r, host, [[BADGE]], { projects });
-        const [old] = host.opened;
-        old.state = "closed";
-        expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
-        await seedFinish(r, host, [[BADGE, "reject", "caught mid-animation"], [BUTTON]], { projects });
-        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
-        expect(host.opened.map((o) => [o.number, o.state])).toEqual([
-            [900, "closed"],
-            [901, "open"],
-        ]);
-    });
+    /**
+     * Whether anything touched pull request 900 or its branch after `before` posts: no reopen,
+     * close or push.
+     * @param {object} r the repository
+     * @param {object} host the fake code host
+     * @param {number} before the posts before
+     * @param {string | null} tip the branch's tip before (null: deleted)
+     */
+    function untouched(r, host, before, tip) {
+        expect(host.posted.slice(before).filter((p) => p.number === 900)).toEqual([]);
+        const branch = host.opened.find((o) => o.number === 900).branch;
+        expect(git(r.remote, "branch", "--list", branch) === "" ? null : git(r.remote, "rev-parse", branch)).toBe(tip);
+    }
 
     /**
-     * The head GitHub keeps for each pull request (refs/pull/N/head): its branch's tip whenever it
-     * is closed, which "Restore branch" brings back after the branch is deleted.
+     * The head GitHub keeps for each pull request (refs/pull/N/head): its branch's tip when it is
+     * closed, which "Restore branch" brings back after the branch is deleted.
      * @param {object} r the repository
      * @param {object} host the fake code host
      * @returns {Map<number, string>} the heads, by number
@@ -720,6 +718,26 @@ describe("Finish of a seed in change mode", () => {
         };
         return heads;
     }
+
+    it("never lets a seed pull request closed by hand with its branch kept block a later Finish", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [old] = host.opened;
+        old.state = "closed";
+        const tip = git(r.remote, "rev-parse", old.branch);
+        const before = host.posted.length;
+        // With its record, then twice more after restarts lost it.
+        await seedFinish(r, host, [[BADGE, "reject", "caught mid-animation"], [BUTTON]], { projects });
+        for (let i = 0; i < 2; i++) {
+            rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+            const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
+            expect(prepared.retire.map((x) => x.number)).not.toContain(900);
+        }
+        expect(old.state).toBe("closed");
+        untouched(r, host, before, tip);
+    });
 
     it("retires an earlier seed with a signed reject on its branch, so restoring and reopening it fails the gate", async () => {
         const r = changeRepo();
@@ -753,51 +771,47 @@ describe("Finish of a seed in change mode", () => {
         expect(gateOn(r, host.opened[1].branch, "pr:901")).toEqual([]);
     });
 
-    it("retires a seed pull request closed by hand with its branch kept, after a restart lost its record", async () => {
+    it("never lets a seed pull request closed with its branch deleted block a later Finish", async () => {
         const r = changeRepo();
         const host = seedHost(r);
-        const heads = keptHeads(r, host);
         const projects = capture(r);
         await seedFinish(r, host, [[BADGE]], { projects });
         const [old] = host.opened;
-        old.state = "closed";
-        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
-        const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
-        expect(prepared.retire.map((x) => x.number)).toEqual([900]);
-        // Pushed while closed, reopened so its head follows the branch, then closed again.
-        const before = host.posted.findIndex((p) => p.kind === "reopen");
-        expect(
-            host.posted
-                .slice(before)
-                .filter((p) => p.number === 900)
-                .map((p) => p.kind),
-        ).toEqual(["reopen", "close"]);
-        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
-        git(r.remote, "branch", old.branch, heads.get(900));
-        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+        await host.closeChange(old.number);
+        git(r.remote, "branch", "-D", old.branch);
+        const before = host.posted.length;
+        for (let i = 0; i < 2; i++) {
+            rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+            const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
+            expect(prepared.retire.map((x) => x.number)).not.toContain(900);
+        }
+        expect(old.state).toBe("closed");
+        untouched(r, host, before, null);
     });
 
-    it("retires a candidate's accept pull request closed with its branch deleted, from the head GitHub keeps", async () => {
+    it("never lets a candidate's accept pull request closed with its branch deleted block a reject", async () => {
         const r = changeRepo();
         const host = seedHost(r);
         const projects = capture(r);
         await seedFinish(r, host, [[BADGE]], { projects, candidate: r.master });
         const [old] = host.opened;
-        // Closed by hand and "Delete branch" pressed: only refs/pull/900/head keeps the accept.
         await host.closeChange(old.number);
-        git(r.remote, "update-ref", `refs/pull/${old.number}/head`, old.head);
         git(r.remote, "branch", "-D", old.branch);
-        const { prepared, result } = await seedFinish(r, host, [[BADGE, "reject", "clipped"]], {
+        const before = host.posted.length;
+        const input = {
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null, candidate: r.master },
             projects,
-            candidate: r.master,
-        });
-        expect(prepared.statement).toMatchObject({ change: "pr:900", entries: [{ decision: "reject" }] });
-        expect(result).toMatchObject({ closedPullRequest: "https://fake/changes/900" });
+            decisions: [{ project: "compact-mantine", file: BADGE, decision: "reject", reason: "clipped" }],
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+        };
+        expect(await prepareApproval({ ...input, now: new Date() })).toBeNull();
+        expect(await finish(input)).toMatchObject({ rejects: 1 });
         expect(old.state).toBe("closed");
-        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
-        // "Restore branch" at the head GitHub kept, then reopen: it holds the retiring statement.
-        git(r.remote, "branch", old.branch, old.head);
-        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+        untouched(r, host, before, null);
     });
 
     it("leaves alone another pull request whose branch only carries a seed's commits", async () => {
@@ -842,27 +856,32 @@ describe("Finish of a seed in change mode", () => {
         await expect(seedFinish(r, host, [[BADGE]])).rejects.toThrow("the code host cannot list its changes");
     });
 
-    it("reopens an earlier seed someone closed after the prepare, so its head reaches the retiring commit", async () => {
-        const r = changeRepo();
-        const host = seedHost(r);
-        const heads = keptHeads(r, host);
-        const projects = capture(r);
-        await seedFinish(r, host, [[BADGE]], { projects });
-        const [old] = host.opened;
-        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
-        await seedFinish(r, host, [[BUTTON]], {
-            projects,
-            meanwhile: () => {
-                old.head = git(r.remote, "rev-parse", old.branch);
-                old.state = "closed";
-            },
-        });
-        expect(host.posted.filter((p) => p.number === 900 && p.kind !== "update").map((p) => p.kind)).toEqual([
-            "reopen",
-            "close",
-        ]);
-        git(r.remote, "branch", old.branch, heads.get(900));
-        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+    it("skips an earlier seed someone closed after the prepare, never reopening it or recreating its branch", async () => {
+        for (const deleted of [false, true]) {
+            const r = changeRepo();
+            const host = seedHost(r);
+            const projects = capture(r);
+            await seedFinish(r, host, [[BADGE]], { projects });
+            const [old] = host.opened;
+            const tip = git(r.remote, "rev-parse", old.branch);
+            rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+            let before = 0;
+            const { prepared } = await seedFinish(r, host, [[BUTTON]], {
+                projects,
+                meanwhile: () => {
+                    old.head = tip;
+                    old.state = "closed";
+                    if (deleted) {
+                        git(r.remote, "branch", "-D", old.branch);
+                    }
+                    before = host.posted.length;
+                },
+            });
+            expect(prepared.retire.map((x) => x.number)).toEqual([900]);
+            expect(old.state).toBe("closed");
+            untouched(r, host, before, deleted ? null : tip);
+            expect(host.opened[1].state).toBe("open");
+        }
     });
 
     it("keeps an earlier seed's branch and refuses when its pull request's head never reaches the retiring commit", async () => {
@@ -885,40 +904,37 @@ describe("Finish of a seed in change mode", () => {
         expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
     });
 
-    it("retires the pull request a seed statement names, not a later one opened from its branch", async () => {
+    it("skips the closed pull request a seed statement names, closing only a later one opened from its branch", async () => {
         const r = changeRepo();
         const host = seedHost(r);
-        const heads = keptHeads(r, host);
         const projects = capture(r);
         await seedFinish(r, host, [[BADGE]], { projects });
         const [old] = host.opened;
         old.head = git(r.remote, "rev-parse", old.branch);
         old.state = "closed";
-        host.opened.push({
+        const later = {
             number: 950,
             html_url: "https://fake/changes/950",
             branch: old.branch,
             state: "open",
             body: "",
-        });
+        };
+        host.opened.push(later);
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const before = host.posted.length;
         const { prepared } = await seedFinish(r, host, [[BUTTON]], { projects });
-        expect(prepared.retire.map((x) => x.number)).toEqual([900]);
-        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
-        git(r.remote, "branch", old.branch, heads.get(900));
-        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+        expect(prepared.retire).toEqual([]);
+        expect(later.state).toBe("closed");
+        expect(host.posted.slice(before).filter((p) => p.number === 900)).toEqual([]);
     });
 
     it("does not retire again a seed an earlier Finish already retired", async () => {
         const r = changeRepo();
         const host = seedHost(r);
-        const heads = keptHeads(r, host);
         const projects = capture(r);
         await seedFinish(r, host, [[BADGE]], { projects });
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
         await seedFinish(r, host, [[BUTTON]], { projects });
-        // GitHub keeps the closed pull request's head, which holds the retiring statement.
-        git(r.remote, "update-ref", "refs/pull/900/head", heads.get(900));
         rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
         const before = host.posted.length;
         const { prepared, touches } = await seedFinish(r, host, [[BADGE]], { projects });
@@ -951,23 +967,6 @@ describe("Finish of a seed in change mode", () => {
             }),
         ).rejects.toThrow("https://fake/changes/970 holds a seed of this capture opened since this Finish was prepared");
         expect(host.opened.find((o) => o.number === 900)?.state).toBe("open");
-    });
-
-    it("names the pull request and its branch when an earlier seed cannot be reopened", async () => {
-        const r = changeRepo();
-        const host = seedHost(r);
-        const projects = capture(r);
-        await seedFinish(r, host, [[BADGE]], { projects });
-        const [old] = host.opened;
-        old.state = "closed";
-        host.reopenChange = async () => {
-            throw new Error("state cannot be changed");
-        };
-        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
-        await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(
-            `https://fake/changes/900 cannot be reopened (state cannot be changed)`,
-        );
-        await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(`delete its branch ${old.branch}`);
     });
 
     it("ignores a forged unsigned statement on a visual/ branch, asking for no extra touch", async () => {
@@ -1143,7 +1142,7 @@ describe("Finish of a seed in change mode", () => {
         };
         expect(await prepareApproval({ ...input, now: new Date() })).toBeNull();
         await finish(input);
-        expect(host.posted.filter((p) => p.number === 900 && ["reopen", "close"].includes(p.kind))).toEqual([]);
+        expect(host.posted.filter((p) => p.number === 900 && p.kind === "close")).toEqual([]);
         expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
     });
 

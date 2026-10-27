@@ -33,10 +33,6 @@ import { noCiStore, plainGitCodeHost } from "./plain-git.mjs";
  * @property {(number: number) => Promise<any>} [change] one change: its state, head ref and sha
  * @property {(number: number, change: { body: string }) => Promise<void>} [updateChange] rewrites its description
  * @property {(number: number) => Promise<void>} [closeChange] closes it
- * @property {(number: number) => Promise<void>} [reopenChange] reopens a closed one
- * @property {(prefix: string, opts?: { since?: string | null }) => Promise<{ number: number, url: string, branch: string }[]>} [closedChanges]
- *     every closed, unmerged change of this repository from a branch starting with `prefix`, its
- *     branch kept or not; with `since` (an ISO time), only those updated since then
  * @property {() => Promise<string | null>} [whoAmI] the reviewer's login
  * @property {() => Promise<string | null>} [repositoryId] the id change statements name the repository by
  */
