@@ -1,0 +1,32 @@
+{
+    "description": "A seed statement whose type was changed to change-approval after signing: the signature covers the type, so it fails.",
+    "expect": "fail",
+    "problem": "it was signed for other contents than these",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "seed-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{baseCommit}",
+            "previous": null,
+            "approvedAt": "2026-10-27T09:14:02Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ],
+            "$after": {
+                "type": "change-approval"
+            }
+        }
+    ]
+}

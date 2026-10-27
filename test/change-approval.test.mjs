@@ -102,8 +102,8 @@ describe("the change statement", () => {
     });
 
     it.each([
-        ["a version 1 tree statement", { version: 1 }, "not a version 2 change-approval statement"],
-        ["another type", { type: "tree-approval" }, "not a version 2 change-approval statement"],
+        ["a version 1 tree statement", { version: 1 }, "not a version 2 change-approval or seed-approval statement"],
+        ["another type", { type: "tree-approval" }, "not a version 2 change-approval or seed-approval statement"],
         ["an unknown field", { note: "x" }, 'unknown field "note"'],
         ["no repository", { repository: "" }, "repository must be a non-empty string"],
         ["a change with no kind", { change: "3486" }, "change must be a change id"],
@@ -186,7 +186,11 @@ describe("the example statements (test/fixtures/approvals/)", () => {
                 return value;
             }
             const [, what, arg] = m;
-            const at = { repository: () => REPO_ID, capturedHead: () => capturedHead };
+            const at = {
+                repository: () => REPO_ID,
+                capturedHead: () => capturedHead,
+                baseCommit: () => git(r.repo, "rev-parse", "master"),
+            };
             const by = {
                 base: () => hashAt(r, "master", arg),
                 head: () => hashAt(r, "pr", arg),
@@ -197,8 +201,8 @@ describe("the example statements (test/fixtures/approvals/)", () => {
         };
         const capturedHead = git(r.repo, "rev-parse", "pr");
         for (const raw of x.statements) {
-            const { $unsigned, $file, ...rest } = raw;
-            const done = finish(r, fill(rest), { key: $unsigned ? null : KEY, file: $file });
+            const { $unsigned, $file, $after, ...rest } = raw;
+            const done = finish(r, fill(rest), { key: $unsigned ? null : KEY, file: $file, after: $after });
             ids.push(done.id);
             expect(validate(done.statement), `${done.file} against the schema`).toBe(x.schemaValid);
         }

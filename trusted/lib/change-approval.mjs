@@ -24,6 +24,10 @@ import { canonical, PASSKEYS_FILE, recordHash, verifyApproval } from "./approval
 
 export const STATEMENT_VERSION = 2;
 export const STATEMENT_TYPE = "change-approval";
+/** A seed statement: a change statement whose reviewer saw a capture of the default branch itself. */
+export const SEED_TYPE = "seed-approval";
+// A closed list: a statement of any other type is refused, never skipped.
+const TYPES = [STATEMENT_TYPE, SEED_TYPE];
 
 const FIELDS = new Set([
     "version",
@@ -103,8 +107,8 @@ export function statementProblem(s) {
     if (typeof s !== "object" || s === null || Array.isArray(s)) {
         return "not a JSON object";
     }
-    if (s.version !== STATEMENT_VERSION || s.type !== STATEMENT_TYPE) {
-        return `not a version ${STATEMENT_VERSION} ${STATEMENT_TYPE} statement`;
+    if (s.version !== STATEMENT_VERSION || !TYPES.includes(s.type)) {
+        return `not a version ${STATEMENT_VERSION} ${TYPES.join(" or ")} statement`;
     }
     const extra = Object.keys(s).find((k) => !FIELDS.has(k));
     if (extra !== undefined) {
@@ -461,13 +465,100 @@ function checkStatement(file, bytes, at) {
     if (!succeeds(git, ["cat-file", "-e", `${c}^{commit}`])) {
         return { problem: `its capturedHead ${c} is not in this repository` };
     }
+    const onBase = succeeds(git, ["merge-base", "--is-ancestor", c, base]);
+    // A seed statement's reviewer saw a capture of the default branch, so its capturedHead must be on
+    // the base; a change statement's must not, so neither kind stands in for the other.
+    if (statement.type === SEED_TYPE) {
+        return onBase
+            ? { statement, id: statementId(statement) }
+            : { problem: `its capturedHead ${c} is not on the default branch, so it did not review a capture of the default branch` };
+    }
     if (!succeeds(git, ["merge-base", "--is-ancestor", c, head])) {
         return { problem: `its capturedHead ${c} is not in this change's history` };
     }
-    if (succeeds(git, ["merge-base", "--is-ancestor", c, base])) {
+    if (onBase) {
         return { problem: `its capturedHead ${c} is already on the base, so it reviewed an earlier change` };
     }
     return { statement, id: statementId(statement) };
+}
+
+/**
+ * The statements a later commit of the change takes back: every statement file a commit of
+ * `base..head` deletes or modifies (a rename is a deletion here) that the base does not hold, from
+ * one `git log`. A statement once pushed to a change stays, byte for byte, so dropping a later
+ * reject (a revert of its Finish commit, say) takes rewriting the branch's history, which the code
+ * host shows. A statement that never verified against the base's keys (one committed unsigned
+ * before the first key landed) approves nothing, so removing it takes nothing back.
+ * @param {(args: string[], input?: string) => Buffer} git the runner
+ * @param {object} at what to read
+ * @param {string} at.base the base
+ * @param {string} at.head the head
+ * @param {string} at.approvals the approvals directory
+ * @param {object[] | null} at.keys the base's keys; null while approvals are not enforced
+ * @returns {string[]} one line per statement taken back
+ */
+export function withdrawnStatements(git, { base, head, approvals, keys }) {
+    const parts = git([
+        "log",
+        "--format=%x01%H",
+        "--raw",
+        "-z",
+        "--no-abbrev",
+        "--no-renames",
+        "--diff-filter=DM",
+        `${base}..${head}`,
+        "--",
+        `${approvals}/`,
+    ])
+        .toString("utf8")
+        .split("\0");
+    const found = new Map();
+    let commit = null;
+    for (let i = 0; i < parts.length; i++) {
+        const token = parts[i].replace(/^\n+/, "");
+        if (token.startsWith("\x01")) {
+            commit = token.slice(1);
+        } else if (token.startsWith(":")) {
+            const [, , old, , status] = token.split(" ");
+            const path = parts[++i];
+            if (path.slice(approvals.length + 1).includes("/") && !found.has(path)) {
+                found.set(path, { commit, old, status });
+            }
+        }
+    }
+    if (found.size === 0) {
+        return [];
+    }
+    const onBase = new Set(
+        git(["ls-tree", "-r", "-z", "--name-only", base, "--", `${approvals}/`]).toString("utf8").split("\0"),
+    );
+    const blobs = readBlobs(git, [...found.values()].map((f) => f.old));
+    const out = [];
+    for (const [path, { commit: sha, old, status }] of found) {
+        if (onBase.has(path) || (keys && !verifiesWith(blobs.get(old), keys))) {
+            continue;
+        }
+        const what = status === "D" ? "deletes" : "modifies";
+        out.push(
+            `${path}: commit ${sha.slice(0, 12)} of this change ${what} it; a Finish is never taken back, so finish again instead`,
+        );
+    }
+    return out;
+}
+
+/**
+ * Whether a statement blob carries a signature one of the keys verifies.
+ * @param {Buffer | undefined} bytes the blob
+ * @param {object[]} keys the keys
+ * @returns {boolean} whether it does
+ */
+function verifiesWith(bytes, keys) {
+    try {
+        const doc = JSON.parse(bytes.toString("utf8"));
+        return statementProblem(doc) === null && verifyApproval(doc, keys) === null;
+    } catch {
+        return false;
+    }
 }
 
 /**

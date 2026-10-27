@@ -14,7 +14,7 @@ Fields:
   committed through Git LFS as a pointer), null for a deletion.
 - `statements`: the statements, in the order Finish committed them. Strings are replaced before
   signing: `{repository}` by the repository's id, `{capturedHead}` by the change's head before its
-  statements, `{base:<path>}` and `{head:<path>}` by that file's hash at the base and the head (null
+  statements, `{baseCommit}` by the base's commit (what a seed's reviewer saw), `{base:<path>}` and `{head:<path>}` by that file's hash at the base and the head (null
   when absent), `{hash:<text>}` by the SHA-256 of the text and `{id:<n>}` by the id of statement n.
-  `$unsigned` leaves a statement unsigned, and `$file` stores it at another path than its content
-  gives.
+  `$unsigned` leaves a statement unsigned, `$file` stores it at another path than its content
+  gives, and `$after` changes fields after it is signed (a forgery).

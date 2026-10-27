@@ -141,7 +141,7 @@ describe("change statements in the gate", () => {
         commit(r3, { [`${APPROVALS}/pr-7/junk.json`]: "{", [`${APPROVALS}/pr-7/old.json`]: { version: 1 } });
         expect(check(r3)).toEqual([
             `${APPROVALS}/pr-7/junk.json: not JSON`,
-            `${APPROVALS}/pr-7/old.json: not a change statement (not a version 2 change-approval statement)`,
+            `${APPROVALS}/pr-7/old.json: not a change statement (not a version 2 change-approval or seed-approval statement)`,
         ]);
     });
 
@@ -569,5 +569,112 @@ describe("the gate command with change statements", () => {
         acceptCard(r);
         commit(r, { [PASSKEYS_FILE]: passkeysJson(KEY, makeKey()) });
         expect(run(r, ["--pr", "7"]).stdout).toContain(`::error::baselines not approved -- ${PASSKEYS_FILE}: changed`);
+    });
+});
+
+/**
+ * A seed statement: a change statement whose reviewer saw a capture of master itself.
+ * @param {{ repo: string }} r the repository
+ * @param {object[]} entries the entries
+ * @param {object} [more] other fields, or overrides
+ * @returns {object} the unsigned statement
+ */
+const seedOf = (r, entries, more = {}) =>
+    statementOf(r, entries, { type: "seed-approval", capturedHead: git(r.repo, "rev-parse", "master"), ...more });
+
+describe("seed statements in the gate", () => {
+    it("pass a seed of the base's own capture, and refuse the same statement replayed after it landed", () => {
+        const r = changeRepo();
+        commit(r, { [CARD_FILE]: "seeded image" });
+        const seed = finish(r, seedOf(r, [entry(r, CARD)]));
+        expect(check(r)).toEqual([]);
+        land(r);
+        // Kept under its own name it is not new; copied under another name it is in the wrong place;
+        // signed again (the other valid signature) it is the same landed review.
+        commit(r, { [CARD_FILE]: "seeded image, again" });
+        const copy = `${APPROVALS}/pr-7/copy.json`;
+        commit(r, { [copy]: seed.statement });
+        const resigned = {
+            ...seed.statement,
+            approval: { ...seed.statement.approval, signature: otherSignature(seed.statement.approval.signature) },
+        };
+        expect(verifyApproval(resigned, [KEY.entry])).toBeNull();
+        const resignedFile = statementPath(APPROVALS, resigned);
+        commit(r, { [resignedFile]: resigned });
+        expect(check(r).sort()).toEqual(
+            [
+                `${copy}: its content belongs at ${seed.file}: a statement is never moved or copied`,
+                `${resignedFile}: it is already in the default branch's history, and a landed statement never counts again`,
+                NOT_REVIEWED,
+            ].sort(),
+        );
+    });
+
+    it("refuse a seed the default branch overtook: stale for the file it changed since, and only that file", () => {
+        const r = changeRepo();
+        commit(r, { [CARD_FILE]: "seeded card", [TOOLTIP_FILE]: "seeded tooltip" });
+        finish(r, seedOf(r, [entry(r, CARD), entry(r, TOOLTIP)]));
+        expect(check(r)).toEqual([]);
+        git(r.repo, "checkout", "-q", "master");
+        commit(r, { [CARD_FILE]: "a newer card landed first" });
+        git(r.repo, "checkout", "-q", "pr");
+        git(r.repo, "merge", "-q", "-X", "ours", "--no-edit", "master");
+        expect(check(r)).toEqual([
+            `the default branch changed ${CARD_FILE} after the review; update and decide it again`,
+        ]);
+    });
+
+    it("refuse a seed statement of another pull request merged into this one, with a notice", () => {
+        const r = changeRepo();
+        commit(r, { [CARD_FILE]: "seeded image" });
+        const theirs = finish(r, seedOf(r, [entry(r, CARD)], { change: "pr:8" }));
+        const found = approvalProblems(checkInput(r));
+        expect(found.problems).toEqual([NOT_REVIEWED]);
+        expect(found.notices).toEqual([`${theirs.file} approves pr:8, not this change, so it is not counted`]);
+    });
+
+    it("count a seed's later change statement, so the newest decision wins whichever kind made it", () => {
+        const r = changeRepo();
+        commit(r, { [CARD_FILE]: "seeded image" });
+        const seed = finish(r, seedOf(r, [entry(r, CARD)]));
+        expect(check(r)).toEqual([]);
+        finish(r, statementOf(r, [entry(r, CARD, { decision: "reject", reason: "wrong" })], { previous: seed.id }));
+        expect(check(r)).toEqual([
+            `${CARD_FILE}: rejected (wrong); a rejected item needs a code change, not another review`,
+        ]);
+    });
+});
+
+describe("statements a change takes back", () => {
+    it("fail a change whose later commit reverts a reject Finish, naming the statement, with no force-push", () => {
+        const r = changeRepo();
+        const accepted = acceptCard(r);
+        const rejected = finish(
+            r,
+            statementOf(r, [entry(r, CARD, { decision: "reject", reason: "the border is gone" })], {
+                previous: accepted.id,
+                approvedAt: "2026-10-25T15:00:00Z",
+            }),
+        );
+        git(r.repo, "revert", "--no-edit", "HEAD");
+        const reverting = git(r.repo, "rev-parse", "HEAD");
+        expect(check(r)).toEqual([
+            `${rejected.file}: commit ${reverting.slice(0, 12)} of this change deletes it; a Finish is never taken back, so finish again instead`,
+        ]);
+    });
+
+    it("fail a statement modified by a later commit, and let one that never verified be removed", () => {
+        const r = changeRepo();
+        const done = acceptCard(r);
+        commit(r, { [done.file]: { ...done.statement, approvedAt: "2026-10-26T00:00:00Z" } });
+        expect(check(r)[0]).toMatch(`${done.file}: commit `);
+        expect(check(r)[0]).toMatch("of this change modifies it");
+        // Committed unsigned before the key landed: it approves nothing, so removing it takes nothing back.
+        const s = changeRepo();
+        commit(s, { [CARD_FILE]: "new image" });
+        const unsigned = finish(s, statementOf(s, [entry(s, CARD)]), { key: null });
+        commit(s, { [unsigned.file]: null });
+        finish(s, statementOf(s, [entry(s, CARD)]));
+        expect(check(s)).toEqual([]);
     });
 });

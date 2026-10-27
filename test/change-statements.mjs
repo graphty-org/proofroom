@@ -133,11 +133,12 @@ export const sign = (statement, key = KEY) => (key ? { ...statement, approval: a
  * Finish: signs a statement and commits it where its content says it belongs (or at `file`).
  * @param {{ repo: string }} r the repository
  * @param {object} statement the unsigned statement
- * @param {{ key?: object | null, file?: string }} [o] the key, and another place to put it
+ * @param {{ key?: object | null, file?: string, after?: object }} [o] the key, another place to
+ *     put it, and fields changed after signing (a forgery)
  * @returns {{ statement: object, id: string, file: string }} what was committed
  */
-export function finish(r, statement, { key = KEY, file } = {}) {
-    const signed = sign(statement, key);
+export function finish(r, statement, { key = KEY, file, after = {} } = {}) {
+    const signed = { ...sign(statement, key), ...after };
     const where = file ?? statementPath(APPROVALS, signed);
     commit(r, { [where]: signed }, "finish");
     return { statement: signed, id: statementId(signed), file: where };

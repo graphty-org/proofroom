@@ -1,0 +1,29 @@
+{
+    "description": "A statement of a type this gate does not know is refused, never skipped.",
+    "expect": "fail",
+    "problem": "not a version 2 change-approval or seed-approval statement",
+    "schemaValid": false,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "tree-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{baseCommit}",
+            "previous": null,
+            "approvedAt": "2026-10-27T09:14:02Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}

@@ -46,7 +46,10 @@
  * Settings (`approvals`, `baselines`, `approvalFormat`, `repositoryId`, `selfApproval`) come from
  * the base's config only. With `"selfApproval": "forbid"` no statement may be signed by a key whose
  * identity contributed to the change (contributorsOf, selfApprovalProblems). Statements and the old review records under <baselines>/reviews/ are append-only: a change
- * that modifies or deletes one the base holds fails. The review records mean nothing else to the
+ * that modifies or deletes one the base holds fails, and so does one whose later commit deletes or
+ * modifies a statement an earlier commit of it added (change-approval.mjs withdrawnStatements). A
+ * seed statement (`seed-approval`) is checked as a change statement, but its capturedHead must be
+ * on the base: its reviewer saw a capture of the default branch. The review records mean nothing else to the
  * gate. Without that approval, committing the captured PNGs straight into the baselines directory would
  * turn the capture check green with no review at all.
  *
@@ -73,7 +76,14 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { PASSKEYS_FILE, parsePasskeys, verifyApproval, verifyRecord } from "./lib/approval.mjs";
-import { changeApprovals, changeCommits, contentHash, gitIn, selfApprovalProblems } from "./lib/change-approval.mjs";
+import {
+    changeApprovals,
+    changeCommits,
+    contentHash,
+    gitIn,
+    selfApprovalProblems,
+    withdrawnStatements,
+} from "./lib/change-approval.mjs";
 import { CONFIG_FILE, loadConfigAt, repoRoot } from "./lib/config.mjs";
 import { isSkipMarker, SKIPPED_FILE, validateResults } from "./lib/results.mjs";
 
@@ -562,8 +572,14 @@ export function repositoryOf(config, env = process.env) {
  *     statements that count, and whether a tree statement approved what they do not
  */
 export function approvalProblems({ base, head, cwd, baselines, approvals, keys, mode, changes, repository }) {
-    const c = changeApprovals({ base, head, baselines, approvals, keys, repository, changes, git: gitIn(cwd) });
-    const problems = [...passkeysProblems({ base, head, cwd, keys }), ...c.history, ...c.statements];
+    const git = gitIn(cwd);
+    const c = changeApprovals({ base, head, baselines, approvals, keys, repository, changes, git });
+    const problems = [
+        ...passkeysProblems({ base, head, cwd, keys }),
+        ...c.history,
+        ...withdrawnStatements(git, { base, head, approvals, keys }),
+        ...c.statements,
+    ];
     let unapproved = [];
     let byTree = false;
     if (mode === "change") {
@@ -590,7 +606,8 @@ export function approvalProblems({ base, head, cwd, baselines, approvals, keys, 
  * Who contributed to each change, for the self-approval rule: the opener and each commit's
  * verified signer, author and committer. The tool's own commits and merges that add nothing are
  * left out (change-approval.mjs changeCommits); every other commit must be signed, or the change
- * fails closed.
+ * fails closed. A change with no commit of its own left (a seed: only Finish's commits) has no
+ * contributors, its opener included.
  *
  * On GitHub Actions the commits and the opener come from GitHub (the event payload, and the
  * pull request's commits through the API with GITHUB_TOKEN), and a commit's signer is its
@@ -664,7 +681,11 @@ export async function contributorsOf({
         }
         try {
             const pr = await githubPullRequest(change, env, fetchJson ?? githubApi(env));
-            add(who.logins, pr.opener);
+            // A change none of whose commits counts (only Finish's own commits and merges that add
+            // nothing, as a seed's) brings no code, so it has no contributors, its opener included.
+            if ([...commits.values()].some((c) => c.counts)) {
+                add(who.logins, pr.opener);
+            }
             for (const c of pr.commits) {
                 const local = commits.get(c.sha);
                 if (!local) {

@@ -1,0 +1,29 @@
+{
+    "description": "A seed statement of another pull request, merged into this one: it counts only for the change it names, so the image is not reviewed here.",
+    "expect": "fail",
+    "problem": "not reviewed",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "seed-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:8",
+            "capturedHead": "{baseCommit}",
+            "previous": null,
+            "approvedAt": "2026-10-27T09:14:02Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}

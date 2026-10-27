@@ -1,0 +1,29 @@
+{
+    "description": "A seed statement whose capturedHead the default branch never held: it did not review a capture of the default branch.",
+    "expect": "fail",
+    "problem": "did not review a capture of the default branch",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "seed-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{capturedHead}",
+            "previous": null,
+            "approvedAt": "2026-10-27T09:14:02Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,48 @@
+{
+    "description": "A seed statement accepts, then a later seed statement of the same pull request rejects: the newest decision in the chain wins, and the reject fails.",
+    "expect": "fail",
+    "problem": "rejected (caught mid-animation)",
+    "schemaValid": true,
+    "head": {
+        "compact-mantine/card--legacy.png": "new image"
+    },
+    "statements": [
+        {
+            "version": 2,
+            "type": "seed-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{baseCommit}",
+            "previous": null,
+            "approvedAt": "2026-10-27T09:14:02Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "accept"
+                }
+            ]
+        },
+        {
+            "version": 2,
+            "type": "seed-approval",
+            "repository": "{repository}",
+            "baselines": "visual-baselines",
+            "change": "pr:7",
+            "capturedHead": "{baseCommit}",
+            "previous": "{id:0}",
+            "approvedAt": "2026-10-27T09:20:00Z",
+            "entries": [
+                {
+                    "path": "compact-mantine/card--legacy.png",
+                    "from": "{base:compact-mantine/card--legacy.png}",
+                    "to": "{head:compact-mantine/card--legacy.png}",
+                    "decision": "reject",
+                    "reason": "caught mid-animation"
+                }
+            ]
+        }
+    ]
+}

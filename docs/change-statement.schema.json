@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://github.com/graphty-org/proofroom/blob/main/docs/change-statement.schema.json",
-    "title": "proofroom change statement",
+    "title": "proofroom change statement (and seed statement)",
     "description": "One Finish's decisions on one change, signed once by a reviewer's passkey. See docs/approval-format.md for where it is stored and how the gate reads it.",
     "type": "object",
     "additionalProperties": false,
@@ -18,7 +18,10 @@
     ],
     "properties": {
         "version": { "const": 2 },
-        "type": { "const": "change-approval" },
+        "type": {
+            "description": "change-approval: the reviewer saw a capture of the change itself. seed-approval: the reviewer saw a capture of a default branch commit (a seed). A reader refuses any other type.",
+            "enum": ["change-approval", "seed-approval"]
+        },
         "repository": {
             "description": "The repository's id: github:<numeric repository id> on GitHub, else the config's repositoryId.",
             "type": "string",
@@ -35,7 +38,7 @@
             "pattern": "^[a-z][a-z0-9-]*:\\S+$"
         },
         "capturedHead": {
-            "description": "The change's own head commit whose capture the reviewer saw.",
+            "description": "The commit whose capture the reviewer saw: the change's own head for a change-approval, the default branch commit for a seed-approval.",
             "type": "string",
             "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
         },

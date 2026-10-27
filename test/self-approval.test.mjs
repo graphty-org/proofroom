@@ -102,13 +102,15 @@ function commitAs(r, files, { as, email = as.email, signed = true, by = as }) {
  * as the review page commits it.
  * @param {{ repo: string }} r the repository
  * @param {object} reviewer whose passkey signs, and whose git identity commits
- * @param {{ image?: string, extra?: object, signed?: boolean }} [o] the image; other files the
- *     commit also writes; whether the commit is signed
+ * @param {{ image?: string, extra?: object, signed?: boolean, seed?: boolean }} [o] the image; other
+ *     files the commit also writes; whether the commit is signed; whether it is a seed statement (of
+ *     a capture of master)
  * @returns {string} the statement's path
  */
-function finishAs(r, reviewer, { image = "new image", extra = {}, signed = false } = {}) {
+function finishAs(r, reviewer, { image = "new image", extra = {}, signed = false, seed = false } = {}) {
     const e = { path: CARD, from: hashAt(r, "master", CARD), to: contentHash(Buffer.from(image)), decision: "accept" };
-    const statement = sign(statementOf(r, [e]), reviewer.passkey);
+    const more = seed ? { type: "seed-approval", capturedHead: git(r.repo, "rev-parse", "master") } : {};
+    const statement = sign(statementOf(r, [e], more), reviewer.passkey);
     const file = statementPath(APPROVALS, statement);
     commitAs(r, { [CARD_FILE]: image, [file]: statement, ...extra }, { as: reviewer, signed });
     return file;
@@ -355,6 +357,19 @@ describe("the self-approval rule on GitHub", () => {
         expect((await check(s, { env: GITHUB, fetchJson: github(s, { opener: "bob" }).fetchJson })).self).toEqual([
             refused(bobs, "bob"),
         ]);
+    });
+
+    it("passes a seed pull request its reviewer opened, and refuses it once the reviewer adds code", async () => {
+        // A seed brings no code: only Finish's own commit, so its opener contributed nothing.
+        const r = repoWith();
+        finishAs(r, people.rita, { seed: true });
+        const opened = github(r, { opener: "rita", commit: () => ({ author: { login: "rita" } }) });
+        expect(await check(r, { env: GITHUB, fetchJson: opened.fetchJson })).toEqual({ problems: [], self: [] });
+        // One code commit of the reviewer's own makes the opener and that commit's people contributors.
+        const seed = git(r.repo, "ls-tree", "-r", "--name-only", "pr", "--", `${APPROVALS}/`);
+        commitAs(r, { "src.txt": "code" }, { as: people.rita, signed: false });
+        const withCode = github(r, { opener: "rita", commit: () => ({ author: { login: "rita" } }) });
+        expect((await check(r, { env: GITHUB, fetchJson: withCode.fetchJson })).self).toEqual([refused(seed, "rita")]);
     });
 
     it("reads the opener from the event payload when it is this pull request's", async () => {
