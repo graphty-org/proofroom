@@ -1,6 +1,6 @@
 /*
  * The monorepo runs the package's own workflow templates: visual-seed.yml is exactly what
- * `visual-review init` writes, and ci.yml's visual job and gate step run the template's commands.
+ * `visual-review init` writes, and ci.yml's story tests and gate step use the template's artifact and commands.
  */
 
 import { spawnSync } from "node:child_process";
@@ -34,22 +34,31 @@ describe("the monorepo's workflows", () => {
         expect(unpinned(a)).not.toBe(unpinned(a.replace("actions/setup-node", "actions/cache")));
     });
 
-    it("ci.yml's visual job runs the template's commands and uploads the same artifact", () => {
-        const template = job(renderTemplate("visual-review.yml", values), "visual", "visual-gate");
-        const ci = job(workflow("ci.yml"), "visual", "all-checks");
-        const lines = template
-            .split("\n")
-            .filter((l) => /visual-review (install-browser|reference|capture)|name: visual-\$/.test(l))
-            .map((l) => l.trim());
-        expect(lines).toHaveLength(4);
-        for (const line of lines) {
-            // install-browser's apt step comes from the monorepo's cached playwright-system-deps action.
-            if (line.includes("install-browser")) continue;
-            expect(ci).toContain(line);
+    it("ci.yml's story tests upload their capture under the template's artifact name", () => {
+        // The review page and the gate find a project's capture by this name, whichever job wrote it.
+        const name = /name: visual-\$.*$/m.exec(renderTemplate("visual-review.yml", values))[0];
+        expect(job(workflow("ci.yml"), "story-tests", "story-tests-merge")).toContain(name);
+        expect(job(workflow("ci.yml"), "story-tests-merge", "all-checks")).toContain(name);
+    });
+
+    it("ci.yml's story tests take a pull request's pictures with the base branch's capture code", () => {
+        const ci = job(workflow("ci.yml"), "story-tests", "story-tests-merge");
+        const step = ci.slice(ci.indexOf("- name: Use the base branch's capture code"));
+        expect(step).toMatch(/^[^\n]*\n\s+if: [^\n]*github\.event_name == 'pull_request'/);
+        expect(step).toContain("CAPTURE_CODE: visual-review/capture visual-review/trusted");
+        expect(step).toContain("git archive HEAD^1 $CAPTURE_CODE | tar -x");
+        // every package export (the vitest integration the stories import) lives in the swapped directories
+        const exports = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).exports;
+        for (const [key, target] of Object.entries(exports)) {
+            if (key === "./package.json") continue;
+            expect(target.default).toMatch(/^\.\/(capture|trusted)\//);
         }
-        expect(ci).toContain("uses: ./.github/actions/playwright-system-deps");
-        expect(ci).toContain("run: pnpm exec playwright install chromium\n");
-        expect(ci).toContain("name: visual (${{ matrix.project }})");
+        // the swap comes after the checkout (which fetches HEAD^1) and before anything installs or runs
+        const swap = ci.indexOf("- name: Use the base branch's capture code");
+        expect(ci.indexOf("fetch-depth: 0")).toBeGreaterThan(0);
+        expect(ci.indexOf("fetch-depth: 0")).toBeLessThan(swap);
+        expect(ci.indexOf("pnpm install")).toBeGreaterThan(swap);
+        expect(ci.indexOf("VISUAL_REVIEW_STORY_OUT")).toBeGreaterThan(swap);
     });
 
     it("ci.yml's gate step runs the base branch's gate with the template's arguments", () => {
@@ -62,14 +71,6 @@ describe("the monorepo's workflows", () => {
         // The step passes --pr when the base's gate says it takes it, which this one does.
         const grep = /grep -q -- "(.+?)" "\$gate\/visual-review\/trusted\/gate.mjs"/.exec(ci)[1];
         expect(readFileSync(new URL("../trusted/gate.mjs", import.meta.url), "utf8")).toContain(grep);
-    });
-
-    it("ci.yml's visual job runs the base branch's capture code before any of the tool's commands", () => {
-        const ci = job(workflow("ci.yml"), "visual", "all-checks");
-        const swap = ci.indexOf("git archive HEAD^1 visual-review/capture visual-review/trusted | tar -x");
-        expect(swap).toBeGreaterThan(0);
-        expect(ci.indexOf("playwright-system-deps")).toBeGreaterThan(swap);
-        expect(ci).toContain("fetch-depth: 2");
     });
 });
 
