@@ -46,6 +46,8 @@ const FINISHED_KEPT = 50;
 const LOOK_KEPT = 10;
 const STORY_PREFIX = /^[a-z0-9][a-z0-9-]*$/;
 const SHA = /^[0-9a-f]{7,40}$/;
+/** The git config key, under `branch.<name>`, marking a local branch made from a remote one: its remote ref. */
+const FROM_REMOTE = "proofroomRemote";
 
 /** A capture request the server refuses, with the HTTP status it answers. */
 export class CaptureRefused extends Error {
@@ -246,6 +248,11 @@ export function captureQueue({
         if (p.look) {
             p.decidable = null;
         }
+        // Only now, with the whole request accepted, does a decided capture of a remote branch make
+        // its local branch (a look-only one captures the remote commit and leaves no branch behind).
+        if (p.fromRemote && p.decidable) {
+            await trackRemote(p.branch, p.fromRemote);
+        }
         return p;
     }
 
@@ -294,6 +301,12 @@ export function captureQueue({
     async function asBranch(branch, head, confirmed) {
         if (branch === config.defaultBranch) {
             return { branch, head, decidable: null, look: "the default branch" };
+        }
+        // A local branch proofroom made from a remote one is still someone else's code.
+        const remote = await git(["config", "--get", `branch.${branch}.${FROM_REMOTE}`]).catch(() => "");
+        if (remote) {
+            const author = (await git(["log", "-1", "--format=%cn", head]).catch(() => "")) || null;
+            mayRun({ pr: null, remote, author }, confirmed);
         }
         const change = changes().find((c) => c.pr !== null && c.branch === branch && c.head === head);
         if (!change) {
@@ -359,8 +372,9 @@ export function captureQueue({
     }
 
     // Plain git: a branch only on a remote is someone's code from elsewhere, so it is captured here
-    // only as a change from the code host is. It becomes a local branch tracking the remote one, and
-    // is then captured, decided and finished as any local branch: Finish pushes it back there.
+    // only as a change from the code host is. A decided capture makes it a local branch tracking the
+    // remote one (plan, trackRemote), then captured, decided and finished as any local branch: Finish
+    // pushes it back there.
     async function remotePlan(what, confirmed) {
         const change = changes().find((c) => c.pr === null && c.remote === what.branch);
         if (!change) {
@@ -370,9 +384,6 @@ export function captureQueue({
             throw new CaptureRefused(409, `${what.branch} has a newer head than the page showed: look at it again`);
         }
         mayRun(change, confirmed);
-        await git(["branch", "--track", change.branch, `refs/remotes/${change.remote}`]).catch((err) => {
-            throw new CaptureRefused(409, `${change.branch} could not be made a local branch: ${err.message}`);
-        });
         return {
             kind: "branch",
             label: `branch ${change.branch}`,
@@ -380,7 +391,17 @@ export function captureQueue({
             branch: change.branch,
             head: change.head,
             decidable: "branch",
+            fromRemote: change.remote,
         };
+    }
+
+    // The local branch of a remote one, marked as made from it so that capturing it again as a
+    // local branch still asks first and runs through captureCommand (asBranch).
+    async function trackRemote(branch, remote) {
+        await git(["branch", "--track", branch, `refs/remotes/${remote}`]).catch((err) => {
+            throw new CaptureRefused(409, `${branch} could not be made a local branch: ${err.message}`);
+        });
+        await git(["config", `branch.${branch}.${FROM_REMOTE}`, remote]);
     }
 
     async function baselinesPlan(given) {

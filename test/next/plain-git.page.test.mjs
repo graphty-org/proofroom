@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import { captureRepo } from "../capture-repo.mjs";
 import { startApp } from "../faults.mjs";
-import { git } from "../helpers.mjs";
+import { git, tempDir } from "../helpers.mjs";
 import { countingServer } from "../stand-in-storybook.mjs";
 import { TOKEN, message } from "./page-kit.mjs";
 
@@ -38,6 +38,37 @@ afterAll(async () => {
 });
 
 describe("the page on a plain git repository", () => {
+    it("names a branch only on the remote by its branch in New capture", async () => {
+        const r = captureRepo(counter.url, { codeHost: "plain-git" });
+        const remote = tempDir("vr-plain-remote-");
+        git(remote, "init", "-q", "--bare", "-b", "main");
+        git(r.repo, "remote", "add", "origin", remote);
+        git(r.repo, "push", "-q", "origin", "main", "feat/x:feat/y");
+        git(r.repo, "fetch", "-q", "origin");
+        const s = await startApp(r, {
+            config: r.config,
+            previews: join(r.repo, "tmp/visual-review/local"),
+            token: TOKEN,
+        });
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+        const page = await context.newPage();
+        page.setDefaultTimeout(0);
+        await page.route("**/api/usage-setting", (route) => route.fulfill({ json: { on: false } }));
+        t = {
+            close: async () => {
+                await context.close();
+                await s.close();
+            },
+        };
+        await page.goto(`${s.origin}/next/#token=${TOKEN}`);
+        await page.locator("#snap-list").getByRole("button", { name: "New capture..." }).click();
+        const option = page.locator("#nc-pr option");
+        await option.waitFor({ state: "attached" });
+        expect(await option.innerText()).toBe("feat/y feature (Owner)");
+        expect(await option.getAttribute("value")).toBe("origin/feat/y");
+    });
+
     it("captures a branch, hides what plain git cannot do, says why in Settings, and finishes the reject into a file", async () => {
         const r = captureRepo(counter.url, { codeHost: "plain-git" });
         const s = await startApp(r, {
@@ -134,7 +165,7 @@ describe("the page on a plain git repository", () => {
         const box = page.locator("dialog.finish[open]");
         await box.waitFor();
         const summary = await box.innerText();
-        expect(summary).toContain("Will commit: only the rejects, to visual-review-rejects/feat-x.md.");
+        expect(summary).toContain("Will commit: 0 accepted (0 not opened), 0 excluded, to branch feat/x as ");
         expect(summary).toContain("Will write 1 reject to visual-review-rejects/feat-x.md on the branch.");
         expect(summary).not.toContain("Will post");
         expect(summary).not.toContain("Will set");

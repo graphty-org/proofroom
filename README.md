@@ -141,26 +141,26 @@ Every command has `--help`; `proofroom --help` lists them.
 }
 ```
 
-| Key              | Default                   | Meaning                                                                                                             |
-| ---------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `defaultBranch`  | `main`                    | The branch baselines are seeded from and pull requests merge into                                                   |
-| `workflow`       | `visual-review.yml`       | The workflow file whose runs hold the captures; the review page looks runs up by it                                 |
-| `baselines`      | `visual-baselines`        | Where baselines live: `<baselines>/<project>/<story id>[.<mode>].png`, and review records in `<baselines>/reviews/` |
-| `approvals`      | `visual-review-approvals` | Where Finish commits your approvals of the baselines tree, `<approvals>/<tree>.json`; outside `baselines`           |
-| `workDir`        | `.visual-review`          | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                      |
-| `commitPrefix`   | `test`                    | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                 |
-| `issueLabels`    | `["bug"]`                 | Labels of the issue Finish opens for rejects on the default branch; each must exist                                 |
-| `fontconfig`     | none (host fonts)         | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
-| `updateCheck`    | none                      | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                  |
-| `candidates`     | none                      | A shell command `serve --candidate next` runs to list the default branch's full runs (see "Candidates")             |
-| `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
-| `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                        |
-| `diskBudget`     | `10`                      | How many GB `serve` may keep in `workDir`; beyond it, it removes images (see "Troubleshooting")                     |
-| `codeHost`       | `github`                  | Where your pull requests are; `github` is the only value (see [docs/configuration.md](docs/configuration.md))       |
-| `captureStore`   | `github-actions`          | Where CI's captures are; `github-actions` is the only value                                                         |
-| `stories`        | `storybook`               | Where the stories come from; `storybook` is the only value                                                          |
-| `renderer`       | `playwright-chromium`     | What draws each story; `playwright-chromium` is the only value                                                      |
-| `projects`       | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
+| Key              | Default                   | Meaning                                                                                                                 |
+| ---------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `defaultBranch`  | `main`                    | The branch baselines are seeded from and pull requests merge into                                                       |
+| `workflow`       | `visual-review.yml`       | The workflow file whose runs hold the captures; the review page looks runs up by it                                     |
+| `baselines`      | `visual-baselines`        | Where baselines live: `<baselines>/<project>/<story id>[.<mode>].png`, and review records in `<baselines>/reviews/`     |
+| `approvals`      | `visual-review-approvals` | Where Finish commits your approvals of the baselines tree, `<approvals>/<tree>.json`; outside `baselines`               |
+| `workDir`        | `.visual-review`          | Where `serve` downloads captures and keeps its decisions and session token; keep it out of git                          |
+| `commitPrefix`   | `test`                    | The conventional-commit type and scope of the commits Finish makes, e.g. `test(ui)`                                     |
+| `issueLabels`    | `["bug"]`                 | Labels of the issue Finish opens for rejects on the default branch; each must exist                                     |
+| `fontconfig`     | none (host fonts)         | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")                  |
+| `updateCheck`    | none                      | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                      |
+| `candidates`     | none                      | A shell command `serve --candidate next` runs to list the default branch's full runs (see "Candidates")                 |
+| `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                              |
+| `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                            |
+| `diskBudget`     | `10`                      | How many GB `serve` may keep in `workDir`; beyond it, it removes images (see "Troubleshooting")                         |
+| `codeHost`       | `github`                  | Where your changes are: `github` (pull requests) or `plain-git` (your branches; see "Using it without GitHub")          |
+| `captureStore`   | `github-actions`          | Where the captures are: `github-actions` (CI's), or `local-folder` (this machine's only, the default under `plain-git`) |
+| `stories`        | `storybook`               | Where the stories come from; `storybook` is the only value                                                              |
+| `renderer`       | `playwright-chromium`     | What draws each story; `playwright-chromium` is the only value                                                          |
+| `projects`       | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                      |
 
 Per project:
 
@@ -203,6 +203,14 @@ fonts. Each results.json records the SHA-256 of the directory as `environment.fo
 `environment.emojiFont` says whether the pinned set draws emoji. To keep your existing baselines,
 snapshot the fonts and `/etc/fonts/conf.d` your CI runner has today; switching to a different set
 changes every capture with text, which is one re-baseline.
+
+## Using it without GitHub
+
+proofroom also works in a git repository with no GitHub. Set it up with
+`npx proofroom init --code-host plain-git`: your branches are then the changes you review, every
+capture is made on your machine from the review page, and Finish writes the rejects to a file on the
+branch instead of commenting. How to set it up, capture, review and finish:
+[docs/plain-git.md](docs/plain-git.md).
 
 ## The GitHub Actions workflows
 

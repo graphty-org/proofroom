@@ -79,12 +79,16 @@ const rejectsFile = (branch) => `visual-review-rejects/${branch.replaceAll(/[^A-
  * The steps a Finish goes through, for what it does (null: not known, after a reload).
  * @param {{ seed: boolean, commits: boolean, posts: boolean, signed: boolean, file?: boolean } | null} plan the plan;
  *     `file`: the rejects go to a file on the branch, and no status is set (a code host that cannot post)
+ * @param {any} list the server's list, whose code host decides the steps when the plan is not known
  * @returns {Array<typeof STEPS[number]>} the steps
  */
-function stepsOf(plan) {
+function stepsOf(plan, list) {
     return STEPS.filter(([key]) => {
         if (!plan) {
-            return key !== "passkey" && key !== "rejects";
+            // What the code host can do decides the rest: a host that cannot comment writes the file.
+            const comments = hostCan(list, "comment");
+            const can = { comment: comments, rejects: !comments, status: hostCan(list, "setStatus") };
+            return key !== "passkey" && (can[key] ?? true);
         }
         if (["write", "commit", "upload", "push"].includes(key)) {
             return plan.commits;
@@ -104,10 +108,11 @@ function stepsOf(plan) {
 /**
  * "Step 3 of 8: commit": where a running Finish is.
  * @param {{ step: string | null, plan: any }} run the running Finish
+ * @param {any} list the server's list
  * @returns {string} the step line
  */
-function stepLine(run) {
-    const steps = stepsOf(run.plan);
+function stepLine(run, list) {
+    const steps = stepsOf(run.plan, list);
     let at = run.step === null ? 0 : steps.findIndex(([, , match]) => match?.test(run.step));
     at = Math.max(at, 0);
     return `Step ${at + 1} of ${steps.length}: ${steps[at][1](run.step, run.plan)}`;
@@ -206,7 +211,7 @@ export function installFinish(app) {
                 state: "finishing",
                 mark: ["spin", "c-ink2"],
                 count: "Finishing",
-                steps: stepLine(running),
+                steps: stepLine(running, app.list),
                 section: "decided",
             };
         }
@@ -343,14 +348,12 @@ export function installFinish(app) {
 
     function commitLine(t) {
         const f = t.finish;
-        if (f.accepts + f.excludes === 0) {
-            if (f.rejects > 0) {
-                return toFile(t) ? `only the rejects, to ${rejectsFile(t.branch)}.` : "nothing; only rejects are posted.";
-            }
-            return "nothing.";
+        // Under plain git the rejects file is committed too, so the line is the branch's even then.
+        if (f.accepts + f.excludes === 0 && !(toFile(t) && f.rejects > 0)) {
+            return f.rejects > 0 ? "nothing; only rejects are posted." : "nothing.";
         }
         const what = `${fmt(f.accepts)} accepted (${fmt(f.notOpened)} not opened), ${fmt(f.excludes)} excluded`;
-        if (t.pr === null) {
+        if (t.pr === null && !t.localBranch) {
             const branch = t.candidate
                 ? `visual/approve-${t.candidate.commit.slice(0, 12)}`
                 : `visual/seed-${new Date().toISOString().slice(0, 10)}`;

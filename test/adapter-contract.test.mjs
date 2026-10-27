@@ -1,8 +1,9 @@
 /*
  * The adapters' contract: what the server, Finish and capture rely on from a code host, a capture
  * store, a story source and a renderer, run against every implementation -- GitHub and GitHub
- * Actions over a replay of gh's recorded answers (never the network), the local folder, Storybook
- * and Playwright Chromium over the stand-in Storybook, and the fakes the other tests use.
+ * Actions over a replay of gh's recorded answers (never the network), plain git over a temporary
+ * repository, the local folder, Storybook and Playwright Chromium over the stand-in Storybook, and
+ * the fakes the other tests use. A code host may lack an optional function; it then says so.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
@@ -12,13 +13,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import * as chromium from "../capture/chromium.mjs";
 import * as storybookSource from "../capture/storybook.mjs";
-import { captureStoreFor, codeHostFor, localFolderStore } from "../trusted/lib/adapters/index.mjs";
+import { adapterFacts, captureStoreFor, codeHostFor, localFolderStore } from "../trusted/lib/adapters/index.mjs";
+import { plainGitCodeHost } from "../trusted/lib/adapters/plain-git.mjs";
 import { normalizeConfig } from "../trusted/lib/config.mjs";
 import { fakeCaptureStore } from "./fakes/capture-store.mjs";
 import { fakeCodeHost } from "./fakes/code-host.mjs";
 import { fakeRenderer } from "./fakes/renderer.mjs";
 import { fakeStorySource } from "./fakes/story-source.mjs";
-import { CONFIG, copyFixture, FIXTURE, tempDir } from "./helpers.mjs";
+import { exec } from "../trusted/lib/github.mjs";
+import { CONFIG, copyFixture, FIXTURE, git, tempDir } from "./helpers.mjs";
 import { countingServer, storybook as standIn } from "./stand-in-storybook.mjs";
 
 const HEAD = "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876";
@@ -133,12 +136,53 @@ describe("the config picks the adapters by name", () => {
     });
 });
 
+const BRANCH = "feat/3486-storybook-9";
+
+/**
+ * Plain git over a temporary repository on main with the branch BRANCH, committed by apowers.
+ * @returns {{ host: object, written: () => number, asked: () => string[], ref: string, head: string, id: RegExp }}
+ *     the host, its writes (none: it has nothing to post to), every git call, and the branch's head
+ */
+function plainGit() {
+    const repo = tempDir("vr-contract-git-");
+    const run = (...args) => git(repo, ...args);
+    run("init", "-q", "-b", "main");
+    run("config", "user.name", "apowers");
+    run("config", "user.email", "apowers@example.com");
+    run("commit", "-q", "--allow-empty", "-m", "init");
+    run("checkout", "-q", "-b", BRANCH);
+    run("commit", "-q", "--allow-empty", "-m", "Storybook 9 upgrade for every package and its stories");
+    const head = run("rev-parse", "HEAD");
+    run("checkout", "-q", "main");
+    const asked = [];
+    const host = plainGitCodeHost(
+        repo,
+        { defaultBranch: "main", repositoryId: "1b7e4c2a-9d3f-4e8a-b6c1-2f0a9e8d7c65" },
+        {
+            git: (args) => {
+                asked.push(args.join(" "));
+                return exec("git", args, { cwd: repo });
+            },
+        },
+    );
+    return { host, written: () => 0, asked: () => asked, ref: BRANCH, head, id: /^[0-9a-f-]{36}$/ };
+}
+
+// Each code host, and the change it holds: its number (its branch on a host without numbers), its
+// head, and the form of the repository's id.
 const codeHosts = [
     [
         "GitHub, over gh's recorded answers",
         () => {
             const r = replayGh();
-            return { host: codeHostFor(CONFIG, { gh: r.gh }), written: () => r.sent.length, asked: () => r.asked };
+            return {
+                host: codeHostFor(CONFIG, { gh: r.gh }),
+                written: () => r.sent.length,
+                asked: () => r.asked,
+                ref: 3486,
+                head: HEAD,
+                id: /^\S+:\S+$/,
+            };
         },
     ],
     [
@@ -160,10 +204,21 @@ const codeHosts = [
                 ],
                 login: "apowers",
             });
-            return { host, written: () => host.posted.length, asked: () => host.calls };
+            return {
+                host,
+                written: () => host.posted.length,
+                asked: () => host.calls,
+                ref: 3486,
+                head: HEAD,
+                id: /^\S+:\S+$/,
+            };
         },
     ],
+    ["plain git, over a temporary repository", plainGit],
 ];
+
+const lacks = (host) => adapterFacts(host, { name: "none" }, {}).codeHost.lacks;
+const has = (host, fn) => typeof host[fn] === "function";
 
 describe.each(codeHosts)("the code host: %s", (_, make) => {
     it("has the page's words for its changes", () => {
@@ -175,58 +230,97 @@ describe.each(codeHosts)("the code host: %s", (_, make) => {
             "hostName",
             "numberPrefix",
         ]);
-        expect(Object.values(host.vocabulary).every((w) => typeof w === "string")).toBe(true);
+        // Every word is a string, but a host with no CI has no name for it.
+        expect(
+            Object.entries(host.vocabulary).every(([k, w]) => typeof w === "string" || (k === "ciName" && w === null)),
+        ).toBe(true);
     });
 
     it("lists every open change in one call, each with its head, branch and newest capture run", async () => {
-        const { host, asked } = make();
+        const { host, asked, ref, head } = make();
         const changes = await host.listChanges({ workflow: "ci.yml" });
         expect(asked()).toHaveLength(1);
-        const c = changes.find((x) => x.number === 3486);
-        expect(c).toMatchObject({ headSha: HEAD, branch: "feat/3486-storybook-9", draft: false, author: "apowers" });
+        const c = changes.find((x) => x.branch === BRANCH);
+        expect(c).toMatchObject({ headSha: head, draft: false, author: "apowers" });
+        // A change without a number is named by its branch, and has no page of its own.
+        expect(c.number).toBe(typeof ref === "number" ? ref : null);
         expect(typeof c.title).toBe("string");
-        expect(typeof c.url).toBe("string");
-        expect(c.run).toMatchObject({ id: expect.any(Number), status: expect.any(String) });
+        if (c.number === null) {
+            expect(c.url).toBeNull();
+        } else {
+            expect(typeof c.url).toBe("string");
+        }
+        if (host.vocabulary.ciName === null) {
+            expect(c.run).toBeNull();
+        } else {
+            expect(c.run).toMatchObject({ id: expect.any(Number), status: expect.any(String) });
+        }
     });
 
     it("describes a change, names the reviewer and the repository, and reads one change", async () => {
-        const { host } = make();
-        const about = await host.describe(3486, "apowers");
+        const { host, ref, head, id } = make();
+        const about = await host.describe(ref, "apowers");
         expect(about).toMatchObject({
             title: expect.any(String),
             body: expect.any(String),
             comments: expect.any(Array),
         });
         expect(await host.whoAmI()).toBe("apowers");
-        expect(await host.repositoryId()).toMatch(/^\S+:\S+$/);
-        expect(await host.change(3486)).toMatchObject({
-            state: "open",
-            head: { ref: "feat/3486-storybook-9", sha: HEAD },
-        });
+        expect(await host.repositoryId()).toMatch(id);
+        // One change is read back only after Finish opened one: a host that opens none has neither.
+        if (has(host, "openChange")) {
+            expect(await host.change(ref)).toMatchObject({ state: "open", head: { ref: BRANCH, sha: head } });
+        } else {
+            expect(has(host, "change")).toBe(false);
+        }
     });
 
     it("posts a comment, a status and an issue, and opens, finds, updates and closes a change", async () => {
-        const { host, written } = make();
-        await host.comment(3486, "rejected: slider--sizes.png");
-        await host.setStatus(HEAD, { state: "success", description: "Reviewed: 1 accepted" });
-        expect(await host.fileIssue({ title: "Visual review", body: "rejects", labels: ["bug"] })).toMatch(/^https:/);
-        const url = await host.openChange({
-            title: "test: approve",
-            head: "visual/approve-6dfc21d0c4",
-            base: "master",
-            body: "accepts",
+        const { host, written, ref, head } = make();
+        let writes = 0;
+        // Each write a host can make, made; each it cannot, named among the functions it lacks.
+        const each = async (fn, write) => {
+            if (has(host, fn)) {
+                await write();
+                writes += 1;
+            } else {
+                expect(lacks(host)).toContain(fn);
+            }
+        };
+        await each("comment", () => host.comment(ref, "rejected: slider--sizes.png"));
+        await each("setStatus", () => host.setStatus(head, { state: "success", description: "Reviewed: 1 accepted" }));
+        await each("fileIssue", async () =>
+            expect(await host.fileIssue({ title: "Visual review", body: "rejects", labels: ["bug"] })).toMatch(
+                /^https:/,
+            ),
+        );
+        await each("openChange", async () => {
+            const url = await host.openChange({
+                title: "test: approve",
+                head: "visual/approve-6dfc21d0c4",
+                base: "master",
+                body: "accepts",
+            });
+            expect(url).toMatch(/^https:/);
+            const open = await host.openChangeOf("visual/approve-6dfc21d0c4");
+            expect(open).toEqual({ number: expect.any(Number), html_url: url });
+            await host.updateChange(open.number, { body: "accepts, again" });
+            await host.closeChange(open.number);
+            writes += 2;
         });
-        expect(url).toMatch(/^https:/);
-        const open = await host.openChangeOf("visual/approve-6dfc21d0c4");
-        expect(open).toEqual({ number: expect.any(Number), html_url: url });
-        await host.updateChange(open.number, { body: "accepts, again" });
-        await host.closeChange(open.number);
-        expect(written()).toBe(6);
+        if (!has(host, "openChange")) {
+            expect(["openChangeOf", "updateChange", "closeChange"].filter((fn) => has(host, fn))).toEqual([]);
+        }
+        expect(written()).toBe(writes);
     });
 
     it("finds no open change for a branch that has none", async () => {
         const { host } = make();
-        expect(await host.openChangeOf("no-such-branch")).toBeNull();
+        if (has(host, "openChange")) {
+            expect(await host.openChangeOf("no-such-branch")).toBeNull();
+        } else {
+            expect(lacks(host)).toContain("openChange");
+        }
     });
 });
 

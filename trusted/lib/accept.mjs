@@ -2544,12 +2544,13 @@ const changedSince = async (repo, a, b) =>
 /**
  * Whether `tip` is `head` plus nothing but commits a Finish makes (its accept, approval and signing
  * commits): `head` is an ancestor, and every commit after it has one parent and changes nothing
- * outside the baselines and approvals directories. Such commits change no capture, so a capture
- * of `head` is still current for `tip`. Unknown commits (not fetched yet) count as no.
+ * outside the baselines and approvals directories, and under plain git, which cannot comment, the
+ * rejects files' directory. Such commits change no capture, so a capture of `head` is still current
+ * for `tip`. Unknown commits (not fetched yet) count as no.
  * @param {string} repo the repository
  * @param {string} head the captured head
  * @param {string} tip the branch's tip
- * @param {{ baselines: string, approvals: string }} config the settings
+ * @param {{ baselines: string, approvals: string, codeHost?: string }} config the settings
  * @returns {Promise<boolean>} whether it is
  */
 export async function onlyFinishCommits(repo, head, tip, config) {
@@ -2563,7 +2564,8 @@ export async function onlyFinishCommits(repo, head, tip, config) {
     if (log === null) {
         return false;
     }
-    const inside = (f) => [config.baselines, config.approvals, REJECTS_DIR].some((d) => f.startsWith(`${d}/`));
+    const dirs = [config.baselines, config.approvals, ...(config.codeHost === "plain-git" ? [REJECTS_DIR] : [])];
+    const inside = (f) => dirs.some((d) => f.startsWith(`${d}/`));
     return log
         .split("\x01")
         .filter(Boolean)

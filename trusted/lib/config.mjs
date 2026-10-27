@@ -168,12 +168,6 @@ function stringSettings(raw, out, fail) {
             out[key] = raw[key];
         }
     }
-    // Plain git has no repository id of its own for change statements to name (docs/plain-git.md).
-    if (raw.codeHost === "plain-git" && raw.repositoryId === undefined) {
-        fail(
-            'codeHost "plain-git" needs a repositoryId, such as a random UUID (proofroom init --code-host plain-git writes one)',
-        );
-    }
 }
 
 /**

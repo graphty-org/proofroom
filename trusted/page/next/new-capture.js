@@ -63,7 +63,8 @@ export async function newCapture(app, prefill = null) {
             el(
                 "option",
                 { value: c.id, ...(!byBranch && prefill?.pr === c.pr && { selected: true }) },
-                `${byBranch ? c.name : `${words.numberPrefix}${c.pr}`} ${c.title}${c.author ? ` (${c.author})` : ""}`,
+                // A remote branch by its name on the remote (origin/feat/y is feat/y).
+                `${byBranch ? c.name.slice(c.name.indexOf("/") + 1) : `${words.numberPrefix}${c.pr}`} ${c.title}${c.author ? ` (${c.author})` : ""}`,
             ),
         ),
     );

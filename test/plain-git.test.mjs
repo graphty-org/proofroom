@@ -6,10 +6,11 @@
  * captured as another person's code; and `init --code-host plain-git` writes a repository id.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { onlyFinishCommits } from "../trusted/lib/accept.mjs";
 import { adapterFacts, captureStoreFor, codeHostFor } from "../trusted/lib/adapters/index.mjs";
 import { plainGitCodeHost, rejectsFile } from "../trusted/lib/adapters/plain-git.mjs";
 import { normalizeConfig } from "../trusted/lib/config.mjs";
@@ -189,6 +190,21 @@ describe("the plain git code host", () => {
         );
     });
 
+    it("keeps a capture current after a commit of the rejects file alone only under plain git", async () => {
+        const repo = tempDir("vr-plain-rejects-");
+        git(repo, "init", "-q", "-b", "main");
+        git(repo, "commit", "-q", "--allow-empty", "-m", "init");
+        const head = git(repo, "rev-parse", "HEAD");
+        mkdirSync(join(repo, "visual-review-rejects"));
+        writeFileSync(join(repo, rejectsFile("feat/x")), "rejects\n");
+        git(repo, "add", "-A");
+        git(repo, "commit", "-q", "-m", "rejects");
+        const tip = git(repo, "rev-parse", "HEAD");
+        const dirs = { baselines: "visual-baselines", approvals: "visual-review-approvals" };
+        expect(await onlyFinishCommits(repo, head, tip, { ...dirs, codeHost: "plain-git" })).toBe(true);
+        expect(await onlyFinishCommits(repo, head, tip, { ...dirs, codeHost: "github" })).toBe(false);
+    });
+
     it("names a branch's rejects file with every run of other characters one dash", () => {
         expect(rejectsFile("feat/x")).toBe("visual-review-rejects/feat-x.md");
         expect(rejectsFile("fix/3471 group padding!")).toBe("visual-review-rejects/fix-3471-group-padding-.md");
@@ -327,11 +343,7 @@ describe("the server on a plain git repository", () => {
 
     it("captures a branch only on the remote as another person's code: through captureCommand, once confirmed", async () => {
         const r = captureRepo(counter.url, { codeHost: "plain-git", captureCommand: "exec" });
-        const remote = tempDir("vr-plain-remote-");
-        git(remote, "init", "-q", "--bare", "-b", "main");
-        git(r.repo, "remote", "add", "origin", remote);
-        git(r.repo, "push", "-q", "origin", "main", "feat/x:feat/y");
-        git(r.repo, "fetch", "-q", "origin");
+        onRemote(r);
         const s = await serve(r);
         await until(async () => (await s.api("GET", "/api/captures?sources=1")).body.sources.remote.length > 0);
         const { sources } = (await s.api("GET", "/api/captures?sources=1")).body;
@@ -345,4 +357,67 @@ describe("the server on a plain git repository", () => {
         // A local branch now tracks the remote one, so Finish pushes there.
         expect(git(r.repo, "rev-parse", "--abbrev-ref", "feat/y@{upstream}")).toBe("origin/feat/y");
     });
+
+    it("makes no local branch of a remote one for a refused or a look-only capture", async () => {
+        const r = captureRepo(counter.url, { codeHost: "plain-git", captureCommand: "exec" });
+        onRemote(r);
+        const s = await serve(r);
+        await until(async () => (await s.api("GET", "/api/captures?sources=1")).body.sources.remote.length > 0);
+        const what = { kind: "change", branch: "origin/feat/y", head: r.head };
+        const refused = await s.api("POST", "/api/captures", {
+            what,
+            confirmed: true,
+            baselines: { commit: "0".repeat(40) },
+        });
+        expect(refused.status).toBe(400);
+        expect(localBranches(r)).toEqual(["feat/x", "main"]);
+        const look = await s.api("POST", "/api/captures", { what, confirmed: true, stories: "demo--" });
+        expect(look.status, JSON.stringify(look.body)).toBe(202);
+        expect(look.body.target).toBe(`capture-${look.body.id}`);
+        let c;
+        await until(async () => {
+            c = (await s.api("GET", `/api/captures/${look.body.id}`)).body;
+            return !["queued", "running"].includes(c.state);
+        });
+        expect(c.state, c.error).toBe("done");
+        expect(localBranches(r)).toEqual(["feat/x", "main"]);
+        // Still offered as a branch from the remote.
+        const { sources } = (await s.api("GET", "/api/captures?sources=1")).body;
+        expect(sources.remote.map((b) => b.name)).toEqual(["origin/feat/y"]);
+    });
+
+    it("asks again, and captures through captureCommand, when the local branch made from a remote one is captured", async () => {
+        const r = captureRepo(counter.url, { codeHost: "plain-git", captureCommand: "sh wrap.sh" });
+        onRemote(r);
+        const s = await serve(r);
+        await until(async () => (await s.api("GET", "/api/captures?sources=1")).body.sources.remote.length > 0);
+        await capturedAndListed(s, {
+            what: { kind: "change", branch: "origin/feat/y", head: r.head },
+            confirmed: true,
+        });
+        expect(readFileSync(r.mark, "utf8").trim().split("\n")).toHaveLength(1);
+        const what = { kind: "branch", branch: "feat/y" };
+        const asked = await s.api("POST", "/api/captures", { what });
+        expect(asked.status).toBe(428);
+        expect(asked.body.error).toBe("capturing origin/feat/y here builds and runs its code: confirm it first");
+        expect(asked.body.change).toEqual({ pr: null, author: "Owner", remote: "origin/feat/y" });
+        const t = await capturedAndListed(s, { what, confirmed: true });
+        expect(t).toMatchObject({ id: "branch-feat%2Fy", localBranch: true });
+        expect(readFileSync(r.mark, "utf8").trim().split("\n")).toHaveLength(2);
+    });
 });
+
+/**
+ * Gives the capture repository a remote holding feat/x's commit as feat/y, a branch with no local
+ * branch of its own.
+ * @param {ReturnType<typeof captureRepo>} r the repository
+ */
+function onRemote(r) {
+    const remote = tempDir("vr-plain-remote-");
+    git(remote, "init", "-q", "--bare", "-b", "main");
+    git(r.repo, "remote", "add", "origin", remote);
+    git(r.repo, "push", "-q", "origin", "main", "feat/x:feat/y");
+    git(r.repo, "fetch", "-q", "origin");
+}
+
+const localBranches = (r) => git(r.repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/").split("\n");
