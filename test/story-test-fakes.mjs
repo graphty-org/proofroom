@@ -74,6 +74,7 @@ export function context(shots, size = { width: 1200, height: 900 }) {
         setViewportSize: async (v) => {
             viewports.push(v);
         },
+        viewportSize: () => viewports.at(-1) ?? { width: 1200, height: 900 },
         // The next scripted viewport shot, cut to the clip as Chromium cuts it (at scale 2).
         screenshot: async (o) => {
             if (o.clip.width === 1) {
