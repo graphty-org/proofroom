@@ -214,6 +214,13 @@ export function createPasskey(app, { row, prepared }) {
     app.say("Creating the passkey and opening its pull request...");
     making.then(
         (r) => {
+            if (r.pullRequest === null) {
+                app.say(
+                    `Passkey registered (${r.entry.label}), credential id ${r.entry.id}. Pushed branch ${r.branch}: open a merge on your host, and check it names this id.`,
+                );
+                readPasskeys(app, row);
+                return;
+            }
             app.say(
                 `Passkey registered (${r.entry.label}), credential id ${r.entry.id}. Opened ${r.pullRequest}: check it ` +
                     (r.gated
@@ -256,6 +263,104 @@ export function diskText(disk) {
     return `${gigabytes(disk.budget)}, least recently opened removed first. ${used}`;
 }
 
+/** The adapters' names as Settings shows them, by their config names. */
+const ADAPTER_NAMES = {
+    github: "GitHub",
+    "plain-git": "Plain git",
+    "github-actions": "GitHub Actions artifacts",
+    "local-folder": "Local folder",
+    storybook: "Storybook",
+    "playwright-chromium": "Playwright Chromium",
+};
+
+/**
+ * What each missing function hides, as Settings says it (design 12.4).
+ * @param {string} fn the function
+ * @param {{ ciName: string | null }} words the code host's words
+ * @returns {string} the words
+ */
+function hidden(fn, words) {
+    return (
+        {
+            comment: "Cannot post comments: rejects are written to visual-review-rejects/<branch>.md",
+            setStatus: "Cannot set commit statuses: Finish sets none",
+            fileIssue: "Cannot file issues: rejects on the default branch go to the same file",
+            openChange: '"Open on the code host" hidden; a seed says "Pushed branch seed/x: open a merge on your host"',
+            describe: '"About this change" shows no description',
+            whoAmI: "Cannot name you: every change from the code host asks before it is captured here",
+            request: 'Cannot start CI jobs: "CI" in New capture is unavailable',
+            status: `No job states: capturing rows say "Capturing on ${words.ciName || "CI"}" with no count`,
+            cancel: "Cannot cancel CI jobs: Cancel hidden on CI rows",
+            expiresAt: 'No expiry dates: "Images deleted by the code host" never shown',
+        }[fn] ?? "Missing"
+    );
+}
+
+/**
+ * The Adapters row: the code host, capture store, story source and renderer in use, and for each
+ * the functions it lacks with the buttons hidden because of them. Read only: the config names them.
+ * @param {any} adapters the list's `adapters`
+ * @returns {HTMLElement} the row
+ */
+export function adaptersRow(adapters) {
+    const head = [
+        el("b", {}, "Adapters"),
+        el(
+            "span",
+            { class: "small muted" },
+            "Read only, from visual-review.config.json. A missing function hides the buttons that need it.",
+        ),
+    ];
+    if (!adapters) {
+        return el("div", { class: "q", id: "set-adapters" }, ...head, "Not known yet.");
+    }
+    const words = adapters.codeHost.vocabulary;
+    // With no CI at all (plain git), the store's one missing function says so.
+    const storeLacks =
+        words.ciName === null
+            ? [["request", 'No CI: every capture runs on this machine, and "CI" in New capture is unavailable']]
+            : adapters.captureStore.lacks.map((fn) => [fn, hidden(fn, words)]);
+    const row = (role, name, lacks) =>
+        el(
+            "tr",
+            {},
+            el("td", { class: "muted" }, role),
+            el("td", {}, el("b", {}, ADAPTER_NAMES[name] ?? name)),
+            el(
+                "td",
+                {},
+                lacks.length > 0
+                    ? el(
+                          "ul",
+                          { class: "small" },
+                          lacks.map(([fn, text]) => el("li", {}, el("code", {}, fn), `: ${text}`)),
+                      )
+                    : el("span", { class: "small c-accept" }, "nothing missing"),
+            ),
+        );
+    return el(
+        "div",
+        { class: "q", id: "set-adapters" },
+        ...head,
+        el(
+            "table",
+            { class: "jobs adapters" },
+            el(
+                "tbody",
+                {},
+                row(
+                    "Code host",
+                    adapters.codeHost.name,
+                    adapters.codeHost.lacks.map((fn) => [fn, hidden(fn, words)]),
+                ),
+                row("Capture store", adapters.captureStore.name, storeLacks),
+                row("Stories", adapters.stories.name, []),
+                row("Renderer", adapters.renderer.name, []),
+            ),
+        ),
+    );
+}
+
 /**
  * Opens Settings.
  * @param {any} app the page
@@ -284,6 +389,7 @@ export function settingsSheet(app) {
             ),
         ),
         el("div", { class: "q", id: "set-disk" }, el("b", {}, "Disk budget"), diskText(app.list?.disk)),
+        adaptersRow(app.list?.adapters),
     );
     readPasskeys(app, row);
 }

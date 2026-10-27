@@ -12,6 +12,7 @@
 import { approve, passkeyWrongHost } from "../passkey.js";
 import { control } from "./actions.js";
 import { api } from "./api.js";
+import { hostCan } from "./messages.js";
 import { el, fmt } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -45,7 +46,7 @@ const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st
 const STEPS = [
     ["passkey", () => "confirm passkey", null],
     ["check", () => "check", /^(starting|checking)/],
-    ["write", () => "write", /^writing/],
+    ["write", () => "write", /^writing (?!the rejects)/],
     ["commit", () => "commit", /^committing/],
     [
         "upload",
@@ -62,23 +63,41 @@ const STEPS = [
         (step, plan) => (plan?.seed ? "open the issue" : "comment"),
         /^(posting the comment|opening the issue)/,
     ],
+    ["rejects", () => "write the rejects", /^writing the rejects/],
     ["status", () => "status", /^posting the status/],
 ];
 
 /**
+ * Where a branch's rejects are written when the code host cannot post them (plain git), as the
+ * server names the file (adapters/plain-git.mjs rejectsFile).
+ * @param {string} branch the branch
+ * @returns {string} the path
+ */
+const rejectsFile = (branch) => `visual-review-rejects/${branch.replaceAll(/[^A-Za-z0-9._-]+/g, "-")}.md`;
+
+/**
  * The steps a Finish goes through, for what it does (null: not known, after a reload).
- * @param {{ seed: boolean, commits: boolean, posts: boolean, signed: boolean } | null} plan the plan
+ * @param {{ seed: boolean, commits: boolean, posts: boolean, signed: boolean, file?: boolean } | null} plan the plan;
+ *     `file`: the rejects go to a file on the branch, and no status is set (a code host that cannot post)
  * @returns {Array<typeof STEPS[number]>} the steps
  */
 function stepsOf(plan) {
     return STEPS.filter(([key]) => {
         if (!plan) {
-            return key !== "passkey";
+            return key !== "passkey" && key !== "rejects";
         }
         if (["write", "commit", "upload", "push"].includes(key)) {
             return plan.commits;
         }
-        return { passkey: plan.signed, pull: plan.seed && plan.commits, comment: plan.posts }[key] ?? true;
+        return (
+            {
+                passkey: plan.signed,
+                pull: plan.seed && plan.commits,
+                comment: plan.posts && !plan.file,
+                rejects: plan.posts && plan.file === true,
+                status: !plan.file,
+            }[key] ?? true
+        );
     });
 }
 
@@ -104,6 +123,7 @@ const statusText = (f) => `the commit status "${f.status.description}" (${f.stat
 // A failed step in plain words, from the step the server puts before the reason ("pushing: ...").
 const FAILED_AT = [
     [/^(starting|checking)/, "check failed"],
+    [/^writing the rejects/, "rejects not written"],
     [/^writing/, "write failed"],
     [/^committing/, "commit failed"],
     [/^uploading images/, "upload failed"],
@@ -299,7 +319,9 @@ export function installFinish(app) {
             el("p", {}, el("b", {}, "Will commit:"), ` ${commitLine(t)}`),
             rejects.length > 0 || (!seed && f.acceptNotes > 0)
                 ? [
-                      el("p", {}, el("b", {}, "Will post:"), ` ${postLine(t, c)}`),
+                      toFile(t)
+                          ? el("p", {}, el("b", {}, "Will write"), ` ${fileLine(t)}`)
+                          : el("p", {}, el("b", {}, "Will post:"), ` ${postLine(t, c)}`),
                       rejects.length > 0
                           ? el(
                                 "details",
@@ -314,7 +336,7 @@ export function installFinish(app) {
                           : null,
                   ]
                 : null,
-            el("p", {}, el("b", {}, "Will set:"), ` ${statusText(f)}.`),
+            toFile(t) ? null : el("p", {}, el("b", {}, "Will set:"), ` ${statusText(f)}.`),
             signsLine(t, prepared),
         ];
     }
@@ -322,7 +344,10 @@ export function installFinish(app) {
     function commitLine(t) {
         const f = t.finish;
         if (f.accepts + f.excludes === 0) {
-            return f.rejects > 0 ? "nothing; only rejects are posted." : "nothing.";
+            if (f.rejects > 0) {
+                return toFile(t) ? `only the rejects, to ${rejectsFile(t.branch)}.` : "nothing; only rejects are posted.";
+            }
+            return "nothing.";
         }
         const what = `${fmt(f.accepts)} accepted (${fmt(f.notOpened)} not opened), ${fmt(f.excludes)} excluded`;
         if (t.pr === null) {
@@ -332,6 +357,21 @@ export function installFinish(app) {
             return `${what}, to branch ${branch} as ${committer(t)}, and open its pull request.`;
         }
         return `${what}, to branch ${t.branch} as ${committer(t)}.`;
+    }
+
+    // A code host that cannot post (plain git): a local branch's rejects go to a file on it, and no
+    // commit status is set.
+    function toFile(t) {
+        return t.localBranch === true && !hostCan(app.list, "comment");
+    }
+
+    function fileLine(t) {
+        const f = t.finish;
+        const parts = [
+            f.rejects > 0 ? plural(f.rejects, "reject") : null,
+            f.acceptNotes > 0 ? plural(f.acceptNotes, "accept note") : null,
+        ];
+        return `${parts.filter(Boolean).join(" and ")} to ${rejectsFile(t.branch)} on the branch.`;
     }
 
     function postLine(t, c) {
@@ -396,8 +436,12 @@ export function installFinish(app) {
                         el("b", {}, `${c?.label ?? id} ${c?.title ?? ""}`),
                         el("br"),
                         `commit ${fmt(f.accepts)} accepted, ${fmt(f.excludes)} excluded` +
-                            (f.rejects > 0 ? `; post ${plural(f.rejects, "reject")}` : "") +
-                            `; set "${f.status.description}"`,
+                            (f.rejects > 0
+                                ? toFile(t)
+                                    ? `; write ${plural(f.rejects, "reject")} to ${rejectsFile(t.branch)}`
+                                    : `; post ${plural(f.rejects, "reject")}`
+                                : "") +
+                            (toFile(t) ? "" : `; set "${f.status.description}"`),
                         und > 0 ? ["; ", el("b", {}, `${fmt(und)} undecided left`)] : null,
                         failed.has(id) ? "; retries the failed Finish" : null,
                     );
@@ -550,6 +594,7 @@ export function installFinish(app) {
                 commits: f.accepts + f.excludes > 0,
                 posts: seed ? f.rejects > 0 : f.rejects + f.acceptNotes > 0,
                 signed: prepared.required === true,
+                file: toFile(t),
             };
             app.say(
                 prepared.required
@@ -718,6 +763,7 @@ export function installFinish(app) {
                 : r.alreadyFinished
                   ? `${label(id)} was already finished: an earlier Finish committed these decisions. Nothing was pushed or posted now.`
                   : `Finished ${label(id)} at ${at}${signed ? ", signed" : ""}.`,
+            r.rejectsFile ? `The rejects are in ${r.rejectsFile} on the branch.` : null,
             ...why,
             linked.length > 0
                 ? `${andList(linked).replace(/^./, (x) => x.toUpperCase())} ${linked.length === 1 ? "is" : "are"} linked on its row.`

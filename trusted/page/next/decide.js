@@ -17,6 +17,7 @@ import { nextNeeding } from "./changes.js";
 import { BEFORE, splitOf, splitWords, undecided } from "./groups.js";
 import { acceptLabel, groupScope, layoutOf, shownUndecided, undoable } from "./list.js";
 import { STATUS } from "./marks.js";
+import { wordsOf } from "./messages.js";
 import { shownNow } from "./panes.js";
 import { el, fmt } from "./ui.js";
 import { reverse, send, shown } from "./undo.js";
@@ -72,6 +73,7 @@ export function installDecide(app) {
         app.list?.targets?.find((t) => t.id === app.openId)?.projects.find((p) => p.project === s.project)
             ?.acceptable !== false;
     const master = () => app.list?.defaultBranch ?? "master";
+    const words = () => wordsOf(app.list);
 
     // Whether a control that writes is available: not on a look-only capture.
     app.writeOK = () => (app.open()?.lookOnly ? "A look-only capture is viewed, never decided" : true);
@@ -122,7 +124,7 @@ export function installDecide(app) {
             return "Failed snapshots cannot be accepted. Exclude stops capturing the story";
         }
         if (kind !== "reject" && !acceptable(s)) {
-            return `${s.project} is not seeded from ${master()}; its first review is on a pull request`;
+            return `${s.project} is not seeded from ${master()}; its first review is on a ${words().changeNoun}`;
         }
         return true;
     };
@@ -277,7 +279,7 @@ export function installDecide(app) {
         const refused = [...new Set(list.filter((s) => kind !== "reject" && !acceptable(s)).map((s) => s.project))];
         const note =
             refused.length > 0
-                ? ` ${refused.join(", ")} left out: not seeded from ${master()}; its first review is on a pull request.`
+                ? ` ${refused.join(", ")} left out: not seeded from ${master()}; its first review is on a ${words().changeNoun}.`
                 : "";
         const take = list.filter(
             (s) =>
@@ -834,7 +836,7 @@ export function installDecide(app) {
             el(
                 "p",
                 { class: "small" },
-                `Finish still records your decisions against this capture. When the pull request merges, CI compares it with these baselines again, and any image they change comes back to you. Update only when the pull request conflicts with ${master()}.`,
+                `Finish still records your decisions against this capture. When the ${words().changeNoun} merges, ${words().ciName ?? "the gate"} compares it with these baselines again, and any image they change comes back to you. Update only when the ${words().changeNoun} conflicts with ${master()}.`,
             ),
             el(
                 "ul",

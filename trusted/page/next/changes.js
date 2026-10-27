@@ -5,6 +5,7 @@
  */
 
 import { control } from "./actions.js";
+import { GITHUB_WORDS } from "./messages.js";
 import { ageText, el, fmt, ic, megabytes } from "./ui.js";
 
 /** The sections, in order: key, title, open by default. */
@@ -44,12 +45,13 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 /**
  * One changes row, from a target summary.
  * @param {any} t the summary
- * @param {{ defaultBranch: string, now: number, shares?: Map<string, string>, dismissed?: Set<string> }} at
- *     the default branch's name, the server's clock, each change's "shares N baselines with #M"
- *     badge, and the finished rows the reader dismissed (by `dismissKey`)
+ * @param {{ defaultBranch: string, now: number, shares?: Map<string, string>, dismissed?: Set<string>,
+ *     words?: ReturnType<typeof import("./messages.js").wordsOf> }} at the default branch's name, the server's clock, each
+ *     change's "shares N baselines with #M" badge, the finished rows the reader dismissed (by
+ *     `dismissKey`), and the code host's words
  * @returns {any} the row's model
  */
-export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed = new Set() }) {
+export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed = new Set(), words = GITHUB_WORDS }) {
     const projects = t.projects ?? [];
     const states = projects.map(projectState);
     const readyN = states.filter((s) => s === "ready").length;
@@ -73,11 +75,20 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
           : t.pr === null
             ? "seed"
             : "PR";
+    // Plain git's changes are branches: a branch's row is named by the branch, as a number names a
+    // pull request's.
+    const byBranch = words.numberPrefix === "" && t.localBranch && t.branch;
     const row = {
         id: t.id,
         kind,
+        // The tag before the title: the host's word for its changes ("PR"), else what was captured.
+        tag: kind === "PR" ? words.changeTag : kind,
+        // "#3486 " before the title of a change the host numbers.
+        num: kind === "PR" ? `${words.numberPrefix}${t.pr} ` : "",
         pr: t.pr,
-        label: t.pr !== null && !local ? `#${t.pr}` : kind,
+        label: t.pr !== null && !local ? `${words.numberPrefix}${t.pr}` : byBranch ? t.branch : kind,
+        // A change the code host knows: a pull request, or under plain git a branch.
+        hostChange: kind === "PR" || Boolean(byBranch),
         title: kind === "seed" ? `Seed from ${defaultBranch}` : (t.title ?? ""),
         head: t.head ?? null,
         // The page's capture this row stands for while it runs or after it failed (captureRowOf).
@@ -87,7 +98,9 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
             (t.pr === null && !local ? `${defaultBranch}${t.commit ? ` at ${t.commit.slice(0, 7)}` : ""}` : null),
         author: t.author ?? null,
         source:
-            local || t.localBranch || (projects.length > 0 && projects.every((p) => p.preview)) ? "this machine" : "CI",
+            local || t.localBranch || (projects.length > 0 && projects.every((p) => p.preview))
+                ? "this machine"
+                : (words.ciName ?? "this machine"),
         ready: `${readyN} of ${projects.length}`,
         readyAt,
         age: readyAt === null ? null : ageText(now - readyAt),
@@ -127,7 +140,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         Object.assign(row, {
             state: "capturing",
             mark: ["spin", "c-ink2"],
-            count: `Capturing on CI, ${readyN} of ${plural(projects.length, "project")}`,
+            count: `Capturing on ${words.ciName ?? "this machine"}, ${readyN} of ${plural(projects.length, "project")}`,
         });
     } else if (states.includes("failed")) {
         const names = projects.filter((p) => projectState(p) === "failed").map((p) => p.project);
@@ -219,7 +232,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         row.badges.push({ text: "pending push" });
     }
     if (projects.some((p) => p.preview && p.ci && p.ci.status !== "completed")) {
-        row.badges.push({ text: "CI pending" });
+        row.badges.push({ text: `${words.ciName ?? "CI"} pending` });
     }
     if (shares.has(t.id)) {
         row.badges.push({ text: shares.get(t.id) });
@@ -234,10 +247,10 @@ const CAPTURE_KINDS = { tree: "working tree", branch: "branch", change: "PR" };
  * was cancelled (design 3.5): Capturing or downloading, then Not ready. A capture that finished is
  * the row of what it made instead.
  * @param {any} c the capture, as GET /api/captures lists it
- * @param {{ now: number }} at the server's clock
+ * @param {{ now: number, words?: ReturnType<typeof import("./messages.js").wordsOf> }} at the server's clock, and the code host's words
  * @returns {any} the row's model
  */
-export function captureRowOf(c, { now }) {
+export function captureRowOf(c, { now, words = GITHUB_WORDS }) {
     const kind = CAPTURE_KINDS[c.what.kind];
     const failed = c.state === "failed" || c.state === "cancelled";
     const id = `capture-${c.id}`;
@@ -245,8 +258,10 @@ export function captureRowOf(c, { now }) {
         id,
         capId: c.id,
         kind,
+        tag: kind === "PR" ? words.changeTag : kind,
+        num: kind === "PR" ? `${words.numberPrefix}${c.what.number} ` : "",
         pr: c.what.number ?? null,
-        label: kind === "PR" ? `#${c.what.number}` : kind,
+        label: kind === "PR" ? `${words.numberPrefix}${c.what.number}` : kind,
         title: kind === "PR" ? (c.what.title ?? "") : `Capture of ${c.what.label}`,
         head: c.head,
         branch: c.what.branch ?? null,
@@ -290,15 +305,16 @@ export function captureRowOf(c, { now }) {
  * The "shares N baselines with #M" badge of each change in a group of changes that change the same
  * baseline files (the server's inbox groups).
  * @param {{ ids: string[], prs: number[], shared: string[] }[] | null | undefined} groups the groups
+ * @param {ReturnType<typeof import("./messages.js").wordsOf>} [words] the code host's words
  * @returns {Map<string, string>} the badge text by change id
  */
-export function sharesOf(groups) {
+export function sharesOf(groups, words = GITHUB_WORDS) {
     const out = new Map();
     for (const g of groups ?? []) {
         g.ids.forEach((id, i) => {
             const other = g.prs.find((_, j) => j !== i);
             if (other !== undefined && g.shared.length > 0) {
-                out.set(id, `shares ${plural(g.shared.length, "baseline")} with #${other}`);
+                out.set(id, `shares ${plural(g.shared.length, "baseline")} with ${words.numberPrefix}${other}`);
             }
         });
     }
@@ -374,7 +390,7 @@ export function nextNeeding(rows, sort, openId) {
  */
 function rowOf(app, r) {
     const current = r.id === app.currentChangeId();
-    const title = `${r.pr !== null && r.kind === "PR" ? `#${r.pr} ` : ""}${r.title}`;
+    const title = `${r.num}${r.title}`;
     const details = [r.branch, r.author, r.source, `${r.ready} projects ready`, r.age].filter(Boolean).join("  ");
     const acts = [];
     if (r.capId !== null) {
@@ -413,7 +429,7 @@ function rowOf(app, r) {
             el(
                 "div",
                 { class: "l1" },
-                el("span", { class: "tag" }, r.kind),
+                el("span", { class: "tag" }, r.tag),
                 el("span", { class: "t ell grow" }, title),
                 control(app, "rowmenu", { zone: "rows", ctx: { id: r.id } }),
             ),

@@ -11,6 +11,7 @@
  * queued for later (design 10).
  */
 
+import { wordsOf } from "./messages.js";
 import { el, kb } from "./ui.js";
 
 // Where a control sits, in the order that decides which of two controls showing the same key
@@ -58,7 +59,10 @@ export const ACTIONS = {
     "screen-captures": { label: "Captures", run: (app) => app.showCaptures() },
     newcap: {
         label: "New capture...",
-        title: "Capture the working tree, a local branch or a pull request",
+        title: (app) => {
+            const w = wordsOf(app.list);
+            return `Capture the working tree, a local branch or a ${w.changeNoun} from ${w.hostName === "git" ? "the remote" : w.hostName}`;
+        },
         run: (app) => app.newCapture(),
     },
     refresh: { label: (app) => app.statusText(), title: "Refresh now", run: (app) => app.refresh() },
@@ -160,9 +164,12 @@ export const ACTIONS = {
     rowmenu: { label: "...", title: "More for this change", run: (app, ctx) => app.rowMenu(ctx.id, ctx.el) },
     about: { label: "About this change", run: (app, ctx) => app.aboutChange(ctx.id) },
     onhost: {
-        label: "Open on GitHub",
+        label: (app) => `Open on ${wordsOf(app.list).hostName}`,
         run: (app, ctx) => app.openOnHost(ctx.id),
-        available: (app, ctx) => (app.change(ctx.id)?.url ? true : "Only a pull request is on GitHub"),
+        available: (app, ctx) => {
+            const w = wordsOf(app.list);
+            return app.change(ctx.id)?.url ? true : `Only a ${w.changeNoun} is on ${w.hostName}`;
+        },
     },
     copylink: { label: "Copy link", run: (app, ctx) => app.copyLink(ctx.id) },
     dismiss: {

@@ -68,7 +68,7 @@ import {
     visibleRows,
 } from "./list.js";
 import { ORDER, STATUS, mark } from "./marks.js";
-import { history as messageHistory, say, sayAgain } from "./messages.js";
+import { history as messageHistory, hostCan, hostWho, say, sayAgain, wordsOf } from "./messages.js";
 import { applyPanes, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
 import {
     applyTheme,
@@ -222,7 +222,7 @@ app.statusText = () => {
         return "Server not answering";
     }
     if (app.list?.error) {
-        return "GitHub not answering";
+        return `${wordsOf(app.list).hostName} not answering`;
     }
     if (!app.list?.updatedAt) {
         return "Loading...";
@@ -253,6 +253,10 @@ function drawChangesPane() {
     drawChanges(app);
 }
 
+// The empty Review screen's words: where captures come from, and that one can be made now.
+const noCapturesYet = (w) =>
+    `${w.ciName ? `Captures made by ${w.ciName} appear here on their own once a ${w.changeNoun} runs its visual job. Or capture` : "Capture"} the working tree on this machine now.`;
+
 // The summary of a change, in the Snapshots pane while no change is open.
 function summaryOf(c) {
     const statuses = REVIEWABLE.filter((s) => c.counts[s] > 0).map((s) =>
@@ -262,8 +266,8 @@ function summaryOf(c) {
     return el(
         "div",
         { class: "summary" },
-        el("div", { class: "title" }, `${c.kind === "PR" ? `#${c.pr} ` : ""}${c.title}`),
-        el("div", { class: "small" }, el("span", { class: "tag" }, c.kind), " ", c.branch ?? ""),
+        el("div", { class: "title" }, `${c.num}${c.title}`),
+        el("div", { class: "small" }, el("span", { class: "tag" }, c.tag), " ", c.branch ?? ""),
         el(
             "div",
             { class: "small muted" },
@@ -281,7 +285,7 @@ function summaryOf(c) {
     );
 }
 
-// The open change's title, a link to it on GitHub: pressed, it runs Open on GitHub (logged as that
+// The open change's title, a link to it on the code host: pressed, it runs Open on <host> (logged as that
 // action); the address stays on the link for copying and the browser's own menu.
 function titleLink(c, title) {
     const a = control(app, "onhost", {
@@ -293,7 +297,7 @@ function titleLink(c, title) {
             href: c.url,
             target: "_blank",
             rel: "noreferrer",
-            title: `${title}: open on GitHub`,
+            title: `${title}: open on ${wordsOf(app.list).hostName}`,
         },
         children: [title],
     });
@@ -333,11 +337,7 @@ function drawSnaps() {
                       "div",
                       { class: "summary nocap" },
                       el("div", { class: "title" }, "No captures yet."),
-                      el(
-                          "p",
-                          { class: "small" },
-                          "Captures made by CI appear here on their own once a pull request runs its visual job. Or capture the working tree on this machine now.",
-                      ),
+                      el("p", { class: "small" }, noCapturesYet(wordsOf(app.list))),
                       el(
                           "div",
                           { id: "summary-newcap" },
@@ -350,11 +350,11 @@ function drawSnaps() {
         );
         return;
     }
-    const title = `${c.kind === "PR" ? `#${c.pr} ` : ""}${c.title}`;
+    const title = `${c.num}${c.title}`;
     const h1 = el(
         "div",
         { class: "h1" },
-        c.url ? titleLink(c, title) : el("span", { class: "grow ell", title }, title),
+        c.url && hostCan(app.list, "openChange") ? titleLink(c, title) : el("span", { class: "grow ell", title }, title),
         changesShown ? null : control(app, "nextchange", { zone: "snaps-head", attrs: { id: "snap-next-btn" } }),
         hide,
     );
@@ -1084,7 +1084,10 @@ app.loadNewer = async () => {
 app.rowMenu = (id, anchor) => {
     const c = app.change(id);
     showMenu(anchor, [
-        ...(c.url ? [{ id: "onhost", label: "Open on GitHub", ctx: { id } }] : []),
+        // A code host that cannot open changes (plain git) has no page to open them on.
+        ...(c.url && hostCan(app.list, "openChange")
+            ? [{ id: "onhost", label: `Open on ${wordsOf(app.list).hostName}`, ctx: { id } }]
+            : []),
         { id: "about", label: "About this change", ctx: { id } },
         { id: "capagain", label: "Capture again...", ctx: { id } },
         // On every change: anything but a pull request shows it unavailable, saying why.
@@ -1120,13 +1123,13 @@ app.closeBox = () => {
 
 app.aboutChange = async (id) => {
     const c = app.change(id);
-    const head = `${c.kind === "PR" ? `#${c.pr} ` : ""}${c.title}`;
+    const head = `${c.num}${c.title}`;
     const facts = el(
         "p",
         { class: "small muted" },
         [c.branch, c.author && `by ${c.author}`].filter(Boolean).join(", "),
     );
-    if (c.kind !== "PR" || c.capId !== null) {
+    if (!c.hostChange || c.capId !== null || !hostCan(app.list, "describe")) {
         openBox(head, facts);
         return;
     }
@@ -1256,7 +1259,7 @@ app.captureAgain = (ctx) => {
         return;
     }
     const c = allCaptures(app.captures).find((x) => x.id === ctx.cap);
-    app.newCapture(c ? captureRowOf(c, { now: app.capNow() }) : null);
+    app.newCapture(c ? captureRowOf(c, { now: app.capNow(), words: wordsOf(app.list) }) : null);
 };
 
 // A box holding a form of its own (the New capture sheet and its second step); Esc runs `onEsc`
@@ -1286,7 +1289,7 @@ app.startCapture = async (confirmed) => {
     const req = sheet.request();
     const { what, where } = req.body;
     if (what.kind === "change" && !req.change) {
-        say("New capture: choose a pull request first.", "err");
+        say(`New capture: choose a ${wordsOf(app.list).changeNoun} first.`, "err");
         return;
     }
     if (what.kind === "change" && where === "here" && !confirmed) {
@@ -1467,7 +1470,8 @@ whenRefused((refused) => askToken(refused));
 app.rebuild = () => rebuild();
 function rebuild() {
     const l = app.list;
-    const shares = sharesOf(l.inbox?.groups);
+    const words = wordsOf(l);
+    const shares = sharesOf(l.inbox?.groups, words);
     app.changes = (l.targets ?? []).map((t) =>
         app.withFinish(
             changeOf(t, {
@@ -1475,6 +1479,7 @@ function rebuild() {
                 now: l.now ?? Date.now(),
                 shares,
                 dismissed: app.dismissed ?? new Set(),
+                words,
             }),
         ),
     );
@@ -1482,7 +1487,7 @@ function rebuild() {
     const now = app.capNow();
     for (const c of allCaptures(app.captures)) {
         if (busy(c) || (["failed", "cancelled"].includes(c.state) && now - (c.endedAt ?? 0) < FAILED_ROW_MS)) {
-            app.changes.push(captureRowOf(c, { now }));
+            app.changes.push(captureRowOf(c, { now, words }));
         }
     }
     if (app.dismissed === null) {
@@ -1562,7 +1567,10 @@ app.refresh = async () => {
     app.refreshing = false;
     draw();
     if (app.failed === null) {
-        say(app.list?.error ? `GitHub did not answer: ${app.list.error}` : "Refreshed.", app.list?.error ? "err" : "");
+        say(
+            app.list?.error ? `${hostWho(app.list)} did not answer: ${app.list.error}` : "Refreshed.",
+            app.list?.error ? "err" : "",
+        );
     }
 };
 

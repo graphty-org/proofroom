@@ -12,6 +12,7 @@
 
 import { control } from "./actions.js";
 import { filterOf, jumpOf } from "./find.js";
+import { wordsOf } from "./messages.js";
 import {
     BEFORE,
     BIG,
@@ -915,7 +916,8 @@ export function decisionWords(app, s) {
     if (d.decision === "accept") {
         if (s.before) {
             const pr = d.approvedBefore.pr;
-            return `Accepted (approved before ${pr === null || pr === undefined ? "on the seed" : `#${pr}`})`;
+            const before = pr === null || pr === undefined ? "on the seed" : `${wordsOf(app.list).numberPrefix}${pr}`;
+            return `Accepted (approved before ${before})`;
         }
         return d.bulk ? "Accepted (not opened)" : "Accepted";
     }
