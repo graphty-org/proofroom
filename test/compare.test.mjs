@@ -361,9 +361,10 @@ describe("compare and run on a Storybook", () => {
     it("capture --ndjson | compare --stdin prints a result line before the capture's end line reaches it", async () => {
         const { repo } = demoRepo(counter.url);
         const out = join(repo, "out");
+        // A space after the comma, as a hand-typed list has it, is not part of a prefix.
         const shoot = spawn(
             process.execPath,
-            [CLI, "capture", "--project", "demo", "--out", out, "--ndjson", "--stories", "demo--plain,demo--small"],
+            [CLI, "capture", "--project", "demo", "--out", out, "--ndjson", "--stories", "demo--plain, demo--small"],
             { cwd: repo, stdio: ["ignore", "pipe", "pipe"] },
         );
         const judge = spawn(process.execPath, [CLI, "compare", "--project", "demo", "--captures", out, "--stdin"], {

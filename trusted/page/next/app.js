@@ -1320,7 +1320,15 @@ app.captureAgain = (ctx) => {
         return;
     }
     const c = allCaptures(app.captures).find((x) => x.id === ctx.cap);
-    app.newCapture(c ? captureRowOf(c, { now: app.capNow(), words: wordsOf(app.list) }) : null);
+    app.newCapture(
+        c
+            ? captureRowOf(c, {
+                  now: app.capNow(),
+                  words: wordsOf(app.list),
+                  status: app.captures?.ci?.status !== false,
+              })
+            : null,
+    );
 };
 
 // A box holding a form of its own (the New capture sheet and its second step); Esc runs `onEsc`
@@ -1375,7 +1383,8 @@ app.startCapture = async (confirmed) => {
         app.capCur = answer.id;
     }
     await pollCaptures();
-    say(`Capture of ${req.label} started on this machine. Its row is in Changes, under Capturing.`);
+    const on = where === "ci" ? `on ${wordsOf(app.list).ciName ?? "CI"}` : "on this machine";
+    say(`Capture of ${req.label} started ${on}. Its row is in Changes, under Capturing.`);
 };
 
 app.cancelCapture = async (id) => {
@@ -1548,7 +1557,7 @@ function rebuild() {
     const now = app.capNow();
     for (const c of allCaptures(app.captures)) {
         if (busy(c) || (["failed", "cancelled"].includes(c.state) && now - (c.endedAt ?? 0) < FAILED_ROW_MS)) {
-            app.changes.push(captureRowOf(c, { now, words }));
+            app.changes.push(captureRowOf(c, { now, words, status: app.captures?.ci?.status !== false }));
         }
     }
     if (app.dismissed === null) {

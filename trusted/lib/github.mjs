@@ -148,7 +148,7 @@ const PULLS_QUERY = `query($owner: String!, $name: String!, $after: String, $app
     pullRequests(states: OPEN, first: 100, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title url headRefName headRefOid isDraft
+        number title url headRefName headRefOid isDraft isCrossRepository
         author { login }
         commits(last: 1) { nodes { commit { checkSuites(first: 10, filterBy: { appId: $appId }) { nodes {
           databaseId status conclusion
@@ -184,7 +184,7 @@ function visualRuns(suite) {
  * @param {{ workflow: string, ignoreBranches?: string[] }} config the workflow file that captures (the
  *     config's `workflow`), and the branch-name prefixes whose pull requests are left out
  * @returns {Promise<{ number: number, title: string, url: string, headSha: string, branch: string, draft: boolean,
- *     author: string | null, run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null,
+ *     fork: boolean, author: string | null, run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null,
  *     visual: Record<string, { status: string, conclusion: string | null }> | null }[]>}
  *     the pull requests; `run` is null when CI never ran on the head, and its status and
  *     conclusion are lowercase, as REST spells them; `visual` is each project's capture job in
@@ -224,6 +224,8 @@ export async function openPullRequests(gh, { workflow, ignoreBranches = [] }) {
                 headSha: p.headRefOid,
                 branch: p.headRefName,
                 draft: p.isDraft === true,
+                // From a fork: its branch name names a branch of the fork, not of this repository.
+                fork: p.isCrossRepository === true,
                 // null for a deleted account ("ghost").
                 author: p.author?.login ?? null,
                 run: newest && {
@@ -281,7 +283,8 @@ export const getRun = async (gh, id) => toRun(await api(gh, `repos/{owner}/{repo
  * @param {{ id: number }} run the run
  * @param {number} attempt the attempt
  * @param {string[]} projects project ids
- * @returns {Promise<Record<string, { status?: string, conclusion: string | null, url: string } | undefined>>} by project
+ * @returns {Promise<Record<string, { status?: string, conclusion: string | null, url: string, startedAt?: string,
+ *     endedAt?: string } | undefined>>} by project
  */
 export async function visualJobs(gh, run, attempt, projects) {
     // Every page: a run that calls the workflow beside other lanes can have more than 100 jobs.
@@ -302,7 +305,16 @@ export async function visualJobs(gh, run, attempt, projects) {
         projects.map((p) => {
             // The exact name: "visual (graphty-element)" also contains "graphty".
             const job = visual.find((j) => j.name === `visual (${p})` || j.name.endsWith(` / visual (${p})`));
-            return [p, job && { ...(job.status && { status: job.status }), conclusion: job.conclusion, url: job.html_url }];
+            return [
+                p,
+                job && {
+                    ...(job.status && { status: job.status }),
+                    conclusion: job.conclusion,
+                    url: job.html_url,
+                    ...(job.started_at && { startedAt: job.started_at }),
+                    ...(job.completed_at && { endedAt: job.completed_at }),
+                },
+            ];
         }),
     );
 }
@@ -371,9 +383,7 @@ function download(gh, runId, name, dir, again = false) {
             return Promise.resolve();
         } catch (err) {
             // Damaged on this disk (CI uploads only results.json it wrote): download it again.
-            console.error(
-                `proofroom: ${join(dir, "results.json")} is unreadable, downloading again: ${err.message}`,
-            );
+            console.error(`proofroom: ${join(dir, "results.json")} is unreadable, downloading again: ${err.message}`);
         }
     }
     if (!downloading.has(dir)) {

@@ -22,6 +22,13 @@
  * `run` writes `progress.json` beside each project's result lines; the queue reads it when asked,
  * and keeps the newest log lines of each capture in memory. The jobs (without their logs) are kept
  * in `<work dir>/captures/jobs.json`, so a restarted server still lists them.
+ *
+ * A capture can also be asked of CI, when the capture store can `request` one and the capturing
+ * workflow on the default branch takes requests: then it is always a whole open change at the head
+ * the page showed, against its own baselines, because the run it starts becomes that change's
+ * capture, reviewed and finished as any CI capture of it. Nothing of it runs here: the queue asks
+ * the store for its run's and jobs' states (`status`) while it waits or runs, at most once per
+ * `ciEvery`, and only when the page asks for the captures.
  */
 
 import { spawn } from "node:child_process";
@@ -46,8 +53,15 @@ const FINISHED_KEPT = 50;
 const LOOK_KEPT = 10;
 const STORY_PREFIX = /^[a-z0-9][a-z0-9-]*$/;
 const SHA = /^[0-9a-f]{7,40}$/;
+// How often the capturing workflow on the default branch is read again, to say whether CI takes requests.
+const WORKFLOW_EVERY = 60_000;
 /** The git config key, under `branch.<name>`, marking a local branch made from a remote one: its remote ref. */
 const FROM_REMOTE = "proofroomRemote";
+
+// Whether a capturing workflow's text takes the review page's capture requests: a dispatch trigger
+// with the request and pull request inputs. ponytail: read as text, not parsed.
+const takesRequests = (text) =>
+    /^\s*workflow_dispatch:/m.test(text) && /^\s+request:/m.test(text) && /^\s+pr:/m.test(text);
 
 /** A capture request the server refuses, with the HTTP status it answers. */
 export class CaptureRefused extends Error {
@@ -135,12 +149,18 @@ export function lookCaptures(tmp) {
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} options.config the settings
  * @param {string} options.tmp the work directory
  * @param {string | null} options.previews where local previews are; null when this server has none
- * @param {() => { pr: number | null, head: string, branch: string, title: string, author: string | null, remote?: string }[]} [options.changes]
+ * @param {() => { pr: number | null, head: string, branch: string, title: string, author: string | null, remote?: string,
+ *     fork?: boolean }[]} [options.changes]
  *     the code host's changes as last listed: pull requests, or under plain git the branches only on
- *     a remote (`remote` names one, such as origin/feat-x, and `pr` is null)
+ *     a remote (`remote` names one, such as origin/feat-x, and `pr` is null); `fork` marks a pull
+ *     request from a fork
  * @param {() => Promise<string | null>} [options.whoAmI] the code host login of the person running the server
  * @param {(job: object) => void} [options.onEnd] told when a capture ends, however it ends
  * @param {string} [options.cli] the proofroom command line to run (this package's)
+ * @param {import("./adapters/index.mjs").CaptureStore | null} [options.store] the capture store, which
+ *     CI captures are asked of when it can `request` them
+ * @param {number} [options.ciEvery] the least time, in milliseconds, between two asks of one CI
+ *     capture's state
  * @returns the queue
  */
 export function captureQueue({
@@ -152,6 +172,8 @@ export function captureQueue({
     whoAmI = async () => null,
     onEnd = () => {},
     cli = CLI,
+    store = null,
+    ciEvery = 20_000,
 }) {
     const root = join(tmp, CAPTURES_DIR);
     const jobsFile = join(root, "jobs.json");
@@ -162,14 +184,19 @@ export function captureQueue({
     const children = new Map();
     let running = null;
     let idle = Promise.resolve();
+    /** The CI captures whose state is being asked, by id. */
+    const asking = new Map();
+    let workflowWhy = "the capturing workflow has not been read yet";
+    let workflowAt = -Infinity;
     const saved = readJson(jobsFile);
     if (Array.isArray(saved?.jobs)) {
-        // A capture the last server left running may still be: nothing of it is kept running.
-        for (const j of saved.jobs.filter((x) => x.state === "running")) {
+        // A capture the last server left running may still be: nothing of it is kept running. One on
+        // CI goes on there, and is followed again.
+        for (const j of saved.jobs.filter((x) => x.state === "running" && !x.ci)) {
             stragglersGone(tmp, j.id);
         }
         jobs = saved.jobs.map((j) =>
-            j.state === "running" || j.state === "queued"
+            (j.state === "running" || j.state === "queued") && !j.ci
                 ? {
                       ...j,
                       state: "failed",
@@ -207,7 +234,7 @@ export function captureQueue({
         const what = body?.what ?? {};
         const confirmed = body?.confirmed === true;
         if (body?.where !== undefined && body.where !== "here") {
-            throw new CaptureRefused(409, "this capture store cannot start CI jobs: capture on this machine");
+            throw new CaptureRefused(400, 'where must be "here" or "ci"');
         }
         if (!previews) {
             throw new CaptureRefused(409, "this server shows a local results folder: it starts no captures");
@@ -280,6 +307,17 @@ export function captureQueue({
     }
 
     async function branchPlan(branch, confirmed) {
+        const head = await localHead(branch);
+        return {
+            kind: "branch",
+            label: `branch ${branch}`,
+            inPlace: false,
+            ...(await asBranch(branch, head, confirmed)),
+        };
+    }
+
+    // A local branch's head, or a refusal.
+    async function localHead(branch) {
         const ok =
             branch !== "" &&
             (await git(["check-ref-format", "--branch", branch]).then(
@@ -292,7 +330,99 @@ export function captureQueue({
         if (!head) {
             throw new CaptureRefused(404, `no local branch ${branch}`);
         }
-        return { kind: "branch", label: `branch ${branch}`, inPlace: false, ...(await asBranch(branch, head, confirmed)) };
+        return head;
+    }
+
+    /**
+     * Turns the page's request for a CI capture into the open change it captures, or refuses it:
+     * CI captures a whole change at the head the page showed (a change's, or a local branch's or a
+     * clean working tree's that is the head of an open change), every project and story, against
+     * its own baselines.
+     * @param {any} body the request
+     * @returns {Promise<object>} the planned capture
+     */
+    async function ciPlan(body) {
+        const why = ciFacts().available ? null : ciFacts().why;
+        if (why) {
+            throw new CaptureRefused(409, `CI cannot capture here: ${why}`);
+        }
+        const names = Object.keys(config.projects);
+        const projects = body.projects ?? names;
+        if (
+            String(body.stories ?? "").trim() !== "" ||
+            !Array.isArray(projects) ||
+            names.some((n) => !projects.includes(n)) ||
+            (body.baselines ?? "target") !== "target"
+        ) {
+            throw new CaptureRefused(
+                400,
+                "CI captures a whole change against its own baselines, because its run becomes the change's capture: capture some projects or stories, or against other baselines, on this machine",
+            );
+        }
+        const what = body.what ?? {};
+        let change;
+        if (what.kind === "change") {
+            change = changes().find((c) => c.pr !== null && c.pr === Number(what.number));
+            if (!change) {
+                throw new CaptureRefused(404, `no open change ${what.number}`);
+            }
+            if (what.head !== change.head) {
+                throw new CaptureRefused(409, `#${change.pr} has a newer head than the page showed: look at it again`);
+            }
+        } else if (what.kind === "tree" || what.kind === "branch") {
+            let branch = what.branch;
+            if (what.kind === "tree") {
+                if ((await changedFiles()) > 0) {
+                    throw new CaptureRefused(
+                        409,
+                        "uncommitted changes are not on CI: commit and push them, or capture the working tree on this machine",
+                    );
+                }
+                branch = await git(["symbolic-ref", "--short", "-q", "HEAD"]).catch(() => "");
+                if (!branch) {
+                    throw new CaptureRefused(409, "a detached checkout is no change CI can capture");
+                }
+            }
+            const head = await localHead(String(branch ?? ""));
+            change = changes().find((c) => c.pr !== null && c.branch === branch && c.head === head);
+            if (!change) {
+                throw new CaptureRefused(
+                    409,
+                    `CI captures the head of an open change: ${branch} at ${head.slice(0, 10)} is not one; push it and open one, or capture it on this machine`,
+                );
+            }
+        } else {
+            throw new CaptureRefused(400, 'what.kind must be "tree", "branch" or "change"');
+        }
+        if (change.fork) {
+            // Its branch name names a branch of the fork: a dispatch would run on this repository's
+            // branch of that name (often the default branch), with its caches and secrets.
+            throw new CaptureRefused(
+                409,
+                `#${change.pr} is from a fork, which CI is not asked to capture: its own CI run captures it, or capture it on this machine`,
+            );
+        }
+        // GitHub runs the dispatched branch's own copy of the workflow.
+        const own = await workflowWhyAt(change.head);
+        if (own) {
+            throw new CaptureRefused(
+                409,
+                `${own} at #${change.pr}'s head: merge ${config.defaultBranch} into ${change.branch}, or capture it on this machine`,
+            );
+        }
+        return {
+            kind: "change",
+            label: `#${change.pr} ${change.title}`,
+            title: change.title,
+            number: change.pr,
+            branch: change.branch,
+            head: change.head,
+            author: change.author,
+            projects: names,
+            stories: null,
+            baselines: { kind: "target", label: config.defaultBranch },
+            decidable: "change",
+        };
     }
 
     // A local branch's capture: the open change of that branch when the code host lists one at
@@ -474,6 +604,9 @@ export function captureQueue({
      * @returns {Promise<object>} the capture
      */
     async function start(body) {
+        if (body?.where === "ci") {
+            return startCi(body);
+        }
         const p = await plan(body);
         const id = next++;
         const out = p.look
@@ -514,11 +647,169 @@ export function captureQueue({
         return j;
     }
 
+    // Asks CI for a capture: the store's request is made before the capture is listed, so a request
+    // CI refused is never listed.
+    async function startCi(body) {
+        const p = await ciPlan(body);
+        let ci;
+        try {
+            ci = await store.request(
+                { pr: p.number, branch: p.branch, head: p.head },
+                { projects: p.projects, stories: [] },
+                config,
+            );
+        } catch (err) {
+            throw new CaptureRefused(502, `CI did not take the request: ${err.message}`);
+        }
+        const j = {
+            id: next++,
+            what: {
+                kind: p.kind,
+                label: p.label,
+                title: p.title,
+                branch: p.branch,
+                number: p.number,
+                author: p.author,
+            },
+            head: p.head,
+            inPlace: false,
+            decidable: p.decidable,
+            look: null,
+            baselines: p.baselines,
+            projects: p.projects,
+            stories: null,
+            out: null,
+            target: String(p.number),
+            ci: { ...ci, url: null, jobs: [] },
+            state: "queued",
+            step: null,
+            error: null,
+            createdAt: Date.now(),
+            startedAt: null,
+            endedAt: null,
+        };
+        jobs.push(j);
+        log(j, `Asked CI for a capture of ${p.label} at ${p.head.slice(0, 10)} (request ${ci.request})`);
+        save();
+        return j;
+    }
+
+    // Asks the store how each CI capture that waits or runs is getting on, at most once per
+    // `ciEvery` each, without waiting for the answers: the page's next poll has them.
+    function askCi() {
+        const now = Date.now();
+        const hasStatus = typeof store?.status === "function";
+        for (const j of jobs.filter(
+            (x) =>
+                x.ci &&
+                busy(x) &&
+                (hasStatus || x.cancelling) &&
+                !asking.has(x.id) &&
+                now - (x.ci.askedAt ?? 0) >= ciEvery,
+        )) {
+            const asked = (async () => {
+                if (hasStatus) {
+                    ciAnswer(j, await store.status(j.ci, j.projects));
+                }
+                // A Cancel pressed before the run was made: cancelled now that it is found.
+                if (j.cancelling && busy(j) && (await store.cancel(j.ci))) {
+                    ciCancelled(j);
+                }
+            })()
+                .catch((err) => log(j, `CI did not say how the capture is getting on: ${err.message}`))
+                .finally(() => {
+                    j.ci.askedAt = Date.now();
+                    asking.delete(j.id);
+                });
+            asking.set(j.id, asked);
+        }
+    }
+
+    function ciCancelled(j) {
+        j.state = "cancelled";
+        j.error = "Cancelled by you";
+        j.endedAt = Date.now();
+        log(j, "Cancelled on CI");
+        save();
+        onEnd(j);
+    }
+
+    function ciAnswer(j, st) {
+        if (!busy(j)) {
+            return; // cancelled while it was asked
+        }
+        const was = j.state;
+        j.ci.run = st.run?.id ?? j.ci.run;
+        j.ci.url = st.run?.url ?? j.ci.url;
+        j.ci.jobs = st.jobs;
+        if (st.state === "running") {
+            j.state = "running";
+            j.startedAt ??= Date.now();
+        } else if (["done", "failed", "cancelled"].includes(st.state)) {
+            j.state = st.state;
+            j.startedAt ??= Date.now();
+            j.endedAt = Date.now();
+            j.error = { failed: "the CI run failed", cancelled: "Cancelled on CI" }[st.state] ?? null;
+        }
+        if (j.state !== was) {
+            log(j, `CI: ${j.state}${j.ci.url ? ` (${j.ci.url})` : ""}`);
+            save();
+            if (!busy(j)) {
+                onEnd(j);
+            }
+        }
+    }
+
+    // Whether CI captures can be asked for here, and what the store can say and do about them.
+    function ciFacts() {
+        const can = typeof store?.request === "function";
+        return {
+            available: can && workflowWhy === null,
+            why: can ? (workflowWhy ?? "") : "your capture store cannot start CI jobs",
+            status: typeof store?.status === "function",
+            cancel: typeof store?.cancel === "function",
+        };
+    }
+
+    // Why the capturing workflow on the default branch takes no capture requests, or null when it does.
+    async function readWorkflow() {
+        const file = `.github/workflows/${config.workflow}`;
+        let ref;
+        try {
+            ref = await defaultRef();
+        } catch (err) {
+            return err.message;
+        }
+        const text = await git(["show", `${ref}:${file}`]).catch(() => null);
+        if (text === null) {
+            return `${file} is not on ${config.defaultBranch}`;
+        }
+        return takesRequests(text)
+            ? null
+            : `${file} on ${config.defaultBranch} takes no capture requests: update it with proofroom init --force`;
+    }
+
+    // Why the capturing workflow at a commit takes no capture requests, or null when it does or the
+    // commit is not here to read.
+    async function workflowWhyAt(sha) {
+        const file = `.github/workflows/${config.workflow}`;
+        if (
+            !(await git(["cat-file", "-e", `${sha}^{commit}`]).then(
+                () => true,
+                () => false,
+            ))
+        ) {
+            return null; // ponytail: not fetched here; CI answers a workflow without the inputs itself.
+        }
+        const text = await git(["show", `${sha}:${file}`]).catch(() => null);
+        return text !== null && takesRequests(text) ? null : `${file} takes no capture requests`;
+    }
+
     function pump() {
         if (running) {
             return;
         }
-        const j = jobs.find((x) => x.state === "queued");
+        const j = jobs.find((x) => x.state === "queued" && !x.ci);
         if (!j) {
             return;
         }
@@ -756,14 +1047,30 @@ export function captureQueue({
 
     /**
      * Cancels a capture: one waiting is dropped; one running is stopped with every process it
-     * started.
+     * started; one on CI has its run cancelled.
      * @param {number} id the capture
-     * @returns {object | null} the capture, or null when there is none
+     * @returns {Promise<object | null>} the capture, or null when there is none
      */
-    function cancel(id) {
+    async function cancel(id) {
         const j = jobs.find((x) => x.id === id);
         if (!j) {
             return null;
+        }
+        if (j.ci) {
+            if (busy(j) && !j.cancelling) {
+                if (typeof store?.cancel !== "function") {
+                    throw new CaptureRefused(409, "your capture store cannot cancel CI jobs");
+                }
+                if (await store.cancel(j.ci)) {
+                    ciCancelled(j);
+                } else {
+                    // GitHub has not made the run yet: it is cancelled once a later ask finds it.
+                    j.cancelling = true;
+                    log(j, "Cancelling: CI has not started the run yet");
+                    save();
+                }
+            }
+            return j;
         }
         if (j.state === "queued") {
             j.state = "cancelled";
@@ -798,21 +1105,38 @@ export function captureQueue({
     }
 
     const progressOf = (j) =>
-        j.projects.map((name) => {
-            const p = readJson(join(j.out, name, PROGRESS_FILE));
-            return {
-                project: name,
-                done: p?.done ?? 0,
-                total: p?.total ?? 0,
-                current: p?.current ?? null,
-                failures: p?.failures ?? 0,
-                failed: p?.failed ?? [],
-            };
-        });
+        j.ci
+            ? []
+            : j.projects.map((name) => {
+                  const p = readJson(join(j.out, name, PROGRESS_FILE));
+                  return {
+                      project: name,
+                      done: p?.done ?? 0,
+                      total: p?.total ?? 0,
+                      current: p?.current ?? null,
+                      failures: p?.failures ?? 0,
+                      failed: p?.failed ?? [],
+                  };
+              });
 
-    // A capture as the list shows it: no log, its stories counted over its projects.
+    // A capture as the list shows it: no log, its stories counted over its projects; on CI, its
+    // project jobs counted instead.
     const row = (j) => {
-        const progress = j.state === "queued" ? [] : progressOf(j);
+        if (j.ci) {
+            const ended = j.ci.jobs.filter((x) => !["queued", "running"].includes(x.state));
+            return {
+                ...localRow(j, []),
+                where: "ci",
+                done: ended.length,
+                total: j.projects.length,
+                failures: ended.filter((x) => x.state === "failed").length,
+                jobs: j.ci.jobs,
+                runUrl: j.ci.url,
+            };
+        }
+        return localRow(j, j.state === "queued" ? [] : progressOf(j));
+    };
+    const localRow = (j, progress) => {
         return {
             id: j.id,
             what: j.what,
@@ -841,6 +1165,25 @@ export function captureQueue({
         start,
         cancel,
         stop,
+        /**
+         * What the page asks for the captures with: reads the capturing workflow again when it is
+         * due, and asks CI how its captures are getting on (askCi).
+         * @returns {Promise<void>} once the workflow is read
+         */
+        async poll() {
+            if (typeof store?.request === "function" && Date.now() - workflowAt >= WORKFLOW_EVERY) {
+                workflowAt = Date.now();
+                workflowWhy = await readWorkflow();
+            }
+            if (typeof store?.status === "function" || typeof store?.cancel === "function") {
+                askCi();
+            }
+        },
+        /**
+         * Whether CI captures can be asked for, why not, and whether their state and Cancel are there.
+         * @returns {{ available: boolean, why: string, status: boolean, cancel: boolean }} it
+         */
+        ci: () => ciFacts(),
         /**
          * Every capture: the one running, the ones waiting in order, the finished ones newest first.
          * @param {Set<number> | null} [watch] only these finished ones (those a page saw waiting or
@@ -885,12 +1228,15 @@ export function captureQueue({
          * @returns {Promise<void>} once idle
          */
         idle: async () => {
-            while (running) {
-                await idle;
+            while (running || asking.size > 0) {
+                await Promise.all([idle, ...asking.values()]);
             }
         },
     };
 }
+
+// Whether a capture still waits or runs.
+const busy = (j) => j.state === "queued" || j.state === "running";
 
 // What a capture's processes carry in PROOFROOM_CAPTURE_JOB: its id and the work directory, since
 // ids are counted per work directory and several review servers can run on one machine.

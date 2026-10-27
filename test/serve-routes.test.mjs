@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { provenance } from "../trusted/lib/compare-run.mjs";
 import { openPullRequests } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
@@ -22,6 +23,7 @@ import {
     keepTiles,
     makeRepo,
     seedTiles,
+    tempDir,
     until,
 } from "./helpers.mjs";
 
@@ -235,6 +237,43 @@ describe("serve: bulk Undo", () => {
         const { decisions } = (await s.api("GET", "/api/pr/123/compact-mantine")).body;
         expect(decisions).toEqual({ "badge--default.light.png": { decision: "accept", reason: null, posted: true } });
     });
+
+    it("finishes a pull request whose capture a run the review page dispatched made, as its own run's", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        onTestFinished(() => vi.restoreAllMocks());
+        const r = makeRepo();
+        // What `run` records on CI in a workflow_dispatch with the pull request and the head the page showed.
+        const event = join(tempDir("vr-event-"), "event.json");
+        writeFileSync(event, JSON.stringify({ inputs: { pr: "123", ref: r.head, request: "req-1" } }));
+        const was = process.env.GITHUB_ACTIONS ?? "";
+        vi.stubEnv("GITHUB_ACTIONS", "true");
+        vi.stubEnv("GITHUB_EVENT_PATH", event);
+        vi.stubEnv("GITHUB_RUN_ID", "1000");
+        vi.stubEnv("GITHUB_RUN_ATTEMPT", "1");
+        let asked;
+        try {
+            asked = await provenance();
+        } finally {
+            vi.stubEnv("GITHUB_ACTIONS", was);
+        }
+        expect(asked).toMatchObject({ headSha: r.head, pr: 123, runId: 1000, runAttempt: 1, local: null });
+        // The merge it checked out is not this repository's: the head is what Finish keys on.
+        const at = { ...asked, commit: "1".repeat(40) };
+        const s = await start({
+            ...r,
+            fakes: onePrFakes({ results: { "visual-compact-mantine-1": at, "visual-graphty-element-1": at } }),
+        });
+        await s.api("GET", "/api/prs");
+        const one = { id: "123", project: "compact-mantine", file: "badge--default.light.png" };
+        expect((await s.api("POST", "/api/decide", { ...one, decision: "accept" })).status).toBe(200);
+        await s.api("POST", "/api/finish", { id: "123" });
+        let ended;
+        await until(async () => {
+            ({ job: ended } = (await s.api("GET", "/api/finish-status")).body);
+            return ended && !ended.running;
+        });
+        expect(ended.error).toBeNull();
+    });
 });
 
 /**
@@ -287,6 +326,7 @@ describe("serve: the pull request poll", () => {
                 headSha: "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876",
                 branch: "feat/3486-storybook-9",
                 draft: false,
+                fork: false,
                 author: "apowers",
                 run: { id: 18800002, status: "in_progress", conclusion: null, updatedAt: "2026-10-25T10:12:00Z" },
                 // Only the runs named "visual (<project>)".
@@ -303,6 +343,8 @@ describe("serve: the pull request poll", () => {
                 headSha: "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
                 branch: "fix/3471-legend-spacing",
                 draft: true,
+                // From a fork.
+                fork: true,
                 author: null,
                 run: null,
                 visual: null,
@@ -313,6 +355,7 @@ describe("serve: the pull request poll", () => {
         expect(asked[0]).toContain("appId=15368");
         const query = asked[0].find((a) => a.startsWith("query=")).slice("query=".length);
         expect(query).toMatch(/author \{ login \}/);
+        expect(query).toMatch(/\bisCrossRepository\b/);
         expect(query).toMatch(/checkSuites\(first: 10, filterBy: \{ appId: \$appId \}\)/);
         expect(query).toMatch(
             /checkRuns\(first: 50, filterBy: \{ checkType: LATEST \}\) \{ nodes \{ name status conclusion \} \}/,

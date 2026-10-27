@@ -10,13 +10,49 @@
 # difference waiting for review never fails the run; on a pull request the "Visual gate" job fails
 # while any difference is not accepted, so make "Visual gate" a required status check (Settings,
 # Branches or Rulesets).
+#
+# The review page's New capture asks for a capture on CI by dispatching this workflow on a pull
+# request's branch, with the pull request (`pr`), the head it showed (`ref`) and a request id
+# (`request`) the run's name carries, so the page finds the run it started. Such a run captures the
+# pull request's merge with its base branch, as its own run does, and stops if the pull request has
+# moved past that head. By hand:
+#   gh workflow run visual-review.yml --ref <branch>
+# and add -f projects="web,charts" or -f stories="button--" to capture only those.
 
 name: Visual review
+run-name: ${{ inputs.request && format('Visual review, capture request {0}', inputs.request) || '' }}
 
 on:
     pull_request:
     push:
         branches: [__BRANCH__]
+    workflow_dispatch:
+        inputs:
+            ref:
+                description: "The commit (or branch) to capture (default: the branch it runs on)"
+                required: false
+                type: string
+                default: ""
+            pr:
+                description: "The pull request to capture, by number: its merge at the head `ref` names (default: none)"
+                required: false
+                type: string
+                default: ""
+            projects:
+                description: "The projects to capture, separated by spaces or commas (default: every one)"
+                required: false
+                type: string
+                default: ""
+            stories:
+                description: "Only the stories whose id starts with one of these, separated by commas (default: every one)"
+                required: false
+                type: string
+                default: ""
+            request:
+                description: "The review page's id for this capture, put in the run's name"
+                required: false
+                type: string
+                default: ""
 
 permissions:
     contents: read
@@ -34,13 +70,24 @@ jobs:
                   sparse-checkout: visual-review.config.json
                   sparse-checkout-cone-mode: false
 
+            # A name in the `projects` input that is not a project stops the run here, rather than
+            # capturing fewer projects than were asked for.
             - name: List the projects
               id: plan
+              env:
+                  WANT: ${{ inputs.projects }}
               run: |
-                  echo "projects=$(jq -c '(.baselines // "visual-baselines") as $b | (.fontconfig // null) as $f
+                  projects=$(jq -c --arg want "$WANT" '(.baselines // "visual-baselines") as $b | (.fontconfig // null) as $f
+                      | [$want | splits("[ ,]+") | select(. != "")] as $w
                       | [.projects | to_entries[] | {project: .key, storybook: .value.storybook,
                          build: .value.build, baselines: $b,
-                         fonts: (if $f then ($f | sub("[^/]*$"; "")) + "**" else "\($b)/\(.key)/**" end)}]' visual-review.config.json)" >> "$GITHUB_OUTPUT"
+                         fonts: (if $f then ($f | sub("[^/]*$"; "")) + "**" else "\($b)/\(.key)/**" end)}] as $all
+                      | ($w - [$all[].project]) as $unknown
+                      | if ($unknown | length) > 0
+                        then error("not a project: \($unknown | join(", "))")
+                        else [$all[] | select(($w | length) == 0 or (.project | IN($w[])))] end' \
+                      visual-review.config.json)
+                  echo "projects=$projects" >> "$GITHUB_OUTPUT"
 
     # continue-on-error: a crash of the tool itself must not fail the run; the gate below judges.
     visual:
@@ -59,6 +106,21 @@ jobs:
                 include: ${{ fromJSON(needs.plan.outputs.projects) }}
         steps:
             - uses: actions/checkout@v7
+              with:
+                  ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || inputs.ref }}
+
+            # A pull request is captured at the head that was asked for: its merge's second parent.
+            - name: Check the pull request is at the head asked for
+              if: inputs.pr
+              env:
+                  PR: ${{ inputs.pr }}
+                  WANT: ${{ inputs.ref }}
+              run: |
+                  head=$(git cat-file -p HEAD | sed -n 's/^parent //p' | sed -n 2p)
+                  if [[ "$head" != "$WANT" ]]; then
+                      echo "::error::pull request $PR is at ${head:-no merge}, not $WANT: ask for a capture of its new head"
+                      exit 1
+                  fi
 
             # Baseline PNGs are Git LFS objects. They are cached by the pointer files' hash, so a run
             # downloads from LFS only the images accepted since the cache was saved.
@@ -90,7 +152,7 @@ jobs:
             # "unseeded"; without a reference every one is "new". Both block until accepted or seeded.
             - name: Download the default branch's newest capture
               id: reference
-              if: github.event_name == 'pull_request'
+              if: github.event_name != 'push'
               continue-on-error: true
               env:
                   GH_TOKEN: ${{ github.token }}
@@ -101,7 +163,9 @@ jobs:
             # snapshot, for test-report and flaky-test tools) in the artifact. To shoot a snapshot that
             # did not pass once more before it counts, add --retries 1.
             - name: Capture and compare
-              run: __CLI__ run --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual" --reference "${{ steps.reference.outputs.dir }}"
+              env:
+                  STORIES: ${{ inputs.stories }}
+              run: __CLI__ run --project ${{ matrix.project }} --out "$RUNNER_TEMP/visual" --reference "${{ steps.reference.outputs.dir }}" ${STORIES:+--stories "$STORIES"}
 
             # Kept when a snapshot did not pass or the tool crashed, so the reviewer sees what was judged.
             - name: Upload captures

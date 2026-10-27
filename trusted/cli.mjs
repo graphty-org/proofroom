@@ -294,7 +294,12 @@ async function shootOptions(values, help) {
         out: resolve(values.out),
         workers,
         waitFor: project.waitFor,
-        stories: values.stories ? values.stories.split(",").filter(Boolean) : null,
+        stories: values.stories
+            ? values.stories
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+            : null,
         fontconfig: config.fontconfig ? join(root, config.fontconfig) : null,
     };
 }

@@ -238,6 +238,12 @@ by the same Chromium that took the captures) and records which browser drew them
 carries them and the review page shows every picture as soon as it is downloaded. See
 [Capture and compare](docs/capture-and-compare.md).
 
+It can also be started by hand or by the review page (**New capture...**, Where: CI), with the
+inputs `ref` (the commit to capture), `pr` (a pull request to capture at that head), `projects`,
+`stories` (story id prefixes, separated by commas) and `request`; see [Asking CI for a
+capture](docs/capturing-from-the-page.md#asking-ci-for-a-capture). A workflow written by an older
+`init` lacks them: `npx proofroom init --force` writes the new one.
+
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
 their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
 rather capture inside an existing CI workflow (to reuse a Storybook your build job already made),

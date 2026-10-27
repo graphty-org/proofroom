@@ -1,9 +1,9 @@
 /*
  * The New capture sheet (design 9.1): four questions, What, Against which baselines, Which projects
  * and stories, and Where, with defaults that make Start one Enter. A change from the code host
- * captured on this machine asks once more, naming its author, because a capture builds and runs
- * that code here. Start capture [Enter] closes the sheet and the capture's row is in the changes
- * pane at once (POST /api/captures).
+ * defaults to CI when CI can be asked for a capture; captured on this machine it asks once more,
+ * naming its author, because a capture builds and runs that code here. Start capture [Enter]
+ * closes the sheet and the capture's row is in the changes pane at once (POST /api/captures).
  */
 
 import { control, runAction } from "./actions.js";
@@ -155,13 +155,24 @@ export async function newCapture(app, prefill = null) {
     );
     const value = (name) =>
         /** @type {HTMLInputElement | null} */ (form.querySelector(`input[name=${name}]:checked`))?.value;
+    // Someone else's change runs on CI unless the reader chose where.
+    let whereTouched = false;
     const sync = () => {
+        if (value("what") === "pr" && ci.available && !whereTouched) {
+            /** @type {HTMLInputElement} */ (form.querySelector("input[name=where][value=ci]")).checked = true;
+        }
         partial.hidden = prefix.value.trim() === "";
         dirty.hidden = !(value("what") === "wt" && sources.changed > 0);
         asTheyAre.hidden = value("what") !== "wt";
     };
-    form.addEventListener("change", sync);
-    form.addEventListener("input", sync);
+    // A choice of Where is the reader's from then on; marked before sync runs, on whichever event
+    // comes first.
+    const changed = (e) => {
+        whereTouched ||= /** @type {HTMLInputElement} */ (e.target).name === "where";
+        sync();
+    };
+    form.addEventListener("change", changed);
+    form.addEventListener("input", changed);
     // A choice in a picker or field chooses its option too.
     brSelect.addEventListener("change", () => (form.querySelector("input[value=br]").checked = true));
     prSelect.addEventListener("change", () => (form.querySelector("input[value=pr]").checked = true));

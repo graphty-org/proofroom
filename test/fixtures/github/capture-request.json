@@ -1,0 +1,105 @@
+{
+    "note": "gh's answers to a capture request: the dispatch of visual-review.yml on a pull request's branch, the branch's dispatched runs (the one the request started carries its id, written here as {request}), the run's jobs while one project's job runs, the artifacts of the run (the ended job's capture), the finished run, and its cancel. Trimmed to the fields the tool reads.",
+    "calls": {
+        "api -X POST repos/{owner}/{repo}/actions/workflows/visual-review.yml/dispatches --input -": "",
+        "api repos/{owner}/{repo}/actions/workflows/visual-review.yml/runs?event=workflow_dispatch&branch=feat%2F3486-storybook-9&per_page=20": {
+            "total_count": 2,
+            "workflow_runs": [
+                {
+                    "id": 18800105,
+                    "name": "Visual review",
+                    "display_title": "Visual review, capture request {request}",
+                    "event": "workflow_dispatch",
+                    "head_branch": "feat/3486-storybook-9",
+                    "head_sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876",
+                    "status": "in_progress",
+                    "conclusion": null,
+                    "run_attempt": 1,
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800105",
+                    "updated_at": "2026-10-27T10:02:00Z"
+                },
+                {
+                    "id": 18800101,
+                    "name": "Visual review",
+                    "display_title": "Visual review, capture request 0b5d6c1e-2f43-4a0e-9a57-6b1d2c3e4f50",
+                    "event": "workflow_dispatch",
+                    "head_branch": "feat/3486-storybook-9",
+                    "head_sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "run_attempt": 1,
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800101",
+                    "updated_at": "2026-10-27T09:40:00Z"
+                }
+            ]
+        },
+        "api repos/{owner}/{repo}/actions/runs/18800105/attempts/1/jobs?per_page=100&page=1": {
+            "total_count": 3,
+            "jobs": [
+                {
+                    "name": "Plan",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800105/job/1",
+                    "steps": []
+                },
+                {
+                    "name": "visual (graphty-element)",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800105/job/2",
+                    "started_at": "2026-10-27T10:01:00Z",
+                    "completed_at": "2026-10-27T10:04:10Z",
+                    "steps": [
+                        {
+                            "name": "Capture and compare",
+                            "status": "completed",
+                            "conclusion": "failure"
+                        },
+                        {
+                            "name": "Upload captures",
+                            "status": "completed",
+                            "conclusion": "success"
+                        }
+                    ]
+                },
+                {
+                    "name": "visual (graphty)",
+                    "status": "in_progress",
+                    "conclusion": null,
+                    "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800105/job/3",
+                    "started_at": "2026-10-27T10:01:05Z",
+                    "completed_at": null,
+                    "steps": [
+                        {
+                            "name": "Capture and compare",
+                            "status": "in_progress",
+                            "conclusion": null
+                        }
+                    ]
+                }
+            ]
+        },
+        "api repos/{owner}/{repo}/actions/runs/18800105/artifacts?per_page=100": {
+            "total_count": 1,
+            "artifacts": [
+                {
+                    "name": "visual-graphty-element-1",
+                    "size_in_bytes": 2048,
+                    "expired": false,
+                    "expires_at": "2026-11-26T10:04:10Z"
+                }
+            ]
+        },
+        "api repos/{owner}/{repo}/actions/runs/18800105": {
+            "id": 18800105,
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/graphty-org/graphty-monorepo/actions/runs/18800105",
+            "head_sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876",
+            "updated_at": "2026-10-27T10:09:00Z"
+        },
+        "api -X POST repos/{owner}/{repo}/actions/runs/18800105/cancel": ""
+    }
+}

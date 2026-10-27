@@ -1991,6 +1991,10 @@ dialog.finish pre {
 .capdetail ul {
     margin: 0;
 }
+/* A capture on CI's notes, spaced as paragraphs are. */
+.capdetail p.cinote {
+    margin: 12px 0;
+}
 .projbar {
     display: grid;
     grid-template-columns: 170px 1fr 120px;
@@ -2055,4 +2059,15 @@ dialog.finish .warnbox {
 }
 #summary-newcap {
     margin-top: 8px;
+}
+
+/* A capture on CI: each project's job (captures.js). */
+.jobs {
+    border-collapse: collapse;
+    font-size: 12px;
+    margin: 4px 0;
+}
+.jobs td {
+    padding: 4px 12px 4px 0;
+    border-bottom: 1px solid var(--line);
 }

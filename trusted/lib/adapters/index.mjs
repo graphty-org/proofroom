@@ -53,6 +53,13 @@ import { noCiStore, plainGitCodeHost } from "./plain-git.mjs";
  * @property {(project: string, dir: string, config: { workflow: string, defaultBranch: string }) =>
  *     Promise<string | null>} newestDefault the default branch's newest complete set of a project
  * @property {(wanted: (dir: string) => boolean) => void} hurry fetches these first
+ * @property {(change: { pr: number, branch: string, head: string }, what: { projects: string[], stories: string[] },
+ *     config: { workflow: string }) => Promise<object>} [request] asks CI for a capture of a change (of
+ *     this repository, never a fork's) at that head, returning the request `status` and `cancel` take
+ * @property {(request: any, projects: string[]) => Promise<{ state: string, run: { id: number, url: string } | null,
+ *     jobs: object[] }>} [status] a requested capture's state, its run, and each project's job, with
+ *     the stories that failed in a job that ended
+ * @property {(request: any) => Promise<boolean>} [cancel] stops a requested capture
  */
 
 /**
