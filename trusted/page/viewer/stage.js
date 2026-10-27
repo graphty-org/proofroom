@@ -569,6 +569,8 @@ export function createStage(host) {
         host.drawn(item);
         if (first) {
             view.appearedAt = Infinity;
+            // A stage kept across snapshots (the new page's) is ready again only for this one.
+            delete stage.dataset.ready;
             const { items, index } = host.pass();
             const after = items.slice(index + 1, index + 3);
             for (const next of after) {
@@ -594,7 +596,7 @@ export function createStage(host) {
             setTimeout(
                 () => {
                     if (stage.isConnected && view.shownFile === item.file) {
-                        stage.dataset.ready = "";
+                        stage.dataset.ready = item.file;
                     }
                 },
                 Math.max(0, GUARD_MS - (performance.now() - view.appearedAt)),

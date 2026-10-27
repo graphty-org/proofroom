@@ -50,17 +50,21 @@ export const BROWSERS = { chromium, webkit };
  * @param {{ targets?: object[], list?: object, rows?: (id: string, project: string) => object,
  *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string>,
  *     clock?: boolean, ui?: "review" | "next", path?: string, failList?: number,
- *     pictures?: (name: string) => boolean, decide?: (body: object) => object }} [options]
+ *     pictures?: (name: string) => boolean, decide?: (body: object) => object,
+ *     acceptAll?: (body: object) => object, update?: (body: object) => object,
+ *     finishStatus?: () => object | null }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
  *     project's reviewable), the window, the address after #, local storage to start with,
  *     whether the test controls the page's clock, the server's page at /, the path to open, and
  *     how many of the first asks for the list answer HTTP 500, which pictures to answer (the rest
- *     fail with HTTP 500), and the answer to each POST /api/decide (by default `{ ok: true }`)
+ *     fail with HTTP 500), the answer to each POST /api/decide (by default `{ ok: true }`) and
+ *     POST /api/accept-all (by default every file listed done), POST /api/update's answer, and
+ *     the job GET /api/finish-status reports
  * @returns {Promise<{ page: import("playwright").Page, context: import("playwright").BrowserContext,
- *     close: () => Promise<void>, actions: object[],
- *     requests: string[], origin: string, setList: (answer: object) => void }>} the tab, how to
- *     close it, the actions it logged (`{ a, via }`), every path it asked for, and how to change
- *     the list's next answer
+ *     close: () => Promise<void>, actions: object[], requests: string[],
+ *     posts: { path: string, body: any }[], origin: string, setList: (answer: object) => void }>}
+ *     the tab, how to close it, the actions it logged (`{ a, via }`), every path it asked for,
+ *     every decision request with its body, and how to change the list's next answer
  */
 export async function openNext(browser, options = {}) {
     const s = await startApp(makeRepo(), { gh: fakeGh({}), token: TOKEN, ...(options.ui && { ui: options.ui }) });
@@ -111,8 +115,28 @@ export async function openNext(browser, options = {}) {
             ? route.fulfill({ status: 500, json: { error: "the picture failed" } })
             : route.fulfill({ status: 200, contentType: "image/png", body: PICTURE });
     });
-    await page.route("**/api/decide", (route) =>
-        route.fulfill({ json: options.decide ? options.decide(route.request().postDataJSON()) : { ok: true } }),
+    // The decision routes: each request kept, in order, and answered as the server does (or by
+    // the test's own answer, which may be a promise or { status, json } for a refusal).
+    const posts = [];
+    const answerWith = async (route, given, fallback) => {
+        const body = route.request().postDataJSON();
+        posts.push({ path: new URL(route.request().url()).pathname, body });
+        const a = await (given ? given(body) : fallback(body));
+        return a?.status ? route.fulfill({ status: a.status, json: a.json }) : route.fulfill({ json: a });
+    };
+    await page.route("**/api/decide", (route) => answerWith(route, options.decide, () => ({ ok: true })));
+    await page.route("**/api/accept-all", (route) =>
+        answerWith(route, options.acceptAll, (b) =>
+            b.decision === null
+                ? { undone: b.files.length, files: b.files, unpublished: 0 }
+                : { accepted: b.files.length, files: b.files, unpublished: 0 },
+        ),
+    );
+    await page.route("**/api/update", (route) =>
+        answerWith(route, options.update, () => ({ status: 404, json: { error: "no update here" } })),
+    );
+    await page.route("**/api/finish-status", (route) =>
+        route.fulfill({ json: { job: options.finishStatus ? options.finishStatus() : null } }),
     );
     await page.route("**/api/pr-context/**", (route) =>
         route.fulfill({
@@ -144,6 +168,7 @@ export async function openNext(browser, options = {}) {
         context,
         actions,
         requests,
+        posts,
         origin: s.origin,
         setList: (answer) => {
             list = answer;
@@ -166,33 +191,37 @@ export const message = (page) => page.locator("#msg-t").innerText();
  * The key boxes a reader sees now, with the action of the control each is on: every visible,
  * enabled control's visible boxes, a Find box's key where its placeholder prints it, and the keys
  * a visible menu button's closed menu prints in its right column (`data-menukeys`), each with the
- * action its item runs, while letter keys are on.
+ * action its item runs, while letter keys are on. With `unavailable`, also the boxes of controls
+ * shown unavailable, whose key only says why.
  * @param {import("playwright").Page} page the tab
+ * @param {{ unavailable?: boolean }} [options] whether to list unavailable controls' boxes too
  * @returns {Promise<{ act: string, key: string }[]>} the boxes
  */
-export const visibleKeys = (page) =>
-    page.evaluate(() =>
-        [...globalThis.document.querySelectorAll("[data-act]")]
-            .filter((n) => n.getClientRects().length > 0 && n.getAttribute("aria-disabled") !== "true")
-            .flatMap((n) =>
-                n instanceof globalThis.HTMLInputElement
-                    ? n.placeholder.endsWith(`[${n.dataset.key}]`)
-                        ? [{ act: n.dataset.act, key: n.dataset.key }]
-                        : []
-                    : [
-                          ...[...n.querySelectorAll(":scope > kbd")]
-                              .filter((k) => k.getClientRects().length > 0)
-                              // innerText: a box's letter half ("F / " of "F / hold Space") is
-                              // hidden while letter keys are off.
-                              .map((k) => ({ act: n.dataset.act, key: k.innerText })),
-                          // A menu's keys are all letter, digit or symbol keys: none acts while
-                          // letter keys are off.
-                          ...(globalThis.document.body.classList.contains("nokeys")
-                              ? []
-                              : Object.entries(JSON.parse(n.dataset.menukeys ?? "{}")).map(([key, act]) => ({
-                                    act,
-                                    key,
-                                }))),
-                      ],
-            ),
+export const visibleKeys = (page, { unavailable = false } = {}) =>
+    page.evaluate(
+        (all) =>
+            [...globalThis.document.querySelectorAll("[data-act]")]
+                .filter((n) => n.getClientRects().length > 0 && (all || n.getAttribute("aria-disabled") !== "true"))
+                .flatMap((n) =>
+                    n instanceof globalThis.HTMLInputElement
+                        ? n.placeholder.endsWith(`[${n.dataset.key}]`)
+                            ? [{ act: n.dataset.act, key: n.dataset.key }]
+                            : []
+                        : [
+                              ...[...n.querySelectorAll(":scope > kbd")]
+                                  .filter((k) => k.getClientRects().length > 0)
+                                  // innerText: a box's letter half ("F / " of "F / hold Space") is
+                                  // hidden while letter keys are off.
+                                  .map((k) => ({ act: n.dataset.act, key: k.innerText })),
+                              // A menu's keys are all letter, digit or symbol keys: none acts while
+                              // letter keys are off.
+                              ...(globalThis.document.body.classList.contains("nokeys")
+                                  ? []
+                                  : Object.entries(JSON.parse(n.dataset.menukeys ?? "{}")).map(([key, act]) => ({
+                                        act,
+                                        key,
+                                    }))),
+                          ],
+                ),
+        unavailable,
     );

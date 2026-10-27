@@ -298,6 +298,7 @@ describe("the row menu", () => {
         expect(await page.getByRole("menuitem").allInnerTexts()).toEqual([
             "Open on GitHub",
             "About this change",
+            "Update from master...",
             "Copy link",
         ]);
         await page.getByRole("menuitem", { name: "About this change" }).click();

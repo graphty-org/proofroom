@@ -5,12 +5,13 @@
  * (actions.js); every text that came from a pull request is set as text.
  *
  * Opening a change shows its snapshot list (list.js) and the current snapshot in the viewer
- * (viewer.js); the decisions arrive with their own module.
+ * (viewer.js); the decisions, the selection and Undo are decide.js, select.js and undo.js.
  */
 
 import { ACTIONS, control, runAction } from "./actions.js";
 import { formatAddress, parseAddress, snapParts } from "./address.js";
 import { api, currentToken, logControls, logUsage, startUsage, useToken, whenRefused } from "./api.js";
+import { installDecide } from "./decide.js";
 import { SORTS, changeOf, drawChanges, nextNeeding, sectionsOf, SECTIONS, sharesOf, walkOrder } from "./changes.js";
 import { startKeys, syncHints } from "./keys.js";
 import {
@@ -29,12 +30,10 @@ import {
     openList,
     pictureItems,
     scrollToCurrent,
-    setDecision,
     setGrouping,
     setPictures,
     setShow,
     showItems,
-    shownBy,
     snapsOf,
     toggleGroup,
     updateRow,
@@ -45,6 +44,8 @@ import { ORDER, STATUS, mark } from "./marks.js";
 import { history as messageHistory, say, sayAgain } from "./messages.js";
 import { applyPanes, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
 import { el, fmt, ic, kb } from "./ui.js";
+import { installSelect } from "./select.js";
+import { installUndo } from "./undo.js";
 import { createViewer } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
@@ -92,6 +93,8 @@ const app = {
     wanted: parseAddress(location.hash), // what the address asks for, until the list is loaded
     opening: 0, // bumped by each change opened: a superseded load stops there
     menu: null,
+    opened: new Set(), // the snapshots the viewer showed: a bulk accept says how many were never opened
+    endCard: false, // the end card shows in place of the image
 
     logUsage,
     say,
@@ -230,6 +233,7 @@ function drawSnaps() {
     const list = $("snap-list");
     if (!c || app.snaps.length === 0) {
         $("snap-banner").hidden = true;
+        $("snap-stale").hidden = true;
         $("snaps").classList.remove("nopics");
         app.lv.built = null;
     }
@@ -489,6 +493,7 @@ app.openSnapshot = () => {
 
 app.pickSnapshot = (key) => {
     app.snap = key;
+    app.endCard = false;
     if (app.level === 2) {
         app.level = 1;
     }
@@ -561,6 +566,10 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
     app.openId = id;
     app.snaps = model.snaps;
     app.loadedRun = model.run;
+    app.sel.clear();
+    app.anchor = null;
+    app.endCard = false;
+    app.clearSteps();
     const snaps = model.snaps;
     if (snaps.length === 0) {
         // Nothing to review yet: the changes stay in front.
@@ -680,12 +689,25 @@ app.stepSnap = (d) => {
     if (rows.length > 0) {
         const at = rows.findIndex((s) => s.key === app.snap);
         jumpTo(app, rows[Math.max(0, Math.min(rows.length - 1, at < 0 ? 0 : at + d))].n);
+        app.endCard = false;
         writeAddress(false);
         draw();
         scrollToCurrent();
         return true;
     }
     return false;
+};
+
+// A snapshot made current by a decision (the next undecided one, the one an Undo took back): a row
+// in a collapsed group opens it, and the row is scrolled into view.
+app.stepTo = (key) => {
+    const s = app.snaps.find((x) => x.key === key);
+    if (s) {
+        jumpTo(app, s.n);
+        writeAddress(false);
+        draw();
+        scrollToCurrent();
+    }
 };
 
 // A snapshot's whole item (its console and earlier attempts, which the list's rows leave out):
@@ -777,7 +799,8 @@ function showMenu(anchor, items) {
                 return;
             }
             closeMenu();
-            if (!document.querySelector("dialog[open]")) {
+            // An item that opened a box (Reject 5...) leaves focus in it.
+            if (!document.querySelector("dialog[open]") && !$("popbox")) {
                 restoreFocus();
             }
         });
@@ -862,37 +885,6 @@ app.copyListLink = async () => {
     }
 };
 
-// A row's Undo: its decision taken back, that one row drawn again.
-app.undoRow = async (key) => {
-    const s = app.snaps.find((x) => x.key === key);
-    if (!s?.decision) {
-        return;
-    }
-    const was = s.decision.decision;
-    try {
-        await api("/api/decide", {
-            id: app.openId,
-            project: s.project,
-            file: s.file,
-            decision: null,
-            ...(app.loadedRun && { run: app.loadedRun }),
-        });
-    } catch (err) {
-        say(`#${s.n} could not be undone: ${err.message}`, "err", [
-            control(app, "retry", { zone: "msgline", ctx: { run: () => app.undoRow(key) } }),
-        ]);
-        return;
-    }
-    setDecision(s, null);
-    // Kept shown when Show would now hide it (Show: Rejected, after undoing a reject).
-    if (!shownBy(s, app.lv.show, app.lv.keep)) {
-        app.lv.keep.add(key);
-    }
-    updateRow(app, key);
-    draw();
-    say(`Undone: the ${was} of #${s.n}.`);
-};
-
 // A row picture that failed, asked for again.
 app.retryPicture = (key) => {
     const s = app.snaps.find((x) => x.key === key);
@@ -925,6 +917,8 @@ app.loadNewer = async () => {
     const keep = app.snap;
     app.snaps = model.snaps;
     app.loadedRun = model.run;
+    app.sel.clear();
+    app.clearSteps();
     app.lv.version = (app.lv.version ?? 0) + 1;
     openList(app, model, { show: app.lv.show, group: app.lv.chosen ? app.lv.grouping : null, find: app.lv.find });
     app.snap = model.snaps.some((s) => s.key === keep) ? keep : null;
@@ -944,6 +938,10 @@ app.rowMenu = (id, anchor) => {
     showMenu(anchor, [
         ...(c.url ? [{ id: "onhost", label: "Open on GitHub", ctx: { id } }] : []),
         { id: "about", label: "About this change", ctx: { id } },
+        // Only a pull request is updated from the default branch.
+        ...(c.kind === "PR"
+            ? [{ id: "updatefrom", label: `Update from ${app.list?.defaultBranch ?? "master"}...`, ctx: { id } }]
+            : []),
         { id: "copylink", label: "Copy link", ctx: { id } },
     ]);
 };
@@ -960,6 +958,7 @@ function openBox(title, ...body) {
 }
 
 $("dlg").addEventListener("close", restoreFocus);
+app.openBox = openBox;
 
 app.closeBox = () => {
     /** @type {HTMLDialogElement} */ ($("dlg")).close();
@@ -1068,6 +1067,7 @@ whenRefused((refused) => askToken(refused));
 
 // ---------------------------------------------------------------- the list
 
+app.rebuild = () => rebuild();
 function rebuild() {
     const l = app.list;
     const shares = sharesOf(l.inbox?.groups);
@@ -1296,6 +1296,10 @@ async function loadFirst() {
     }
 }
 
+app.runAction = (id, ctx, via) => runAction(app, id, ctx, via);
+installSelect(app);
+installUndo(app);
+installDecide(app);
 app.viewer = createViewer(app);
 app.holdSpace = (on) => app.viewer.holdSpace(on);
 
