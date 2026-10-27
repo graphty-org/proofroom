@@ -220,6 +220,39 @@ describe("compare", () => {
         expect(encode).toHaveBeenCalledTimes(4);
     });
 
+    it("finishes the run without pictures when the encoder fails, warning once", async () => {
+        const base = png(300, 200);
+        const out = tempDir("vr-out-");
+        const encode = vi.fn(async () => {
+            throw new Error("this browser encodes no WebP");
+        });
+        const log = vi.fn();
+        const { results, passed } = await compareRun({
+            project: "app",
+            baselines: baselinesOf({ "a--one.png": base, "a--two.png": base }),
+            captures: tempDir("vr-cap-"),
+            out,
+            junit: null,
+            encode,
+            log,
+            lines: linesOf([
+                ["a--one.png", png(300, 200, [[5, 5, 5, 5]])],
+                ["a--two.png", png(300, 200, [[50, 50, 5, 5]])],
+            ]),
+        });
+        expect(passed).toBe(false);
+        expect(results.complete).toBe(true);
+        expect(results.items.map((i) => [i.status, i.pictures])).toEqual([
+            ["changed", undefined],
+            ["changed", undefined],
+        ]);
+        // Tried once, then left to the server.
+        expect(encode).toHaveBeenCalledTimes(1);
+        expect(log.mock.calls.filter(([l]) => l.startsWith("warning:"))).toHaveLength(1);
+        expect(readdirSync(out).filter((f) => f.endsWith(".webp"))).toEqual([]);
+        expect(JSON.parse(readFileSync(join(out, "results.json"), "utf8")).complete).toBe(true);
+    });
+
     it("keeps the capture's renderer and the reference capture's as the baselines'", async () => {
         const renderer = { name: "Chromium", version: "131.0.6778.33" };
         const baselines = baselinesOf({});

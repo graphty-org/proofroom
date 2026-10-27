@@ -576,7 +576,8 @@ const PICTURED = new Set(["changed", "moved", "new", "unseeded", "removed"]);
  * @param {string} out the output directory, holding the item's images
  * @param {object} item the judged item
  * @param {(images: Record<string, { width: number, height: number, data: Uint8Array }>) =>
- *     Promise<Record<string, Buffer>>} encode encodes each kind's pixels as WebP
+ *     Promise<Record<string, Buffer> | null>} encode encodes each kind's pixels as WebP, or
+ *     answers null to make none for this item
  * @param {boolean} again an earlier attempt of the snapshot may have left pictures: delete them first
  * @returns {Promise<object>} the item, with `pictures` naming the files when it has any
  */
@@ -599,6 +600,9 @@ export async function writePictures(out, item, encode, again) {
           }
         : { image: await readFile(item.capture ? join(out, item.file) : join(out, "baselines", item.file)) };
     const encoded = await encode(pictureParts(job).images);
+    if (!encoded) {
+        return item;
+    }
     const pictures = {};
     for (const [kind, bytes] of Object.entries(encoded)) {
         await writeFile(join(out, name(kind)), bytes);
@@ -682,13 +686,28 @@ export async function compareRun({
     const seeded = existing.size > 0;
     const written = [];
     const attempts = new Map();
+    // Pictures save the server work and are never needed: an encoder that fails is reported once
+    // and makes none for the rest of the run, which the server then makes as for compare alone.
+    let encodeFailed = false;
+    const encodeOnce = async (images) => {
+        if (encodeFailed) {
+            return null;
+        }
+        try {
+            return await encode(images);
+        } catch (err) {
+            encodeFailed = true;
+            log(`warning: no list pictures made, the review server makes them: ${err?.message ?? err}`);
+            return null;
+        }
+    };
     let start = null;
     let end = null;
 
     const report = async (judged, line) => {
         const attempt = (attempts.get(judged.file) ?? 0) + 1;
         attempts.set(judged.file, attempt);
-        const item = encode ? await writePictures(out, judged, encode, attempt > 1) : judged;
+        const item = encode ? await writePictures(out, judged, encodeOnce, attempt > 1) : judged;
         const result = resultLine(item, { project, attempt });
         written.push(result);
         await appendFile(join(out, RESULT_LINES), `${JSON.stringify(result)}\n`);
