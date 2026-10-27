@@ -66,7 +66,7 @@ import {
     settingsSheet,
     startRegistration,
 } from "./settings.js";
-import { el, fmt, ic, kb } from "./ui.js";
+import { el, fmt, ic, kb, megabytes } from "./ui.js";
 import { createViewer } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
@@ -579,6 +579,10 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
     if (!c) {
         return;
     }
+    if (c.evicted !== null) {
+        await fetchAgain(c);
+        return;
+    }
     const seq = ++app.opening;
     app.curId = id;
     // A change opened later supersedes any load still running: its change is no longer current.
@@ -645,6 +649,23 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
         say(`Opened ${c.label} ${c.title}: ${fmt(snaps.filter((s) => !s.decision).length)} undecided.`);
     }
 };
+
+// Opening a change the disk budget evicted: the server downloads its images again (asked once,
+// by its first project), and its row shows the download until they are in.
+async function fetchAgain(c) {
+    const t = app.list.targets.find((x) => x.id === c.id);
+    try {
+        await api(`/api/pr/${encodeURIComponent(c.id)}/${encodeURIComponent(t.projects[0].project)}?rows=1`);
+    } catch (err) {
+        say(`${c.label} could not be opened: ${err.message}`, "err", [
+            control(app, "retry", { zone: "msgline", ctx: { run: () => app.openChange(c.id) } }),
+        ]);
+        return;
+    }
+    say(`Downloading the images of ${c.label} again (${megabytes(c.evicted)}).`);
+    await loadList();
+    draw();
+}
 
 app.nextChange = () => {
     const n = nextNeeding(app.changes, app.sort, app.openId);
