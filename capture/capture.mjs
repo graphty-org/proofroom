@@ -470,7 +470,7 @@ async function shootOnce(browser, url, { delay, waitFor }) {
 export const MAX_SHOT_HEIGHT = 8192;
 
 /** What every screenshot is taken with. */
-export const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
 
 /**
  * Makes a story iframe's document scrollable by one pixel below everything it draws, or takes
@@ -488,7 +488,7 @@ export const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide
  * @param {boolean} on add the pixel, or remove it
  * @returns {void}
  */
-export function scrollLikeTopFrame(on) {
+function scrollLikeTopFrame(on) {
     const ID = "visual-review-scroll-pixel";
     const MARK = "visualReviewBase";
     const root = document.documentElement;
@@ -556,7 +556,7 @@ export async function screenshotWholePage(page, frame = page) {
  * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @returns {Promise<void>} once they are drawn
  */
-export const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
+const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
 
 /**
  * In the page: waits for two frames to be drawn.
@@ -727,7 +727,7 @@ export function pinFixedInPage(undo) {
  *     for a frame), shot from the page's top left
  * @returns {Promise<Buffer>} the PNG
  */
-export async function shootTiles(page, frame, size, vp) {
+async function shootTiles(page, frame, size, vp) {
     const view = { x: 0, y: 0, ...vp };
     const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
     try {
