@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as oldGate from "./fixtures/old-gate/trusted/gate.mjs";
 import { approvalProblems } from "../trusted/gate.mjs";
 import { finish, prepareApproval } from "../trusted/lib/accept.mjs";
+import { plainGitCodeHost } from "../trusted/lib/adapters/plain-git.mjs";
 import { PASSKEYS_FILE } from "../trusted/lib/approval.mjs";
 import { statementId, statementPath } from "../trusted/lib/change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "../trusted/lib/config.mjs";
@@ -605,7 +606,8 @@ describe("Finish of a seed in change mode", () => {
         const fresh = host.opened[1].branch;
         const badge = `${BASELINES}/compact-mantine/${BADGE}`;
         expect(git(r.remote, "ls-tree", "--name-only", fresh, "--", badge)).toBe("");
-        expect(git(r.remote, "ls-tree", "--name-only", host.opened[0].branch, "--", badge)).toBe(badge);
+        // The old seed's branch is deleted, so nobody can reopen its pull request with the accept.
+        expect(git(r.remote, "branch", "--list", host.opened[0].branch)).toBe("");
         expect(seedStatements(r, fresh)[0].entries.find((e) => e.decision === "reject")).toMatchObject({
             path: `compact-mantine/${BADGE}`,
             reason: "caught mid-animation",
@@ -707,6 +709,19 @@ describe("Finish of a seed in change mode", () => {
         expect(prepared.statement.change).toBe(`branch:${prepared.branch}`);
         expect(result.pullRequest).toBeNull();
         expect(gateOn(r, prepared.branch, `branch:${prepared.branch}`)).toEqual([]);
+    });
+
+    it("on plain git, reads a local-only branch where it is and refuses only for an old seed branch", async () => {
+        const r = changeRepo();
+        git(r.repo, "branch", "my-local-work", "master");
+        const host = plainGitCodeHost(r.repo, FIXTURE_CONFIG);
+        const projects = capture(r);
+        const { prepared } = await seedFinish(r, host, [[BADGE]], { projects });
+        git(r.repo, "fetch", "-q", "origin");
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await expect(seedFinish(r, host, [[BUTTON]], { projects })).rejects.toThrow(
+            `${prepared.branch} holds an earlier seed of this capture: close or delete it, then press Finish again`,
+        );
     });
 });
 

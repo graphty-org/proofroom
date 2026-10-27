@@ -372,6 +372,30 @@ describe("the self-approval rule on GitHub", () => {
         expect((await check(r, { env: GITHUB, fetchJson: withCode.fetchJson })).self).toEqual([refused(seed, "rita")]);
     });
 
+    it("counts a seed commit that changes a story settings file other than as Finish's exclusion does", async () => {
+        const legacy = "compact-mantine/card--legacy.json";
+        const seedWith = (settings) => {
+            const r = repoWith();
+            const bytes = `${JSON.stringify(settings, null, 2)}\n`;
+            const entry = { path: legacy, from: null, to: contentHash(Buffer.from(bytes)), decision: "accept" };
+            const more = { type: "seed-approval", capturedHead: git(r.repo, "rev-parse", "master") };
+            const statement = sign(statementOf(r, [entry], more), people.rita.passkey);
+            const file = statementPath(APPROVALS, statement);
+            commitAs(
+                r,
+                { [`${BASELINES}/${legacy}`]: settings, [file]: statement },
+                { as: people.rita, signed: false },
+            );
+            const opened = github(r, { opener: "rita", commit: () => ({ author: { login: "rita" } }) });
+            return { file, run: () => check(r, { env: GITHUB, fetchJson: opened.fetchJson }) };
+        };
+        // A raised threshold is code the reviewer brings: she opened it, so her key is refused.
+        const raised = seedWith({ diffThreshold: 1 });
+        expect((await raised.run()).self).toEqual([refused(raised.file, "rita")]);
+        // Finish's own exclusion of the story is still the tool's commit.
+        expect(await seedWith({ disableSnapshot: true, reason: "noisy" }).run()).toEqual({ problems: [], self: [] });
+    });
+
     it("reads the opener from the event payload when it is this pull request's", async () => {
         const r = repoWith();
         commitAs(r, { "src.txt": "code" }, { as: people.alice, signed: false });

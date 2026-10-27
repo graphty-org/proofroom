@@ -283,7 +283,12 @@ const NO_DIFF = sha256(Buffer.alloc(0));
  * @returns {boolean} whether it is
  */
 export const isBranchCapture = (r, branch) =>
-    branch !== null && r.pr === null && r.runId === null && Boolean(r.local) && !r.local.preview && r.local.diff === NO_DIFF;
+    branch !== null &&
+    r.pr === null &&
+    r.runId === null &&
+    Boolean(r.local) &&
+    !r.local.preview &&
+    r.local.diff === NO_DIFF;
 
 /**
  * The projects of the decided captures that came from a local preview, for the record's
@@ -701,6 +706,9 @@ export async function closeCandidatePullRequest(host, target, at = null) {
         open = recorded?.number ? { number: recorded.number, html_url: recorded.url } : await host.openChangeOf(branch);
         if (open) {
             await host.closeChange(open.number);
+            if (at) {
+                await deleteClosedBranch(at.repo, branch);
+            }
         }
         if (recorded) {
             await keepSeedRecord(at.repo, at.config, key, null);
@@ -1173,7 +1181,13 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
         const tracking = ownRef(config.defaultBranch);
         const from = await remoteOf(repo, target, config.defaultBranch);
         await net(`git fetch ${config.defaultBranch}`, () =>
-            git(repo, ["fetch", "-q", "--no-write-fetch-head", from, `+refs/heads/${config.defaultBranch}:${tracking}`]),
+            git(repo, [
+                "fetch",
+                "-q",
+                "--no-write-fetch-head",
+                from,
+                `+refs/heads/${config.defaultBranch}:${tracking}`,
+            ]),
         );
         await requireApproval(repo, tracking, statement, approval);
         if ((await git(repo, ["rev-parse", `${commit}:${config.baselines}`])) !== statement.tree) {
@@ -1710,14 +1724,21 @@ async function seedBranchOf(input, { key, base, fetch }) {
         }
         await keepSeedRecord(repo, config, key, null);
         if (why !== GONE) {
-            const closed = await closeSeedChange(host, recorded);
+            const closed = await closeSeedChange(host, recorded, repo);
             throw new AcceptError(
                 `${recorded.branch} cannot take this Finish: ${why}. ${closed}; press Finish again to start a fresh seed branch`,
             );
         }
     }
     await retireSeeds(input, { base, fetch });
-    return { branch: freshSeedBranch(target, base, now), change: null, url: null, number: null, parent: base, lease: null };
+    return {
+        branch: freshSeedBranch(target, base, now),
+        change: null,
+        url: null,
+        number: null,
+        parent: base,
+        lease: null,
+    };
 }
 
 const GONE = "gone";
@@ -1726,9 +1747,10 @@ const GONE = "gone";
  * Closes a recorded seed's pull request, which may carry this reviewer's earlier signed accept.
  * @param {import("./adapters/index.mjs").CodeHost | null} host the code host
  * @param {{ branch: string, url: string | null, number: number | null }} recorded the record
+ * @param {string} repo the repository
  * @returns {Promise<string>} what was done, for the message
  */
-async function closeSeedChange(host, recorded) {
+async function closeSeedChange(host, recorded, repo) {
     if (recorded.number === null) {
         return `Close or delete ${recorded.branch}`;
     }
@@ -1737,6 +1759,7 @@ async function closeSeedChange(host, recorded) {
     }
     try {
         await host.closeChange(recorded.number);
+        await deleteClosedBranch(repo, recorded.branch);
         return `Its pull request ${recorded.url} was closed`;
     } catch (err) {
         return `Closing ${recorded.url} failed (${err.message}): close it by hand`;
@@ -1790,7 +1813,10 @@ async function reuseProblem(input, recorded, { base, fetch }) {
         if (sha === tip && sha === recorded.x) {
             continue;
         }
-        const why = parents.length === 1 ? await notFinishCommit(repo, sha, recorded.change, { base, keys, config }) : "it is a merge";
+        const why =
+            parents.length === 1
+                ? await notFinishCommit(repo, sha, recorded.change, { base, keys, config })
+                : "it is a merge";
         if (why) {
             return `commit ${sha.slice(0, 12)} is not a Finish commit of this seed (${why})`;
         }
@@ -1852,19 +1878,31 @@ async function retireSeeds(input, { base, fetch }) {
     const open = await net("listing the open changes", () => host.listChanges({ ...config, ignoreBranches: [] }));
     const tracking = ownRef(config.defaultBranch);
     for (const c of open.filter((o) => o.branch && !o.fork)) {
-        await fetch(c.branch).catch((err) => {
-            throw new AcceptError(
-                `${c.url ?? c.branch} may hold an earlier seed of this capture and fetching it failed (${err.message}): press Finish again`,
-            );
-        });
+        // A branch plain git lists as local (`remote: null`) is on no remote: it is read where it is.
+        const ref = c.remote === null ? `refs/heads/${c.branch}` : ownRef(c.branch);
+        if (c.remote !== null) {
+            await fetch(c.branch).catch((err) => {
+                throw new AcceptError(
+                    `${c.url ?? c.branch} may hold an earlier seed of this capture and fetching it failed (${err.message}): press Finish again`,
+                );
+            });
+        }
         const added = (
-            await git(repo, ["diff", "-z", "--name-only", "--diff-filter=A", `${tracking}...${ownRef(c.branch)}`, "--", `${config.approvals}/`])
+            await git(repo, [
+                "diff",
+                "-z",
+                "--name-only",
+                "--diff-filter=A",
+                `${tracking}...${ref}`,
+                "--",
+                `${config.approvals}/`,
+            ])
         )
             .split("\0")
             .filter(Boolean);
         let holds = false;
         for (const file of added) {
-            const st = await git(repo, ["show", `${ownRef(c.branch)}:${file}`]).then(JSON.parse, () => null);
+            const st = await git(repo, ["show", `${ref}:${file}`]).then(JSON.parse, () => null);
             holds ||= statementProblem(st) === null && st.capturedHead === base;
         }
         if (!holds) {
@@ -1880,7 +1918,24 @@ async function retireSeeds(input, { base, fetch }) {
                 `${c.url ?? c.branch} holds an earlier seed of this capture and closing it failed (${err.message}): close it, then press Finish again`,
             );
         });
+        await deleteClosedBranch(repo, c.branch);
     }
+}
+
+/**
+ * Deletes the branch of a pull request Finish closed, so nobody can reopen it with the accept it
+ * holds. Best effort: a failure is logged (docs/approval-format.md names what is left).
+ * @param {string} repo the repository
+ * @param {string} branch the branch
+ */
+async function deleteClosedBranch(repo, branch) {
+    const from = await remoteOf(repo, null, branch);
+    if (from === ".") {
+        return;
+    }
+    await git(repo, ["push", "-q", from, "--delete", branch]).catch((err) =>
+        console.error(`proofroom: could not delete ${branch} after closing its pull request: ${err.message}`),
+    );
 }
 
 /**
@@ -2436,7 +2491,10 @@ async function requireLfsPointers(tree, items) {
  *     its commit (requireAcceptOnly), and the tip this push replaces (a seed's unsigned accept commit)
  * @returns {Promise<string>} the pushed commit
  */
-async function pushAccepts({ repo, target, progress, net }, { tree, writes, branch, only = null, lease: replaces = null }) {
+async function pushAccepts(
+    { repo, target, progress, net },
+    { tree, writes, branch, only = null, lease: replaces = null },
+) {
     if (target?.localBranch) {
         return moveLocalBranch({ repo, progress, net }, { tree, branch });
     }
@@ -2526,7 +2584,9 @@ async function moveLocalBranch({ repo, progress, net }, { tree, branch }) {
         progress(`pushing ${branch}`);
         await net("git lfs push", () => git(tree, ["lfs", "push", remote, "HEAD"]));
         await net("git push", () => git(tree, ["push", "-q", "--no-verify", remote, `HEAD:${merge}`])).catch((err) => {
-            throw new AcceptError(`the accept commit is on ${branch}, but pushing it to ${remote} failed: ${err.message}`);
+            throw new AcceptError(
+                `the accept commit is on ${branch}, but pushing it to ${remote} failed: ${err.message}`,
+            );
         });
     }
     return head;

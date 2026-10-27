@@ -577,7 +577,7 @@ export function approvalProblems({ base, head, cwd, baselines, approvals, keys, 
     const problems = [
         ...passkeysProblems({ base, head, cwd, keys }),
         ...c.history,
-        ...withdrawnStatements(git, { base, head, approvals, keys }),
+        ...withdrawnStatements(git, { base, head, approvals }),
         ...c.statements,
     ];
     let unapproved = [];

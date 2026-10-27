@@ -489,17 +489,16 @@ function checkStatement(file, bytes, at) {
  * the base does not hold and that the head no longer holds exactly as added, whether a later
  * commit, a merge, a revert or a rename dropped or changed it. A statement once pushed to a change
  * stays, byte for byte, so dropping a later reject takes rewriting the branch's history, which the
- * code host shows. A statement that did not verify against the base's keys as added (one committed
- * unsigned before the first key landed) approves nothing, so removing it takes nothing back.
+ * code host shows. Only a statement that carries no approval (one committed unsigned before the
+ * first key landed) may be replaced: it approves nothing, so removing it takes nothing back.
  * @param {(args: string[], input?: string) => Buffer} git the runner
  * @param {object} at what to read
  * @param {string} at.base the base
  * @param {string} at.head the head
  * @param {string} at.approvals the approvals directory
- * @param {object[] | null} at.keys the base's keys; null while approvals are not enforced
  * @returns {string[]} one line per statement taken back
  */
-export function withdrawnStatements(git, { base, head, approvals, keys }) {
+export function withdrawnStatements(git, { base, head, approvals }) {
     const parts = git([
         "log",
         "--format=%x01%H",
@@ -555,7 +554,9 @@ export function withdrawnStatements(git, { base, head, approvals, keys }) {
         if (named.has(path) || onBase.has(path) || atHead.get(path) === blob) {
             continue;
         }
-        if (keys && !verifiesWith(blobs.get(blob), keys)) {
+        // Only a statement committed unsigned (while no key was registered) may be replaced; a
+        // signed one stays byte for byte, even once its key is removed.
+        if (carriesNoApproval(blobs.get(blob))) {
             continue;
         }
         named.add(path);
@@ -568,15 +569,14 @@ export function withdrawnStatements(git, { base, head, approvals, keys }) {
 }
 
 /**
- * Whether a statement blob carries a signature one of the keys verifies.
+ * Whether a statement blob carries no approval: it was committed while no key was registered.
  * @param {Buffer | undefined} bytes the blob
- * @param {object[]} keys the keys
- * @returns {boolean} whether it does
+ * @returns {boolean} whether it does not
  */
-function verifiesWith(bytes, keys) {
+function carriesNoApproval(bytes) {
     try {
         const doc = JSON.parse(bytes.toString("utf8"));
-        return statementProblem(doc) === null && verifyApproval(doc, keys) === null;
+        return doc !== null && typeof doc === "object" && !("approval" in doc);
     } catch {
         return false;
     }
@@ -735,20 +735,47 @@ export function changeCommits(git, { base, head, baselines, approvals }) {
         const added = files.filter((f) => f.startsWith(`${approvals}/`) && f.slice(approvals.length + 1).includes("/"));
         commits.set(sha, { counts: !(parents.length > 1 && files.length === 0), parents, emails: emailsOf.get(sha) });
         if (added.length === 1 && parents.length === 1) {
-            stated.set(sha, { file: added[0], files });
+            stated.set(sha, { file: added[0], files, parent: parents[0] });
         }
     }
+    // A baseline file that is not an image is a story settings file, which the capture reads:
+    // both its sides are read, so only Finish's exclusion of the story passes as the tool's own.
+    const settings = (files) => files.filter((f) => f.startsWith(`${baselines}/`) && !f.endsWith(".png"));
     const blobs = readBlobs(
         git,
-        [...stated].map(([sha, { file }]) => `${sha}:${file}`),
+        [...stated].flatMap(([sha, { file, files, parent }]) => [
+            `${sha}:${file}`,
+            ...settings(files).flatMap((f) => [`${sha}:${f}`, `${parent}:${f}`]),
+        ]),
     );
-    for (const [sha, { file, files }] of stated) {
+    for (const [sha, { file, files, parent }] of stated) {
         const bytes = blobs.get(`${sha}:${file}`);
-        if (bytes && toolsOwn(bytes, files, file, baselines)) {
+        const excludes = (f) => finishExclusion(blobs.get(`${parent}:${f}`), blobs.get(`${sha}:${f}`));
+        if (bytes && toolsOwn(bytes, files, file, baselines) && settings(files).every(excludes)) {
             commits.get(sha).counts = false;
         }
     }
     return commits;
+}
+
+/**
+ * Whether a story settings file changed exactly as Finish's exclusion changes it: the earlier
+ * settings (none when it is new) with `disableSnapshot: true` and a reason set, nothing else.
+ * @param {Buffer | undefined} before the file in the parent
+ * @param {Buffer | undefined} after the file in the commit
+ * @returns {boolean} whether it did
+ */
+function finishExclusion(before, after) {
+    try {
+        const was = before ? JSON.parse(before.toString("utf8")) : {};
+        const is = JSON.parse(after.toString("utf8"));
+        return (
+            typeof is.reason === "string" &&
+            JSON.stringify(is) === JSON.stringify({ ...was, disableSnapshot: true, reason: is.reason })
+        );
+    } catch {
+        return false;
+    }
 }
 
 /**

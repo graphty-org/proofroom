@@ -726,5 +726,18 @@ describe("statements a change takes back", () => {
         commit(s, { [unsigned.file]: null });
         finish(s, statementOf(s, [entry(s, CARD)]));
         expect(check(s)).toEqual([]);
+        // Signed by a key the base no longer holds (its reviewer left): still never taken back.
+        const t = changeRepo();
+        const accepted = acceptCard(t);
+        const gone = finish(
+            t,
+            statementOf(t, [entry(t, CARD, { decision: "reject", reason: "wrong" })], { previous: accepted.id }),
+            {
+                key: makeKey(),
+            },
+        );
+        const adding = git(t.repo, "rev-parse", "HEAD");
+        commit(t, { [gone.file]: null });
+        expect(check(t)).toEqual([dropped(gone.file, adding)]);
     });
 });

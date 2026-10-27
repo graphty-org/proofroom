@@ -120,8 +120,9 @@ On the merge result against the base:
    inside the change: when a later commit of the change deletes, modifies or renames a statement
    an earlier commit of it added (a `git revert` of a Finish commit, say), the gate fails, naming
    the statement and the commit. Only rewriting the branch's history (a force-push, which the code
-   host shows on the pull request) can drop a statement. A statement that never verified against
-   the base's keys, such as one committed unsigned before the first key landed, may be removed.
+   host shows on the pull request) can drop a statement. Only a statement that carries no
+   `approval`, one committed unsigned before the first key landed, may be removed; a signed one
+   stays even after its key is removed.
 4. **What the change alters**: every file under the baselines directory whose content differs
    between the base and the merge result, `reviews/` left out. When there is none, the approval
    check passes.
@@ -232,7 +233,9 @@ The contributors of a change are:
   addresses, and the identity whose `signingKeys` signed it.
 
 Two kinds of commit do not count: Finish's own commit, recognized by what it changes (one
-statement, and only the baseline files that statement's entries name), never by who made it; and a
+statement, and only the baseline files that statement's entries name, where a story settings file
+may change only as Finish's exclusion changes it: `disableSnapshot: true` and a reason set, nothing
+else), never by who made it; and a
 merge that adds nothing of its own, such as a clean merge of the default branch.
 
 A change none of whose commits counts has no contributors, its opener included. A seed pull request
@@ -397,8 +400,11 @@ Finish again to start a fresh seed branch.
 
 Before Finish opens a fresh seed branch, it closes every open pull request whose statements carry
 the same captured commit, so an older seed of the same run cannot stay green holding an accept you
-have since rejected. On a code host that cannot close pull requests, Finish refuses, naming the old
-branch, until you close or delete it.
+have since rejected. It also deletes that pull request's branch, and the branch of any seed pull
+request it closes, so nobody can reopen it with the earlier accept. If deleting a branch fails,
+Finish logs it and goes on: delete the branch by hand, or a person with write access can reopen the
+closed pull request, which passes again on your earlier accept. On a code host that cannot close
+pull requests, Finish refuses, naming the old branch, until you close or delete it.
 
 The seed's pull request can also be reviewed like any pull request once CI captures it: that
 Finish writes a change statement for `pr:N`, chained after the seed statement, and the newest
