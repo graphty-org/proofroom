@@ -132,6 +132,11 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         document.body.classList.add("sb-show-main", `sb-main-${name}`);
     };
     let clock = null;
+    // Which test is running. A hook that timed out keeps running, and without this its render and shot
+    // land in the next story's test: it shot that story's page as its own and drew it into the next
+    // story's (#3740). A stale hook stops at its next step instead.
+    let test = 0;
+    const stale = (mine) => mine !== test;
     // capture.mjs gives every render a fresh browser context: nothing the story before stored.
     const fresh = async () => {
         await commands.visualPark();
@@ -142,6 +147,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         globalThis.Date = clock;
     };
     beforeEach(async () => {
+        test += 1;
         head ??= commands.visualHead().then((css) => {
             const style = document.createElement("style");
             style.textContent = css;
@@ -227,17 +233,26 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         if (!job || job.modes.length === 0) {
             return;
         }
-        const { story, chromatic, plan, fail } = job;
+        const { story, chromatic, plan, fail, mine } = job;
         const unstable = [];
         try {
             for (const [i, mode] of job.modes.entries()) {
                 try {
+                    if (stale(mine)) {
+                        return;
+                    }
                     await render(story, mode);
                     await settle(plan);
+                    if (stale(mine)) {
+                        return;
+                    }
                     if ((await shot(story, chromatic, mode)).status === "unstable") {
                         unstable.push(mode.name ?? story.id);
                     }
                 } catch (e) {
+                    if (stale(mine)) {
+                        return;
+                    }
                     await fail(
                         job.modes.slice(i).map((m) => m.name),
                         String(e?.message ?? e),
@@ -255,12 +270,29 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
         }
     });
 
+    // A failed story is recorded as failed, not shot; an excluded one has no modes. Either still
+    // finishes here, not in the next story's test. True when the story is not shot.
+    const unshot = async (context, plan, fail) => {
+        const failed = context.task.result?.state === "fail";
+        if (failed) {
+            await fail(
+                plan.modes.map((m) => m.name),
+                context.task.result.errors?.[0]?.message ?? "the story test failed",
+            );
+        }
+        if ((failed || plan.modes.length === 0) && plan.waitFor) {
+            await waitForElements(plan.waitFor, true);
+        }
+        return failed;
+    };
+
     afterEach(async (context) => {
         confirm = null;
         const story = context.story;
         if (!story) {
             return;
         }
+        const mine = test;
         // Through JSON, as capture.mjs reads it, so no function crosses to Node.
         const chromatic = JSON.parse(JSON.stringify(story.parameters?.chromatic ?? {})); // NOSONAR(S7784): structuredClone throws on the functions this drops
         const plan = await commands.visualPlan({ id: story.id, chromatic, test: testOf(context.task) });
@@ -268,19 +300,8 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
             commands.visualFail({ id: story.id, modes, reason, chromatic, console: lines.splice(0) });
         const again = [];
         try {
-            if (context.task.result?.state === "fail") {
-                await fail(
-                    plan.modes.map((m) => m.name),
-                    context.task.result.errors?.[0]?.message ?? "the story test failed",
-                );
-                if (plan.waitFor) {
-                    await waitForElements(plan.waitFor, true);
-                }
+            if (await unshot(context, plan, fail)) {
                 return;
-            }
-            if (plan.modes.length === 0 && plan.waitFor) {
-                // An excluded story is not shot, but it finishes here, not in the next story's test.
-                await waitForElements(plan.waitFor, true);
             }
             for (const [i, mode] of plan.modes.entries()) {
                 try {
@@ -288,10 +309,16 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
                         await render(story, mode);
                     }
                     await settle(plan);
+                    if (stale(mine)) {
+                        return;
+                    }
                     if ((await shot(story, chromatic, mode)).again) {
                         again.push(mode);
                     }
                 } catch (e) {
+                    if (stale(mine)) {
+                        return;
+                    }
                     await fail(
                         plan.modes.slice(i).map((m) => m.name),
                         String(e?.message ?? e),
@@ -299,7 +326,7 @@ export function installVisualStoryTest({ afterEach, beforeEach, commands }) {
                     throw e;
                 }
             }
-            confirm = { story, chromatic, plan, fail, modes: again };
+            confirm = { story, chromatic, plan, fail, mine, modes: again };
         } finally {
             if (!confirm) {
                 restoreDate();
