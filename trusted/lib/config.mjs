@@ -35,7 +35,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
 /**
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
- * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, workDir: string,
+ * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, selfApproval?: "allow" | "forbid", workDir: string,
  *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
@@ -79,8 +79,9 @@ export function normalizeConfig(input) {
 /**
  * The optional approval settings, set only when the config names them (docs/approval-format.md):
  * `approvalFormat`, the statements Finish writes and the gate reads ("change" or "tree"), and
- * `repositoryId`, the id change statements name outside GitHub. The gate reads both from the
- * base's config only.
+ * `repositoryId`, the id change statements name outside GitHub, and `selfApproval` ("forbid"
+ * refuses a statement signed by someone who contributed to the change). The gate reads them from
+ * the base's config only.
  * @param {any} raw the parsed config
  * @param {any} out the settings being filled in
  * @param {(msg: string) => never} fail throws the config error
@@ -97,6 +98,12 @@ function approvalSettings(raw, out, fail) {
             fail("repositoryId must be a non-empty string without spaces, such as a random UUID");
         }
         out.repositoryId = raw.repositoryId;
+    }
+    if (raw.selfApproval !== undefined) {
+        if (raw.selfApproval !== "allow" && raw.selfApproval !== "forbid") {
+            fail('selfApproval must be "allow" or "forbid"');
+        }
+        out.selfApproval = raw.selfApproval;
     }
 }
 
