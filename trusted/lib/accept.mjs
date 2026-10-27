@@ -61,6 +61,7 @@ import {
 } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
 import { githubCodeHost } from "./adapters/github.mjs";
+import { REJECTS_DIR, rejectsFile } from "./adapters/plain-git.mjs";
 import { exec, NETWORK, RETRY_DELAYS, retryOnNetwork, UNSENT } from "./github.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
 
@@ -364,8 +365,9 @@ function check(projects, decisions, pr, branch = null) {
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, acceptNotes: number, state: string | null,
  *     status: string | null, statusError: string | null, commentError: string | null, pending?: boolean,
- *     alreadyFinished?: true, resigned?: true, closedPullRequest?: string, closeError?: string }>} what
- *     was pushed and posted (`closedPullRequest`: a rejected candidate's accept pull request, closed;
+ *     alreadyFinished?: true, resigned?: true, closedPullRequest?: string, closeError?: string,
+ *     rejectsFile?: string }>} what was pushed and posted (`rejectsFile`: where a local branch's
+ *     rejects were written, on a code host that cannot comment; `closedPullRequest`: a rejected candidate's accept pull request, closed;
  *     `alreadyFinished`: an earlier Finish
  *     already pushed these decisions as `commit`, and nothing was pushed or posted now; `resigned`:
  *     `commit` only signs the record of an earlier Finish, and nothing was posted; `issue`: master's rejects; `acceptNotes`: the accept notes published, in the comment or the
@@ -427,8 +429,17 @@ export async function finish({
     const pullRequest = made.pushed && isMaster ? await openSeedPullRequest(host, decided, pushed) : null;
     const { commit, branch } = pushed;
     if (target.localBranch) {
-        // A local branch has no code host to comment on or set a status for.
-        return { ...unposted(pushed), rejects: rejects.length, pending: pushed.pending === true };
+        // A local branch has no code host change to comment on or set a status for. On a host that
+        // cannot comment at all (plain git), the rejects and the accept notes go to a file on it.
+        const write = !host.comment && (rejects.length > 0 || notes.length > 0);
+        const written = write ? await commitRejects(decided, pushed, { repo }) : null;
+        return {
+            ...unposted(written ?? pushed),
+            rejects: rejects.length,
+            acceptNotes: written ? notes.length : 0,
+            pending: (written ?? pushed).pending === true,
+            ...(written && { rejectsFile: written.file }),
+        };
     }
     // On a pull request, one comment holds the rejects and the accept notes; on master the accept
     // notes are in the seed pull request's description, and only rejects open the issue.
@@ -456,6 +467,48 @@ export async function finish({
         commentError,
     };
 }
+
+/**
+ * Writes a local branch's rejects and accept notes to their file on the branch (plain-git.mjs
+ * rejectsFile), the text a comment would hold, in a commit of its own on top of what the Finish
+ * committed, and moves the branch to it (moveLocalBranch). It replaces an earlier Finish's file.
+ * @param {object} decided what finish checked: target, first, rejects, notes, progress, net, config
+ * @param {{ commit: string | null, record: string | null }} pushed what the Finish committed before
+ * @param {{ repo: string }} at the repository
+ * @returns {Promise<{ commit: string, branch: string, file: string, pending: boolean }>} the commit
+ *     the branch is at now, and the file
+ */
+async function commitRejects(decided, { commit, record }, { repo }) {
+    const { target, first, rejects, notes, progress, net, config } = decided;
+    const file = rejectsFile(target.branch);
+    progress(`writing the rejects to ${file}`);
+    const fetch = fetcher(repo, target, net);
+    await fetch(target.branch);
+    const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
+    await removeWorktree(repo, tree);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, ownRef(target.branch)]);
+    try {
+        const about = commit === null ? {} : { recordFile: record, commit };
+        await put(join(tree, file), `${rejectComment(null, first, rejects, notes, target.branch, about)}\n`);
+        await git(tree, ["add", "--", file]);
+        const counts = [
+            rejects.length > 0 ? plural(rejects.length, "reject") : null,
+            notes.length > 0 ? plural(notes.length, "accept note") : null,
+        ].filter(Boolean);
+        const message = `${config.commitPrefix}: visual review ${counts.join(" and ")} on ${target.branch}\n\nThe reviewer's notes are in ${file}.\n`;
+        await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
+        const at = await moveLocalBranch({ repo, progress, net }, { tree, branch: target.branch });
+        return { commit: at, branch: target.branch, file, pending: await pendingPush(repo, target) };
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    } finally {
+        await removeWorktree(repo, tree).catch((err) =>
+            console.error(`proofroom: could not remove the rejects worktree ${tree}: ${err.message}`),
+        );
+    }
+}
+
+const plural = (n, one) => `${n} ${n === 1 ? one : `${one}s`}`;
 
 // Pushes what a Finish decided: the accept commit the owner signed, or the accepts committed here.
 // `pushed` is null when there was nothing to push; `done` is the whole Finish result when an
@@ -2120,8 +2173,8 @@ async function candidateBranchOwned(repo, candidate, tip, config) {
  *     the key, as verifyRegistration accepted it
  * @param {Date} [input.now] when
  * @param {{ defaultBranch: string, workDir: string, commitPrefix: string }} input.config the settings
- * @returns {Promise<{ branch: string, pullRequest: string, gated: boolean }>} the pushed branch, its
- *     pull request, and whether the visual gate fails it (the default branch already holds a key)
+ * @returns {Promise<{ branch: string, pullRequest: string | null, gated: boolean }>} the pushed branch, its
+ *     pull request (null on a code host that cannot open one), and whether the visual gate fails it (the default branch already holds a key)
  */
 export async function proposeKey({ repo, gh, codeHost = null, entry, now = new Date(), config }) {
     const { defaultBranch } = config;
@@ -2157,7 +2210,12 @@ export async function proposeKey({ repo, gh, codeHost = null, entry, now = new D
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     }
     const gated = keys.length > 0;
-    const pullRequest = await (codeHost ?? githubCodeHost(gh)).openChange({
+    const host = codeHost ?? githubCodeHost(gh);
+    // A host that cannot open a change (plain git): the branch is pushed, and merged by hand.
+    if (!host.openChange) {
+        return { branch, pullRequest: null, gated };
+    }
+    const pullRequest = await host.openChange({
         title: `${config.commitPrefix}: register a visual review passkey`,
         head: branch,
         base: defaultBranch,
@@ -2505,7 +2563,7 @@ export async function onlyFinishCommits(repo, head, tip, config) {
     if (log === null) {
         return false;
     }
-    const inside = (f) => [config.baselines, config.approvals].some((d) => f.startsWith(`${d}/`));
+    const inside = (f) => [config.baselines, config.approvals, REJECTS_DIR].some((d) => f.startsWith(`${d}/`));
     return log
         .split("\x01")
         .filter(Boolean)

@@ -134,7 +134,7 @@ import {
 import { evict, evictedAt, evictionOrder, sizes as diskSizes } from "./budget.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
-import { captureStoreFor, codeHostFor, localFolderStore } from "./adapters/index.mjs";
+import { adapterFacts, captureStoreFor, codeHostFor, localFolderStore } from "./adapters/index.mjs";
 import { branchCaptures, branchTargetId, captureQueue, CaptureRefused, lookCaptures } from "./captures.mjs";
 import { exec, retrying } from "./github.mjs";
 import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
@@ -756,7 +756,12 @@ export function createApp({
     ui = "review",
 }) {
     const stateDir = join(tmp, "state");
-    const host = codeHost ?? codeHostFor(config, { gh });
+    const host = codeHost ?? codeHostFor(config, { gh, repo });
+    // Plain git: the changes are branches, with no number and no CI run; each is reviewed through
+    // its capture on this machine (captures.mjs), named after the branch.
+    const plainGit = host.name === "plain-git";
+    /** The branches plain git last listed (plainGitCodeHost listChanges), by name. */
+    let hostBranches = new Map();
     const store = captureStore ?? captureStoreFor(config, { gh, keep: tmp, warn: (m) => warnOnce(m) });
     // Local previews (`previews`) and a local results directory (`results`) are local folder stores.
     const previewStore = previews ? localFolderStore(previews) : null;
@@ -774,9 +779,13 @@ export function createApp({
         tmp,
         previews,
         changes: () =>
-            [...targets.values()]
-                .filter((t) => t.pr !== null && !t.local)
-                .map((t) => ({ pr: t.pr, head: t.head, branch: t.branch, title: t.title, author: t.author ?? null })),
+            plainGit
+                ? [...hostBranches.values()]
+                      .filter((b) => b.remote)
+                      .map((b) => ({ pr: null, remote: b.remote, head: b.headSha, branch: b.branch, title: b.title, author: b.author }))
+                : [...targets.values()]
+                      .filter((t) => t.pr !== null && !t.local)
+                      .map((t) => ({ pr: t.pr, head: t.head, branch: t.branch, title: t.title, author: t.author ?? null })),
         whoAmI: () => (reviewer ??= host.whoAmI().catch(() => null)),
         onEnd: () => {
             refresh().catch((err) => console.error(`proofroom: refresh after a capture failed: ${err.message}`));
@@ -1900,6 +1909,8 @@ export function createApp({
             capture: { id: status.capture ?? null, label: status.label ?? null },
         });
         for (const c of branchCaptures(previews)) {
+            // Plain git names a branch's change by its last commit and committer.
+            const named = hostBranches.get(c.branch);
             // A Finish moved the branch past its capture, and the branch has nowhere to push to.
             const tip = await gitIn(["rev-parse", "--verify", "-q", `refs/heads/${c.branch}`]).catch(() => "");
             const upstream = await gitIn(["config", `branch.${c.branch}.merge`]).catch(() => "");
@@ -1914,6 +1925,7 @@ export function createApp({
                     tip !== c.status.head &&
                     (await onlyFinishCommits(repo, c.status.head, tip, config)),
                 ...common(c.status),
+                ...(named && { title: named.title, author: named.author }),
                 projects: await listed(c.dir, c.status),
             });
         }
@@ -1988,6 +2000,19 @@ export function createApp({
                     projects: list,
                 });
             }
+        } else if (plainGit) {
+            // One `git for-each-ref`: the branches name the captures' changes; nothing to fetch or
+            // ask CI. A list that fails keeps the last one.
+            listWarnings = [];
+            step("listing branches");
+            hostBranches = await host
+                .listChanges(config)
+                .then((list) => new Map(list.map((b) => [b.branch, b])))
+                .catch((err) => {
+                    console.error(`proofroom: branches not listed: ${err.message}`);
+                    listWarnings.push(`could not list the branches: ${err.message}`);
+                    return hostBranches;
+                });
         } else {
             // When the list of pull requests cannot be read, the ones listed before stay, and the
             // master seed still loads.
@@ -4113,7 +4138,8 @@ export function createApp({
         ...captures.list(watch),
         ci: {
             available: false,
-            label: `CI (${CI_NAMES[store.name] ?? store.name})`,
+            // A store with no CI of its own (plain git's local folder) names none.
+            label: store.name === "local-folder" ? "CI" : `CI (${CI_NAMES[store.name] ?? store.name})`,
             why: "your capture store cannot start CI jobs",
         },
         changeHere: Boolean(config.captureCommand),
@@ -4154,6 +4180,9 @@ export function createApp({
                     baselines: config.baselines,
                     // The repository's name, for the new page's top bar.
                     repository: await repository,
+                    // The adapters in use: the code host's words for its changes, and the
+                    // optional functions each lacks, whose buttons the page hides.
+                    adapters: adapterFacts(host, store, config),
                     updatedAt: refreshedAt || null,
                     now: Date.now(),
                     refreshing: progress,
@@ -4288,22 +4317,24 @@ export function createApp({
             if (!t) {
                 return gone(id);
             }
-            if (t.pr === null || t.local) {
+            // Under plain git a branch is the change, and its last commit message its description.
+            if (t.local || (t.pr === null && !(plainGit && t.localBranch))) {
                 return [404, { error: "only a pull request has a description and comments" }];
             }
-            const key = `${t.pr} ${t.head ?? t.headSha}`;
+            const key = `${t.pr ?? t.branch} ${t.head ?? t.headSha}`;
             if (!contexts.has(key)) {
                 reviewer ??= host.whoAmI().catch(() => null);
                 contexts.set(
                     key,
-                    reviewer.then((login) => host.describe(t.pr, login)),
+                    reviewer.then((login) => host.describe(t.pr ?? t.branch, login)),
                 );
             }
             try {
                 return [200, await contexts.get(key)];
             } catch (err) {
                 contexts.delete(key);
-                return [502, { error: `GitHub did not give the pull request's description: ${err.message}` }];
+                const { hostName, changeNoun } = host.vocabulary;
+                return [502, { error: `${hostName} did not give the ${changeNoun}'s description: ${err.message}` }];
             }
         },
         "GET /api/img": async ([id, name, kind, file], _, query) => {
@@ -4682,11 +4713,12 @@ export function createApp({
                 throw err;
             }
             writeJson(pendingFile, { version: 1, keys: [...readPending(), entry] });
-            passkeyPr = Number(proposed.pullRequest.split("/").pop()) || passkeyPr;
+            // A code host that cannot open a change leaves the pushed branch to be merged by hand.
+            passkeyPr = Number(proposed.pullRequest?.split("/").pop()) || passkeyPr;
             passkeyOpened = { number: passkeyPr, id: entry.id, at: Date.now() };
             await readPasskeys();
             console.log(
-                `proofroom: registered passkey ${entry.id}; merge ${proposed.pullRequest} to enforce approvals`,
+                `proofroom: registered passkey ${entry.id}; merge ${proposed.pullRequest ?? proposed.branch} to enforce approvals`,
             );
             return [200, { entry, ...proposed }];
         },
