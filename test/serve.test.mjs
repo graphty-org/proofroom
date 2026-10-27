@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished,
 import { contentHash } from "../trusted/gate.mjs";
 import { parsePasskeys, recordHash, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
 import { sha256 } from "../trusted/lib/compare.mjs";
+import { CONFIG_FILE } from "../trusted/lib/config.mjs";
 import { approvalIndex } from "../trusted/lib/filters.mjs";
 import { downloadCaptures, hurry, newestMasterCapture, openPullRequests, withRetries } from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
@@ -630,6 +631,9 @@ describe("serve: candidates", () => {
                 }
                 return JSON.stringify(r.box.open);
             }
+            if (args[1]?.startsWith("repos/{owner}/{repo}/pulls?state=closed")) {
+                return "[]";
+            }
             if (args[2] === "PATCH") {
                 r.box.closed.push(args[3]);
                 return "{}";
@@ -749,6 +753,27 @@ describe("serve: candidates", () => {
             "slider--sizes.png": { decision: "reject", reason: "clipped" },
             "button--primary.dark.png": { decision: "accept" },
         });
+    });
+
+    it("asks no passkey of a change mode Finish rejecting a candidate with no accept pull request, on a host with no key", async () => {
+        const s = await startWith((r) => {
+            const own = JSON.parse(readFileSync(join(r.repo, CONFIG_FILE), "utf8"));
+            writeFileSync(
+                join(r.repo, CONFIG_FILE),
+                JSON.stringify({ ...own, approvalFormat: "change", repositoryId: "id-1" }),
+            );
+            git(r.repo, "commit", "-q", "-am", "change statements");
+            git(r.repo, "push", "-q", "origin", "master");
+            r.master = git(r.repo, "rev-parse", "HEAD");
+            return [record(r.master, 2000, true, 2000)];
+        });
+        mkdirSync(join(s.tmp, "state"), { recursive: true });
+        writeFileSync(join(s.tmp, "state/passkeys-pending.json"), passkeysJson(makeKey("dev.ato.ms")));
+        await offered(s);
+        expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
+        const r = await s.api("POST", "/api/finish-prepare", { id: "master" });
+        expect(r.status).toBe(200);
+        expect(r.body).toMatchObject({ required: false });
     });
 
     it("sends a reject again on the next candidate, so it is dropped too and opens no accept pull request", async () => {

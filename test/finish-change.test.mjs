@@ -909,6 +909,50 @@ describe("Finish of a seed in change mode", () => {
         expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
     });
 
+    it("does not retire again a seed an earlier Finish already retired", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const heads = keptHeads(r, host);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        // GitHub keeps the closed pull request's head, which holds the retiring statement.
+        git(r.remote, "update-ref", "refs/pull/900/head", heads.get(900));
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const before = host.posted.length;
+        const { prepared, touches } = await seedFinish(r, host, [[BADGE]], { projects });
+        expect(prepared.retire.map((x) => x.number)).toEqual([901]);
+        expect(touches).toBe(2);
+        expect(host.posted.slice(before).filter((p) => p.number === 900)).toEqual([]);
+    });
+
+    it("refuses a seed Finish when another seed of the capture was opened after the prepare", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [first] = host.opened;
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const other = `${first.branch}-other`;
+        await expect(
+            seedFinish(r, host, [[BUTTON]], {
+                projects,
+                meanwhile: () => {
+                    git(r.remote, "branch", other, "master");
+                    host.opened.push({
+                        number: 970,
+                        html_url: "https://fake/changes/970",
+                        branch: other,
+                        state: "open",
+                        body: "",
+                    });
+                },
+            }),
+        ).rejects.toThrow("https://fake/changes/970 holds a seed of this capture opened since this Finish was prepared");
+        expect(host.opened.find((o) => o.number === 900)?.state).toBe("open");
+    });
+
     it("names the pull request and its branch when an earlier seed cannot be reopened", async () => {
         const r = changeRepo();
         const host = seedHost(r);

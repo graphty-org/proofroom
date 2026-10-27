@@ -1410,6 +1410,23 @@ async function pushSignedChange(input) {
     for (const seed of retire) {
         await requireApproval(repo, ownRef(config.defaultBranch), seed.statement, approval);
     }
+    if (statement.type === SEED_TYPE) {
+        // Another Finish of this capture may have opened its seed since this one was prepared:
+        // only the seeds found then were signed for, so any other one refuses (as retireCandidate).
+        const seeds = await seedsOf(input, {
+            base: statement.capturedHead,
+            fetch,
+            except: branch,
+            named: seedBranches(target, statement.capturedHead),
+        });
+        const branches = new Set([...retire, ...(approval.close ?? [])].map((c) => c.branch));
+        const extra = seeds.filter((b) => !branches.has(b.branch)).flatMap((b) => [...b.numbers, ...b.open]);
+        if (extra.length > 0) {
+            throw new AcceptError(
+                `${urlsOf(extra)} holds a seed of this capture opened since this Finish was prepared: press Finish again`,
+            );
+        }
+    }
     // The earlier seeds this Finish replaces get their signed statements before the seed is pushed.
     if (retire.length > 0) {
         progress(`retiring ${retire.map((s) => s.url ?? s.branch).join(", ")}`);
@@ -2164,7 +2181,9 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
     const stated = new Map();
     /** @type {Map<string, { ref: string, numbers: number[], open: { number: number, url: string | null }[] }>} */
     const found = new Map();
-    for (const c of open.filter((o) => o.branch && !o.fork && o.branch !== except)) {
+    // Only branches under visual/, where Finish names every seed branch: a statement on another
+    // branch can only be copied there from one (branched off a seed, or merged it), someone else's work.
+    for (const c of open.filter((o) => o.branch?.startsWith("visual/") && !o.fork && o.branch !== except)) {
         // A branch plain git lists as local (`remote: null`) is on no remote: it is read where it is.
         const ref = c.remote === null ? `refs/heads/${c.branch}` : ownRef(c.branch);
         if (!stated.has(c.branch)) {
@@ -2179,10 +2198,7 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
             stated.set(c.branch, numbers);
         }
         const numbers = stated.get(c.branch);
-        // Only this capture's own seeds: a branch under visual/ (where Finish names every seed
-        // branch), or one whose statement names this very pull request. Another branch that only
-        // carries a seed's commits (branched off it, or merged it) is someone else's work.
-        if (numbers === null || !(c.branch.startsWith("visual/") || numbers.includes(c.number))) {
+        if (numbers === null) {
             continue;
         }
         if (!retires || c.number === null || c.number === undefined) {
@@ -2224,7 +2240,11 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
                 "the seeds of this capture could not be looked up: the code host cannot list its closed changes; nothing was changed",
             );
         }
-        const closed = await read("listing the closed visual/ changes", () => host.closedChanges("visual/"));
+        // A seed of this capture was closed after the captured commit was made: older ones are not
+        // listed (a day's margin for the committer's clock).
+        const made = await git(repo, ["show", "-s", "--format=%ct", base]).catch(() => "");
+        const since = made ? new Date((Number(made) - 86400) * 1000).toISOString().replace(/\.\d+Z$/, "Z") : null;
+        const closed = await read("listing the closed visual/ changes", () => host.closedChanges("visual/", { since }));
         for (const c of closed) {
             if (c.branch === except || found.has(c.branch) || branches.has(c.branch)) {
                 continue;
@@ -2260,6 +2280,11 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
             if (!c || c.head?.ref !== branch || repoOf(c.head) !== repoOf(c.base)) {
                 continue;
             }
+            // A closed one whose kept head already rejects every file it decided is retired: the
+            // gate fails it however it comes back. Its branch alone holding that is not enough.
+            if (c.state === "closed" && c.head?.sha && (await retiredAt(repo, c.head.sha, config, `pr:${number}`))) {
+                continue;
+            }
             unmerged.push({ number, url: c.html_url ?? null });
         }
         if (unmerged.length > 0 || (listedOpen.length > 0 && !merged)) {
@@ -2267,6 +2292,26 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
         }
     }
     return out;
+}
+
+/**
+ * Whether a seed's statements at `ref` reject every file they decided, newest first: it is retired.
+ * @param {string} repo the repository
+ * @param {string} ref the commit
+ * @param {{ approvals: string, defaultBranch: string }} config the settings
+ * @param {string} change the change id
+ * @returns {Promise<boolean>} whether it is
+ */
+async function retiredAt(repo, ref, config, change) {
+    // A head not fetched here is not known to be retired.
+    const chain = await trustedStatementsAt(repo, ref, config, change).catch(() => []);
+    const newest = chain.length > 0 ? newestDecisions(chain) : null;
+    return (
+        newest !== null &&
+        "decisions" in newest &&
+        newest.decisions.size > 0 &&
+        [...newest.decisions.values()].every((d) => d.decision === "reject")
+    );
 }
 
 /**

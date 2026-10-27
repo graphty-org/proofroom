@@ -70,7 +70,7 @@
             }
         ],
         "api repos/{owner}/{repo}/pulls?state=open&head={owner}:no-such-branch": [],
-        "api repos/{owner}/{repo}/pulls?state=closed&per_page=100&page=1": [
+        "api repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1": [
             {
                 "number": 3501,
                 "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3501",

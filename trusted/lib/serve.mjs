@@ -3048,9 +3048,19 @@ export function createApp({
             approvals.delete(t.id);
             return [200, { required: false, ...(trusted.length > 0 && unsigned && { unsigned }) }];
         }
-        if (here.length > 0) {
+        // A candidate's rejects alone sign only a retirement, if prepareApproval finds one to sign.
+        if (here.length > 0 || !commitsOf(work)) {
             return null;
         }
+        return noKeyHere(trusted);
+    };
+
+    /**
+     * finish-prepare's answer when this Finish must be signed and no key is registered for this host.
+     * @param {object[]} trusted every trusted key
+     * @returns {Array<unknown>} the answer
+     */
+    const noKeyHere = (trusted) => {
         const hosts = [...new Set(trusted.map((k) => k.rpId))].join(", ");
         return [
             409,
@@ -4580,6 +4590,10 @@ export function createApp({
                 // A Finish of rejects alone with no accept pull request to retire: it signs nothing.
                 approvals.delete(t.id);
                 return [200, { required: false }];
+            }
+            if (here.length === 0) {
+                approvals.delete(t.id);
+                return noKeyHere(trusted);
             }
             if (resign && !prepared.pushed) {
                 return [
