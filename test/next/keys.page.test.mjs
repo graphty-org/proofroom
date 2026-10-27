@@ -55,8 +55,13 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             return t.page;
         };
         // The key presses the page logged, after a click on the Review tab has been logged too:
-        // the page sends its events in order, so every press before the click has arrived.
+        // the page sends its events in order, so every press before the click has arrived. A box
+        // the key opened (? opens the Keys sheet) is closed first: it holds the page.
         const settled = async (page, from) => {
+            if ((await page.locator("dialog[open]").count()) > 0) {
+                await page.keyboard.press("Escape");
+                await expect.poll(() => page.locator("dialog[open]").count()).toBe(0);
+            }
             const marks = t.actions.filter((a) => a.a === "screen-review").length;
             await page.locator('#tabs [data-act="screen-review"]').click();
             await expect.poll(() => t.actions.filter((a) => a.a === "screen-review").length).toBe(marks + 1);
