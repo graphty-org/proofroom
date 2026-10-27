@@ -50,7 +50,8 @@ export function repo(baselines) {
  * next of `shots`.
  * @param {Buffer[]} shots the screenshots, in order
  * @param {{ width: number, height: number }} [size] the story's size, in CSS px, as the page measures it
- * @returns {object} the context; its `viewports` lists every viewport the page was given
+ * @returns {object} the context; its `viewports` lists every viewport the page was given, `clips` every
+ *     clip it was shot with (but the 1 px throwaway), and `pages` the HTML of every page it opened
  */
 export function context(shots, size = { width: 1200, height: 900 }) {
     const frameElement = { evaluate: async () => undefined, focus: async () => undefined };
@@ -66,21 +67,32 @@ export function context(shots, size = { width: 1200, height: 900 }) {
         frameElement: async () => frameElement,
     };
     const viewports = [];
+    const clips = [];
+    const pages = [];
     const page = {
         mouse: { move: async () => undefined },
         setViewportSize: async (v) => {
             viewports.push(v);
         },
-        screenshot: async (o) => (o.clip.width === 1 ? png(0) : shots.shift()),
+        // The next scripted viewport shot, cut to the clip as Chromium cuts it (at scale 2).
+        screenshot: async (o) => {
+            if (o.clip.width === 1) {
+                return png(0);
+            }
+            clips.push(o.clip);
+            return crop(shots.shift(), o.clip);
+        },
         context: () => ({
             browser: () => ({ version: () => "1.0" }),
-            // A page that shows an image and shoots it back unchanged, as Chromium does at 1:1.
+            // A page that draws its images 1:1 where their styles put them and shoots that, as Chromium
+            // does; where no image is, the picture stays empty.
             newPage: async () => {
                 let shown = null;
                 return {
                     setViewportSize: async () => undefined,
                     setContent: async (html) => {
-                        shown = Buffer.from(/base64,([^"]+)/.exec(html)[1], "base64");
+                        pages.push(html);
+                        shown = compose(html);
                     },
                     evaluate: async () => undefined,
                     screenshot: async () => shown,
@@ -89,7 +101,41 @@ export function context(shots, size = { width: 1200, height: 900 }) {
             },
         }),
     };
-    return { page, frame: async () => frame, viewports };
+    return { page, frame: async () => frame, viewports, clips, pages };
+}
+
+/**
+ * A screenshot cut to a clip in CSS px, at scale 2.
+ * @param {Buffer} shot the whole viewport's PNG
+ * @param {{ x: number, y: number, width: number, height: number }} clip in CSS px
+ * @returns {Buffer} the PNG of the clip
+ */
+function crop(shot, clip) {
+    const image = PNG.sync.read(shot);
+    if (clip.x === 0 && clip.y === 0 && clip.width * 2 >= image.width && clip.height * 2 >= image.height) {
+        return shot;
+    }
+    const out = new PNG({ width: clip.width * 2, height: clip.height * 2 });
+    PNG.bitblt(image, out, clip.x * 2, clip.y * 2, out.width, out.height, 0, 0);
+    return PNG.sync.write(out);
+}
+
+/**
+ * The picture a page of positioned images draws, at scale 2: the body's size, each image at its
+ * left and top.
+ * @param {string} html the page
+ * @returns {Buffer} the PNG
+ */
+function compose(html) {
+    const [, width, height] = /body\{[^}]*width:(\d+)px;height:(\d+)px/.exec(html);
+    const out = new PNG({ width: Number(width) * 2, height: Number(height) * 2 });
+    for (const [, left, top, b64] of html.matchAll(
+        /left:(\d+)px;top:(\d+)px[^"]*" src="data:image\/png;base64,([^"]+)"/g,
+    )) {
+        const tile = PNG.sync.read(Buffer.from(b64, "base64"));
+        PNG.bitblt(tile, out, 0, 0, tile.width, tile.height, Number(left) * 2, Number(top) * 2);
+    }
+    return PNG.sync.write(out);
 }
 
 /**
