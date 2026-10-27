@@ -8,7 +8,8 @@ import { PNG } from "pngjs";
 import { chromium, webkit } from "playwright";
 
 import { startApp } from "../faults.mjs";
-import { fakeGh, makeRepo } from "../helpers.mjs";
+import { fakeAdapters } from "../fakes/adapters.mjs";
+import { makeRepo } from "../helpers.mjs";
 import { listAnswer, rowsAnswer } from "./fixtures.mjs";
 
 export { fiftyChanges, listAnswer, project, richRows, row, rowsAnswer, target } from "./fixtures.mjs";
@@ -72,7 +73,7 @@ export const BROWSERS = { chromium, webkit };
  */
 export async function openNext(browser, options = {}) {
     const s = await startApp(makeRepo(), {
-        gh: fakeGh({}),
+        ...fakeAdapters(),
         token: TOKEN,
         ...(options.ui && { ui: options.ui }),
         ...(options.host && { host: options.host }),

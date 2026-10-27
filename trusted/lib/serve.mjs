@@ -132,18 +132,8 @@ import {
 import { evict, evictedAt, evictionOrder, sizes as diskSizes } from "./budget.mjs";
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
-import {
-    downloadCaptures,
-    exec,
-    getRun,
-    hurry,
-    openPullRequests,
-    pullRequestContext,
-    repositoryNumber,
-    retrying,
-    reviewerLogin,
-    visualJobs,
-} from "./github.mjs";
+import { captureStoreFor, codeHostFor, localFolderStore } from "./adapters/index.mjs";
+import { exec, retrying } from "./github.mjs";
 import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
 import {
@@ -697,7 +687,10 @@ async function loadResults(dir, name) {
  * Builds the request handler.
  * @param {object} options the server's settings
  * @param {string} options.repo the repository accepts are committed in
- * @param {Function} options.gh the gh runner
+ * @param {(args: string[], input?: string) => Promise<string>} [options.gh] the gh runner the config's code host and capture store run on
+ * @param {import("./adapters/index.mjs").CodeHost} [options.codeHost] the code host; wins over `gh`
+ * @param {import("./adapters/index.mjs").CaptureStore} [options.captureStore] where CI's captures are;
+ *     wins over `gh`
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} options.config the
  *     repository's settings (visual-review.config.json)
  * @param {string} options.tmp where artifacts are downloaded
@@ -739,6 +732,8 @@ async function loadResults(dir, name) {
 export function createApp({
     repo,
     gh,
+    codeHost,
+    captureStore,
     config,
     tmp,
     token,
@@ -756,6 +751,11 @@ export function createApp({
     ui = "review",
 }) {
     const stateDir = join(tmp, "state");
+    const host = codeHost ?? codeHostFor(config, { gh });
+    const store = captureStore ?? captureStoreFor(config, { gh, keep: tmp, warn: (m) => warnOnce(m) });
+    // Local previews (`previews`) and a local results directory (`results`) are local folder stores.
+    const previewStore = previews ? localFolderStore(previews) : null;
+    const resultsStore = results ? localFolderStore(results) : null;
     const { projects, defaultBranch } = config;
     const names = Object.keys(projects);
     const repository = repositoryName(repo);
@@ -912,12 +912,12 @@ export function createApp({
     };
     /**
      * Whose key is being registered, for the self-approval rule (docs/approval-format.md): the
-     * code host login gh is signed in as and the git e-mail of this server's repository, each when
+     * code host login the reviewer is signed in as and the git e-mail of this server's repository, each when
      * known; null when neither is.
      * @returns {Promise<{ user?: string, emails?: string[] } | null>} the identity
      */
     async function keyIdentity() {
-        reviewer ??= reviewerLogin(gh).catch(() => null);
+        reviewer ??= host.whoAmI().catch(() => null);
         const [user, email] = await Promise.all([
             reviewer,
             execFileAsync("git", ["config", "--get", "user.email"], { cwd: repo }).then(
@@ -1280,10 +1280,7 @@ export function createApp({
      * @returns {Promise<string | null>} the id
      */
     async function repositoryId() {
-        githubId ??= await repositoryNumber(gh).then(
-            (id) => (id === null ? null : `github:${id}`),
-            () => undefined,
-        );
+        githubId ??= await host.repositoryId().catch(() => undefined);
         return githubId ?? config.repositoryId ?? null;
     }
 
@@ -1464,36 +1461,6 @@ export function createApp({
     };
 
     /**
-     * The gh runner for one finished run: what GitHub says about it (its jobs, its artifacts) no
-     * longer changes, so each answer is asked once and kept on disk beside the run's downloads,
-     * and pruned with them. A refresh then asks GitHub only for the pull requests and their newest
-     * runs. ponytail: an artifact that expires later is still listed as there; its download fails
-     * and says so, which only matters for a capture never downloaded in its 90 days.
-     * @param {{ id: number, attempt: number }} run the finished run
-     * @returns {Function} the gh runner
-     */
-    const kept = (run) => async (args, input) => {
-        if (args[0] !== "api") {
-            return gh(args, input);
-        }
-        const name = sha256(args.join(" ")).slice(0, 16);
-        const file = join(tmp, `${run.id}-${run.attempt}`, "gh", `${name}.json`);
-        const saved = await readFile(file, "utf8").catch(() => null);
-        if (saved !== null) {
-            return saved;
-        }
-        const answer = await gh(args, input);
-        try {
-            mkdirSync(dirname(file), { recursive: true });
-            writeFileSync(`${file}.tmp`, answer);
-            renameSync(`${file}.tmp`, file);
-        } catch (err) {
-            warnOnce(`could not keep GitHub's answers in ${dirname(file)}: ${err.message}`);
-        }
-        return answer;
-    };
-
-    /**
      * A listed pull request's CI run as REST answers it: the attempt is only there, so REST is
      * asked only when the list shows the run changed since the last refresh.
      * @param {{ run: { id: number, status: string, conclusion: string | null, updatedAt: string } | null }} pr
@@ -1507,7 +1474,7 @@ export function createApp({
         }
         const stamp = `${run.status} ${run.conclusion} ${run.updatedAt}`;
         const was = runsRead.get(run.id);
-        const got = was?.stamp === stamp ? was.run : await getRun(gh, run.id);
+        const got = was?.stamp === stamp ? was.run : await store.run(run.id);
         // Kept only when REST agrees with the list, so an answer that lags it is asked again.
         if (got.status === run.status && got.conclusion === run.conclusion) {
             read.set(run.id, { stamp, run: got });
@@ -1523,8 +1490,7 @@ export function createApp({
      * @returns {Promise<object>} the target
      */
     async function build(info, run, again = false) {
-        const g = run.status === "completed" ? kept(run) : gh;
-        const jobs = await visualJobs(g, run, run.attempt, names);
+        const jobs = await store.jobs(run, names);
         // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
         // gave none there (a CI app the filter misses), the jobs call this build makes anyway:
         // the job's status, or, where the answer has none, running while it has no conclusion.
@@ -1559,8 +1525,7 @@ export function createApp({
             await withPreviews(partial);
             await decorate(partial);
         };
-        const downloads = downloadCaptures(
-            g,
+        const downloads = store.fetch(
             run,
             names,
             tmp,
@@ -1685,9 +1650,7 @@ export function createApp({
             return null;
         }
         let best = null;
-        for (const name of pendingNames()) {
-            const dir = join(previews, name);
-            const status = readStatusIn(dir);
+        for (const { dir, status } of previewStore.pending()) {
             if (status?.pr !== t.pr || !sha(status.head) || status.head === t.head || status.state === "failed") {
                 continue;
             }
@@ -1727,8 +1690,8 @@ export function createApp({
     // One project of a target with its local preview in place when CI has not captured it and the
     // preview is of this head; as it was otherwise (or saying a draft needs a new preview).
     async function withPreview(t, p) {
-        const dir = join(previews, String(t.pr), p.project);
-        if (p.results || p.downloading || !existsSync(join(dir, "results.json"))) {
+        const dir = previewStore.dir(t.pr, p.project);
+        if (p.results || p.downloading || !previewStore.has(t.pr, p.project)) {
             return p;
         }
         const local = await project(p.project, dir, null, true);
@@ -1749,7 +1712,7 @@ export function createApp({
     // Marks each project a preview of this head is still capturing, or finished without loading,
     // as not loaded (from the preview's status.json).
     async function markPreviewStatus(t) {
-        const status = readPreviewStatus(t.pr);
+        const status = previewStore.status(t.pr);
         if (!status?.head || !(await onlyFinishCommits(repo, status.head, t.head, config))) {
             return;
         }
@@ -1766,37 +1729,9 @@ export function createApp({
         }
     }
 
-    const previewStatusFile = (pr) => join(previews, String(pr), "status.json");
-    const readStatusIn = (dir) => {
-        try {
-            return JSON.parse(readFileSync(join(dir, "status.json"), "utf8"));
-        } catch {
-            return null;
-        }
-    };
-    const readPreviewStatus = (pr) => readStatusIn(join(previews, String(pr)));
-    // The captures the pre-push gate staged under the commit it checks (pendingPreview).
-    const pendingNames = () => {
-        try {
-            return readdirSync(previews).filter((n) => n.startsWith(".pending-"));
-        } catch {
-            return [];
-        }
-    };
-    const mtimeOf = (file) => {
-        try {
-            return statSync(file).mtimeMs;
-        } catch {
-            return null;
-        }
-    };
     // When a pull request's preview status.json, or any staged capture's, last changed: a staged
     // capture may be a pending push of this pull request.
-    const previewStamp = (pr) =>
-        [
-            mtimeOf(previewStatusFile(pr)),
-            ...pendingNames().map((n) => `${n}:${mtimeOf(join(previews, n, "status.json"))}`),
-        ].join(",");
+    const previewStamp = (pr) => previewStore.stamp(pr);
     // Whether a listed pull request's local preview changed since the list read it, each change
     // counted once: a refresh that cannot reach GitHub keeps the old list, and must not start another.
     const previewSeen = new Map();
@@ -1934,7 +1869,7 @@ export function createApp({
             info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${pick.queued.length} queued)`;
             info.candidate = { commit, runId, queued: pick.queued.map((c) => ({ commit: c.commit, runId: c.runId })) };
         }
-        return getRun(gh, runId)
+        return store.run(runId)
             // When CI last touched the run, as a pull request's "4 min ago".
             .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
             .catch((err) => keptOr(info, err));
@@ -1945,9 +1880,7 @@ export function createApp({
         if (results) {
             const list = await Promise.all(
                 names.map((n) =>
-                    existsSync(join(results, n, "results.json"))
-                        ? project(n, join(results, n), null)
-                        : project(n, null, "no capture"),
+                    resultsStore.has(null, n) ? project(n, resultsStore.dir(null, n), null) : project(n, null, "no capture"),
                 ),
             );
             const r = list.find((p) => p.results)?.results;
@@ -1974,7 +1907,7 @@ export function createApp({
             step("listing pull requests");
             // This refresh's runs (runOf); a failed list keeps what the last one learned.
             let read = new Map();
-            const prs = await openPullRequests(gh, config).catch((err) => {
+            const prs = await host.listChanges(config).catch((err) => {
                 if (!masterRun && !candidates && kept.length === 0) {
                     throw err;
                 }
@@ -2106,7 +2039,7 @@ export function createApp({
     // Closes the accept pull requests a rejecting Finish could not close; a failure stays a warning.
     const closeLeftOpen = async () => {
         for (const commit of toClose) {
-            const { closeError } = await closeCandidatePullRequest(gh, { candidate: commit });
+            const { closeError } = await closeCandidatePullRequest(host, { candidate: commit });
             if (closeError) {
                 listWarnings.push(
                     `the accept pull request of rejected candidate ${commit.slice(0, 10)} is still open: ${closeError}`,
@@ -4088,7 +4021,7 @@ export function createApp({
             }
             if (t.projects.find((x) => x.project === name)?.downloading) {
                 // The reviewer is waiting for this one: it downloads next. The page asks again.
-                hurry((dir) => basename(dir) === name && dir.startsWith(join(tmp, `${t.runId}-`)));
+                store.hurry((dir) => basename(dir) === name && dir.startsWith(join(tmp, `${t.runId}-`)));
                 return [202, { downloading: true, target: summary(t), network: networkTrouble(), now: Date.now() }];
             }
             if (!p) {
@@ -4140,10 +4073,10 @@ export function createApp({
             }
             const key = `${t.pr} ${t.head ?? t.headSha}`;
             if (!contexts.has(key)) {
-                reviewer ??= reviewerLogin(gh).catch(() => null);
+                reviewer ??= host.whoAmI().catch(() => null);
                 contexts.set(
                     key,
-                    reviewer.then((login) => pullRequestContext(gh, t.pr, login)),
+                    reviewer.then((login) => host.describe(t.pr, login)),
                 );
             }
             try {
@@ -4521,7 +4454,7 @@ export function createApp({
             };
             let proposed;
             try {
-                proposed = await proposeKey({ repo, gh, entry, config });
+                proposed = await proposeKey({ repo, codeHost: host, entry, config });
             } catch (err) {
                 if (err instanceof AcceptError) {
                     return [409, { error: err.message }];
@@ -4668,7 +4601,7 @@ export function createApp({
             );
             runFinish(job, t, list, {
                 repo,
-                gh,
+                codeHost: host,
                 target: finishTarget(t),
                 projects: captures,
                 decisions: list,

@@ -60,17 +60,8 @@ import {
     statementProblem,
 } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
-import {
-    commentOnPullRequest,
-    createIssue,
-    createPullRequest,
-    exec,
-    NETWORK,
-    postStatus,
-    RETRY_DELAYS,
-    retryOnNetwork,
-    UNSENT,
-} from "./github.mjs";
+import { githubCodeHost } from "./adapters/github.mjs";
+import { exec, NETWORK, RETRY_DELAYS, retryOnNetwork, UNSENT } from "./github.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
 
 /** The statuses an item can be accepted or rejected in; unstable and failed are only excluded. */
@@ -320,7 +311,9 @@ function check(projects, decisions, pr) {
  * Applies the owner's decisions for one target.
  * @param {object} input the work
  * @param {string} input.repo the repository (its `.worktrees/` holds the accept worktree)
- * @param {Function} input.gh the gh runner
+ * @param {(args: string[], input?: string) => Promise<string>} [input.gh] the gh runner, wrapped into the GitHub code host when no `codeHost` is given
+ * @param {import("./adapters/index.mjs").CodeHost} [input.codeHost] the code host the pull
+ *     request, comment, issue and status go to; wins over `gh`
  * @param {{ pr: number | null, branch: string | null, candidate?: string }} input.target a pull request and its
  *     branch, or `{ pr: null }` for master; on master, `candidate` is the commit of the full run
  *     offered (serve's `candidates`): the accept commit goes on `visual/approve-<short sha>` and
@@ -361,6 +354,7 @@ function check(projects, decisions, pr) {
 export async function finish({
     repo,
     gh,
+    codeHost = null,
     target,
     projects,
     decisions,
@@ -374,6 +368,7 @@ export async function finish({
     approval = null,
     repository = null,
 }) {
+    const host = codeHost ?? githubCodeHost(gh);
     const { progress, net } = stepRunner(tell, retryDelays);
     progress("checking");
     const { accepts, rejects } = check(projects, decisions, target.pr);
@@ -407,20 +402,20 @@ export async function finish({
         return made.done;
     }
     const pushed = made.pushed ?? { commit: null, branch: target.branch, record: null };
-    const pullRequest = made.pushed && isMaster ? await openSeedPullRequest(gh, decided, pushed) : null;
+    const pullRequest = made.pushed && isMaster ? await openSeedPullRequest(host, decided, pushed) : null;
     const { commit, branch } = pushed;
     // On a pull request, one comment holds the rejects and the accept notes; on master the accept
     // notes are in the seed pull request's description, and only rejects open the issue.
     const comment = isMaster ? rejects.length > 0 : rejects.length > 0 || notes.length > 0;
     const { issue, commentError } = comment
-        ? await postRejects(gh, decided, pushed, pullRequest)
+        ? await postRejects(host, decided, pushed, pullRequest)
         : { issue: null, commentError: null };
-    const { state, status, statusError } = await postFinishStatus(gh, decided, { commit, undecided, unloaded });
+    const { state, status, statusError } = await postFinishStatus(host, decided, { commit, undecided, unloaded });
     const notesPosted = (comment && commentError === null) || (isMaster && pullRequest);
     // A rejected image means the candidate never promotes: an accept pull request an earlier Finish
     // of it opened is closed, so its baselines never reach the default branch.
     const closed =
-        isMaster && target.candidate && rejects.length > 0 ? await closeCandidatePullRequest(gh, target) : {};
+        isMaster && target.candidate && rejects.length > 0 ? await closeCandidatePullRequest(host, target) : {};
     return {
         ...closed,
         commit,
@@ -526,19 +521,19 @@ function stepRunner(tell, retryDelays) {
 
 /**
  * Opens the seed's pull request for the branch commitAccepts pushed.
- * @param {Function} gh the gh runner
+ * @param {import("./adapters/index.mjs").CodeHost} host the code host
  * @param {object} decided what finish checked: first, accepts, rejects, notes, progress, net, config
  * @param {{ commit: string, branch: string }} pushed the pushed commit and branch
  * @returns {Promise<string>} the pull request's URL
  */
-async function openSeedPullRequest(gh, decided, { commit, branch }) {
+async function openSeedPullRequest(host, decided, { commit, branch }) {
     const { first, accepts, rejects, notes, progress, net, config } = decided;
     progress("opening the pull request");
     try {
         return await net(
             "opening the pull request",
             () =>
-                createPullRequest(gh, {
+                host.openChange({
                     title: masterSubject(config.commitPrefix, decided.target.candidate ?? null),
                     head: branch,
                     base: config.defaultBranch,
@@ -548,18 +543,13 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
         );
     } catch (err) {
         // A candidate's branch is replaced on a later Finish, so its pull request may be open already.
-        const open = decided.target.candidate ? await openPullRequestOf(gh, branch).catch(() => null) : null;
+        const open = decided.target.candidate ? await host.openChangeOf(branch).catch(() => null) : null;
         if (open) {
             // Its description is the only place a candidate's accept notes are published, so it is
             // rewritten with this Finish's (every decision of the candidate, notes included).
             const body = seedBody(first, accepts, rejects, notes, config, decided.target.candidate);
             try {
-                await net("updating the pull request", () =>
-                    gh(
-                        ["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${open.number}`, "--input", "-"],
-                        JSON.stringify({ body }),
-                    ),
-                );
+                await net("updating the pull request", () => host.updateChange(open.number, { body }));
             } catch (patchErr) {
                 const e = new AcceptError(
                     `${branch} was pushed as ${commit.slice(0, 10)}, but updating the description of ` +
@@ -581,30 +571,19 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
 }
 
 /**
- * The open pull request of a branch of this repository, or null; throws when GitHub cannot say.
- * @param {Function} gh the gh runner
- * @param {string} branch the branch
- * @returns {Promise<{ number: number, html_url: string } | null>} it
- */
-async function openPullRequestOf(gh, branch) {
-    const list = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls?state=open&head={owner}:${branch}`]));
-    return list.find((p) => p.head?.ref === branch) ?? null;
-}
-
-/**
  * Closes the open accept pull request of a candidate, if there is one.
- * @param {Function} gh the gh runner
+ * @param {import("./adapters/index.mjs").CodeHost} host the code host
  * @param {{ candidate?: string }} target the candidate
  * @returns {Promise<{ closedPullRequest?: string, closeError?: string }>} the pull request closed,
  *     or why closing it failed
  */
-export async function closeCandidatePullRequest(gh, target) {
+export async function closeCandidatePullRequest(host, target) {
     const branch = candidateBranch(target.candidate);
     let open = null;
     try {
-        open = await openPullRequestOf(gh, branch);
+        open = await host.openChangeOf(branch);
         if (open) {
-            await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${open.number}`, "-f", "state=closed"]);
+            await host.closeChange(open.number);
         }
         return open ? { closedPullRequest: open.html_url } : {};
     } catch (err) {
@@ -618,14 +597,14 @@ export async function closeCandidatePullRequest(gh, target) {
  * Posts the rejects and the accept notes: one pull request comment, or on master (which has no
  * pull request to comment on) one issue an agent can pick up, since master's rejects are stories
  * that do not look right yet.
- * @param {Function} gh the gh runner
+ * @param {import("./adapters/index.mjs").CodeHost} host the code host
  * @param {object} decided what finish checked
  * @param {{ commit: string | null, record: string | null }} pushed what commitAccepts pushed
  * @param {string | null} pullRequest the seed's pull request
  * @returns {Promise<{ issue: string | null, commentError: string | null }>} master's issue, and why
  *     a comment holding only accept notes failed after the accepts were pushed
  */
-async function postRejects(gh, decided, { commit, record }, pullRequest) {
+async function postRejects(host, decided, { commit, record }, pullRequest) {
     const { target, first, rejects, notes, isMaster, progress, net, config } = decided;
     try {
         progress(isMaster ? "opening the issue for the rejects" : "posting the comment");
@@ -643,7 +622,7 @@ async function postRejects(gh, decided, { commit, record }, pullRequest) {
             const issue = await net(
                 "opening the issue",
                 () =>
-                    createIssue(gh, {
+                    host.fileIssue({
                         title: `Visual review: ${rejects.length} ${rejects.length === 1 ? "story" : "stories"} rejected on ${config.defaultBranch}`,
                         body,
                         labels: config.issueLabels,
@@ -652,7 +631,7 @@ async function postRejects(gh, decided, { commit, record }, pullRequest) {
             );
             return { issue, commentError: null };
         }
-        await net("posting the comment", () => commentOnPullRequest(gh, target.pr, body), true);
+        await net("posting the comment", () => host.comment(target.pr, body), true);
         return { issue: null, commentError: null };
     } catch (err) {
         if (commit === null) {
@@ -695,14 +674,14 @@ function rejectsFailed(err, { rejects, notes, isMaster }, commit, pullRequest) {
 /**
  * Posts one commit status per Finish, on the commit it pushed, or the captured one when it pushed
  * none. A failure here does not undo what was pushed and posted; the page shows it.
- * @param {Function} gh the gh runner
+ * @param {import("./adapters/index.mjs").CodeHost} host the code host
  * @param {object} decided what finish checked
  * @param {{ commit: string | null, undecided: number, unloaded: string[] }} counts the pushed
  *     commit, and what the Finish leaves
  * @returns {Promise<{ state: string, status: string, statusError: string | null }>} the status
  *     posted, and why posting it failed
  */
-async function postFinishStatus(gh, decided, { commit, undecided, unloaded }) {
+async function postFinishStatus(host, decided, { commit, undecided, unloaded }) {
     const { accepts, rejects, isMaster, first, progress, net } = decided;
     const accepted = accepts.filter((a) => a.decision === "accept").length;
     const { state, description: status } = commitStatus({
@@ -717,7 +696,7 @@ async function postFinishStatus(gh, decided, { commit, undecided, unloaded }) {
     try {
         // Posting the same status again replaces it, so every network failure is retried.
         const sha = commit ?? (isMaster ? first.commit : first.headSha);
-        await net("posting the status", () => postStatus(gh, sha, { state, description: status }));
+        await net("posting the status", () => host.setStatus(sha, { state, description: status }));
     } catch (err) {
         statusError = err.message;
     }
@@ -1989,7 +1968,9 @@ async function candidateBranchOwned(repo, candidate, tip, config) {
  * from then on the gate requires approvals.
  * @param {object} input the work
  * @param {string} input.repo the repository
- * @param {Function} input.gh the gh runner
+ * @param {(args: string[], input?: string) => Promise<string>} [input.gh] the gh runner, wrapped into the GitHub code host when no `codeHost` is given
+ * @param {import("./adapters/index.mjs").CodeHost} [input.codeHost] the code host the pull request
+ *     is opened on; wins over `gh`
  * @param {{ id: string, publicKey: string, rpId: string, label: string, registeredAt: string }} input.entry
  *     the key, as verifyRegistration accepted it
  * @param {Date} [input.now] when
@@ -1997,7 +1978,7 @@ async function candidateBranchOwned(repo, candidate, tip, config) {
  * @returns {Promise<{ branch: string, pullRequest: string, gated: boolean }>} the pushed branch, its
  *     pull request, and whether the visual gate fails it (the default branch already holds a key)
  */
-export async function proposeKey({ repo, gh, entry, now = new Date(), config }) {
+export async function proposeKey({ repo, gh, codeHost = null, entry, now = new Date(), config }) {
     const { defaultBranch } = config;
     const tracking = `refs/visual-review/origin/${defaultBranch}`;
     const branch = `visual/passkey-${now.toISOString().replaceAll(/[-:]/g, "").replace(/\.\d+/, "")}`;
@@ -2031,7 +2012,7 @@ export async function proposeKey({ repo, gh, entry, now = new Date(), config }) 
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     }
     const gated = keys.length > 0;
-    const pullRequest = await createPullRequest(gh, {
+    const pullRequest = await (codeHost ?? githubCodeHost(gh)).openChange({
         title: `${config.commitPrefix}: register a visual review passkey`,
         head: branch,
         base: defaultBranch,

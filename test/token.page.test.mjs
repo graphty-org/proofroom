@@ -13,7 +13,8 @@ import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
-import { CONFIG, isolateGit, makeRepo, onePr } from "./helpers.mjs";
+import { onePrFakes } from "./fakes/adapters.mjs";
+import { CONFIG, isolateGit, makeRepo } from "./helpers.mjs";
 
 const TOKEN = "k".repeat(43);
 
@@ -56,7 +57,7 @@ async function review(options = {}) {
             token: TOKEN,
             origin: at,
             startCommand: "serve",
-            gh: onePr()(r),
+            ...onePrFakes()(r),
             ...o,
         });
     let app = make(options);
