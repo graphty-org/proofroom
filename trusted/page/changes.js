@@ -310,7 +310,10 @@ export function captureRowOf(c, { now, words = GITHUB_WORDS, status = true }) {
                     ? `Capturing on ${words.ciName ?? "CI"}${status ? `, ${fmt(c.done)} of ${plural(c.projects.length, "project")}` : ""}`
                     : c.state === "queued"
                       ? "On this machine, queued: local captures run one at a time"
-                      : `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`,
+                      : c.total > 0
+                        ? `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`
+                        : // No count before the capture has counted its stories, as on the Captures screen.
+                          "On this machine",
         notReady: true,
         dismissKey: id,
         dismissable: false,
