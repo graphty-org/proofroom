@@ -330,7 +330,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     await expect
                         .poll(() => row.innerText())
                         .toMatch(
-                            /^Passkeys\n(Linux|Mac|Windows) passkey, \d{4}-\d\d-\d\d \(localhost\), waiting for its pull request to merge\nRegister passkey\.\.\.$/,
+                            /^Passkeys\n(Linux|Mac|Windows) passkey, registered \d{4}-\d\d-\d\d, waiting for its pull request to merge\nRegister passkey\.\.\.$/,
                         );
                     expect(await page.evaluate(() => globalThis.whileOpen)).toEqual([true]);
                 },

@@ -36,4 +36,13 @@ describe("Look alike and Approved before", () => {
         const rejected = snap(1, { decision: { decision: "reject", reason: "no" } });
         expect(keysOf([rejected, snap(2), snap(3)])).toEqual([["l:app:0", [1, 2, 3]]]);
     });
+
+    it("puts the one image left of a two-image cluster with the rest, not in a Look alike group", () => {
+        const approved = snap(1, { decision: { decision: "accept", approvedBefore: { pr: 77 } }, before: true });
+        const other = snap(4, { look: null });
+        expect(keysOf([approved, snap(2), other])).toEqual([
+            [BEFORE, [1]],
+            ["z:rest", [2, 4]],
+        ]);
+    });
 });

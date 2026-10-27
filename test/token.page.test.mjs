@@ -223,11 +223,19 @@ describe("review page: the session cookie", () => {
         more.push(fixed.server);
         await page.goto(`${fixed.origin}/#token=${TOKEN}`);
         await loaded();
+        // The page leaves first: it is still opening the change, and a request of its own refused
+        // by the new token would forget the token before the visit below could present it.
+        const at = page.url();
+        await page.goto("about:blank");
         // The same server id with a new token: the cookie of the old token no longer counts.
         const NEW = "n".repeat(43);
         fixed.swap({ token: NEW, serverId: "fixed" });
-        expect(await status(page, "/api/prs?cached=1")).toBe(401);
-        await page.reload();
+        const [cookie] = await context.cookies(fixed.origin);
+        const res = await fetch(`${fixed.origin}/api/prs?cached=1`, {
+            headers: { cookie: `${cookie.name}=${cookie.value}` },
+        });
+        expect(res.status).toBe(401);
+        await page.goto(at);
         await expect.poll(() => page.locator("#token-box .error").textContent()).toMatch(/did not accept/);
         await paste(NEW);
         await loaded();
