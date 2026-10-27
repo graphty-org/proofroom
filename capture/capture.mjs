@@ -176,6 +176,11 @@ async function newContext(browser) {
     });
     await context.addInitScript(() => {
         delete (/** @type {any} */ (Navigator.prototype).gpu);
+        // Playwright's clock, which shoot() installs after this script runs, turns
+        // requestAnimationFrame into a timer: a frame waited on through it can end before
+        // Chromium drew any, and a screenshot then fails with "Unable to capture screenshot".
+        // Capture's own waits for a drawn frame use the real one, kept here.
+        Object.defineProperty(globalThis, "__proofroomFrame", { value: requestAnimationFrame.bind(globalThis) });
     });
     return context;
 }
@@ -272,7 +277,7 @@ async function shoot(browser, url, { delay, waitFor }) {
         // Wait for every font in use, then for one frame drawn with them.
         await page.evaluate(async () => {
             await document.fonts.ready;
-            await new Promise((r) => requestAnimationFrame(() => r()));
+            await new Promise((r) => /** @type {any} */ (globalThis).__proofroomFrame(() => r()));
             await document.fonts.ready;
         });
         if (waitFor) {
