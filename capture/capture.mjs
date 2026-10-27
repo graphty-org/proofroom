@@ -73,18 +73,33 @@ export const CHROMIUM_ARGS = [
     "--disable-lcd-text",
     "--font-render-hinting=none",
 ];
+/**
+ * The environment every capture browser launches with: this process's, then `extra`, in UTC, and
+ * always with FC_FONTATIONS=1. Chromium 143 sets that variable itself from a font thread while a
+ * D-Bus thread may be reading the environment; when the setenv has to grow the array, glibc frees
+ * the old one under the reader and the browser dies at launch with SIGSEGV (only at some
+ * environment sizes, so it comes and goes). Presetting it makes Chromium's setenv an in-place
+ * overwrite. The full analysis is in the monorepo's vitest.base.mjs (2026-09-25).
+ * @param {Record<string, string>} [extra] variables to add, such as the pinned fonts'
+ * @returns {Record<string, string | undefined>} the launch environment
+ */
+export const chromiumEnv = (extra = {}) => ({ ...process.env, ...extra, TZ: "UTC", FC_FONTATIONS: "1" });
 const MAX_CONSOLE = 100;
 const MAX_LINE = 2000;
 
 /**
  * The iframe URL of one story, relative to the Storybook root. `chromatic=true` makes
- * `isChromatic()` true inside the stories.
+ * `isChromatic()` true inside the stories. `query` (VISUAL_REVIEW_STORY_QUERY, such as
+ * `features=all`) is appended as is, so a Storybook that reads its own URL parameters can be
+ * captured in another configuration and compared with the same baselines.
  * @param {string} id the story id
  * @param {Record<string, string> | null} globals the mode's Storybook globals
+ * @param {string} [query] extra query parameters, without a leading `&`
  * @returns {string} the relative URL
  */
-export function storyUrl(id, globals) {
-    const url = `iframe.html?id=${encodeURIComponent(id)}&viewMode=story&chromatic=true`;
+export function storyUrl(id, globals, query = process.env.VISUAL_REVIEW_STORY_QUERY ?? "") {
+    const extra = query ? "&" + query : "";
+    const url = `iframe.html?id=${encodeURIComponent(id)}&viewMode=story&chromatic=true${extra}`;
     if (!globals) {
         return url;
     }
@@ -373,8 +388,26 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         // component timed with it (graphty-element's input playback and recording, for one).
         await page.clock.install({ time: CLOCK_START });
         await page.clock.resume();
-        await page.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        const phase = await page
+        // The story loads in a same-origin iframe of the viewport's size, as in Storybook's own UI
+        // and the story tests: Chromium draws text in an iframe up to one color level differently
+        // from a top-level page, so a top-level shot never matched the story tests' picture.
+        const wrapper = new URL("__visual-review-frame.html", url).href;
+        await page.route(wrapper, (route) =>
+            route.fulfill({
+                contentType: "text/html",
+                body: `<!doctype html><style>html,body{margin:0}</style><iframe style="border:0;position:absolute;left:0;top:0;width:${VIEWPORT.width}px;height:${VIEWPORT.height}px"></iframe>`,
+            }),
+        );
+        await page.goto(wrapper, { waitUntil: "load", timeout: RENDER_TIMEOUT });
+        // The empty frame takes the focus before the story loads in it, as the story had when it
+        // was the page itself and as story-test.mjs's visualPark focuses the tester iframe before
+        // the play function. Focusing it after the story loaded would blur a control a play
+        // function already focused.
+        const element = await page.waitForSelector("iframe");
+        await element.focus();
+        const frame = await element.contentFrame();
+        await frame.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
+        const phase = await frame
             .waitForFunction(
                 () => {
                     if (document.body.classList.contains("sb-show-errordisplay")) {
@@ -390,7 +423,7 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         if (phase === "errored" || phase === "aborted") {
             // Storybook's error screen holds the thrown message and its stack (a play function's
             // failed expect included).
-            const shown = await page.evaluate(() =>
+            const shown = await frame.evaluate(() =>
                 ["error-message", "error-stack"].map((id) => document.getElementById(id)?.textContent?.trim() ?? ""),
             );
             return fail([`story render ${phase}`, ...shown].join("\n"));
@@ -399,13 +432,13 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         // render completed; a capture taken before it arrives draws the fallback face, so the
         // text and anything placed beside the text differ from a later capture.
         // Wait for every font in use, then for one frame drawn with them.
-        await page.evaluate(async () => {
+        await frame.evaluate(async () => {
             await document.fonts.ready;
             await new Promise((r) => requestAnimationFrame(() => r()));
             await document.fonts.ready;
         });
         if (waitFor) {
-            await page.evaluate(
+            await frame.evaluate(
                 async ({ selector, method }) => {
                     const found = [...document.querySelectorAll(selector)];
                     await Promise.all(found.map((el) => /** @type {any} */ (el)[method]()));
@@ -424,7 +457,7 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         // full page of the story iframe -- the viewport, or everything a scroll would reach when
         // the story is taller or wider -- so every story of a project is the same size unless
         // it overflows.
-        const png = await screenshotWholePage(page);
+        const png = await screenshotWholePage(page, frame);
         return { png, reason: null, console: lines };
     } catch (e) {
         return fail(e.message);
@@ -441,31 +474,85 @@ async function shootOnce(browser, url, { delay, waitFor }) {
 export const MAX_SHOT_HEIGHT = 8192;
 
 /** What every screenshot is taken with. */
-export const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+
+/**
+ * Makes a story iframe's document scrollable by one pixel below everything it draws, or takes
+ * that back. A top frame (iframe.html shot as the page) always scrolls on the compositor, so
+ * Chromium draws its `position: fixed` elements (a popover, a menu, a toast) in layers of their
+ * own, apart from the scrolling page; an iframe whose content fits does not scroll, so it drew
+ * them into the page's layer and their blurred shadows came out one level darker. The pixel is
+ * added after the frame was measured and lies outside every shot; headless Chromium draws no
+ * scrollbar, so nothing moves.
+ *
+ * A scrolling document gets a layer of its own, and an iframe's is transparent where the top frame's
+ * is white (its base background), so the anti-aliased edges of a rounded border were blended onto
+ * transparency and came out one level off. A document that paints no background of its own (html
+ * and body both transparent) gets the top frame's white while the pixel is there.
+ * @param {boolean} on add the pixel, or remove it
+ * @returns {void}
+ */
+function scrollLikeTopFrame(on) {
+    const ID = "visual-review-scroll-pixel";
+    const MARK = "visualReviewBase";
+    const root = document.documentElement;
+    document.getElementById(ID)?.remove();
+    if (MARK in root.dataset) {
+        root.style.backgroundColor = root.dataset[MARK];
+        delete root.dataset[MARK];
+    }
+    if (on) {
+        const clear = (el) => {
+            const style = document.defaultView.getComputedStyle(el);
+            return style.backgroundImage === "none" && /^rgba\(.*,\s*0\)$|^transparent$/.test(style.backgroundColor);
+        };
+        if (clear(root) && (!document.body || clear(document.body))) {
+            root.dataset[MARK] = root.style.backgroundColor;
+            root.style.backgroundColor = "white";
+        }
+        const pixel = document.createElement("div");
+        pixel.id = ID;
+        pixel.style.cssText = `position:absolute;left:0;top:${Math.max(root.scrollHeight, root.clientHeight)}px;width:1px;height:1px;visibility:hidden`;
+        root.append(pixel);
+    }
+}
 
 /**
  * A screenshot of the whole page, however big. A page within the viewport is one screenshot of
  * its size; a bigger one is shot in viewport-sized tiles (see shootTiles), never with Chromium's
  * beyond-viewport capture, which drew a story's `monospace` text in another font.
  * @param {import("playwright").Page} page the page, at device scale factor SCALE
+ * @param {import("playwright").Page | import("playwright").Frame} [frame] the document to shoot: the
+ *     page itself, or a viewport-sized iframe at the page's top left
  * @returns {Promise<Buffer>} the PNG
  */
-export async function screenshotWholePage(page) {
+export async function screenshotWholePage(page, frame = page) {
     // A throwaway screenshot and two frames first: a story that redraws on a screenshot (Cytoscape's
     // canvases) is done redrawing before the real one.
     await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, width: 1, height: 1 } });
-    await page.evaluate(twoFramesInPage);
-    const size = await page.evaluate(() => {
+    await frame.evaluate(twoFramesInPage);
+    const size = await frame.evaluate(() => {
         const [b, d] = [document.body, document.documentElement];
         const most = (key) =>
             Math.max(...[b, d].flatMap((e) => [e[`scroll${key}`], e[`offset${key}`], e[`client${key}`]]));
         return { width: most("Width"), height: most("Height") };
     });
     const vp = page.viewportSize();
-    if (size.width <= vp.width && size.height <= vp.height) {
-        return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+    const inFrame = frame !== page;
+    if (inFrame) {
+        await frame.evaluate(scrollLikeTopFrame, true);
+        await frame.evaluate(twoFramesInPage);
     }
-    return shootTiles(page, page, size, vp);
+    try {
+        if (size.width <= vp.width && size.height <= vp.height) {
+            return await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+        }
+        return await shootTiles(page, frame, size, vp);
+    } finally {
+        if (inFrame) {
+            await frame.evaluate(scrollLikeTopFrame, false);
+        }
+    }
 }
 
 /**
@@ -473,7 +560,7 @@ export async function screenshotWholePage(page) {
  * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @returns {Promise<void>} once they are drawn
  */
-export const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
+const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
 
 /**
  * In the page: waits for two frames to be drawn.
@@ -506,9 +593,10 @@ function imagesInPage() {
  * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @param {number} x in CSS px
  * @param {number} y in CSS px
+ * @param {boolean} [settle] whether to wait for what came into view; not when nothing is shot after it
  * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
  */
-async function scrollFrame(frame, x, y) {
+async function scrollFrame(frame, x, y, settle = true) {
     const at = await frame.evaluate(
         ([left, top]) => {
             globalThis.scrollTo(left, top);
@@ -537,31 +625,48 @@ async function scrollFrame(frame, x, y) {
         },
         [x, y],
     );
-    await frame.evaluate(imagesInPage);
-    await twoFrames(frame);
+    if (settle) {
+        await frame.evaluate(imagesInPage);
+        await twoFrames(frame);
+    }
     return at;
 }
 
 /**
- * The stitched picture as Chromium's own screenshot encodes it, so its bytes are what
- * capture.mjs's one full-page screenshot holds: shown 1:1 in a page of its own size and shot. A
- * picture taller than one screenshot is encoded as capture.mjs stitches its slices.
- * @param {import("playwright").Page} page vitest's page, whose context opens the new page
- * @param {PNG} image the stitched picture, at SCALE device px per CSS px
- * @param {{ width: number, height: number }} size in CSS px
+ * The tiles stitched into one picture, encoded as Chromium's own screenshot encodes it, so its bytes
+ * are what capture.mjs's one full-page screenshot holds: each tile is shown 1:1 where it belongs in a
+ * page of the picture's size, and that page is shot. Chromium decodes the tiles and stitches them,
+ * so this process never decodes or encodes a PNG: at four workers, pngjs doing that work on the one
+ * Node thread every worker shares made each story about twice as slow. A picture taller than one
+ * screenshot is stitched with pngjs instead, as capture.mjs stitches its slices.
+ * @param {import("playwright").Page} page the page whose context opens the new page (vitest's page, in a story test)
+ * @param {{ png: Buffer, left: number, top: number, width: number, height: number }[]} tiles each tile's PNG at SCALE
+ *     device px per CSS px, and where it goes in CSS px
+ * @param {{ width: number, height: number }} size the picture's size in CSS px
  * @returns {Promise<Buffer>} the PNG
  */
-async function encodeAsChromium(page, image, size) {
-    const png = PNG.sync.write(image, { filterType: 4 });
-    if (image.height > MAX_SHOT_HEIGHT) {
-        return png;
+async function stitchAsChromium(page, tiles, size) {
+    if (size.height * SCALE > MAX_SHOT_HEIGHT) {
+        const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+        for (const t of tiles) {
+            const tile = PNG.sync.read(t.png);
+            PNG.bitblt(tile, out, 0, 0, t.width * SCALE, t.height * SCALE, t.left * SCALE, t.top * SCALE);
+        }
+        return PNG.sync.write(out, { filterType: 4 });
     }
     const shown = await page.context().newPage();
     try {
         await shown.setViewportSize(size);
+        const imgs = tiles.map(
+            (t) =>
+                `<img style="left:${t.left}px;top:${t.top}px;width:${t.width}px;height:${t.height}px" ` +
+                `src="data:image/png;base64,${t.png.toString("base64")}">`,
+        );
         await shown.setContent(
-            `<style>html,body{margin:0}img{display:block;width:${size.width}px;height:${size.height}px}</style>` +
-                `<img src="data:image/png;base64,${png.toString("base64")}">`,
+            // The body holds the picture's size: absolute images give it none, and a page whose
+            // viewport did not take the size (a story test's) is shot to its document's size.
+            `<style>html,body{margin:0}body{position:relative;width:${size.width}px;height:${size.height}px}` +
+                `img{display:block;position:absolute}</style>${imgs.join("")}`,
         );
         await shown.evaluate(imagesInPage);
         return await shown.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
@@ -644,9 +749,8 @@ export function pinFixedInPage(undo) {
  *     for a frame), shot from the page's top left
  * @returns {Promise<Buffer>} the PNG
  */
-export async function shootTiles(page, frame, size, vp) {
-    const view = { x: 0, y: 0, ...vp };
-    const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+async function shootTiles(page, frame, size, vp) {
+    const tiles = [];
     try {
         // Inside the try, so a failure still puts every style back (an undo of nothing does nothing).
         await frame.evaluate(pinFixedInPage, false);
@@ -663,20 +767,23 @@ export async function shootTiles(page, frame, size, vp) {
                     Math.max(0, Math.min(left, size.width - vp.width)),
                     Math.max(0, Math.min(top, size.height - vp.height)),
                 );
-                const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
                 const [x, y] = [left - at.x, top - at.y];
                 w = Math.min(vp.width - x, size.width - left);
                 h = Math.min(vp.height - y, size.height - top);
+                // Only the part of the viewport this tile adds: the last row of tiles often adds a few
+                // rows, and a whole-viewport shot of it was most of a tile's cost for nothing.
                 if (w > 0 && h > 0) {
-                    PNG.bitblt(tile, out, x * SCALE, y * SCALE, w * SCALE, h * SCALE, left * SCALE, top * SCALE);
+                    const png = await page.screenshot({ ...SHOT, clip: { x, y, width: w, height: h } });
+                    tiles.push({ png, left, top, width: w, height: h });
                 }
             }
         }
     } finally {
-        await scrollFrame(frame, 0, 0);
+        // Back where the story was; the next screenshot (screenshotWholePage's) waits for its own frames.
+        await scrollFrame(frame, 0, 0, false);
         await frame.evaluate(pinFixedInPage, true);
     }
-    return encodeAsChromium(page, out, size);
+    return stitchAsChromium(page, tiles, size);
 }
 
 /**
@@ -873,7 +980,7 @@ export async function capture({
     // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.
     const browsers = await Promise.all(
         Array.from({ length: Math.max(1, workers) }, () =>
-            chromium.launch({ args: CHROMIUM_ARGS, env: { ...process.env, ...fontEnv, TZ: "UTC" } }),
+            chromium.launch({ args: CHROMIUM_ARGS, env: chromiumEnv(fontEnv) }),
         ),
     );
     const [browser] = browsers;

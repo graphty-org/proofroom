@@ -377,23 +377,27 @@ function download(gh, runId, name, dir) {
 export async function downloadCaptures(gh, run, projects, tmp, others = [], landed = () => {}, planned = () => {}) {
     const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
     for (const a of artifacts) {
-        const p = /^visual-(.+)-\d+$/.exec(a.name)?.[1];
+        const p = /^visual-(?:final-)?(.+)-\d+$/.exec(a.name)?.[1];
         if (p && !projects.includes(p) && !others.includes(p)) {
             others.push(p);
         }
     }
+    // A run that shot its changed stories a second time keeps the gated result of both shots as
+    // visual-final-<project>-<attempt>: that one is the capture, whatever the first shot said.
+    const newestOf = (pattern) =>
+        artifacts
+            .filter((x) => pattern.test(x.name))
+            .map((x) => ({
+                name: x.name,
+                expired: x.expired,
+                bytes: x.size_in_bytes ?? 0,
+                attempt: Number(pattern.exec(x.name)[1]),
+            }))
+            .sort((x, y) => y.attempt - x.attempt)[0];
     const newest = Object.fromEntries(
         projects.map((project) => {
-            const pattern = new RegExp(`^visual-${project}-(\\d+)$`);
-            const a = artifacts
-                .filter((x) => pattern.test(x.name))
-                .map((x) => ({
-                    name: x.name,
-                    expired: x.expired,
-                    bytes: x.size_in_bytes ?? 0,
-                    attempt: Number(pattern.exec(x.name)[1]),
-                }))
-                .sort((x, y) => y.attempt - x.attempt)[0];
+            const final = newestOf(new RegExp(String.raw`^visual-final-${project}-(\d+)$`));
+            const a = final ? { ...final, final: true } : newestOf(new RegExp(String.raw`^visual-${project}-(\d+)$`));
             return [project, a ?? null];
         }),
     );
@@ -407,7 +411,7 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
             if (!a) {
                 out[project] = null;
             } else {
-                const dir = join(tmp, `${run.id}-${a.attempt}`, project);
+                const dir = join(tmp, `${run.id}-${a.attempt}${a.final ? "-final" : ""}`, project);
                 const got = { attempt: a.attempt, bytes: a.bytes };
                 if (a.expired) {
                     out[project] = whole(dir) ? { dir, ...got } : { dir: null, ...got, expired: true };
@@ -441,8 +445,20 @@ export async function newestMasterCapture(gh, project, tmp, { workflow, defaultB
     // The branch's newest commits, then each one's run: GitHub's list of a workflow's runs filtered
     // by branch now and then answers with a stale page (runs from weeks ago), which made a pull
     // request compare with an old capture or none. Commits and a run by head sha answer consistently.
-    const commits = await api(gh, `repos/{owner}/{repo}/commits?sha=${encodeURIComponent(defaultBranch)}&per_page=10`);
-    for (const { sha } of commits) {
+    // The list holds every ancestor. A push to the default branch captures nothing, so a capture
+    // comes from the pull request run of a head merged into it (a merge's later parent, whose run
+    // captured the merged tree); a merged branch's earlier commits captured an older branch state
+    // and are skipped by walking the first-parent line and only each commit's own parents.
+    const commits = await api(gh, `repos/{owner}/{repo}/commits?sha=${encodeURIComponent(defaultBranch)}&per_page=30`);
+    const shas = [];
+    let next = commits[0]?.sha;
+    for (const { sha, parents = [] } of commits) {
+        if (sha === next) {
+            shas.push(sha, ...parents.slice(1).map((p) => p.sha));
+            next = parents[0]?.sha;
+        }
+    }
+    for (const sha of shas) {
         const run = await newestCiRun(gh, sha, { workflow });
         if (!run) {
             continue;

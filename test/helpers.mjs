@@ -310,7 +310,7 @@ export function pullsGraphql(prs, runOf) {
  * @param {Record<string, object>} [data.runs] CI runs by head sha
  * @param {Record<string, object>} [data.runsById] CI runs by id
  * @param {object[]} [data.masterRuns] master's commits, newest first, each with its CI run (`id`
- *     null for a commit CI never ran on)
+ *     null for a commit CI never ran on) and its parents (`parents`, default the next entry)
  * @param {Record<string, object[]>} [data.jobs] jobs by run id
  * @param {Record<string, string[]>} [data.artifacts] artifact names by run id
  * @param {Record<string, object>} [data.results] results overrides applied to each download, by
@@ -343,7 +343,12 @@ export function fakeGh({
             return pullsGraphql(prs, (head) => runs[head]);
         }
         if (path?.startsWith("repos/{owner}/{repo}/commits?sha=master")) {
-            return JSON.stringify(masterRuns.map((r) => ({ sha: r.head })));
+            return JSON.stringify(
+                masterRuns.map((r, i) => ({
+                    sha: r.head,
+                    parents: (r.parents ?? [masterRuns[i + 1]?.head]).map((sha) => ({ sha })),
+                })),
+            );
         }
         if ((m = /workflows\/ci\.yml\/runs\?head_sha=(\w+)/.exec(path))) {
             const found = runs[m[1]] ?? masterRuns.find((r) => r.head === m[1] && r.id !== null);
