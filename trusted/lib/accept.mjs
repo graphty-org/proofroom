@@ -44,6 +44,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { PASSKEYS_FILE, parsePasskeys, verifyApproval } from "./approval.mjs";
+import { statementPath, statementProblem } from "./change-approval.mjs";
 import {
     commentOnPullRequest,
     createIssue,
@@ -740,29 +741,95 @@ const blobsOf = (listing) =>
  * @param {string} sha the commit whose approvals directory is read
  * @param {{ approvals: string, baselines: string }} config the settings
  * @param {object[]} keys the keys a signature must come from
- * @param {Map<string, string[]>} [cache] the record blobs by statement blob and keys, kept across
+ * @param {Map<string, any>} [cache] what each statement blob says, by blob and keys, kept across
  *     calls
  * @returns {Promise<Set<string>>} the record blobs
  */
 export async function treeSignedRecords(repo, sha, config, keys, cache = new Map()) {
-    const out = new Set();
-    const listing = await git(repo, ["ls-tree", sha, "--", `${config.approvals}/`]).catch(() => "");
-    const ids = keys.map((k) => k.id).join(",");
-    for (const blob of blobsOf(listing)) {
-        const key = `${blob} ${ids}`;
-        if (!cache.has(key)) {
-            const statement = await git(repo, ["cat-file", "blob", blob]).then(JSON.parse, () => null);
-            const holds =
-                statement?.version === 1 &&
-                statement.baselines === config.baselines &&
-                /^[0-9a-f]{40,64}$/.test(String(statement.tree)) &&
-                verifyApproval(statement, keys) === null;
-            const records = holds ? await git(repo, ["ls-tree", statement.tree, "--", "reviews/"]).catch(() => "") : "";
-            cache.set(key, blobsOf(records));
+    return (await earlierApprovalsAt(repo, sha, config, keys, cache)).treeSigned;
+}
+
+/**
+ * Every earlier approval at a commit, from one `git ls-tree` of the approvals directory and the
+ * review records: the review record files, the record blobs a signed tree statement covers
+ * (treeSignedRecords), and every change statement (change-approval.mjs), each blob read once.
+ * A change statement is verified when it sits where its content says it belongs, names this
+ * repository, is about these baselines and carries a valid signature from one of `keys`; an
+ * unverified one is listed too, so a history can show it as unverified, and never counts as an
+ * approval.
+ * @param {string} repo the repository
+ * @param {string} sha the commit
+ * @param {{ approvals: string, baselines: string }} config the settings
+ * @param {object[] | null} keys the default branch's keys; null when it has none, so nothing
+ *     verifies
+ * @param {Map<string, any>} [cache] what each statement blob says, by blob, keys and placement,
+ *     kept across calls
+ * @param {string | null} [repository] this repository's id as the gate names it (gate.mjs
+ *     repositoryOf); null when it is not known, so no change statement verifies
+ * @returns {Promise<{ records: { path: string, blob: string }[], treeSigned: Set<string>,
+ *     statements: { path: string, blob: string, statement: object, verified: boolean }[] }>} them
+ */
+export async function earlierApprovalsAt(repo, sha, config, keys, cache = new Map(), repository = null) {
+    const approvals = `${config.approvals}/`;
+    const reviews = `${config.baselines}/reviews/`;
+    const listing = await git(repo, ["ls-tree", "-r", sha, "--", approvals, reviews]).catch(() => "");
+    const out = { records: [], treeSigned: new Set(), statements: [] };
+    const ids = (keys ?? []).map((k) => k.id).join(",");
+    for (const line of listing.split("\n")) {
+        const [meta, path] = line.split("\t");
+        const blob = meta.split(" ")[2];
+        const inReviews = path?.startsWith(reviews);
+        const rest = path?.slice((inReviews ? reviews : approvals).length) ?? "";
+        if (!path?.endsWith(".json") || (inReviews && rest.includes("/"))) {
+            continue;
         }
-        cache.get(key).forEach((b) => out.add(b));
+        if (inReviews) {
+            out.records.push({ path, blob });
+            continue;
+        }
+        const nested = rest.includes("/");
+        const key = `${blob} ${ids} ${nested}`;
+        if (!cache.has(key)) {
+            cache.set(key, await readApproval(repo, blob, config, keys, nested));
+        }
+        const read = cache.get(key);
+        if (read.statement) {
+            const placed = statementPath(config.approvals, read.statement) === path;
+            const ours = repository !== null && read.statement.repository === repository;
+            out.statements.push({ path, blob, statement: read.statement, verified: read.signed && placed && ours });
+        }
+        read.records?.forEach((b) => out.treeSigned.add(b));
     }
     return out;
+}
+
+/**
+ * What one blob of the approvals directory says: a change statement (in a folder) and whether its
+ * signature holds, or the record blobs a signed tree statement (at the top) covers.
+ * @param {string} repo the repository
+ * @param {string} blob the blob
+ * @param {{ baselines: string }} config the settings
+ * @param {object[] | null} keys the keys a signature must come from
+ * @param {boolean} nested whether it sits in a folder, where change statements live
+ * @returns {Promise<{ statement?: object, signed?: boolean, records?: string[] }>} it
+ */
+async function readApproval(repo, blob, config, keys, nested) {
+    const doc = await git(repo, ["cat-file", "blob", blob]).then(JSON.parse, () => null);
+    if (nested) {
+        if (statementProblem(doc) !== null) {
+            return {};
+        }
+        const signed = keys !== null && doc.baselines === config.baselines && verifyApproval(doc, keys) === null;
+        return { statement: doc, signed };
+    }
+    const holds =
+        keys !== null &&
+        doc?.version === 1 &&
+        doc.baselines === config.baselines &&
+        /^[0-9a-f]{40,64}$/.test(String(doc.tree)) &&
+        verifyApproval(doc, keys) === null;
+    const records = holds ? await git(repo, ["ls-tree", doc.tree, "--", "reviews/"]).catch(() => "") : "";
+    return { records: blobsOf(records) };
 }
 
 /**
