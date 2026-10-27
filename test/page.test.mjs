@@ -881,8 +881,10 @@ describe("review page: the control panel, on an iPad", () => {
         const menu = page.locator("#options");
         expect(await menu.evaluate((d) => d.open)).toBe(false);
         await page.locator("#options > summary").click();
-        const names = await menu.locator("button").evaluateAll((bs) => bs.map((b) => b.textContent.trim()));
-        expect(names).toEqual(["OutlineB", "BaselineP", "FocusO", "Next change1 of 1N", "Copy link"]);
+        // The Next change count is filled in once the viewer has counted the changes.
+        await expect
+            .poll(() => menu.locator("button").evaluateAll((bs) => bs.map((b) => b.textContent.trim())))
+            .toEqual(["OutlineB", "BaselineP", "FocusO", "Next change1 of 1N", "Copy link"]);
         // An option stays open for the next, and its key works as before.
         await page.getByRole("button", { name: "Outline", exact: true }).click();
         await expect.poll(() => page.locator("#opt-showBox").getAttribute("aria-pressed")).toBe("false");

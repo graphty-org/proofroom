@@ -11,7 +11,7 @@
     <body>
         <header id="top">
             <span class="brand">Visual review</span><span class="repo" id="repo"></span>
-            <span class="tabs" id="tabs"></span>
+            <span class="tabs" id="tabs"></span><span id="newcap-slot"></span>
             <span class="grow"></span>
             <span id="status-slot"></span><span id="frame-slot"></span>
         </header>
@@ -72,6 +72,15 @@
                 <div class="list" id="bl-list" tabindex="0" role="listbox" aria-label="Baselines"></div>
             </section>
             <main class="viewer bl" id="bl-viewer" tabindex="-1" aria-label="Baseline viewer"></main>
+        </div>
+        <div id="scr-captures" hidden>
+            <nav id="cap-list" class="pane" aria-label="Captures">
+                <div class="pane-head">
+                    <div class="pane-title"><span class="grow">Captures</span><span id="cap-new"></span></div>
+                </div>
+                <div class="list" id="cap-rows" tabindex="0" role="listbox" aria-label="Captures"></div>
+            </nav>
+            <main class="capdetail" id="cap-detail" aria-label="Capture"></main>
         </div>
         <footer id="msgline">
             <span class="t" id="msg-t" role="status"></span><span id="msg-x"></span><span id="msg-btn"></span>

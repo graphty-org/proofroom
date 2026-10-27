@@ -23,6 +23,7 @@ const DEFAULTS = {
     fontconfig: null,
     updateCheck: null,
     candidates: null,
+    captureCommand: null,
     usage: false,
     ignoreBranches: [],
     diskBudget: 10,
@@ -38,7 +39,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, selfApproval?: "allow" | "forbid", codeHost?: string, captureStore?: string, stories?: string, renderer?: string, workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, usage: boolean, ignoreBranches: string[], diskBudget: number, projects: Record<string, { storybook: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, captureCommand: string | null, usage: boolean, ignoreBranches: string[], diskBudget: number, projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -199,6 +200,15 @@ function commandSettings(raw, out, fail) {
             fail("updateCheck must be a shell command");
         }
         out.updateCheck = raw.updateCheck;
+    }
+    // The command the review server runs every capture started from its page through, the
+    // `proofroom run` command line appended to it (e.g. a wrapper that applies this machine's
+    // browser limits, or isolates the capture). Null: run as it is.
+    if (raw.captureCommand !== undefined && raw.captureCommand !== null) {
+        if (typeof raw.captureCommand !== "string" || raw.captureCommand.trim() === "") {
+            fail("captureCommand must be a shell command");
+        }
+        out.captureCommand = raw.captureCommand;
     }
     // The shell command `serve --candidate next` runs in the repository to list the default
     // branch's full runs: JSON on stdout, `[{ commit, runId, waiting, at }]`. Null: none.

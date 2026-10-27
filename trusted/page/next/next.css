@@ -1916,6 +1916,99 @@ dialog.finish pre {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+
+/*
+ * The Captures screen (design 9.2) and the New capture sheet (design 9.1).
+ */
+#scr-captures {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+#scr-captures[hidden] {
+    display: none;
+}
+#cap-list {
+    width: 360px;
+    background: var(--rail);
+}
+.caprow {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.caprow .l1 {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+}
+.caprow.cur {
+    background: var(--surface);
+    box-shadow: inset 3px 0 var(--focus);
+}
+.capdetail {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    padding: 16px 20px;
+    background: var(--surface);
+}
+.capdetail h2 {
+    margin: 0 0 4px;
+    font-size: 18px;
+}
+.capdetail h3 {
+    font-size: 14px;
+    margin: 12px 0 4px;
+}
+.capdetail p {
+    margin: 0 0 6px;
+}
+.capdetail ul {
+    margin: 0;
+}
+.projbar {
+    display: grid;
+    grid-template-columns: 170px 1fr 120px;
+    gap: 10px;
+    align-items: center;
+    margin: 6px 0;
+}
+.prog {
+    height: 5px;
+    background: var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.prog > div {
+    height: 100%;
+    background: var(--focus);
+}
+.prog.bad > div {
+    background: var(--st-failed);
+}
+.log {
+    background: #11151b;
+    color: #cfd6e0;
+    font: 11px/1.5 ui-monospace, Menlo, monospace;
+    padding: 8px 10px;
+    border-radius: 6px;
+    height: 200px;
+    overflow: auto;
+    white-space: pre;
+}
+.capacts {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+dialog.newcap {
+    width: 602px;
+}
 .warnbox {
     background: color-mix(in srgb, var(--warn) 14%, var(--surface));
     border: 1px solid var(--warn);
@@ -1935,4 +2028,11 @@ dialog.finish .warnbox {
 .finlist > div {
     padding: 5px 8px;
     border-bottom: 1px solid var(--line);
+}
+.warnbox[hidden],
+#nc-asis[hidden] {
+    display: none;
+}
+#summary-newcap {
+    margin-top: 8px;
 }

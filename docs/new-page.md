@@ -48,6 +48,9 @@ PORT=4800 proofroom serve --ui next
 - **Finish.** **Finish** in the top bar, Finish... on each decided change and Finish all, with a
   summary sheet that says what each Finish will commit, post and set first. See
   [Finish on the new page](finish.md).
+- **Captures on this machine.** **New capture...** captures the working tree, a local branch or a
+  pull request here, and **Captures** follows them; see [Starting a capture from the
+  page](capturing-from-the-page.md).
 - **Addresses.** Every change and snapshot you open is in the address, so a copied link opens it
   again and the browser's Back and Forward move between them. Links today's page wrote, such as
   those in pull request comments, open the same change and snapshot here.

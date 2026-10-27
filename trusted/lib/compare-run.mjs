@@ -54,6 +54,10 @@ const MAX_LINE = 2000;
 export const CAPTURE_LINES = "capture.ndjson";
 /** The result lines compare appends, beside results.json. */
 export const RESULT_LINES = "results.ndjson";
+/** How far a run is, rewritten beside the result lines after every snapshot (`run`). */
+export const PROGRESS_FILE = "progress.json";
+// The failed snapshots progress.json names, so it stays under 1 KB.
+const PROGRESS_FAILED = 3;
 
 /**
  * A console list as results.json holds it: at most 100 lines of at most 2000 characters.
@@ -552,18 +556,49 @@ export async function judgeLine(ctx, line) {
 }
 
 /**
+ * Writes how far a run is, counted from its result lines: `done` snapshots of `total` (the
+ * capture's planned count, or more once a removed baseline is reported), the snapshot judged last,
+ * how many failed to render and the first few of them with their reason, and whether the run ended.
+ * Written to a temporary file and renamed, so a reader never sees half of it.
+ * @param {string | null} file the progress file, or null for none
+ * @param {object} start the capture's start line
+ * @param {object[]} written the result lines so far
+ * @param {boolean} ended whether the run ended
+ * @returns {Promise<void>} once written
+ */
+async function writeProgress(file, start, written, ended) {
+    if (!file) {
+        return;
+    }
+    const latest = new Map(written.map((l) => [l.file, l]));
+    const failed = [...latest.values()].filter((l) => l.status === "failed");
+    const body = {
+        project: start.project,
+        done: latest.size,
+        total: Math.max(Number.isInteger(start.planned) ? start.planned : 0, latest.size),
+        current: written.at(-1)?.file ?? null,
+        failures: failed.length,
+        failed: failed.slice(0, PROGRESS_FAILED).map((l) => ({ file: l.file, reason: (l.reason ?? "").slice(0, 120) })),
+        ended,
+    };
+    await writeFile(`${file}.tmp`, JSON.stringify(body));
+    await rename(`${file}.tmp`, file);
+}
+
+/**
  * Judges a stream of capture lines and writes the results.
  * @param {{ project: string, baselines: string, captures: string, out: string,
  *     lines: AsyncIterable<any>, reference?: string | null, ids?: Set<string> | null,
  *     junit?: string | null, prune?: boolean, print?: (line: object) => void,
  *     onResult?: (result: object, line: object | null) => void,
- *     log?: (line: string) => void }} options `captures` is where an image line's PNG is when it
+ *     log?: (line: string) => void, progress?: string | null }} options `captures` is where an image line's PNG is when it
  *     carries no bytes; `ids` judges only these snapshots (`<id>` or `<id>.<mode>`), and then
  *     neither removed baselines, results.json nor JUnit are written; `junit` is the JUnit file's
  *     path (default `<out>/junit.xml`, null for none); `prune` deletes the capture of a snapshot
  *     that needs no image from `out`, for a capture that wrote it there (`run`); `onResult` sees
  *     every result line with the capture line it judged (null for a removed baseline or a broken
- *     rename) before the next line is read
+ *     rename) before the next line is read; `progress` is a file rewritten after every result line
+ *     with how far the run is (writeProgress), for a page following it
  * @returns {Promise<{ results: object | null, passed: boolean, lines: object[] }>} results.json's
  *     contents (null with `ids`), whether every snapshot passed, and every result line
  */
@@ -580,6 +615,7 @@ export async function compareRun({
     print = () => {},
     onResult = () => {},
     log = console.error,
+    progress = null,
 }) {
     await mkdir(join(out, "baselines"), { recursive: true });
     // A run of a few snapshots (`ids`) adds its lines to the run they belong to.
@@ -600,6 +636,7 @@ export async function compareRun({
         const result = resultLine(item, { project, attempt });
         written.push(result);
         await appendFile(join(out, RESULT_LINES), `${JSON.stringify(result)}\n`);
+        await writeProgress(progress, start, written, false);
         print(result);
         if (!result.passed) {
             log(`${item.status} ${item.file}${item.reason ? `: ${item.reason}` : ""}`);
@@ -615,6 +652,7 @@ export async function compareRun({
                 }
                 start = line;
                 ctx.known = Array.isArray(line.stories) ? new Set(line.stories) : null;
+                await writeProgress(progress, start, written, false);
                 if (!ids) {
                     await renameErrors();
                 }
@@ -651,6 +689,7 @@ export async function compareRun({
         await removedBaselines();
     }
     const results = await finish(end?.complete === true);
+    await writeProgress(progress, start, written, true);
     return { results, passed: passed(), lines: written };
 
     /**
@@ -660,7 +699,7 @@ export async function compareRun({
      */
     async function finish(complete) {
         const header = { ...start };
-        for (const key of ["type", "stories", "only"]) {
+        for (const key of ["type", "stories", "only", "planned"]) {
             delete header[key];
         }
         const items = itemsFromLines(written).get(project) ?? [];

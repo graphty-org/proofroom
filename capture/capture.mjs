@@ -39,6 +39,7 @@ import {
     compareRun,
     fileName,
     loadSettings,
+    PROGRESS_FILE,
     provenance,
     storySettings,
     toolVersion,
@@ -402,6 +403,8 @@ export function capture({
                 },
                 stories: allIds,
                 only: stories,
+                // How many snapshot lines follow, before any shot again: a progress count's total.
+                planned: jobs.size + excluded.length,
             });
             for (const line of excluded) {
                 yield await record(line);
@@ -510,6 +513,7 @@ export function run({ reference = null, retries = 0, junit, print, ...options })
         prune: true,
         print,
         log: options.log,
+        progress: join(options.out, PROGRESS_FILE),
         onResult: (result, line) => {
             if (!result.passed && line && result.attempt <= retries) {
                 shots.again(line);

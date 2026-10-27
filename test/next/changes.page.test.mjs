@@ -53,10 +53,11 @@ describe("with no changes", () => {
         expect(await next.getAttribute("title")).toBe("No changes yet");
         const sort = page.getByRole("button", { name: /^Sort:/ });
         expect(await sort.getAttribute("title")).toBe("No changes yet");
-        // The Snapshots pane says how captures appear; New capture... is absent until it can work.
+        // The Snapshots pane says how captures appear, with New capture... there and in the top bar.
         expect(await page.locator("#snap-list").innerText()).toContain("No captures yet.");
         expect(await page.locator("#snap-list").innerText()).toContain("Captures made by CI appear here on their own");
-        expect(await page.getByText("New capture...").count()).toBe(0);
+        expect(await page.locator("#snap-list").getByRole("button", { name: "New capture..." }).count()).toBe(1);
+        expect(await page.locator("#top").getByRole("button", { name: "New capture..." }).count()).toBe(1);
         // Pressing either, by pointer or by key, says why.
         // A reader can press a control marked unavailable; Playwright's click would wait for it to
         // become available, so these clicks skip that wait.
@@ -299,6 +300,7 @@ describe("the row menu", () => {
         expect(await page.getByRole("menuitem").allInnerTexts()).toEqual([
             "Open on GitHub",
             "About this change",
+            "Capture again...",
             "Update from master...",
             "Copy link",
         ]);
@@ -332,6 +334,7 @@ describe("the row menu", () => {
         await menuOf("local").click();
         expect(await page.getByRole("menuitem").allInnerTexts()).toEqual([
             "About this change",
+            "Capture again...",
             "Update from master...",
             "Copy link",
         ]);

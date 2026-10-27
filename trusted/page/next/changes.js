@@ -60,18 +60,34 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
     const local = t.local === true;
     // An ISO time only: Date.parse reads other text too, as some year.
     const readyAt = /^\d{4}-\d\d-\d\dT/.test(t.readyAt ?? "") ? Date.parse(t.readyAt) : null;
-    const kind = local ? "preview" : t.pr === null ? "seed" : "PR";
+    // A capture made from the page is named by what it captured (captures.js).
+    const captured = t.capture?.label ?? "";
+    const kind = t.localBranch
+        ? "branch"
+        : local
+          ? captured === "working tree"
+              ? "working tree"
+              : captured.startsWith("branch ")
+                ? "branch"
+                : "preview"
+          : t.pr === null
+            ? "seed"
+            : "PR";
     const row = {
         id: t.id,
         kind,
         pr: t.pr,
         label: t.pr !== null && !local ? `#${t.pr}` : kind,
         title: kind === "seed" ? `Seed from ${defaultBranch}` : (t.title ?? ""),
+        head: t.head ?? null,
+        // The page's capture this row stands for while it runs or after it failed (captureRowOf).
+        capId: null,
         branch:
             t.branch ??
             (t.pr === null && !local ? `${defaultBranch}${t.commit ? ` at ${t.commit.slice(0, 7)}` : ""}` : null),
         author: t.author ?? null,
-        source: local || (projects.length > 0 && projects.every((p) => p.preview)) ? "this machine" : "CI",
+        source:
+            local || t.localBranch || (projects.length > 0 && projects.every((p) => p.preview)) ? "this machine" : "CI",
         ready: `${readyN} of ${projects.length}`,
         readyAt,
         age: readyAt === null ? null : ageText(now - readyAt),
@@ -199,7 +215,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
     if (t.behind) {
         row.badges.push({ text: `behind ${t.behind}` });
     }
-    if (t.pendingPush) {
+    if (t.pendingPush || t.unpushed) {
         row.badges.push({ text: "pending push" });
     }
     if (projects.some((p) => p.preview && p.ci && p.ci.status !== "completed")) {
@@ -209,6 +225,65 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         row.badges.push({ text: shares.get(t.id) });
     }
     return row;
+}
+
+const CAPTURE_KINDS = { tree: "working tree", branch: "branch", change: "PR" };
+
+/**
+ * The changes row of a capture started from the page while it waits or runs, or after it failed or
+ * was cancelled (design 3.5): Capturing or downloading, then Not ready. A capture that finished is
+ * the row of what it made instead.
+ * @param {any} c the capture, as GET /api/captures lists it
+ * @param {{ now: number }} at the server's clock
+ * @returns {any} the row's model
+ */
+export function captureRowOf(c, { now }) {
+    const kind = CAPTURE_KINDS[c.what.kind];
+    const failed = c.state === "failed" || c.state === "cancelled";
+    const id = `capture-${c.id}`;
+    return {
+        id,
+        capId: c.id,
+        kind,
+        pr: c.what.number ?? null,
+        label: kind === "PR" ? `#${c.what.number}` : kind,
+        title: kind === "PR" ? (c.what.title ?? "") : `Capture of ${c.what.label}`,
+        head: c.head,
+        branch: c.what.branch ?? null,
+        author: c.what.author ?? null,
+        source: "this machine",
+        ready: `0 of ${c.projects.length}`,
+        readyAt: c.createdAt,
+        age: ageText(now - c.createdAt),
+        total: 0,
+        decided: 0,
+        undecided: 0,
+        draft: false,
+        lookOnly: false,
+        url: null,
+        logUrl: null,
+        runKey: id,
+        projects: c.projects,
+        counts: {},
+        badges: [],
+        stale: 0,
+        evicted: null,
+        deleted: false,
+        state: failed ? "failed" : "capturing",
+        mark: failed ? ["failed", "c-failed"] : ["spin", "c-ink2"],
+        count:
+            c.state === "cancelled"
+                ? "Capture cancelled by you"
+                : failed
+                  ? `Capture failed: ${c.error}`
+                  : c.state === "queued"
+                    ? "On this machine, queued: local captures run one at a time"
+                    : `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`,
+        notReady: true,
+        dismissKey: id,
+        dismissable: false,
+        section: failed ? "notready" : "busy",
+    };
 }
 
 /**
@@ -302,7 +377,17 @@ function rowOf(app, r) {
     const title = `${r.pr !== null && r.kind === "PR" ? `#${r.pr} ` : ""}${r.title}`;
     const details = [r.branch, r.author, r.source, `${r.ready} projects ready`, r.age].filter(Boolean).join("  ");
     const acts = [];
-    if (["failed", "capturing"].includes(r.state) && r.logUrl) {
+    if (r.capId !== null) {
+        // A capture on this machine: its log is on the Captures screen.
+        acts.push(
+            ...(r.state === "capturing"
+                ? [control(app, "capcancel", { zone: "rows", ctx: { cap: r.capId } })]
+                : [
+                      control(app, "joblog", { zone: "rows", ctx: { id: r.id } }),
+                      control(app, "capagain", { zone: "rows", ctx: { id: r.id, label: "Retry" } }),
+                  ]),
+        );
+    } else if (["failed", "capturing"].includes(r.state) && r.logUrl) {
         acts.push(control(app, "joblog", { zone: "rows", ctx: { id: r.id } }));
     }
     acts.push(...app.finishControls(r));
