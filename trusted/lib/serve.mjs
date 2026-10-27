@@ -3027,9 +3027,10 @@ export function createApp({
 
     // Whether a Finish of this work commits anything (a Finish of rejects alone only comments).
     const commitsOf = (work) => work.list.some((d) => d.decision !== "reject");
-    // Whether it may sign something all the same: a Finish rejecting an image of a candidate retires
-    // the accept pull request an earlier change mode Finish of it opened (prepareApproval says).
-    const retiresOf = (t) => Boolean(t.candidate) && changeMode();
+    // Whether it may sign something all the same: a Finish rejecting images of a candidate, or of a
+    // seed run, retires the accept pull requests (earlier seeds) an earlier change mode Finish of
+    // that capture opened (prepareApproval says).
+    const retiresOf = (t) => (Boolean(t.candidate) || (t.pr === null && !t.localBranch)) && changeMode();
 
     /**
      * finish-prepare's answer when this Finish needs no passkey (no key is known, it commits

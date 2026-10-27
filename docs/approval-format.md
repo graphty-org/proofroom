@@ -422,7 +422,14 @@ same way, before it posts the rejects, whichever server opened them: it finds th
 statements of the candidate's commit on every open pull request's branch, and also closes any open
 pull request from a `visual/approve-<commit>-` branch that holds no statement yet (a cancelled
 touch), deleting its branch. You sign each retiring statement with one touch (unsigned without a
-registered key).
+registered key). A seed Finish that only rejects images (it accepts nothing, so it opens no seed of
+its own) retires the earlier open seeds of its capture the same way, before it opens the issue for
+the rejects, so a later reject of an image an earlier Finish accepted always wins.
+
+Earlier seeds that Finish only closes (no statement of theirs to retire, such as a seed whose touch
+was cancelled) are checked again after your touch: if one gained a statement or moved since the
+Finish was prepared, Finish refuses and changes nothing (press Finish again), and a branch is
+deleted only while it is still at the commit Finish read.
 
 Finding seeds reads the code host (the open pull requests, and each pull request a statement names)
 and git (their branches). If any of that cannot be read, Finish refuses, names what failed, and
@@ -443,6 +450,13 @@ What it does not cover:
   same images), never anything else. To retire it for good, remove the key that signed it.
 - On a code host that cannot close pull requests, Finish refuses, naming the old branch, until you
   close or delete it.
+- A seed pull request whose branch was renamed away from `visual/` (GitHub's "Rename branch" moves
+  the open pull request with it): Finish looks only at `visual/` branches, so it never sees or
+  retires that pull request, which stays open with your earlier signed accept. Close it by hand.
+- A seed of an earlier capture: retiring is per captured commit. A Finish of a newer commit of the
+  default branch that rejects an image leaves the open seeds of older captures as they are, and one
+  whose accepted image is still what the code draws can still merge it. Close those pull requests by
+  hand when a newer review rejects what they accept.
 
 The seed's pull request can also be reviewed like any pull request once CI captures it: that
 Finish writes a change statement for `pr:N`, chained after the seed statement, and the newest

@@ -965,8 +965,46 @@ describe("Finish of a seed in change mode", () => {
                     });
                 },
             }),
-        ).rejects.toThrow("https://fake/changes/970 holds a seed of this capture opened since this Finish was prepared");
+        ).rejects.toThrow(
+            "https://fake/changes/970 holds a seed of this capture that changed since this Finish was prepared",
+        );
         expect(host.opened.find((o) => o.number === 900)?.state).toBe("open");
+    });
+
+    it("refuses a seed Finish when an earlier seed it only closes moved after the prepare, keeping it", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, touch: false });
+        const [old] = host.opened;
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await expect(
+            seedFinish(r, host, [[BUTTON]], {
+                projects,
+                // The other Finish's touch lands on its branch meanwhile.
+                meanwhile: () => git(r.remote, "update-ref", `refs/heads/${old.branch}`, r.master),
+            }),
+        ).rejects.toThrow(
+            "https://fake/changes/900 holds a seed of this capture that changed since this Finish was prepared",
+        );
+        expect(old.state).toBe("open");
+        expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
+    });
+
+    it("retires an earlier seed of the run when a later Finish of it only rejects that image", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const heads = keptHeads(r, host);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [old] = host.opened;
+        const { prepared, result, touches } = await seedFinish(r, host, [[BADGE, "reject", "clipped"]], { projects });
+        expect(prepared.statement).toMatchObject({ change: "pr:900", entries: [{ decision: "reject" }] });
+        expect(touches).toBe(1);
+        expect(result).toMatchObject({ rejects: 1, closedPullRequest: "https://fake/changes/900" });
+        expect(old.state).toBe("closed");
+        git(r.remote, "branch", old.branch, heads.get(900));
+        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
     });
 
     it("ignores a forged unsigned statement on a visual/ branch, asking for no extra touch", async () => {
