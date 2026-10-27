@@ -166,10 +166,15 @@ export function startKeys(app) {
     document.addEventListener("keyup", (e) => {
         const t = /** @type {HTMLElement} */ (e.target);
         if (space(e) && !t.matches?.("input, textarea, select") && !document.querySelector("dialog[open]")) {
-            e.preventDefault();
+            // In a menu, Space keeps its own meaning; the flash still ends.
+            if (!document.querySelector(".menu")) {
+                e.preventDefault();
+            }
             app.holdSpace?.(false);
         }
     });
+    // A Space released while the window was away is never seen: losing focus ends the flash.
+    addEventListener("blur", () => app.holdSpace?.(false));
     document.addEventListener("keydown", (e) => {
         if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) {
             return;

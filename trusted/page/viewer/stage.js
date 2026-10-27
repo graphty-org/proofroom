@@ -10,7 +10,8 @@
 import { diffable, keptDiffs, targetsOf } from "./prefetch.js";
 import { dimmed } from "/spot.js";
 
-const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
+const FLASH_MS = 667; // one image each two thirds of a second: about 1.5 swaps a second
+const BLINK_MS = 500; // the overlays on, then off, each half a second
 const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
 // A press this soon after its item's images were drawn is the tail of a press meant for the item
 // before, not a decision on an image the reader saw. Measured from the press's own time
@@ -481,7 +482,7 @@ export function createStage(host) {
         }, FLASH_MS);
     }
 
-    // Both panes' overlays on and off together, at Flash's pace.
+    // Both panes' overlays on and off together.
     function startBlink(stage) {
         const marks = [...stage.querySelectorAll(".diffmark")];
         let on = true;
@@ -490,7 +491,7 @@ export function createStage(host) {
             for (const m of marks) {
                 m.style.visibility = on ? "visible" : "hidden";
             }
-        }, FLASH_MS);
+        }, BLINK_MS);
     }
 
     // An image or the diff failed to load: the compared views show the error in both panes; side

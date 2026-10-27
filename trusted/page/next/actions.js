@@ -222,13 +222,16 @@ export const ACTIONS = {
     "layout-stacked": { label: "Over and under", run: (app) => app.viewer.setLayout("stacked") },
     options: {
         label: "Options",
-        title: "Outline, Open centered on the area, Details, Copy link",
         run: (app, ctx) => app.viewer.optionsMenu(ctx.el),
     },
     more: { label: "More", title: "Image only, Layout, Options", run: (app, ctx) => app.viewer.moreMenu(ctx.el) },
     outline: { label: "Outline", key: "B", run: (app) => app.viewer.toggle("outline") },
     centerarea: { label: "Open centered on the area", key: "O", run: (app) => app.viewer.toggle("center") },
     details: { label: "Details", run: (app) => app.viewer.toggle("details") },
+    flashheld: {
+        label: "Flash while held",
+        run: (app) => app.say("Hold Space to flash the current view; release to stop."),
+    },
     nextarea: {
         label: "Next area",
         key: "N",
@@ -296,7 +299,7 @@ export function runAction(app, id, ctx, via) {
     app.logUsage("action", { a: id, via });
     const ok = availability(app, id, ctx);
     if (ok !== true) {
-        app.say(`${labelOf(app, id, ctx)}: ${ok}.`);
+        app.say(`${labelOf(app, id, ctx)}: ${ok}${String(ok).endsWith(".") ? "" : "."}`);
         return;
     }
     ACTIONS[id].run(app, ctx);

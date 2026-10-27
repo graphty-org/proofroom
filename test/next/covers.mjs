@@ -50,6 +50,7 @@ export const COVERS = {
         "layout-auto",
         "layout-side",
         "layout-stacked",
+        "flashheld",
         "options",
         "more",
         "outline",

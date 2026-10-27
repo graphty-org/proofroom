@@ -767,8 +767,8 @@ function showMenu(anchor, items) {
                 it.mark ? mark(it.mark[0], it.mark[1]) : null,
                 el("span", {}, it.label),
                 // A menu item prints its key in its right column (design 8.1.1).
-                ACTIONS[it.id].key ? el("span", { class: "mk" }) : null,
-                ACTIONS[it.id].key ? kb(ACTIONS[it.id].key) : null,
+                (it.key ?? ACTIONS[it.id].key) ? el("span", { class: "mk" }) : null,
+                (it.key ?? ACTIONS[it.id].key) ? kb(it.key ?? ACTIONS[it.id].key) : null,
             ],
         });
         node.addEventListener("click", () => {

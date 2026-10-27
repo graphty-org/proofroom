@@ -359,13 +359,13 @@ describe("one-sided snapshots and failures", () => {
         await drawn(page, 3);
         expect(await labels(page)).toEqual(["New: no baseline yet. Accept makes this the first baseline."]);
         for (const act of ["view-flash", "view-highlight", "view-spotlight"]) {
-            expect(await unavailable(act)).toEqual(["true", "Needs a baseline"]);
+            expect(await unavailable(act)).toEqual(["true", "Needs a baseline: this snapshot is new."]);
         }
         expect(await tool(page, "view-side").getAttribute("aria-checked")).toBe("true");
         expect(await tool(page, "baseline").innerText()).toContain("Baseline: none");
         expect(await unavailable("baseline")).toEqual(["true", "This snapshot has only one image"]);
         await page.keyboard.press("KeyH");
-        await expect.poll(() => message(page)).toBe("Highlight: Needs a baseline.");
+        await expect.poll(() => message(page)).toBe("Highlight: Needs a baseline: this snapshot is new.");
         // #4 no baseline yet.
         await page.keyboard.press("ArrowRight");
         await drawn(page, 4);
@@ -377,7 +377,7 @@ describe("one-sided snapshots and failures", () => {
         expect(
             await page.locator("#stage .frame").evaluate((n) => globalThis.getComputedStyle(n).backgroundImage),
         ).toContain("repeating-linear-gradient");
-        expect(await unavailable("view-spotlight")).toEqual(["true", "Needs a new image: this snapshot was removed"]);
+        expect(await unavailable("view-spotlight")).toEqual(["true", "Needs a new image: this snapshot was removed."]);
         // #6 failed: the error panel, no view available.
         await page.keyboard.press("ArrowRight");
         await expect.poll(() => page.locator(".decide .pos b").textContent()).toBe("#6");
@@ -385,10 +385,10 @@ describe("one-sided snapshots and failures", () => {
         await expect.poll(() => panel.innerText()).toContain("TypeError: nodes is undefined");
         await expect.poll(() => panel.innerText()).toContain("Reason: Timed out after 30 s");
         expect(await panel.innerText()).toContain(
-            "2 attempts: failed (Timed out after 30 s), failed (Timed out after 30 s)",
+            "2 attempts: failed (Timed out after 30 s), failed (Timed out after 30 s).",
         );
         for (const act of ["view-side", "view-flash", "view-highlight", "view-spotlight"]) {
-            expect(await unavailable(act)).toEqual(["true", "The story did not render: there is no image to compare"]);
+            expect(await unavailable(act)).toEqual(["true", "The story did not render: there is no image to compare."]);
         }
         // The remembered view is unchanged: the changed snapshot opens in Spotlight again.
         await page.keyboard.press("KeyJ");
@@ -515,6 +515,11 @@ describe("one test per toolbar control", () => {
         expect(await tool(page, "layoutmenu").innerText()).toContain("Layout: Auto");
         expect(await tool(page, "layoutmenu").getAttribute("title")).toBe("Auto chose side by side for this window");
         await page.keyboard.press("KeyY");
+        expect(await page.getByRole("menu").locator(".mi").allInnerTexts()).toEqual([
+            "Auto (side by side now)",
+            "Side by side",
+            "Over and under",
+        ]);
         await menuItem(page, "Over and under").click();
         await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("stacked");
         const [a, b] = await page
@@ -525,7 +530,7 @@ describe("one test per toolbar control", () => {
         await menuItem(page, "Side by side").click();
         await expect.poll(() => page.locator("#stage").getAttribute("class")).not.toContain("stacked");
         await tool(page, "layoutmenu").click();
-        await menuItem(page, "Auto").click();
+        await menuItem(page, "Auto (side by side now)").click();
         await expect.poll(() => tool(page, "layoutmenu").innerText()).toContain("Layout: Auto");
         // A tall window: each image is drawn larger over and under, and Auto says so.
         await page.setViewportSize({ width: 1280, height: 1500 });
@@ -533,6 +538,9 @@ describe("one test per toolbar control", () => {
         await expect
             .poll(() => tool(page, "layoutmenu").getAttribute("title"))
             .toBe("Auto chose over and under for this window");
+        await tool(page, "layoutmenu").click();
+        await menuItem(page, "Auto (over and under now)").waitFor();
+        await page.keyboard.press("Escape");
         await page.setViewportSize(NARROW);
         await expect.poll(() => page.locator("#stage").getAttribute("class")).not.toContain("stacked");
     });
@@ -546,6 +554,7 @@ describe("one test per toolbar control", () => {
         expect(await page.locator("#changes").getAttribute("class")).toContain("rail");
         await expect.poll(() => page.locator(".vtb .itemsum").isVisible()).toBe(true);
         expect(await page.locator(".vtb .itemsum").innerText()).toContain("#1");
+        expect(await page.locator(".vtb .itemsum .name").innerText()).toBe("component-0 / story-0");
         expect(await page.locator(".iline").isVisible()).toBe(false);
         await expect.poll(() => message(page)).toBe("Image only: Shift+3 brings the panes back.");
         // In the merged row, Image only sits in More.
@@ -599,17 +608,25 @@ describe("one test per toolbar control", () => {
             .getByRole("menu")
             .locator("[data-act]")
             .evaluateAll((ns) => ns.map((n) => [n.dataset.act, n.querySelector("kbd")?.textContent ?? null]));
+        // The viewer is under 900 px wide here, so More also holds Flash while held.
         expect(keys).toEqual([
+            ["flashheld", "hold Space"],
             ["imageonly", "Shift+3"],
-            ["layoutmenu", "Y"],
+            ["layout-auto", "Y"],
+            ["layout-side", "Y"],
+            ["layout-stacked", "Y"],
             ["outline", "B"],
             ["centerarea", "O"],
             ["details", null],
             ["listlink", null],
         ]);
+        await menuItem(page, "Layout: Over and under").click();
+        await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("stacked");
+        await tool(page, "more").click();
+        await menuItem(page, "Flash while held").click();
+        await expect.poll(() => message(page)).toBe("Hold Space to flash the current view; release to stop.");
+        await tool(page, "more").click();
         await menuItem(page, "Layout: Auto").click();
-        await menuItem(page, "Over and under").waitFor();
-        await page.keyboard.press("Escape");
         await expect.poll(() => page.getByRole("menu").count()).toBe(0);
         // B acts through More while Options is in it.
         await page.keyboard.press("KeyV");

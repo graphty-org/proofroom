@@ -789,12 +789,13 @@ const BADGE_FONT = () => `11px ${FONT()}`;
 /**
  * A snapshot's change size, as its row and the viewer's item line show it.
  * @param {any} s the snapshot
+ * @param {number} [count] its changed areas: by default the capture's count, in the viewer the diff's
  * @returns {string} "1,234 px, 3 areas", "image identical", or ""
  */
-export function sizeText(s) {
+export function sizeText(s, count = s.areas?.count) {
     if (s.status === "changed") {
         const px = s.changedPixels === null ? "" : `${fmt(s.changedPixels)} px`;
-        const a = s.areas ? `${fmt(s.areas.count)} area${s.areas.count === 1 ? "" : "s"}` : "";
+        const a = count === undefined ? "" : `${fmt(count)} area${count === 1 ? "" : "s"}`;
         return [px, a].filter(Boolean).join(", ");
     }
     if (s.status === "moved") {

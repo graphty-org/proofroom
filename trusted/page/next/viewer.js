@@ -27,6 +27,7 @@ const VIEWS = [
 const VIEW_NAME = { side: "Side by side", flash: "Flash", highlight: "Highlight", spotlight: "Spotlight" };
 const ZOOMS = ["fit", 1, 2, 4, 8];
 const LAYOUTS = { auto: "Auto", side: "Side by side", stacked: "Over and under" };
+const fullName = (s) => `${s.component} / ${s.name}`;
 const ONE_SIDED = ["new", "unseeded", "removed"];
 const LOCATOR_FROM = 2; // the zoom from which the locator shows
 const LABEL_H = 22; // a frame's label strip
@@ -95,10 +96,12 @@ export function createViewer(app) {
             return "Choose a snapshot first";
         }
         if (s.status === "failed") {
-            return "The story did not render: there is no image to compare";
+            return "The story did not render: there is no image to compare.";
         }
         if (v !== "side" && !twoImages(s)) {
-            return s.status === "removed" ? "Needs a new image: this snapshot was removed" : "Needs a baseline";
+            return s.status === "removed"
+                ? "Needs a new image: this snapshot was removed."
+                : "Needs a baseline: this snapshot is new.";
         }
         return true;
     }
@@ -337,10 +340,10 @@ export function createViewer(app) {
     function attemptsText(full) {
         const tries = [...(full?.attempts ?? []), full].filter(Boolean);
         if (tries.length === 0) {
-            return "1";
+            return "No attempt was recorded.";
         }
         const said = tries.map((a) => (a.reason ? `${a.status} (${a.reason})` : a.status));
-        return `${tries.length} attempt${tries.length === 1 ? "" : "s"}: ${said.join(", ")}`;
+        return `${tries.length} attempt${tries.length === 1 ? "" : "s"}: ${said.join(", ")}.`;
     }
 
     // ------------------------------------------------------------ the toolbar and the item line
@@ -419,7 +422,7 @@ export function createViewer(app) {
                 }),
             ),
             imageOnly()
-                ? el("span", { class: "itemsum grow" }, lineHead(s, "iline"), lineEnd(s))
+                ? el("span", { class: "itemsum grow" }, lineHead(s, "iline", fullName(s)), lineEnd(s))
                 : el("span", { class: "grow" }),
             display,
             control(app, "more", {
@@ -437,13 +440,14 @@ export function createViewer(app) {
         ];
     }
 
-    // The item line's start: Back, the number, the status and the story's name.
-    function lineHead(s, zone) {
+    // The item line's start: Back, the number, the status and the story's name (in the toolbar,
+    // its full name).
+    function lineHead(s, zone, name = s.name) {
         return [
             app.level >= 1 ? control(app, "back", { zone }) : null,
             el("b", { class: "num" }, `#${s.n}`),
             statusMark(s.status),
-            el("b", { class: "name ell", title: s.id }, s.name),
+            el("b", { class: "name ell", title: fullName(s) }, name),
         ];
     }
 
@@ -458,8 +462,10 @@ export function createViewer(app) {
         );
 
     function fillLine(s) {
+        // One count for the size text, Next area and "n of N": the diff's areas once drawn.
         const count = areas.key === s.key ? areas.count : (s.areas?.count ?? 0);
         const text = areas.key === s.key ? areas.text : `1 of ${count}`;
+        const size = sizeText(s, areas.key === s.key ? areas.count : s.areas?.count);
         const words = decisionWords(app, s);
         parts.line.className = `iline ${imageOnly() ? "ionly" : ""}`;
         fill(
@@ -467,7 +473,7 @@ export function createViewer(app) {
             lineHead(s, "iline"),
             s.mode ? el("span", { class: "tag" }, s.mode) : null,
             el("span", { class: "muted ell comp" }, `${s.project} > ${s.component}`),
-            sizeText(s) ? el("span", { class: "muted keep" }, sizeText(s)) : null,
+            size ? el("span", { class: "muted keep" }, size) : null,
             count > 1
                 ? [control(app, "nextarea", { zone: "iline" }), el("span", { class: "num keep", id: "area-at" }, text)]
                 : null,
@@ -618,7 +624,7 @@ export function createViewer(app) {
     const layoutTitle = () =>
         vs.layout === "auto"
             ? `Auto chose ${stacked ? "over and under" : "side by side"} for this window`
-            : `Layout: ${LAYOUTS[vs.layout]}`;
+            : "Layout";
 
     function menuItem(id, label, checked) {
         return { id, label, checked, check: true };
@@ -686,11 +692,14 @@ export function createViewer(app) {
             save();
             redraw();
         },
-        // From More's item, the menu opens under More (the item goes with the menu it was in).
         layoutMenu: (anchor) =>
             app.showMenu(
-                anchor.closest(".menu") ? document.getElementById("morebtn") : anchor,
-                Object.entries(LAYOUTS).map(([k, label]) => ({ id: `layout-${k}`, label, checked: vs.layout === k })),
+                anchor,
+                Object.keys(LAYOUTS).map((k) => ({
+                    id: `layout-${k}`,
+                    label: k === "auto" ? `Auto (${stacked ? "over and under" : "side by side"} now)` : LAYOUTS[k],
+                    checked: vs.layout === k,
+                })),
             ),
         optionsMenu: (anchor) =>
             app.showMenu(anchor, [
@@ -699,18 +708,37 @@ export function createViewer(app) {
                 menuItem("details", "Details", vs.details),
                 { id: "listlink", label: "Copy link" },
             ]),
-        moreMenu: (anchor) =>
+        // Below a viewer width of 900 px More also holds Flash while held, and below 800 px Zoom.
+        moreMenu: (anchor) => {
+            const vw = document.getElementById("viewer")?.clientWidth ?? innerWidth;
             app.showMenu(anchor, [
+                vw < 900 ? [{ head: "View" }, { id: "flashheld", label: "Flash while held", key: "hold Space" }] : [],
+                vw < 800
+                    ? [
+                          { head: "Zoom" },
+                          ...ZOOMS.map((z) => ({
+                              id: `zoom-${z}`,
+                              label: z === "fit" ? "Fit" : `${z}x`,
+                              checked: vs.zoom === z,
+                          })),
+                      ]
+                    : [],
                 { head: "Display" },
                 menuItem("imageonly", "Image only", imageOnly()),
-                { id: "layoutmenu", label: `Layout: ${LAYOUTS[vs.layout]}` },
+                Object.entries(LAYOUTS).map(([k, l]) => ({
+                    id: `layout-${k}`,
+                    label: `Layout: ${l}`,
+                    key: "Y",
+                    checked: vs.layout === k,
+                })),
                 { sep: true },
                 { head: "Options" },
                 menuItem("outline", "Outline", vs.outline),
                 menuItem("centerarea", "Open centered on the area", vs.center),
                 menuItem("details", "Details", vs.details),
                 { id: "listlink", label: "Copy link" },
-            ]),
+            ].flat());
+        },
         pressImageOnly: () => {
             const at = app.at();
             const { shown, before } = pressImageOnly(shownNow(), ioBefore, at);
