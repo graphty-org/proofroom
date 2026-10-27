@@ -149,8 +149,11 @@ let shown = { rpId: "", keys: [] }; // the last GET /api/passkeys answer
 
 // The Passkeys row: each registered key, and Register passkey....
 function passkeyRow(app, row) {
+    // As the mockup words it: "MacBook Touch ID, registered 2026-10-12". A label this page gave
+    // ends in its registration day ("Linux passkey, 2026-10-27").
+    const named = (label) => label.replace(/, (\d{4}-\d\d-\d\d)$/, ", registered $1");
     const keys = shown.keys.map((k) =>
-        el("div", {}, k.label ?? "passkey", ` (${k.rpId})`, k.pending ? ", waiting for its pull request to merge" : ""),
+        el("div", {}, named(k.label ?? "passkey"), k.pending ? ", waiting for its pull request to merge" : ""),
     );
     row.replaceChildren(
         el("b", {}, "Passkeys"),

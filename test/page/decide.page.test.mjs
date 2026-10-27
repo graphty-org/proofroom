@@ -769,7 +769,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         await menuItem(page, "None").click();
         await page.getByRole("button", { name: /^Show:/ }).click();
         await menuItem(page, "Rejected (2)").click();
-        const rej = page.locator("#snap-list .srow", { hasText: "Rejected before (#5000)" });
+        const rej = page.locator("#snap-list .srow", { hasText: "Rejected before (#5000, 2026-10-20)" });
         expect(await rej.getByRole("button", { name: "Undo" }).count()).toBe(0);
         await rej.click();
         await ready(page);

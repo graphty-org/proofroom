@@ -956,8 +956,8 @@ const changeLabel = (app) => app.open()?.label ?? "";
 
 /**
  * A decision's words, whole: "Accepted", "Accepted (not opened)", "Accepted (approved before
- * #1356)", "Rejected: reason", "Rejected before (#3486): reason", "Excluded: reason", "Finished: it
- * is on the branch".
+ * #1356)", "Rejected: reason", "Rejected before (#3486, 2026-10-20): reason" (the date when the
+ * server recorded one), "Excluded: reason", "Finished: it is on the branch".
  * @param {any} app the page
  * @param {any} s the snapshot
  * @returns {string} the words
@@ -979,7 +979,7 @@ export function decisionWords(app, s) {
         return d.bulk ? "Accepted (not opened)" : "Accepted";
     }
     if (s.rejectedBefore) {
-        return `Rejected before (${changeLabel(app)}): ${d.reason ?? ""}`;
+        return `Rejected before (${changeLabel(app)}${d.postedAt ? `, ${d.postedAt}` : ""}): ${d.reason ?? ""}`;
     }
     return `${d.decision === "reject" ? "Rejected" : "Excluded"}: ${d.reason ?? ""}`;
 }
@@ -1090,10 +1090,7 @@ function badgeNodes(badges, room) {
     if (!fits) {
         return [chip(badges)];
     }
-    return [
-        badgeNode(badges[0]),
-        badges.length > 1 ? chip(badges.slice(1)) : null,
-    ];
+    return [badgeNode(badges[0]), badges.length > 1 ? chip(badges.slice(1)) : null];
 }
 
 /**

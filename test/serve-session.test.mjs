@@ -14,7 +14,7 @@ import { PNG } from "pngjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { sha256 } from "../trusted/lib/compare.mjs";
-import { createApp } from "../trusted/lib/serve.mjs";
+import { createApp, serverIdOf } from "../trusted/lib/serve.mjs";
 import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
 import { copyFixture, FIXTURE, FIXTURE_CONFIG, job, makeRepo, onePr } from "./helpers.mjs";
 
@@ -324,6 +324,20 @@ describe("serve: the session cookie", () => {
             expect((await s.get(path, { cookie, "sec-fetch-site": "same-origin" })).status).toBe(200);
             expect((await s.get(path, { cookie, origin: s.origin })).status).toBe(200);
         }
+    });
+
+    it("keeps the server id in the work directory, so a restart keeps the cookie's name", async () => {
+        const s = await start();
+        const state = join(s.tmp, "state");
+        expect(readFileSync(join(state, "server-id"), "utf8")).toBe(s.app.serverId);
+        // A restart on the same work directory reads it back: the same name, and with the same
+        // token the same value, so an open page stays signed in.
+        expect(serverIdOf(state)).toBe(s.app.serverId);
+        // A damaged file is replaced, not used.
+        writeFileSync(join(state, "server-id"), "not an id");
+        const fresh = serverIdOf(state);
+        expect(fresh).toMatch(/^[0-9a-f]{16}$/);
+        expect(serverIdOf(state)).toBe(fresh);
     });
 
     it("ends the cookie with the token, and keeps another server's cookie apart", async () => {

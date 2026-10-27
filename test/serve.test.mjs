@@ -135,6 +135,11 @@ async function finishJob(s, id) {
     return { begun, job: await endedJob(s) };
 }
 
+// The server's local day, as a posted reject records it.
+const today = () => new Date().toLocaleDateString("en-CA");
+// A Finish across local midnight records either day.
+const dayOf = (before) => expect.toSatisfy((d) => d === before || d === today());
+
 describe("serve: pull requests", () => {
     it("lists every open pull request, with counts per project, and one without a CI run as waiting", async () => {
         const s = await start({
@@ -1052,6 +1057,7 @@ describe("serve: decisions and Finish", () => {
             decision: "reject",
             reason: "thumb moved",
         });
+        const day = today();
         const { begun, job } = await finishJob(s, "123");
         expect(begun.status).toBe(202);
         expect(job.error).toBeNull();
@@ -1063,7 +1069,7 @@ describe("serve: decisions and Finish", () => {
         // this capture, the reject for good.
         expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions).toEqual({
             "badge--default.light.png": { decision: "accept", reason: null, posted: true },
-            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true },
+            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true, postedAt: dayOf(day) },
         });
         // A second Finish has nothing new to post.
         expect((await finishJob(s, "123")).job.error).toBe("nothing decided");
@@ -1084,6 +1090,7 @@ describe("serve: decisions and Finish", () => {
             s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
         await decide("badge--default.light.png", "accept");
         await decide("slider--sizes.png", "reject", "thumb moved");
+        const day = today();
         const { job } = await finishJob(s, "123");
         expect(job.error).toBeNull();
         const decisions = async () => (await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions;
@@ -1107,7 +1114,7 @@ describe("serve: decisions and Finish", () => {
         // comment is not on the branch, so the revert leaves it posted.
         expect(await decisions()).toEqual({
             "badge--default.light.png": { decision: "accept", reason: null },
-            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true },
+            "slider--sizes.png": { decision: "reject", reason: "thumb moved", posted: true, postedAt: dayOf(day) },
         });
         expect(await unpublished()).toBe(1);
     });

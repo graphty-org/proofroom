@@ -63,9 +63,12 @@ describe("the Baselines screen", () => {
         ]);
         expect(await page.locator("#bl-title").innerText()).toContain("6 baselines");
         const first = page.locator("#bl-list .blrow").first();
-        expect(await first.innerText()).toContain("#1");
-        expect(await first.innerText()).toContain("button / primary");
-        expect(await first.innerText()).toContain("Last changed 2026-10-15 in #71");
+        // textContent: a row just drawn may not be painted yet (content-visibility), and innerText
+        // skips what is not painted.
+        const text = await first.textContent();
+        expect(text).toContain("#1");
+        expect(text).toContain("button / primary");
+        expect(text).toContain("Last changed 2026-10-15 in #71");
         await expect.poll(() => first.locator(".pic").getAttribute("class")).toContain("ready");
         expect(await page.locator("#bl-viewer .iline").innerText()).toContain("The current baseline");
         expect(await labels(page)).toEqual(["Current baseline"]);
@@ -230,7 +233,7 @@ describe("the Baselines screen", () => {
         await expect.poll(() => page.locator("#bl-list .blrow").count()).toBe(8);
         expect(await message(page)).toBe("Showing the baselines of #3486 Change 3486.");
         const fresh = page.locator('#bl-list .blrow[data-bl="graphty-element/graph--fresh.png"]');
-        expect(await fresh.locator(".pic").innerText()).toBe("Not downloaded");
+        expect(await fresh.locator(".pic").textContent()).toBe("Not downloaded");
         const dl = page.locator('#bl-ctrl [data-act="bldl"]');
         expect(await dl.innerText()).toBe("Download 2 images (7.0 MB)");
         // Viewing one not downloaded fetches nothing: it says so in the picture's place.

@@ -143,6 +143,16 @@ export function groupsOf(rows, { grouping, clusters, pairs }) {
             }
         }
     }
+    // A look-alike cluster counts images approved before, which wait in their own group: one
+    // image left is not a look-alike group.
+    for (const g of [...groups.values()]) {
+        if (g.kind === "look" && g.rows.length < 2) {
+            groups.delete(g.key);
+            for (const s of g.rows) {
+                add("z:rest", "Different from the rest", "rest", s);
+            }
+        }
+    }
     const kindOrder = { before: 0, identical: 1, look: 2, rest: 3 };
     const out = [...groups.values()];
     out.sort((a, b) => {

@@ -25,7 +25,9 @@ export const SORTS = { needs: "Needs me first", newest: "Newest", most: "Most un
 /**
  * A project's state, from its summary.
  * @param {any} p the project summary
- * @returns {"ready" | "downloading" | "capturing" | "expired" | "failed"} the state
+ * @returns {"ready" | "none" | "downloading" | "capturing" | "expired" | "failed"} the state: "none"
+ *     for a project the change has no capture of (not affected, or never captured), which hides
+ *     nothing of the projects it has
  */
 export function projectState(p) {
     if (p.downloading) {
@@ -33,6 +35,9 @@ export function projectState(p) {
     }
     if (p.problem === null || p.problem === undefined) {
         return "ready";
+    }
+    if (p.problem === "no capture" || p.problem === "not affected") {
+        return "none";
     }
     if (/still running|waiting for CI/.test(p.problem)) {
         return "capturing";
@@ -52,8 +57,14 @@ const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
  * @returns {any} the row's model
  */
 export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed = new Set(), words = GITHUB_WORDS }) {
-    const projects = t.projects ?? [];
-    const states = projects.map(projectState);
+    // A project with no capture (not affected, never captured) is left out of the row, so it
+    // hides nothing of the projects that were captured. When no project was captured at all, the
+    // ones never captured read as failed captures.
+    const all = t.projects ?? [];
+    const withCapture = all.filter((p) => projectState(p) !== "none");
+    const projects = withCapture.length > 0 ? withCapture : all.filter((p) => p.problem !== "not affected");
+    const stateOf = (p) => (projectState(p) === "none" ? "failed" : projectState(p));
+    const states = projects.map(stateOf);
     const readyN = states.filter((s) => s === "ready").length;
     const total = projects.reduce((n, p) => n + (p.reviewable ?? 0), 0);
     const decided = projects.reduce((n, p) => n + (p.decided ?? 0), 0);
@@ -110,7 +121,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         draft: t.draft === true,
         lookOnly: t.lookOnly === true,
         url: t.url ?? null,
-        logUrl: projects.find((p) => projectState(p) !== "ready" && p.logUrl)?.logUrl ?? t.runUrl ?? null,
+        logUrl: projects.find((p) => stateOf(p) !== "ready" && p.logUrl)?.logUrl ?? t.runUrl ?? null,
         runKey: `${t.runId}-${t.runAttempt}`,
         projects: projects.map((p) => p.project),
         counts: projects.reduce((all, p) => {
@@ -143,7 +154,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
             count: `Capturing on ${words.ciName ?? "this machine"}, ${readyN} of ${plural(projects.length, "project")}`,
         });
     } else if (states.includes("failed")) {
-        const names = projects.filter((p) => projectState(p) === "failed").map((p) => p.project);
+        const names = projects.filter((p) => stateOf(p) === "failed").map((p) => p.project);
         Object.assign(row, {
             state: "failed",
             mark: ["failed", "c-failed"],
@@ -155,7 +166,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
             mark: ["failed", "c-failed"],
             count: `Incomplete: ${readyN} of ${plural(projects.length, "project")}`,
             why: projects
-                .filter((p) => projectState(p) === "expired")
+                .filter((p) => stateOf(p) === "expired")
                 .map((p) => `${p.project}: ${p.problem}`)
                 .join("\n"),
         });
@@ -299,7 +310,10 @@ export function captureRowOf(c, { now, words = GITHUB_WORDS, status = true }) {
                     ? `Capturing on ${words.ciName ?? "CI"}${status ? `, ${fmt(c.done)} of ${plural(c.projects.length, "project")}` : ""}`
                     : c.state === "queued"
                       ? "On this machine, queued: local captures run one at a time"
-                      : `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`,
+                      : c.total > 0
+                        ? `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`
+                        : // No count before the capture has counted its stories, as on the Captures screen.
+                          "On this machine",
         notReady: true,
         dismissKey: id,
         dismissable: false,

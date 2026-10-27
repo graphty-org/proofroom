@@ -441,6 +441,29 @@ export function sessionToken(stateDir) {
 }
 
 /**
+ * The server id that names the session cookie, created once per work directory like the token, so
+ * a restart keeps the cookie's name (and, with the same token, its value): an open page stays
+ * signed in, and restarts add no cookies to the browser.
+ * @param {string} stateDir where the id file lives
+ * @returns {string} the id
+ */
+export function serverIdOf(stateDir) {
+    const file = join(stateDir, "server-id");
+    const id = randomBytes(8).toString("hex");
+    try {
+        const kept = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+        if (/^[0-9a-f]{16}$/.test(kept)) {
+            return kept;
+        }
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(file, id);
+    } catch {
+        // The id cannot be kept (a full or failing disk): this start's own id names the cookie.
+    }
+    return id;
+}
+
+/**
  * Runs git and resolves with its output as bytes.
  * @param {string} repo the repository
  * @param {string[]} args git's arguments
@@ -709,7 +732,8 @@ async function loadResults(dir, name) {
  * @param {number[]} [options.retryDelays] milliseconds before each retry of a Finish's network call
  * @param {import("./thumbs.mjs").Pool} [options.pictures] the queue the pictures are made in (a
  *     test's fake records the order they start in)
- * @param {string} [options.serverId] what names this server's session cookie; random per start
+ * @param {string} [options.serverId] what names this server's session cookie; by default the one
+ *     kept in the work directory (serverIdOf)
  * @param {number} [options.ciEvery] the least time, in milliseconds, between two asks of a CI
  *     capture's state (captures.mjs)
  * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string, stopCaptures: () => void }}
@@ -734,10 +758,11 @@ export function createApp({
     patience = PATIENCE,
     retryDelays,
     pictures = pool,
-    serverId = randomBytes(8).toString("hex"),
+    serverId,
     ciEvery,
 }) {
     const stateDir = join(tmp, "state");
+    serverId ??= serverIdOf(stateDir);
     const host = codeHost ?? codeHostFor(config, { gh, repo });
     // Plain git: the changes are branches, with no number and no CI run; each is reviewed through
     // its capture on this machine (captures.mjs), named after the branch.
@@ -1007,7 +1032,8 @@ export function createApp({
      * answer is shared: callers never change it (update changes a copy).
      * @param {object} t the target
      * @returns {Readonly<Record<string, { decision: string, reason: string | null, hash: string | null,
-     *     base?: string | null, bulk?: true, posted?: true }>>} the decisions
+     *     base?: string | null, bulk?: true, posted?: true, postedAt?: string }>>} the decisions (`postedAt`:
+     *     the day, YYYY-MM-DD, a reject was posted)
      */
     const readState = (t) => {
         const file = stateFile(t);
@@ -3547,33 +3573,25 @@ export function createApp({
     };
 
     /**
-     * Each capture set's Look alike groups, with what they were computed from: they depend on the
-     * images and the images approved before, never on the decisions, so they are computed once per
-     * load (and again only when a refresh replaces the approvals), not once per list request.
-     * They depend on nothing else of the target than whether it can be accepted (approved before),
-     * so pages on two runs that share a capture set share its groups.
-     * @type {WeakMap<object, { ok: boolean, approved: Map<string, object>,
-     *     grouped: ReturnType<typeof clusters> }>}
+     * Each capture set's Look alike groups: they depend on its images only, never on the decisions
+     * or the target, so they are computed once per load, not once per list request, and pages on
+     * two runs that share a capture set share its groups.
+     * @type {WeakMap<object, ReturnType<typeof clusters>>}
      */
     const lookAlikes = new WeakMap();
     /**
-     * A project's Look alike groups. They leave out what has a group of its own, approved before,
-     * whatever the item's decision.
-     * @param {object} t the target
-     * @param {string} name the project
+     * A project's Look alike groups, of every reviewable item, whatever its decision: computed once
+     * per capture set. The page puts an image approved before in a group of its own first, so it
+     * joins its look-alikes only once a decision since takes it out of that group.
      * @param {object} results its results.json
      * @param {object[]} shown its items as the list shows them
      * @returns {ReturnType<typeof clusters>} the groups
      */
-    const lookAlike = (t, name, results, shown) => {
-        const ok = acceptable(t, name);
-        const kept = lookAlikes.get(results);
-        if (kept?.ok === ok && kept.approved === approved) {
-            return kept.grouped;
+    const lookAlike = (results, shown) => {
+        if (!lookAlikes.has(results)) {
+            lookAlikes.set(results, clusters(shown.filter((i) => REVIEWABLE.has(i.status))));
         }
-        const grouped = clusters(shown.filter((i) => REVIEWABLE.has(i.status) && !approvedBefore(t, name, i)));
-        lookAlikes.set(results, { ok, approved, grouped });
-        return grouped;
+        return lookAlikes.get(results);
     };
 
     /**
@@ -3599,27 +3617,35 @@ export function createApp({
      */
     const blobs = new Map();
     const pictured = new Map();
+    // What each capture directory put in those two maps, so forgetting it touches only its own keys.
+    const keysOfDir = new Map();
     const remember = (map, key, dir, value) => {
         const by = map.get(key) ?? new Map();
         by.delete(dir);
         by.set(dir, value);
         map.set(key, by);
+        const own = keysOfDir.get(dir) ?? new Map();
+        own.set(map, (own.get(map) ?? new Set()).add(key));
+        keysOfDir.set(dir, own);
     };
     // The newest capture that names the key.
     const recall = (map, key) => [...(map.get(key)?.values() ?? [])].pop();
     // Forgets every capture directory under `root`, as prune() removes it.
     function forgetImages(root) {
-        for (const map of [blobs, pictured]) {
-            for (const [key, by] of map) {
-                for (const dir of by.keys()) {
-                    if (dir === root || dir.startsWith(`${root}${sep}`)) {
-                        by.delete(dir);
+        for (const [dir, own] of keysOfDir) {
+            if (dir !== root && !dir.startsWith(`${root}${sep}`)) {
+                continue;
+            }
+            for (const [map, keys] of own) {
+                for (const key of keys) {
+                    const by = map.get(key);
+                    by?.delete(dir);
+                    if (by?.size === 0) {
+                        map.delete(key);
                     }
                 }
-                if (by.size === 0) {
-                    map.delete(key);
-                }
             }
+            keysOfDir.delete(dir);
         }
     }
     function indexImages(dir, r) {
@@ -4171,7 +4197,7 @@ export function createApp({
                 return { ...i, ...(to !== undefined && to !== i.baseline && { reReview: true }) };
             });
             const decided = new Map(mine.map(([k, v]) => [k.slice(prefix.length), v]));
-            const grouped = lookAlike(t, name, p.results, shown);
+            const grouped = lookAlike(p.results, shown);
             const since = query?.get("since");
             const earlier = typeof since === "string" && since !== runKey(t) ? held.get(`${id} ${since}`) : null;
             return [
@@ -4755,6 +4781,10 @@ export function createApp({
                     const k = `${project}/${file}`;
                     if (saved[k] && (decision !== "reject" || posted)) {
                         saved[k].posted = true;
+                        // The day a reject was posted, for the page's "Rejected before (#N, date)".
+                        if (decision === "reject") {
+                            saved[k].postedAt = new Date().toLocaleDateString("en-CA");
+                        }
                     }
                 }
             });
@@ -4874,7 +4904,7 @@ export function createApp({
             .find((c) => c.startsWith(`${COOKIE}=`));
         return given !== undefined && token.length > 0 && tokenOk(given.slice(COOKIE.length + 1), cookieValue);
     };
-    // A week, so the cookies of earlier starts (each its own name) expire; the page signs in on load.
+    // A week; the page renews it on load. A restart keeps its name (serverIdOf), so restarts add none.
     const setCookie = `${COOKIE}=${cookieValue}; Path=/; Max-Age=604800; HttpOnly; SameSite=Strict${
         origin.startsWith("https:") ? "; Secure" : ""
     }`;

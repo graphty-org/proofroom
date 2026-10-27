@@ -23,7 +23,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
@@ -240,7 +240,8 @@ export function openCapture({
     const fontconfig = config.fontconfig ? join(root, config.fontconfig) : null;
     const planned = new Map();
     // A file of its own per openCapture(), read by collect.
-    const planFile = out && join(out, `plan-${process.pid}-${threadId}-${++plans}.json`);
+    const planFile =
+        out && join(out, `plan-${process.pid}-${threadId}-${++plans}-${randomBytes(4).toString("hex")}.json`);
     let plan = null;
     const writePlan = async () => {
         await mkdir(out, { recursive: true });

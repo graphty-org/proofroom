@@ -312,7 +312,12 @@ export function richRows(name, n = 180) {
             approvedBefore: { pr: 1356, reviewedAt: "2026-10-01T00:00:00Z" },
         }),
         d(at(6), { decision: "reject", reason: "Legend overlaps the minimap at the right edge" }),
-        d(at(7), { decision: "reject", reason: "The label wraps under the icon", posted: true }),
+        d(at(7), {
+            decision: "reject",
+            reason: "The label wraps under the icon",
+            posted: true,
+            postedAt: "2026-10-20",
+        }),
         d(at(8), { decision: "exclude", reason: "Animated: never stable" }),
         d(at(9), { decision: "accept", reason: null, posted: true }),
     ]);

@@ -446,7 +446,7 @@ describe("serve: the decision index", () => {
         expect(filters.itemsByFile).not.toHaveBeenCalled();
     });
 
-    it("leaves an image approved before out of Look alike, even once it is rejected", async () => {
+    it("groups an image approved before in Look alike too, so it joins its look-alikes once rejected", async () => {
         const button = capturedItems().find((i) => i.file === "button--primary.dark.png");
         const items = ["a", "b", "c"].map((name) => ({
             ...button,
@@ -480,13 +480,14 @@ describe("serve: the decision index", () => {
         const list = async () => (await s.api("GET", `/api/pr/123/${PROJECT}`)).body;
         const first = await list();
         expect(first.decisions["look--a.dark.png"]).toMatchObject({ decision: "accept", approvedBefore: { pr: 77 } });
-        expect(first.clusters.map((c) => c.files)).toEqual([["look--b.dark.png", "look--c.dark.png"]]);
+        const all = [["look--a.dark.png", "look--b.dark.png", "look--c.dark.png"]];
+        expect(first.clusters.map((c) => [...c.files].sort())).toEqual(all);
         const body = { id: "123", project: PROJECT, file: "look--a.dark.png" };
         const reject = await s.api("POST", "/api/decide", { ...body, decision: "reject", reason: "not this time" });
         expect(reject.status).toBe(200);
         const after = await list();
         expect(after.decisions["look--a.dark.png"]).toEqual({ decision: "reject", reason: "not this time" });
-        expect(after.clusters.map((c) => c.files)).toEqual([["look--b.dark.png", "look--c.dark.png"]]);
+        expect(after.clusters.map((c) => [...c.files].sort())).toEqual(all);
         // Its Undo brings back the accept approved before.
         expect((await s.api("POST", "/api/decide", { ...body, decision: null })).status).toBe(200);
         expect((await list()).decisions["look--a.dark.png"]).toMatchObject({ approvedBefore: { pr: 77 } });

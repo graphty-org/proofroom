@@ -553,7 +553,8 @@ describe("the Captures screen", () => {
         await expect
             .poll(() => page.locator(".sec").evaluateAll((ns) => ns.map((n) => n.textContent.trim())))
             .toEqual(["Capturing or downloading1"]);
-        expect(await page.locator(".chg").innerText()).toContain("On this machine, 0 of 0 stories");
+        // No count before the capture has counted its stories.
+        expect(await page.locator(".chg").getAttribute("aria-label")).toMatch(/: On this machine$/);
         writeFileSync(go, "");
         await page.getByRole("button", { name: "Captures", exact: true }).click();
         const review = page.locator("#cap-detail").getByRole("button", { name: /^Review results/ });

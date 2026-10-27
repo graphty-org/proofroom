@@ -9,6 +9,7 @@
  * gate read.
  */
 
+import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
@@ -150,7 +151,7 @@ export const PRODUCTION = {
  *
  * Each story's shot is judged at once by compareSnapshot() (proofroom/compare), which appends its
  * result line to `<out>/results-<pid>-<thread>.ndjson` and keeps the images the review page needs.
- * At the end of the run the reporter writes `<out>/run-<pid>-<n>.json`: which shard ran, the project's
+ * At the end of the run the reporter writes `<out>/run-<pid>-<n>-<random>.json`: which shard ran, the project's
  * story files and those it ran, and whether every story test that ran reached the visual step.
  * `proofroom collect` turns the shards' directories into the capture the page and the gate read. A
  * rerun of the failed story files into the same directory adds its own lines and run file; a
@@ -334,8 +335,9 @@ export function visualStoryTest({ project, out, root = repoRoot(), fail = "diffe
                 excluded: [...excluded].sort((a, b) => a.localeCompare(b)),
                 ...files,
             };
-            // A file of its own per test run, so a rerun into the same directory (watch mode) keeps the earlier run's.
-            const runFile = join(out, `run-${process.pid}-${++runs}.json`);
+            // A file of its own per test run, so a rerun into the same directory (watch mode, or a process
+            // given an earlier run's pid) keeps the earlier run's.
+            const runFile = join(out, `run-${process.pid}-${++runs}-${randomBytes(4).toString("hex")}.json`);
             writeFileSync(`${runFile}.tmp`, `${JSON.stringify(run, null, 2)}\n`);
             renameSync(`${runFile}.tmp`, runFile);
             planned.clear();
