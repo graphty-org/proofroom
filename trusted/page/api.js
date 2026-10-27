@@ -1,6 +1,6 @@
 /*
- * The server, as the new page talks to it: the session token (from the address or kept in this
- * browser, shared with today's page), the session cookie the server sets for it, JSON requests,
+ * The server, as the page talks to it: the session token (from the address or kept in this
+ * browser), the session cookie the server sets for it, JSON requests,
  * whether the server is reachable at all, and the usage events the server's owner may have turned
  * on.
  */

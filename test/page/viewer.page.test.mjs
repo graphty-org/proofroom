@@ -791,6 +791,25 @@ describe("counted work", () => {
     });
 });
 
+describe("the diff worker", () => {
+    it("shows the error when the worker cannot start, and starts it again for Retry", async () => {
+        t = await openNext(browser, { targets: targets(), rows: (i, n, q) => rows(i, n, q) });
+        await t.page.route("**/api/blob/**", (route) =>
+            route.fulfill({ status: 200, contentType: "image/png", body: blob(route.request().url().split("/").pop()) }),
+        );
+        await t.page.route("**/viewer/diff-worker.js", (route) => route.fulfill({ status: 500, body: "" }));
+        await t.page.locator(`.chg[data-chg="${SMALL}"]`).click();
+        // Spotlight, the first view, needs the diff: both panes say why it is missing.
+        const failed = t.page.locator("#stage .failed");
+        await expect.poll(() => failed.first().textContent()).toContain("the changed pixels could not be worked out");
+        await t.page.unroute("**/viewer/diff-worker.js");
+        await failed.first().getByRole("button", { name: "Retry" }).click();
+        await drawn(t.page, 1);
+        expect(await failed.count()).toBe(0);
+        expect(await labels(t.page)).toEqual(["Baseline", "Spotlit new"]);
+    });
+});
+
 // Last, after every test above: each action listed for this file was pressed by one of them.
 it("pressed every action covers.mjs lists for this file", () => {
     expect([...COVERS["viewer.page.test.mjs"]].filter((id) => !pressed.has(id))).toEqual([]);

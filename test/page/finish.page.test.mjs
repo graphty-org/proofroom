@@ -615,7 +615,7 @@ describe("on the review server", () => {
                 });
                 expect(res.status).toBe(200);
             }
-            await page.goto(`${s.origin}/next/#token=${TOKEN}&change=123`);
+            await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await page.locator("#snap-list .srow.cur").waitFor({ state: "attached" });
             const finish = page.locator('#top [data-act="finish"]');
             await expect.poll(() => shows(finish)).toBe("Finish #123 (2)");
@@ -677,7 +677,7 @@ describe("on the review server", () => {
                 decision: "accept",
             });
             expect(res.status).toBe(200);
-            await page.goto(`${s.origin}/next/#token=${TOKEN}&change=master`);
+            await page.goto(`${s.origin}/#token=${TOKEN}&change=master`);
             await page.locator("#snap-list .srow.cur").waitFor({ state: "attached" });
             const finish = page.locator('#top [data-act="finish"]');
             await expect.poll(() => shows(finish)).toBe("Finish seed (1)");

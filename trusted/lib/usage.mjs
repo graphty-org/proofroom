@@ -111,8 +111,8 @@ export function summarize(events) {
         return Object.fromEntries(Object.entries(out).map(([k, v]) => [k, timing(v)]));
     };
 
-    // Controls: presses, and the ones shown but never pressed. Today's page logs a press by the
-    // control's name ("press", with key presses named "key-J"); the new page logs every press by
+    // Controls: presses, and the ones shown but never pressed. The page before 1.0.0 logged a press
+    // by the control's name ("press", with key presses named "key-J"); the page logs every press by
     // its action id ("action", by pointer or by key), so a key press there is "key-<action id>".
     const presses = new Map();
     for (const e of byType("press")) {

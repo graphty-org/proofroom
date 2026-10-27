@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-const CSS = readFileSync(new URL("../../trusted/page/next/next.css", import.meta.url), "utf8");
+const CSS = readFileSync(new URL("../../trusted/page/page.css", import.meta.url), "utf8");
 
 // The token values of one block of the stylesheet.
 const tokensIn = (block) =>
@@ -27,7 +27,7 @@ const contrast = (a, b) => {
     return (hi + 0.05) / (lo + 0.05);
 };
 
-// [text token, background token]: every pair a rule of next.css draws text with.
+// [text token, background token]: every pair a rule of page.css draws text with.
 const TEXT_PAIRS = [
     ["ink", "bg"],
     ["ink", "surface"],

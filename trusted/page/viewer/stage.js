@@ -577,7 +577,7 @@ export function createStage(host) {
         host.drawn(item);
         if (first) {
             view.appearedAt = Infinity;
-            // A stage kept across snapshots (the new page's) is ready again only for this one.
+            // A stage kept across snapshots is ready again only for this one.
             delete stage.dataset.ready;
             const { items, index } = host.pass();
             const after = items.slice(index + 1, index + 3);

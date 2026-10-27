@@ -540,7 +540,7 @@ describe("the Captures screen", () => {
                 await s.close();
             },
         };
-        await page.goto(`${s.origin}/next/#token=${TOKEN}`);
+        await page.goto(`${s.origin}/#token=${TOKEN}`);
         await expect.poll(() => page.locator("#snap-list").innerText()).toContain("No captures yet.");
         expect(await page.locator("#snap-list").innerText()).toContain(
             "Captures made by CI appear here on their own once a pull request runs its visual job. Or capture the working tree on this machine now.",

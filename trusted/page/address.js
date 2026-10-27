@@ -1,11 +1,11 @@
 /*
  * The page's address: every state a click reaches is after `#`, so a copied link opens it again and
  * the browser's Back and Forward move between states. A snapshot is named by its file (project and
- * file name), never by its number. Addresses today's page wrote (in pull request comments) are read
- * and converted. Pure functions, no DOM.
+ * file name), never by its number. Addresses the page before 1.0.0 wrote (in pull request comments)
+ * are read and converted. Pure functions, no DOM.
  */
 
-// The keys the new page writes, in order. Later stages fill in show, find, view and the rest.
+// The keys the page writes, in order.
 const KEYS = [
     "token",
     "change",
@@ -23,16 +23,16 @@ const KEYS = [
 ];
 
 /**
- * Reads an address's fragment, in the new page's form or today's page's.
+ * Reads an address's fragment, in the page's form or the form of the page before 1.0.0.
  * @param {string} hash the fragment, with or without its "#"
  * @returns {{ token: string | null, change: string | null, snap: string | null, old: boolean } & Record<string, string | null>}
- *     the state it names; `old` when it was today's page's form
+ *     the state it names; `old` when it was the old form
  */
 export function parseAddress(hash) {
     const p = new URLSearchParams(String(hash).replace(/^#/, ""));
     const out = Object.fromEntries(KEYS.map((k) => [k, p.get(k)]));
     out.old = false;
-    // Today's page: #token=..&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit
+    // The page before 1.0.0: #token=..&target=123&project=p&filter=undecided&q=text&item=file.png&view=side&zoom=fit
     //   &box=on&baseline=on&focus=off&blink=off&flash=off
     if (!out.change && p.has("target")) {
         out.old = true;

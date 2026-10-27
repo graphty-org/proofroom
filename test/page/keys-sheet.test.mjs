@@ -5,8 +5,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { ACTIONS } from "../../trusted/page/next/actions.js";
-import { MAP } from "../../trusted/page/next/key-map.js";
+import { ACTIONS } from "../../trusted/page/actions.js";
+import { MAP } from "../../trusted/page/key-map.js";
 
 // The rows whose actions are still to come: none since the decision keys arrived.
 const PENDING = [];

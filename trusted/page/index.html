@@ -4,47 +4,93 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
         <title>Visual review</title>
-        <link rel="icon" href="icon.svg" type="image/svg+xml" />
-        <link rel="apple-touch-icon" href="icon.png" />
-        <link rel="manifest" href="manifest.webmanifest" />
+        <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+        <link rel="apple-touch-icon" href="/icon.png" />
+        <link rel="manifest" href="/manifest.webmanifest" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-title" content="Visual review" />
-        <link rel="stylesheet" href="review.css" />
-        <script type="module" src="review.js"></script>
+        <link rel="stylesheet" href="/page.css" />
+        <script type="module" src="/app.js"></script>
     </head>
     <body>
         <header id="top">
-            <h1><button type="button" id="home" class="link">Visual review</button></h1>
-            <nav id="crumbs" aria-label="Where you are" hidden>
-                <label class="picker"
-                    ><span>Target</span
-                    ><select id="pick-target"></select
-                ></label>
-                <button type="button" id="prev-project" aria-keyshortcuts="[" aria-label="Previous project">
-                    &lt;
-                </button>
-                <label class="picker"
-                    ><span>Project</span
-                    ><select id="pick-project"></select
-                ></label>
-                <button type="button" id="next-project" aria-keyshortcuts="]" aria-label="Next project">&gt;</button>
-                <button type="button" id="to-grid" class="link crumb" aria-keyshortcuts="Escape" hidden>Grid</button>
-                <button type="button" id="to-item" class="link crumb" hidden></button>
-                <button type="button" id="target-title" class="link" hidden></button>
-            </nav>
-            <span id="finish-slot"></span>
-            <button type="button" id="keys-button" aria-keyshortcuts="?">
-                <span class="keys-word">Keys</span> <kbd aria-hidden="true">?</kbd>
-            </button>
-            <button type="button" id="copy-link">Copy link</button>
+            <span class="brand">Visual review</span><span class="repo" id="repo"></span>
+            <span class="tabs" id="tabs"></span><span id="newcap-slot"></span>
+            <span class="grow"></span>
+            <span id="status-slot"></span><span id="frame-slot"></span>
         </header>
-        <section id="bar" aria-label="Tools"></section>
-        <section id="status-row" aria-label="Messages">
-            <output id="status"></output><span id="elapsed" aria-hidden="true"></span
-            ><span id="alert" role="alert"></span
-            ><button type="button" id="status-more" class="link" hidden>More</button>
-        </section>
-        <main id="app" tabindex="-1"><p>Loading...</p></main>
+        <div id="screens">
+            <nav id="changes" class="pane" aria-label="Changes">
+                <div id="rail-c"></div>
+                <div class="pane-head">
+                    <div class="pane-title"><span class="grow">Changes</span><span id="hide-c"></span></div>
+                    <input
+                        type="search"
+                        id="chg-find"
+                        data-act="find"
+                        data-key="/"
+                        data-zone="changes-head"
+                        data-find="Find a change: number, title, branch, author"
+                        aria-label="Find a change: number, title, branch, author"
+                        autocomplete="off"
+                    />
+                    <div class="row-ctrl small">
+                        <span id="chg-next"></span><span id="chg-sort"></span
+                        ><span class="grow muted" id="chg-count"></span>
+                    </div>
+                </div>
+                <div class="list" id="chg-list" tabindex="0" role="listbox" aria-label="Changes"></div>
+            </nav>
+            <section id="snaps" class="pane" aria-label="Snapshots">
+                <div id="rail-s"></div>
+                <div class="pane-head" id="snaps-head"></div>
+                <div class="banner" id="snap-banner" role="status" hidden></div>
+                <div class="banner" id="snap-renderer" role="status" hidden></div>
+                <div class="banner" id="snap-stale" role="status" hidden></div>
+                <div class="list" id="snap-list" tabindex="0" role="listbox" aria-label="Snapshots"></div>
+            </section>
+            <main class="viewer" id="viewer" tabindex="-1" aria-label="Viewer"></main>
+            <nav id="bl-proj" class="pane bl" aria-label="Projects">
+                <div id="rail-p"></div>
+                <div class="pane-head">
+                    <div class="pane-title"><span class="grow">Projects</span><span id="hide-p"></span></div>
+                    <label class="small muted">Baselines of <span id="bl-ref-slot"></span></label>
+                </div>
+                <div class="list tree" id="bl-tree" tabindex="0" role="listbox" aria-label="Projects"></div>
+            </nav>
+            <section id="bl-list-pane" class="pane bl" aria-label="Baselines">
+                <div id="rail-b"></div>
+                <div class="pane-head">
+                    <div class="pane-title" id="bl-title"></div>
+                    <input
+                        type="search"
+                        id="bl-find"
+                        data-act="find"
+                        data-key="/"
+                        data-zone="snaps-head"
+                        data-find="Find a story, or a number"
+                        aria-label="Find a story, or a number"
+                        autocomplete="off"
+                    />
+                    <div class="row-ctrl" id="bl-ctrl"></div>
+                </div>
+                <div class="list" id="bl-list" tabindex="0" role="listbox" aria-label="Baselines"></div>
+            </section>
+            <main class="viewer bl" id="bl-viewer" tabindex="-1" aria-label="Baseline viewer"></main>
+        </div>
+        <div id="scr-captures" hidden>
+            <nav id="cap-list" class="pane" aria-label="Captures">
+                <div class="pane-head">
+                    <div class="pane-title"><span class="grow">Captures</span><span id="cap-new"></span></div>
+                </div>
+                <div class="list" id="cap-rows" tabindex="0" role="listbox" aria-label="Captures"></div>
+            </nav>
+            <main class="capdetail" id="cap-detail" aria-label="Capture"></main>
+        </div>
+        <footer id="msgline">
+            <span class="t" id="msg-t" role="status"></span><span id="msg-x"></span><span id="msg-btn"></span>
+        </footer>
+        <dialog id="dlg"></dialog>
     </body>
 </html>

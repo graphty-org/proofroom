@@ -158,31 +158,20 @@ import { autoKind, factsOf, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs
 import { USAGE_FILE } from "./usage.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const STATIC = {
-    "/": ["../page/index.html", "text/html; charset=utf-8"],
-    "/review.js": ["../page/review.js", "text/javascript; charset=utf-8"],
-    "/review.css": ["../page/review.css", "text/css; charset=utf-8"],
-    "/pixelmatch.mjs": ["../vendor/pixelmatch.mjs", "text/javascript; charset=utf-8"],
-    "/spot.js": ["../page/spot.js", "text/javascript; charset=utf-8"],
-    "/passkey.js": ["../page/passkey.js", "text/javascript; charset=utf-8"],
-    "/viewer/stage.js": ["../page/viewer/stage.js", "text/javascript; charset=utf-8"],
-    "/viewer/diff-worker.js": ["../page/viewer/diff-worker.js", "text/javascript; charset=utf-8"],
-    "/viewer/prefetch.js": ["../page/viewer/prefetch.js", "text/javascript; charset=utf-8"],
-    "/manifest.webmanifest": ["../page/manifest.webmanifest", "application/manifest+json"],
-    "/icon.svg": ["../page/icon.svg", "image/svg+xml"],
-    "/icon.png": ["../page/icon.png", "image/png"],
-};
-// The new page's folder, served at /next/: any file in it whose name is plain (no path), by its
-// extension's type.
-const NEXT_DIR = "../page/next";
-const NEXT_FILE = /^[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png)$/;
-const NEXT_TYPES = {
+// The page's files: its folder's files whose name is plain (no path), by their extension's type,
+// its viewer's, and the diff library its worker imports.
+const PAGE_DIR = "../page";
+const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
+const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
     js: "text/javascript; charset=utf-8",
+    mjs: "text/javascript; charset=utf-8",
     css: "text/css; charset=utf-8",
     svg: "image/svg+xml",
     png: "image/png",
+    webmanifest: "application/manifest+json",
 };
+const VENDOR = { "pixelmatch.mjs": "../vendor/pixelmatch.mjs" };
 // A JSON answer at least this long goes gzipped to a client that accepts it; below it, the header
 // costs about what gzip saves. Images are compressed already and are never gzipped again.
 const GZIP_FROM = 1024;
@@ -735,8 +724,6 @@ async function loadResults(dir, name) {
  * @param {import("./thumbs.mjs").Pool} [options.pictures] the queue the pictures are made in (a
  *     test's fake records the order they start in)
  * @param {string} [options.serverId] what names this server's session cookie; random per start
- * @param {"review" | "next"} [options.ui] the page served at /: today's ("review", the default) or the
- *     new one ("next"), which is served at /next/ either way
  * @param {number} [options.ciEvery] the least time, in milliseconds, between two asks of a CI
  *     capture's state (captures.mjs)
  * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string, stopCaptures: () => void }}
@@ -762,7 +749,6 @@ export function createApp({
     retryDelays,
     pictures = pool,
     serverId = randomBytes(8).toString("hex"),
-    ui = "review",
     ciEvery,
 }) {
     const stateDir = join(tmp, "state");
@@ -4233,9 +4219,9 @@ export function createApp({
                     inbox: summaries && !results ? inbox(summaries) : null,
                     warning: listWarnings.join("\n") || null,
                     defaultBranch,
-                    // The baselines folder, where the new page's Details finds a story's settings file.
+                    // The baselines folder, where the page's Details finds a story's settings file.
                     baselines: config.baselines,
-                    // The repository's name, for the new page's top bar.
+                    // The repository's name, for the page's top bar.
                     repository: await repository,
                     // The adapters in use: the code host's words for its changes, and the
                     // optional functions each lacks, whose buttons the page hides.
@@ -5219,23 +5205,17 @@ export function createApp({
         setInterval(() => refresh().catch(failed("background")), POLL).unref();
     }
 
-    // The page's own files: GET only, and only those it names, and the files of the new page's
-    // folder at /next/. With `ui` "next", the new page is also the page at /.
+    // The page's own files: GET only, and only those of its folder. /next/, where the page was
+    // before 1.0.0, sends its links to the same place at /.
     async function sendStatic(req, res, pathname) {
-        if (req.method === "GET" && pathname === "/next") {
-            return send(res, 301, "", "text/plain; charset=utf-8", { location: "/next/" });
+        if (req.method === "GET" && (pathname === "/next" || pathname === "/next/")) {
+            return send(res, 301, "", "text/plain; charset=utf-8", { location: "/" });
         }
-        const page = ui === "next" && pathname === "/" ? "/next/" : pathname;
-        const name = page === "/next/" ? "index.html" : page.startsWith("/next/") ? page.slice(6) : null;
-        if (req.method === "GET" && name !== null && NEXT_FILE.test(name)) {
-            const body = await readFile(join(HERE, NEXT_DIR, name)).catch(() => null);
-            if (body) {
-                return send(res, 200, body, NEXT_TYPES[name.split(".").pop()]);
-            }
-        }
-        const entry = req.method === "GET" && Object.hasOwn(STATIC, page) ? STATIC[page] : null;
-        return entry
-            ? send(res, 200, await readFile(join(HERE, entry[0])), entry[1])
+        const name = pathname === "/" ? "index.html" : pathname.slice(1);
+        const path = Object.hasOwn(VENDOR, name) ? VENDOR[name] : PAGE_FILE.test(name) ? join(PAGE_DIR, name) : null;
+        const body = req.method === "GET" && path ? await readFile(join(HERE, path)).catch(() => null) : null;
+        return body
+            ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()])
             : send(res, 404, { error: "not found" });
     }
 

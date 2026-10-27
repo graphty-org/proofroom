@@ -6,7 +6,7 @@
  * Face ID inside its own press, as iPad Safari requires.
  */
 
-import { passkeyName, passkeyWrongHost, prepareRegistration, registerPasskey } from "../passkey.js";
+import { passkeyName, passkeyWrongHost, prepareRegistration, registerPasskey } from "./passkey.js";
 import { control, runAction } from "./actions.js";
 import { api } from "./api.js";
 import { letterKeysOn, setLetterKeys, syncHints } from "./keys.js";

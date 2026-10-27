@@ -328,7 +328,7 @@ describe("the row menu", () => {
             .poll(() => message(page))
             .toBe("Link copied: #3484. It carries your session token: it opens this change on any device.");
         const link = await page.evaluate(() => navigator.clipboard.readText());
-        expect(link).toBe(`${t.origin}/next/#token=${TOKEN}&change=3484`);
+        expect(link).toBe(`${t.origin}/#token=${TOKEN}&change=3484`);
         // A preview has no page on the code host: its menu leaves Open on GitHub out. Update from
         // master... stays in place, unavailable, and says why.
         await menuOf("local").click();
@@ -558,7 +558,7 @@ describe("on the real server", () => {
         const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
         try {
             page.setDefaultTimeout(0);
-            await page.goto(`${s.origin}/next/#token=${TOKEN}`);
+            await page.goto(`${s.origin}/#token=${TOKEN}`);
             // One change: it opens by itself, its first undecided snapshot on the item line.
             await expect.poll(() => message(page)).toMatch(/^Opened #123 PR 123: \d+ undecided\.$/);
             expect(await page.locator(".iline").innerText()).toContain("#1");
@@ -576,10 +576,10 @@ describe("on the real server", () => {
     });
 });
 
-describe("the page at / with --ui next", () => {
+describe("the page at /", () => {
     it("loads its styles and scripts and draws the changes, with nothing missing", async () => {
         const missing = [];
-        t = await openNext(browser, { targets: fiftyChanges(), ui: "next", path: "/" });
+        t = await openNext(browser, { targets: fiftyChanges() });
         t.page.on("response", (r) => r.status() === 404 && missing.push(new URL(r.url()).pathname));
         await t.page.reload();
         await t.page.locator(".chg").first().waitFor();

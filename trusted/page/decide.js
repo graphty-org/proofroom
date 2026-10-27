@@ -1,11 +1,11 @@
 /*
- * Decisions on the new page (design 6): Accept, Reject..., Exclude... and Undo on the decision
+ * Decisions on the page (design 6): Accept, Reject..., Exclude... and Undo on the decision
  * bar, the reason box with its recent reasons and Exclude's second step, auto-advance to the next
  * undecided snapshot and the end card, the selection bar's and the group headers' bulk decisions,
  * the list menu's Accept all shown and Undo all, and the stale capture's Update from the default
  * branch.
  *
- * The error prevention of today's page is kept: a held key decides once (keys.js), a decision
+ * Error prevention: a held key decides once (keys.js), a decision
  * within a quarter second of its images being drawn is ignored and the message line says why,
  * Accept waits for the images, and a decision is saved before the next can be made. Every bulk
  * decision is one request per project it touches (undo.js send), and one step for Undo.
@@ -21,7 +21,7 @@ import { wordsOf } from "./messages.js";
 import { shownNow } from "./panes.js";
 import { el, fmt } from "./ui.js";
 import { reverse, send, shown } from "./undo.js";
-import { GUARD_MS } from "../viewer/stage.js";
+import { GUARD_MS } from "./viewer/stage.js";
 
 const REASONS_KEY = "proofroom:reasons";
 const SLOW_MS = 300; // a save longer than this says what it waits for
@@ -873,7 +873,7 @@ export function installDecide(app) {
         await followJob(c, job);
     }
 
-    // Follows an update job of change `c` to its end, as today's page follows Finish: a status ask
+    // Follows an update job of change `c` to its end, as Finish is followed: a status ask
     // that fails says so and tries again two seconds later.
     async function followJob(c, job) {
         const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

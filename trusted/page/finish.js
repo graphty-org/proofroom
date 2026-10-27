@@ -1,5 +1,5 @@
 /*
- * Finish on the new page (design 7): Finish in the top bar, the summary sheet, the step list on the
+ * Finish on the page (design 7): Finish in the top bar, the summary sheet, the step list on the
  * changes row while a Finish runs, the row's state after it (finished with its links, or failed with
  * Retry), Finish... on each row of Decided, not finished, and Finish all, which this page drives one
  * change at a time over the server's routes: prepare (POST /api/finish-prepare), the passkey touch
@@ -9,7 +9,7 @@
  * the same way: the server pushes its branch, opens its pull request and files its rejects.
  */
 
-import { approve, passkeyWrongHost } from "../passkey.js";
+import { approve, passkeyWrongHost } from "./passkey.js";
 import { control } from "./actions.js";
 import { api } from "./api.js";
 import { hostCan } from "./messages.js";

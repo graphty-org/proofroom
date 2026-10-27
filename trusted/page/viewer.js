@@ -1,15 +1,15 @@
 /*
- * The viewer at /next/ (design section 5): the toolbar, the item line, Details, the stage, the
+ * The viewer (design section 5): the toolbar, the item line, Details, the stage, the
  * end card and the decision bar (design 6.1; its decisions are decide.js's). All drawing is the stage's (viewer/stage.js, with its diffs in
  * a worker and worked out ahead); this module chooses what it draws: the view, the zoom, whether
  * the baseline is shown, one frame or two, side by side or over and under, the one-sided and
  * failed rules, and the locator at 2x and above.
  *
  * The toolbar is one 44 px row in a fixed priority. Below a viewer width of 1100 px, Image only,
- * Layout and Options move into More, by a CSS container query (next.css), never by measuring.
+ * Layout and Options move into More, by a CSS container query (page.css), never by measuring.
  */
 
-import { createStage } from "../viewer/stage.js";
+import { createStage } from "./viewer/stage.js";
 import { control, labelOf } from "./actions.js";
 import { badgeNode, badgesOf, decisionWords, layoutOf, sizeText } from "./list.js";
 import { makeLocator, moveToPressed } from "./locator.js";

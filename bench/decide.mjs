@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
-import { listAnswer, project, rowsAnswer, target } from "../test/next/fixtures.mjs";
+import { listAnswer, project, rowsAnswer, target } from "../test/page/fixtures.mjs";
 
 const presses = Number(process.argv[2] ?? "10");
 const ROOT = fileURLToPath(new URL("../trusted/", import.meta.url));
@@ -27,8 +27,7 @@ const fileOf = (path) => {
     if (path.startsWith("/viewer/")) {
         return `page${path}`;
     }
-    const name = path.replace(/^\/next\/?/, "") || "index.html";
-    return `page/next/${name}`;
+    return `page/${path.slice(1) || "index.html"}`;
 };
 const server = createServer(async (req, res) => {
     const file = fileOf(new URL(req.url, "http://x").pathname);
@@ -108,7 +107,7 @@ for (const n of [5, 300, 3000]) {
         await page.waitForFunction((f) => globalThis.document.getElementById("stage")?.dataset.ready === f, file);
         await page.waitForFunction('import("/viewer/stage.js").then((m) => m.diffCounts.done === m.diffCounts.worker)');
     };
-    await page.goto(`${origin}/next/#token=bench&change=9000`);
+    await page.goto(`${origin}/#token=bench&change=9000`);
     let shown = await (await drawnAfter(0)).jsonValue();
     const times = [];
     let waited = 0;

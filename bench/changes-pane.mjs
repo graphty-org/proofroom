@@ -11,15 +11,15 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
 
-import { fiftyChanges, listAnswer } from "../test/next/fixtures.mjs";
+import { fiftyChanges, listAnswer } from "../test/page/fixtures.mjs";
 
 const loads = Number(process.argv[2] ?? "20");
-const PAGE = fileURLToPath(new URL("../trusted/page/next/", import.meta.url));
+const PAGE = fileURLToPath(new URL("../trusted/page/", import.meta.url));
 const TYPES = { html: "text/html", js: "text/javascript", css: "text/css" };
 
 // The page's own files; the API is answered by the browser's routes below.
 const server = createServer(async (req, res) => {
-    const name = new URL(req.url, "http://x").pathname.replace(/^\/next\/?/, "") || "index.html";
+    const name = new URL(req.url, "http://x").pathname.slice(1) || "index.html";
     try {
         const body = await readFile(join(PAGE, name));
         res.writeHead(200, { "content-type": TYPES[name.split(".").pop()] ?? "text/plain" }).end(body);
@@ -44,7 +44,7 @@ const times = [];
 let requests = null;
 for (let i = 0; i < loads; i++) {
     asked.length = 0;
-    await page.goto(`${origin}/next/#token=bench`);
+    await page.goto(`${origin}/#token=bench`);
     await page.locator(".chg").first().waitFor();
     // The last build is the one with the 50 changes in it.
     times.push(await page.evaluate(() => performance.getEntriesByName("changes-pane").at(-1).duration));

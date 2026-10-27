@@ -50,14 +50,14 @@ export const BROWSERS = { chromium, webkit };
  * @param {import("playwright").Browser} browser the browser
  * @param {{ targets?: object[], list?: object, rows?: (id: string, project: string) => object,
  *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string>,
- *     clock?: boolean, ui?: "review" | "next", path?: string, failList?: number,
+ *     clock?: boolean, path?: string, failList?: number,
  *     pictures?: (name: string) => boolean, decide?: (body: object) => object,
  *     acceptAll?: (body: object) => object, update?: (body: object) => object,
  *     finishStatus?: () => object | null, host?: string, finishPreview?: (id: string, t: object) => object,
  *     prepare?: (body: object) => object, finish?: (body: object) => object }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
  *     project's reviewable), the window, the address after #, local storage to start with,
- *     whether the test controls the page's clock, the server's page at /, the path to open, and
+ *     whether the test controls the page's clock, the path to open, and
  *     how many of the first asks for the list answer HTTP 500, which pictures to answer (the rest
  *     fail with HTTP 500), the answer to each POST /api/decide (by default `{ ok: true }`) and
  *     POST /api/accept-all (by default every file listed done), POST /api/update's answer, the
@@ -78,7 +78,6 @@ export async function openNext(browser, options = {}) {
     const s = await startApp(makeRepo(), {
         ...fakeAdapters(),
         token: TOKEN,
-        ...(options.ui && { ui: options.ui }),
         ...(options.host && { host: options.host }),
     });
     const context = await browser.newContext({ viewport: options.viewport ?? { width: 1440, height: 900 } });
@@ -207,7 +206,7 @@ export async function openNext(browser, options = {}) {
         await page.clock.install();
         await page.clock.resume();
     }
-    await page.goto(`${s.origin}${options.path ?? "/next/"}#${options.hash ?? `token=${TOKEN}`}`);
+    await page.goto(`${s.origin}${options.path ?? "/"}#${options.hash ?? `token=${TOKEN}`}`);
     return {
         page,
         context,

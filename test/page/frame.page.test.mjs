@@ -12,7 +12,7 @@
 import { PNG } from "pngjs";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { ACTIONS, OFFLINE_WHY } from "../../trusted/page/next/actions.js";
+import { ACTIONS, OFFLINE_WHY } from "../../trusted/page/actions.js";
 import { COVERS } from "./covers.mjs";
 import {
     BROWSERS,

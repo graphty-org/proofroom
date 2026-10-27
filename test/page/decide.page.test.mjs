@@ -1007,7 +1007,7 @@ describe("on the review server", () => {
                     return Boolean(t123 && !t123.downloading && t123.projects.every((p) => !p.downloading));
                 })
                 .toBe(true);
-            await page.goto(`${s.origin}/next/#token=${TOKEN}&change=123`);
+            await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await showList(page);
             await page.keyboard.press("Slash");
             await page.keyboard.type("slider");
@@ -1061,7 +1061,7 @@ describe("Update from master on the review server", () => {
                     return Boolean(t123 && !t123.downloading && t123.projects.every((p) => !p.downloading));
                 })
                 .toBe(true);
-            await page.goto(`${s.origin}/next/#token=${TOKEN}&change=123`);
+            await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await showList(page);
             const banner = page.locator("#snap-stale");
             await banner.waitFor();

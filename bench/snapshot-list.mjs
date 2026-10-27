@@ -13,10 +13,10 @@ import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
-import { listAnswer, project, rowsAnswer, target } from "../test/next/fixtures.mjs";
+import { listAnswer, project, rowsAnswer, target } from "../test/page/fixtures.mjs";
 
 const loads = Number(process.argv[2] ?? "10");
-const PAGE = fileURLToPath(new URL("../trusted/page/next/", import.meta.url));
+const PAGE = fileURLToPath(new URL("../trusted/page/", import.meta.url));
 const TYPES = { html: "text/html", js: "text/javascript", css: "text/css" };
 const picture = (() => {
     const png = new PNG({ width: 400, height: 156 });
@@ -26,7 +26,7 @@ const picture = (() => {
 
 // The page's own files; the API is answered by the browser's routes below.
 const server = createServer(async (req, res) => {
-    const name = new URL(req.url, "http://x").pathname.replace(/^\/next\/?/, "") || "index.html";
+    const name = new URL(req.url, "http://x").pathname.slice(1) || "index.html";
     try {
         const body = await readFile(join(PAGE, name));
         res.writeHead(200, { "content-type": TYPES[name.split(".").pop()] ?? "text/plain" }).end(body);
@@ -58,7 +58,7 @@ for (const n of [300, 3000]) {
     let first = null;
     for (let i = 0; i < loads; i++) {
         pictures = 0;
-        await page.goto(`${origin}/next/#token=bench&change=9000`);
+        await page.goto(`${origin}/#token=bench&change=9000`);
         await page.locator("#snap-list .srow").first().waitFor();
         await page.waitForFunction(() => performance.getEntriesByName("snapshot-list-frame").length > 0);
         frames.push(await page.evaluate(() => performance.getEntriesByName("snapshot-list-frame").at(-1).duration));

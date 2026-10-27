@@ -12,7 +12,7 @@ import { PNG } from "pngjs";
 import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { SHAPES, STATUS, decisionsFor } from "../../trusted/page/next/marks.js";
+import { SHAPES, STATUS, decisionsFor } from "../../trusted/page/marks.js";
 import { COVERS } from "./covers.mjs";
 import {
     fiftyChanges,

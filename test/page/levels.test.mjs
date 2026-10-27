@@ -15,7 +15,7 @@ import {
     sizeClass,
     togglePane,
     twoLevels,
-} from "../../trusted/page/next/panes.js";
+} from "../../trusted/page/panes.js";
 
 // The viewer's width for a layout: the window less each pane, or its rail.
 const viewerWidth = (shown, width, open) =>

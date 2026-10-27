@@ -61,7 +61,7 @@ describe("the page on a plain git repository", () => {
                 await s.close();
             },
         };
-        await page.goto(`${s.origin}/next/#token=${TOKEN}`);
+        await page.goto(`${s.origin}/#token=${TOKEN}`);
         await page.locator("#snap-list").getByRole("button", { name: "New capture..." }).click();
         const option = page.locator("#nc-pr option");
         await option.waitFor({ state: "attached" });
@@ -87,7 +87,7 @@ describe("the page on a plain git repository", () => {
                 await s.close();
             },
         };
-        await page.goto(`${s.origin}/next/#token=${TOKEN}`);
+        await page.goto(`${s.origin}/#token=${TOKEN}`);
 
         // No CI: the empty Review screen offers only a capture on this machine.
         await expect.poll(() => page.locator("#snap-list").innerText()).toContain("No captures yet.");

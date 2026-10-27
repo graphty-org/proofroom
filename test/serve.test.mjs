@@ -999,7 +999,7 @@ describe("serve: access", () => {
         const page = await fetch(`${s.origin}/`);
         expect(page.status).toBe(200);
         expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
-        expect(await page.text()).toContain("review.js");
+        expect(await page.text()).toContain('src="/app.js"');
     });
 
     it("refuses a state-changing request from a foreign origin", async () => {

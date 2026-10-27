@@ -1,8 +1,8 @@
 # Starting a capture from the page
 
-The review page at `/next/` can capture on the machine the review server runs on, so you can look
-at your own work before CI does, or review and finish a branch that never goes through CI. It can
-also ask CI to capture a pull request again.
+The review page can capture on the machine the review server runs on, so you can look at your own
+work before CI does, or review and finish a branch that never goes through CI. It can also ask CI
+to capture a pull request again.
 
 ## New capture
 

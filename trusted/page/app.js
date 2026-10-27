@@ -1,5 +1,5 @@
 /*
- * The new review page, at /next/: the top bar, the Review screen's three panes with their rails,
+ * The review page: the top bar, the Review screen's three panes with their rails,
  * the levels and their Back and Open buttons, the message line, the address, and the changes pane.
  * Plain ES modules, no framework and no build step. Every control comes from the action table
  * (actions.js); every text that came from a pull request is set as text.
@@ -1490,6 +1490,10 @@ async function reloadAfterCaptures() {
 // ---------------------------------------------------------------- the token box
 
 function askToken(refused) {
+    // A refused token leaves the address, so the page never shows it and a reload does not try it again.
+    if (refused && new URLSearchParams(location.hash.slice(1)).has("token")) {
+        history.replaceState(null, "", formatAddress({ ...parseAddress(location.hash), token: null }));
+    }
     const field = el("input", {
         type: "password",
         id: "token-field",
@@ -1530,6 +1534,8 @@ app.submitToken = () => {
     }
     $("token-box").remove();
     $("screens").hidden = false;
+    // A first load the refused token stopped never settles (api): a new one starts.
+    firstLoading = null;
     boot();
 };
 
@@ -1771,7 +1777,7 @@ async function boot() {
     startUsage();
     const wanted = app.wanted;
     if (wanted.old) {
-        // Today's page's link: written again in the new page's form, in place.
+        // A link of the page before 1.0.0: written again in the page's form, in place.
         history.replaceState(null, "", formatAddress({ ...wanted, token: currentToken() }));
     }
     arrived = false;

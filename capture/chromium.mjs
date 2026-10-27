@@ -364,7 +364,7 @@ async function scrollFrame(frame, x, y) {
  * The stitched picture as Chromium's own screenshot encodes it, so its bytes are what
  * capture.mjs's one full-page screenshot holds: shown 1:1 in a page of its own size and shot. A
  * picture taller than one screenshot is encoded as capture.mjs stitches its slices.
- * @param {import("playwright").Page} page vitest's page, whose context opens the new page
+ * @param {import("playwright").Page} page vitest's page, whose context opens the new tab
  * @param {PNG} image the stitched picture, at SCALE device px per CSS px
  * @param {{ width: number, height: number }} size in CSS px
  * @returns {Promise<Buffer>} the PNG

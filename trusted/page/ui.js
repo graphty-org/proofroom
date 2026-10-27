@@ -1,5 +1,5 @@
 /*
- * Small DOM helpers the new page's modules share: el() (as today's page has it), the 12 px marks,
+ * Small DOM helpers the page's modules share: el(), the 12 px marks,
  * key hint boxes, and number and age formatting. Text from a pull request is always set as text.
  */
 

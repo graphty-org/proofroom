@@ -6,8 +6,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { ACTIONS, ZONES } from "../../trusted/page/next/actions.js";
-import { isLetterKey, matches } from "../../trusted/page/next/keys.js";
+import { ACTIONS, ZONES } from "../../trusted/page/actions.js";
+import { isLetterKey, matches } from "../../trusted/page/keys.js";
 import { COVERS } from "./covers.mjs";
 
 describe("the action table", () => {
