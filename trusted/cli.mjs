@@ -174,7 +174,10 @@ keeps in <workDir>/state/inbox.json, so it never calls GitHub.
 Merges the default branch into the pull request's branch (a merge commit, never a rebase) and
 pushes it, so CI captures again against the default branch's baselines. A file under the
 baselines directory that conflicts takes the default branch's side, and the commit names each
-one; it accepts nothing, and the review shows whatever still differs. A conflict anywhere else
+one; a project's renames.json is merged instead, pair by pair, the default branch's pair winning
+for the same old id. It accepts nothing, and the review shows whatever still differs. Before CI
+runs it says how many conflicting snapshots the pull request's last capture already draws as the
+default branch now has them (nothing to decide) and lists the others. A conflict anywhere else
 refuses, lists the files and changes nothing. The commit is signed as your git configuration
 signs. For a pull request whose capture is stale against the default branch's baselines, or
 whose branch conflicts with it only under the baselines directory.`,
@@ -523,9 +526,11 @@ async function update(args) {
         return 2;
     }
     const { root, config } = await settings();
-    const { ghRunner } = await import("./lib/github.mjs");
-    const { AcceptError, updateFromMaster } = await import("./lib/accept.mjs");
-    const about = JSON.parse(await ghRunner(root)(["api", `repos/{owner}/{repo}/pulls/${pr}`]));
+    const { downloadCaptures, ghRunner, newestCiRun } = await import("./lib/github.mjs");
+    const { AcceptError, updateFromMaster, updateReportLines } = await import("./lib/accept.mjs");
+    const { validateResults } = await import("./lib/results.mjs");
+    const gh = ghRunner(root);
+    const about = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls/${pr}`]));
     if (about.state !== "open") {
         console.error(`proofroom update: #${pr} is ${about.state}, not open`);
         return 1;
@@ -537,10 +542,32 @@ async function update(args) {
             branch: about.head.ref,
             config,
             progress: (step) => console.log(`proofroom update: ${step}`),
+            // The pull request's last capture, from the CI run on its head, downloaded where
+            // `serve` keeps captures, so one the server already has is not downloaded again.
+            captures: async (projects) => {
+                try {
+                    const run = await newestCiRun(gh, about.head.sha, config);
+                    const got = run ? await downloadCaptures(gh, run, projects, join(root, config.workDir)) : {};
+                    const read = async (dir) => {
+                        const r = JSON.parse(await readFile(join(dir, "results.json"), "utf8"));
+                        return validateResults(r).length === 0 ? r : null;
+                    };
+                    return Object.fromEntries(
+                        await Promise.all(projects.map(async (p) => [p, got[p]?.dir ? await read(got[p].dir) : null])),
+                    );
+                } catch (err) {
+                    console.error(`proofroom update: could not read #${pr}'s last capture: ${err.message}`);
+                    return {};
+                }
+            },
         });
         console.log(`proofroom update: pushed ${out.commit} to ${out.branch}`);
         for (const path of out.taken) {
-            console.log(`  took ${config.defaultBranch}'s side: ${path}`);
+            console.log(
+                out.merged.includes(path)
+                    ? `  merged both sides' renames: ${path}`
+                    : `  took ${config.defaultBranch}'s side: ${path}`,
+            );
         }
         const recaptured = out.recapture.map((p) => `  ${p}`).join("\n");
         console.log(
@@ -548,6 +575,9 @@ async function update(args) {
                 ? "CI captures again; no baseline changed on the branch."
                 : `CI captures again and compares these with their new baselines:\n${recaptured}`,
         );
+        for (const line of updateReportLines(out.report, config.defaultBranch)) {
+            console.log(line);
+        }
         return 0;
     } catch (err) {
         if (err instanceof AcceptError) {
