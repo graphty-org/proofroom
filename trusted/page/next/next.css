@@ -1572,13 +1572,14 @@ dialog {
     background: var(--surface);
     color: var(--ink);
     max-height: 86vh;
-    max-width: min(720px, calc(100% - 2em - 42px));
+    max-width: min(762px, calc(100% - 2em));
 }
+/* The mockup's 620px and 720px content widths, plus 40px of padding and 2px of border. */
 dialog.settings {
-    width: 620px;
+    width: 662px;
 }
 dialog.keys-sheet {
-    width: 720px;
+    width: 762px;
 }
 dialog::backdrop {
     background: rgba(20, 30, 50, 0.35);

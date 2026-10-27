@@ -86,6 +86,17 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         };
 
         describe("the Keys sheet", () => {
+            it("measures the mockup's widths, Keys 762px and Settings 662px, at 1280x800", async () => {
+                const page = await open({ viewport: { width: 1280, height: 800 } });
+                const width = () => box(page).evaluate((d) => d.getBoundingClientRect().width);
+                await page.getByRole("button", { name: "Keys" }).click();
+                await expect.poll(width).toBe(762);
+                await closeBox(page);
+                await page.getByRole("button", { name: "Settings" }).click();
+                await expect.poll(width).toBe(662);
+                await closeBox(page);
+            });
+
             it("opens by ? and by its button, lists the keys the page has, and the last 20 messages", async () => {
                 const page = await open({});
                 // 22 messages: a sort, then Changes hidden and shown 21 times.
