@@ -345,7 +345,19 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
          */
         async visualPark(ctx) {
             await park(ctx.page);
-            await (await (await ctx.frame()).frameElement()).focus();
+            const frame = await ctx.frame();
+            await (await frame.frameElement()).focus();
+            // The press resets Chromium's modality, which happens before any listener runs; the story
+            // must not see it (capture.mjs presses no key): Mantine's menus focus their first row on
+            // a keyboard open, so a Shift a menu heard lit that row.
+            await frame.evaluate(() => {
+                for (const type of ["keydown", "keyup"]) {
+                    globalThis.addEventListener(type, (e) => e.stopImmediatePropagation(), {
+                        capture: true,
+                        once: true,
+                    });
+                }
+            });
             await ctx.page.keyboard.press("Shift");
         },
         /**
