@@ -23,6 +23,7 @@ describe("normalizeConfig", () => {
             candidates: null,
             usage: false,
             ignoreBranches: [],
+            diskBudget: 10,
             projects: {
                 web: {
                     storybook: "storybook-static",
@@ -33,6 +34,14 @@ describe("normalizeConfig", () => {
                 },
             },
         });
+    });
+
+    it("takes a disk budget in GB and refuses one that is not above 0", () => {
+        const web = { web: { storybook: "s" } };
+        expect(normalizeConfig({ diskBudget: 2.5, projects: web }).diskBudget).toBe(2.5);
+        for (const bad of [0, -1, "10", Infinity]) {
+            expect(() => normalizeConfig({ diskBudget: bad, projects: web })).toThrow(/diskBudget must be/);
+        }
     });
 
     it("keeps a waitFor and its console marker", () => {

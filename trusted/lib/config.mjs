@@ -25,6 +25,7 @@ const DEFAULTS = {
     candidates: null,
     usage: false,
     ignoreBranches: [],
+    diskBudget: 10,
 };
 
 // Project ids name artifacts, jobs, directories and regular expressions, so they stay plain; and
@@ -37,7 +38,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, usage: boolean, ignoreBranches: string[], diskBudget: number, projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -71,6 +72,13 @@ export function normalizeConfig(input) {
             fail("ignoreBranches must be an array of non-empty branch-name prefixes");
         }
         out.ignoreBranches = raw.ignoreBranches;
+    }
+    // How much the work directory may hold, in GB: `serve` evicts the images of changes beyond it.
+    if (raw.diskBudget !== undefined) {
+        if (typeof raw.diskBudget !== "number" || !(raw.diskBudget > 0) || !Number.isFinite(raw.diskBudget)) {
+            fail("diskBudget must be a number of GB above 0");
+        }
+        out.diskBudget = raw.diskBudget;
     }
     approvalSettings(raw, out, fail);
     out.projects = projectsSetting(raw.projects, fail);

@@ -337,6 +337,13 @@ export function hurry(wanted) {
 const whole = (d) => existsSync(join(d, "results.json")) || existsSync(join(d, SKIPPED_FILE));
 
 /**
+ * Marks a capture directory whose images the disk budget removed (budget.mjs): its results.json
+ * is still there, so it counts as downloaded until a download is asked for `again`.
+ */
+export const EVICTED_FILE = "evicted.json";
+const evicted = (d) => existsSync(join(d, EVICTED_FILE));
+
+/**
  * Downloads one artifact into `dir`, unless it is already there. It is extracted into a sibling
  * temporary directory and renamed into place only once its results.json is there, so `dir` either
  * does not exist or holds a whole artifact; a failed or interrupted download leaves nothing behind.
@@ -346,13 +353,19 @@ const whole = (d) => existsSync(join(d, "results.json")) || existsSync(join(d, S
  * @param {number} runId the run
  * @param {string} name the artifact
  * @param {string} dir where it goes
+ * @param {boolean} [again] download an evicted directory again (it stays as it is until the new
+ *     copy is complete)
  * @returns {Promise<void>} settles when `dir` is complete, or the artifact had no results.json
  */
-function download(gh, runId, name, dir) {
-    if (!downloading.has(dir) && !existsSync(join(dir, "results.json")) && whole(dir)) {
+function download(gh, runId, name, dir, again = false) {
+    const away = !downloading.has(dir) && evicted(dir);
+    if (away && !again) {
+        return Promise.resolve(); // Evicted: its counts are on disk, its images come on open.
+    }
+    if (!away && !downloading.has(dir) && !existsSync(join(dir, "results.json")) && whole(dir)) {
         return Promise.resolve(); // The not-affected marker: nothing to validate.
     }
-    if (!downloading.has(dir) && existsSync(join(dir, "results.json"))) {
+    if (!away && !downloading.has(dir) && existsSync(join(dir, "results.json"))) {
         try {
             JSON.parse(readFileSync(join(dir, "results.json"), "utf8"));
             return Promise.resolve();
@@ -366,8 +379,11 @@ function download(gh, runId, name, dir) {
     if (!downloading.has(dir)) {
         const done = (async () => {
             // A directory without results.json is left over from before downloads were atomic,
-            // and a .part- sibling from a download a killed server never finished.
-            rmSync(dir, { recursive: true, force: true });
+            // and a .part- sibling from a download a killed server never finished. An evicted one
+            // keeps its counts until the new copy replaces it.
+            if (!away) {
+                rmSync(dir, { recursive: true, force: true });
+            }
             mkdirSync(dirname(dir), { recursive: true });
             for (const f of readdirSync(dirname(dir))) {
                 if (f.startsWith(`${basename(dir)}.part-`)) {
@@ -382,6 +398,7 @@ function download(gh, runId, name, dir) {
             try {
                 await gh(["run", "download", String(runId), "-n", name, "-D", part]);
                 if (whole(part)) {
+                    rmSync(dir, { recursive: true, force: true });
                     renameSync(part, dir);
                 }
             } finally {
@@ -410,12 +427,23 @@ function download(gh, runId, name, dir) {
  *     ends, with what the result holds for it, so a page can fill rows in one by one
  * @param {(sizes: Record<string, number>) => void} [planned] told first, with the size in bytes
  *     of each project's artifact, so a page can count the bytes still to come
+ * @param {boolean} [again] download the evicted ones again (EVICTED_FILE)
  * @returns {Promise<Record<string, { dir: string | null, attempt: number, bytes: number,
- *     error?: string, expired?: true } | null>>} null for a project with no artifact; `error`
- *     (and no `dir`) when its download failed; `expired` (and no `dir`) when GitHub deleted it and
- *     it is not on disk
+ *     error?: string, expired?: true, deleted?: true } | null>>} null for a project with no
+ *     artifact; `error` (and no `dir`) when its download failed; `expired` (and no `dir`) when
+ *     GitHub deleted it and it is not on disk; `deleted` when GitHub deleted it and only its
+ *     evicted directory (counts, no images) is on disk
  */
-export async function downloadCaptures(gh, run, projects, tmp, others = [], landed = () => {}, planned = () => {}) {
+export async function downloadCaptures(
+    gh,
+    run,
+    projects,
+    tmp,
+    others = [],
+    landed = () => {},
+    planned = () => {},
+    again = false,
+) {
     const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
     for (const a of artifacts) {
         const p = /^visual-(.+)-\d+$/.exec(a.name)?.[1];
@@ -428,7 +456,8 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
             .filter((x) => pattern.test(x.name))
             .map((x) => ({
                 name: x.name,
-                expired: x.expired,
+                // The list a finished run keeps on disk says false for ever: its date says when.
+                expired: x.expired || Date.parse(x.expires_at) <= Date.now(),
                 bytes: x.size_in_bytes ?? 0,
                 attempt: Number(pattern.exec(x.name)[1]),
             }))
@@ -452,13 +481,20 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
                 const dir = join(tmp, `${run.id}-${a.attempt}`, project);
                 const got = { attempt: a.attempt, bytes: a.bytes };
                 if (a.expired) {
-                    out[project] = whole(dir) ? { dir, ...got } : { dir: null, ...got, expired: true };
+                    out[project] = whole(dir)
+                        ? { dir, ...got, ...(evicted(dir) && { deleted: true }) }
+                        : { dir: null, ...got, expired: true };
                 } else {
                     try {
-                        await download(gh, run.id, a.name, dir);
+                        await download(gh, run.id, a.name, dir, again);
                         out[project] = { dir, ...got };
                     } catch (err) {
-                        out[project] = { dir: null, ...got, error: err.message };
+                        // ponytail: an evicted copy whose download failed stays evicted, with its
+                        // counts, and the next open tries again; the error is only logged.
+                        if (evicted(dir)) {
+                            console.error(`proofroom: downloading ${a.name} again failed: ${err.message}`);
+                        }
+                        out[project] = evicted(dir) ? { dir, ...got } : { dir: null, ...got, error: err.message };
                     }
                 }
             }
@@ -489,7 +525,8 @@ export async function newestMasterCapture(gh, project, tmp, { workflow, defaultB
         if (!run) {
             continue;
         }
-        const got = (await downloadCaptures(gh, run, [project], tmp))[project];
+        // A copy the disk budget evicted is downloaded again: this one's images are compared with.
+        const got = (await downloadCaptures(gh, run, [project], tmp, [], undefined, undefined, true))[project];
         if (got?.error) {
             // Not skipped: an older capture would be compared instead of this one.
             throw new Error(got.error);
