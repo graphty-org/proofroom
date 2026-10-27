@@ -29,7 +29,17 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { threadId } from "node:worker_threads";
 
-import { CLOCK_START, close, open as openBrowser, probe, rendererOf, SCALE, shoot, webpEncoder } from "./chromium.mjs";
+import {
+    chromiumEnv,
+    CLOCK_START,
+    close,
+    open as openBrowser,
+    probe,
+    rendererOf,
+    SCALE,
+    shoot,
+    webpEncoder,
+} from "./chromium.mjs";
 import { preview, rendered, serve, stories as storiesIn, url as storyUrlAt } from "./storybook.mjs";
 
 import { pngSize, sha256 } from "../trusted/lib/compare.mjs";
@@ -67,14 +77,12 @@ export {
 // The renderer's and the story source's, still exported here for the callers that import them from capture.
 export {
     CHROMIUM_ARGS,
+    chromiumEnv,
     CLOCK_START,
     MAX_SHOT_HEIGHT,
     pinFixedInPage,
     SCALE,
     screenshotWholePage,
-    SHOT,
-    shootTiles,
-    twoFrames,
     VIEWPORT,
 } from "./chromium.mjs";
 export { serve, storyIds, storyUrl } from "./storybook.mjs";
@@ -255,7 +263,7 @@ export function openCapture({
                 ? { FONTCONFIG_FILE: fontconfig, XDG_CACHE_HOME: await mkdtemp(join(tmpdir(), "visual-review-fonts-")) }
                 : {};
             const [server, base] = await serve(sb);
-            const browser = await openBrowser({ env: { ...process.env, ...fontEnv, TZ: "UTC" } });
+            const browser = await openBrowser({ env: chromiumEnv(fontEnv) });
             const all = await storiesIn(sb);
             const ids = all.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
             const { value: params } = await probe(browser, preview.url(base), preview);
@@ -356,7 +364,7 @@ export function capture({
         // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.
         const browsers = await Promise.all(
             Array.from({ length: Math.max(1, workers) }, () =>
-                openBrowser({ env: { ...process.env, ...fontEnv, TZ: "UTC" } }),
+                openBrowser({ env: chromiumEnv(fontEnv) }),
             ),
         );
         let shots = 0;

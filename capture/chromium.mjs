@@ -35,11 +35,25 @@ export const CHROMIUM_ARGS = [
 const MAX_LINE = 2000;
 
 /**
+ * The environment every capture browser launches with: this process's, then `extra`, in UTC, and
+ * always with FC_FONTATIONS=1. Chromium 143 sets that variable itself from a font thread while a
+ * D-Bus thread may be reading the environment; when the setenv has to grow the array, glibc frees
+ * the old one under the reader and the browser dies at launch with SIGSEGV (only at some
+ * environment sizes, so it comes and goes). Presetting it makes Chromium's setenv an in-place
+ * overwrite.
+ * @param {Record<string, string>} [extra] variables to add, such as the pinned fonts'
+ * @returns {Record<string, string | undefined>} the launch environment
+ */
+export const chromiumEnv = (extra = {}) => ({ ...process.env, ...extra, TZ: "UTC", FC_FONTATIONS: "1" });
+
+/**
  * Starts a browser with capture's switches.
- * @param {{ env?: NodeJS.ProcessEnv }} [options] the environment it runs in
+ * @param {{ env?: NodeJS.ProcessEnv }} [options] the environment it runs in; FC_FONTATIONS is always
+ *     preset (see chromiumEnv)
  * @returns {Promise<import("playwright").Browser>} the browser
  */
-export const open = ({ env = process.env } = {}) => chromium.launch({ args: CHROMIUM_ARGS, env });
+export const open = ({ env = process.env } = {}) =>
+    chromium.launch({ args: CHROMIUM_ARGS, env: { ...env, FC_FONTATIONS: "1" } });
 
 /**
  * Stops a browser open() started.
@@ -257,7 +271,48 @@ export async function shoot(browser, url, { delay, waitFor, rendered }) {
 export const MAX_SHOT_HEIGHT = 8192;
 
 /** What every screenshot is taken with. */
-export const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide" });
+
+/**
+ * Makes a story iframe's document scrollable by one pixel below everything it draws, or takes
+ * that back. A top frame (iframe.html shot as the page) always scrolls on the compositor, so
+ * Chromium draws its `position: fixed` elements (a popover, a menu, a toast) in layers of their
+ * own, apart from the scrolling page; an iframe whose content fits does not scroll, so it drew
+ * them into the page's layer and their blurred shadows came out one level darker. The pixel is
+ * added after the frame was measured and lies outside every shot; headless Chromium draws no
+ * scrollbar, so nothing moves.
+ *
+ * A scrolling document gets a layer of its own, and an iframe's is transparent where the top frame's
+ * is white (its base background), so the anti-aliased edges of a rounded border were blended onto
+ * transparency and came out one level off. A document that paints no background of its own (html
+ * and body both transparent) gets the top frame's white while the pixel is there.
+ * @param {boolean} on add the pixel, or remove it
+ * @returns {void}
+ */
+function scrollLikeTopFrame(on) {
+    const ID = "visual-review-scroll-pixel";
+    const MARK = "visualReviewBase";
+    const root = document.documentElement;
+    document.getElementById(ID)?.remove();
+    if (MARK in root.dataset) {
+        root.style.backgroundColor = root.dataset[MARK];
+        delete root.dataset[MARK];
+    }
+    if (on) {
+        const clear = (el) => {
+            const style = document.defaultView.getComputedStyle(el);
+            return style.backgroundImage === "none" && /^rgba\(.*,\s*0\)$|^transparent$/.test(style.backgroundColor);
+        };
+        if (clear(root) && (!document.body || clear(document.body))) {
+            root.dataset[MARK] = root.style.backgroundColor;
+            root.style.backgroundColor = "white";
+        }
+        const pixel = document.createElement("div");
+        pixel.id = ID;
+        pixel.style.cssText = `position:absolute;left:0;top:${Math.max(root.scrollHeight, root.clientHeight)}px;width:1px;height:1px;visibility:hidden`;
+        root.append(pixel);
+    }
+}
 
 /**
  * A screenshot of the whole page, however big. A page within the viewport is one screenshot of
@@ -280,10 +335,21 @@ export async function screenshotWholePage(page, frame = page) {
         return { width: most("Width"), height: most("Height") };
     });
     const vp = page.viewportSize();
-    if (size.width <= vp.width && size.height <= vp.height) {
-        return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+    const inFrame = frame !== page;
+    if (inFrame) {
+        await frame.evaluate(scrollLikeTopFrame, true);
+        await frame.evaluate(twoFramesInPage);
     }
-    return shootTiles(page, frame, size, vp);
+    try {
+        if (size.width <= vp.width && size.height <= vp.height) {
+            return await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
+        }
+        return await shootTiles(page, frame, size, vp);
+    } finally {
+        if (inFrame) {
+            await frame.evaluate(scrollLikeTopFrame, false);
+        }
+    }
 }
 
 /**
@@ -291,7 +357,7 @@ export async function screenshotWholePage(page, frame = page) {
  * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @returns {Promise<void>} once they are drawn
  */
-export const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
+const twoFrames = (frame) => frame.evaluate(twoFramesInPage);
 
 /**
  * In the page: waits for two frames to be drawn.
@@ -324,9 +390,10 @@ function imagesInPage() {
  * @param {import("playwright").Page | import("playwright").Frame} frame the tester iframe, or the page itself
  * @param {number} x in CSS px
  * @param {number} y in CSS px
+ * @param {boolean} [settle] whether to wait for what came into view; not when nothing is shot after it
  * @returns {Promise<{ x: number, y: number }>} where it scrolled to, the window's and the body's scroll added
  */
-async function scrollFrame(frame, x, y) {
+async function scrollFrame(frame, x, y, settle = true) {
     const at = await frame.evaluate(
         ([left, top]) => {
             globalThis.scrollTo(left, top);
@@ -355,31 +422,48 @@ async function scrollFrame(frame, x, y) {
         },
         [x, y],
     );
-    await frame.evaluate(imagesInPage);
-    await twoFrames(frame);
+    if (settle) {
+        await frame.evaluate(imagesInPage);
+        await twoFrames(frame);
+    }
     return at;
 }
 
 /**
- * The stitched picture as Chromium's own screenshot encodes it, so its bytes are what
- * capture.mjs's one full-page screenshot holds: shown 1:1 in a page of its own size and shot. A
- * picture taller than one screenshot is encoded as capture.mjs stitches its slices.
- * @param {import("playwright").Page} page vitest's page, whose context opens the new tab
- * @param {PNG} image the stitched picture, at SCALE device px per CSS px
- * @param {{ width: number, height: number }} size in CSS px
+ * The tiles stitched into one picture, encoded as Chromium's own screenshot encodes it, so its bytes
+ * are what a one-shot full-page screenshot holds: each tile is shown 1:1 where it belongs in a page of
+ * the picture's size, and that page is shot. Chromium decodes the tiles and stitches them, so this
+ * process never decodes or encodes a PNG: at four workers, pngjs doing that work on the one Node
+ * thread every worker shares made each story about twice as slow. A picture taller than one
+ * screenshot is stitched with pngjs instead.
+ * @param {import("playwright").Page} page the page whose context opens the new page (vitest's page, in a story test)
+ * @param {{ png: Buffer, left: number, top: number, width: number, height: number }[]} tiles each tile's PNG at SCALE
+ *     device px per CSS px, and where it goes in CSS px
+ * @param {{ width: number, height: number }} size the picture's size in CSS px
  * @returns {Promise<Buffer>} the PNG
  */
-async function encodeAsChromium(page, image, size) {
-    const png = PNG.sync.write(image, { filterType: 4 });
-    if (image.height > MAX_SHOT_HEIGHT) {
-        return png;
+async function stitchAsChromium(page, tiles, size) {
+    if (size.height * SCALE > MAX_SHOT_HEIGHT) {
+        const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+        for (const t of tiles) {
+            const tile = PNG.sync.read(t.png);
+            PNG.bitblt(tile, out, 0, 0, t.width * SCALE, t.height * SCALE, t.left * SCALE, t.top * SCALE);
+        }
+        return PNG.sync.write(out, { filterType: 4 });
     }
     const shown = await page.context().newPage();
     try {
         await shown.setViewportSize(size);
+        const imgs = tiles.map(
+            (t) =>
+                `<img style="left:${t.left}px;top:${t.top}px;width:${t.width}px;height:${t.height}px" ` +
+                `src="data:image/png;base64,${t.png.toString("base64")}">`,
+        );
         await shown.setContent(
-            `<style>html,body{margin:0}img{display:block;width:${size.width}px;height:${size.height}px}</style>` +
-                `<img src="data:image/png;base64,${png.toString("base64")}">`,
+            // The body holds the picture's size: absolute images give it none, and a page whose
+            // viewport did not take the size (a story test's) is shot to its document's size.
+            `<style>html,body{margin:0}body{position:relative;width:${size.width}px;height:${size.height}px}` +
+                `img{display:block;position:absolute}</style>${imgs.join("")}`,
         );
         await shown.evaluate(imagesInPage);
         return await shown.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
@@ -462,9 +546,8 @@ export function pinFixedInPage(undo) {
  *     for a frame), shot from the page's top left
  * @returns {Promise<Buffer>} the PNG
  */
-export async function shootTiles(page, frame, size, vp) {
-    const view = { x: 0, y: 0, ...vp };
-    const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
+async function shootTiles(page, frame, size, vp) {
+    const tiles = [];
     try {
         // Inside the try, so a failure still puts every style back (an undo of nothing does nothing).
         await frame.evaluate(pinFixedInPage, false);
@@ -481,18 +564,21 @@ export async function shootTiles(page, frame, size, vp) {
                     Math.max(0, Math.min(left, size.width - vp.width)),
                     Math.max(0, Math.min(top, size.height - vp.height)),
                 );
-                const tile = PNG.sync.read(await page.screenshot({ ...SHOT, clip: view }));
                 const [x, y] = [left - at.x, top - at.y];
                 w = Math.min(vp.width - x, size.width - left);
                 h = Math.min(vp.height - y, size.height - top);
+                // Only the part of the viewport this tile adds: the last row of tiles often adds a few
+                // rows, and a whole-viewport shot of it was most of a tile's cost for nothing.
                 if (w > 0 && h > 0) {
-                    PNG.bitblt(tile, out, x * SCALE, y * SCALE, w * SCALE, h * SCALE, left * SCALE, top * SCALE);
+                    const png = await page.screenshot({ ...SHOT, clip: { x, y, width: w, height: h } });
+                    tiles.push({ png, left, top, width: w, height: h });
                 }
             }
         }
     } finally {
-        await scrollFrame(frame, 0, 0);
+        // Back where the story was; the next screenshot (screenshotWholePage's) waits for its own frames.
+        await scrollFrame(frame, 0, 0, false);
         await frame.evaluate(pinFixedInPage, true);
     }
-    return encodeAsChromium(page, out, size);
+    return stitchAsChromium(page, tiles, size);
 }

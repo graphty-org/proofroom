@@ -57,8 +57,9 @@ function differs(a, b) {
         return a ? "only in the first" : "only in the second";
     }
     if (a.capture && b.capture) {
-        const samePicture =
-            a.capture === b.capture || (a.baseline === b.baseline && exactToBaseline(a) && exactToBaseline(b));
+        // The second side drawing exactly the approved baseline agrees, whatever the first drew:
+        // the first is the capture being replaced, and its drift is its own (#3472).
+        const samePicture = a.capture === b.capture || (a.baseline === b.baseline && exactToBaseline(b));
         return samePicture ? null : "different bytes";
     }
     if (!a.capture && !b.capture && a.status === b.status && NOTHING_TO_SHOOT.has(a.status)) {
