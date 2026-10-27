@@ -41,7 +41,9 @@
  * approval signs the record into the commit (signRecord). POST /api/finish takes the tree's
  * approval when there is one, checks it, and pushes the commit with the signed statement on it, or
  * the commit alone. A Finish with nothing new to decide signs the record of an earlier Finish that was
- * pushed unsigned, when the branch tip is that Finish's accept commit (`resign`). The server
+ * pushed unsigned, when the branch tip is that Finish's accept commit (`resign`). In change mode
+ * (the default branch's `approvalFormat`) the one approval is of the change statement
+ * prepareApproval builds, for every Finish that commits anything (`signs: "change"`). The server
  * decides whether approval is required, so leaving it out never skips it. The rpId is the host
  * name of the page's own origin.
  *
@@ -138,7 +140,8 @@ import {
     reviewerLogin,
     visualJobs,
 } from "./github.mjs";
-import { CONFIG_FILE } from "./config.mjs";
+import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
+import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
 import {
     approvalIndex,
     baselineWriters,
@@ -279,15 +282,16 @@ const execFileAsync = promisify(execFile);
 const imageHash = (item) => item.capture ?? item.baseline ?? null;
 
 /**
- * The newest `to` hash per path in this pull request's review records at `head`. A record is
- * data from the branch and only decides whether a "re-review" flag is shown.
+ * The newest `to` hash per path in this pull request's review records at `head`, and then in its
+ * change statements there (newest in their chain), which come after every record. Both are data
+ * from the branch and only decide whether a "re-review" flag is shown.
  * @param {string} repo the repository
  * @param {string | null} head the captured head
  * @param {number | null} pr the pull request
- * @param {string} baselines the baselines directory
+ * @param {{ baselines: string, approvals: string }} config the settings
  * @returns {Promise<Map<string, string | null>>} `to` by baseline path
  */
-async function earlierAccepts(repo, head, pr, baselines) {
+async function earlierAccepts(repo, head, pr, { baselines, approvals }) {
     const out = new Map();
     if (pr === null || !head) {
         return out;
@@ -306,6 +310,21 @@ async function earlierAccepts(repo, head, pr, baselines) {
             for (const item of record.items) {
                 out.set(item.path, item.to);
             }
+        }
+    }
+    const change = `pr:${pr}`;
+    const files = await git(["ls-tree", "-r", "--name-only", head, `${approvals}/${changeFolder(change)}/`]).catch(() => "");
+    const chain = [];
+    for (const file of files.split("\n").filter((n) => n.endsWith(".json"))) {
+        const st = await git(["show", `${head}:${file}`]).then(JSON.parse, () => null);
+        if (statementProblem(st) === null && st.change === change) {
+            chain.push({ ...st, file, id: statementId(st) });
+        }
+    }
+    const newest = chain.length > 0 ? newestDecisions(chain) : null;
+    for (const [path, d] of newest && "decisions" in newest ? newest.decisions : []) {
+        if (d.decision === "accept" || d.decision === "exclude") {
+            out.set(`${baselines}/${path}`, d.to);
         }
     }
     return out;
@@ -2120,7 +2139,7 @@ export function createApp({
         }
         const key = `${tip} ${t.pr}`;
         if (!recordsAt.has(key)) {
-            const records = tip === t.headSha ? t.earlier : await earlierAccepts(repo, tip, t.pr, config.baselines);
+            const records = tip === t.headSha ? t.earlier : await earlierAccepts(repo, tip, t.pr, config);
             recordsAt.set(key, await heldAt(repo, tip, records));
         }
         return recordsAt.get(key);
@@ -2132,7 +2151,7 @@ export function createApp({
         t.commit = first?.commit ?? null;
         t.headSha = first?.headSha ?? null;
         const base = t.pr === null ? t.commit : t.headSha;
-        t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config.baselines);
+        t.earlier = await earlierAccepts(repo, t.headSha, t.pr, config);
         t.published = await publishedOn(t);
         // null: unknown, when the captured head was never fetched or git fails.
         const known =
@@ -2651,6 +2670,7 @@ export function createApp({
                 now,
                 config,
                 retryDelays,
+                repository: await repositoryId(),
             });
             return { prepared };
         } catch (err) {
@@ -2790,6 +2810,19 @@ export function createApp({
             return "undecided";
         }
         return null;
+    };
+
+    /**
+     * Whether Finish writes change statements now: the fetched default branch's config chooses
+     * (config.mjs approvalFormatAt), as it does in accept.mjs when the commit is made.
+     * @returns {boolean} whether it does
+     */
+    const changeMode = () => {
+        try {
+            return approvalFormatAt(`refs/remotes/origin/${defaultBranch}`, repo).format === "change";
+        } catch {
+            return false;
+        }
     };
 
     const capturesOf = (t) =>
@@ -3774,7 +3807,8 @@ export function createApp({
                 return signPrepared(t, work, body);
             }
             const { trusted } = await knownKeys();
-            const unsigned = signingProblem(t, work);
+            // A change statement signs exactly what this Finish decides, whatever is left undecided.
+            const unsigned = changeMode() ? null : signingProblem(t, work);
             const here = trusted.filter((k) => k.rpId === rpId);
             const keyless = prepareWithoutKey(t, work, { trusted, here, unsigned });
             if (keyless) {
@@ -3795,9 +3829,10 @@ export function createApp({
             // Signing an earlier Finish's record signs nothing else: the tree is a Finish's of its own.
             const tree = !unsigned && !resign;
             // The tree holds the record, so signing the tree signs the decisions too: one approval.
-            const statement = tree
-                ? await treeStatement({ repo, commit: prepared.commit, config, pr: t.pr, now })
-                : undefined;
+            // In change mode the one approval is of the change statement prepareApproval built.
+            const statement =
+                prepared.statement ??
+                (tree ? await treeStatement({ repo, commit: prepared.commit, config, pr: t.pr, now }) : undefined);
             const challenge = recordHash(statement ?? prepared.recordBody).toString("base64url");
             approvals.set(t.id, {
                 ...prepared,
@@ -3815,8 +3850,8 @@ export function createApp({
                 200,
                 {
                     required: true,
-                    signs: tree ? "tree" : "record",
-                    tree,
+                    signs: prepared.statement ? "change" : tree ? "tree" : "record",
+                    tree: tree && !prepared.statement,
                     resign,
                     ...(tree && { statement }),
                     ...(unsigned && { unsigned }),
@@ -3849,7 +3884,7 @@ export function createApp({
             if (body.digest !== undefined && body.digest !== work.digest) {
                 return [409, { error: CHANGED_SINCE }];
             }
-            const sign = !resign && signingProblem(t, work) === null;
+            const sign = !resign && (changeMode() || signingProblem(t, work) === null);
             const checked = await approvalOf(t, work, body, sign);
             if (checked.refused) {
                 return checked.refused;
@@ -3885,6 +3920,7 @@ export function createApp({
                 config,
                 retryDelays,
                 sign,
+                repository: await repositoryId(),
                 ...(approval && { approval, now: new Date(approval.now) }),
             });
             return [202, { job }];
@@ -3999,7 +4035,7 @@ export function createApp({
                 pushedTips.set(t.branch, commit);
                 pushes++;
             }
-            t.published = await earlierAccepts(repo, commit, t.pr, config.baselines);
+            t.published = await earlierAccepts(repo, commit, t.pr, config);
             t.unsignedRecord = await unsignedRecordAt(repo, commit, t.pr, config);
             // A refresh that ended while this Finish ran listed a new object for the target.
             const shown = targets.get(t.id);

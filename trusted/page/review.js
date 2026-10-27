@@ -4472,7 +4472,8 @@ function passkeySentence(f, prepared) {
                 `unsigned, so they count as approved before. The baselines are not signed: ${blocked}`,
         );
     }
-    if (prepared.required && prepared.tree) {
+    // A change statement, like a tree statement, approves the baselines this Finish writes.
+    if (prepared.required && (prepared.tree || prepared.signs === "change")) {
         return el(
             "p",
             { class: "passkey" },
