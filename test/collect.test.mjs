@@ -153,6 +153,31 @@ describe("collect", () => {
         expect(old.stderr).toContain('unknown command "merge-results"');
     });
 
+    it("writes the capture as incomplete, naming the snapshot, when one has more attempts than allowed", async () => {
+        const baselines = tempDir("vr-bl-");
+        writeFileSync(join(baselines, "same.png"), png(10));
+        writeFileSync(join(baselines, "many.png"), png(10));
+        const out = tempDir("vr-runs-");
+        const judge = (id, image) => compareSnapshot({ project: "app", baselines, id, image, out });
+        await judge("same", png(10));
+        for (let i = 0; i < 22; i++) {
+            await judge("many", png(90));
+        }
+        const repoDir = repo({});
+        git(repoDir, "init", "-q");
+        git(repoDir, "commit", "-q", "--allow-empty", "-m", "start");
+        const into = join(tempDir("vr-collected-"), "app");
+        const run = await cli(
+            ["collect", "--project", "app", "--baselines", baselines, "--out", into, out, "--whole"],
+            repoDir,
+        );
+        expect(run.status).toBe(1);
+        expect(run.stderr).toContain("app/many.png has 22 attempts; at most 21 are allowed");
+        const results = read(into);
+        expect(results.complete).toBe(false);
+        expect(results.items.map((i) => i.file)).toEqual(["same.png"]);
+    });
+
     it("checks an openCapture() plan: a planned snapshot with no result is refused, a filter reports nothing removed", async () => {
         const baselines = tempDir("vr-bl-");
         writeFileSync(join(baselines, "same.png"), png(10));

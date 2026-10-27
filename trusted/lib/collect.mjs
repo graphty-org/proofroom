@@ -6,11 +6,11 @@
  *
  * Each directory holds result-line files, `results-<pid>-<thread>.ndjson`, one per process. Over
  * all of them, the last attempt of each snapshot is its item and the earlier ones its `attempts`.
- * A directory the vitest adapter wrote also holds one `run-<pid>-<n>.json` per vitest run (a rerun of
+ * A directory the vitest adapter wrote also holds one `run-<pid>-<n>-<random>.json` per vitest run (a rerun of
  * the failed story files into the same directory adds one): which shard it was, the project's
  * story files and those it ran, and whether every story test that ran reached the visual step.
  *
- * A directory openCapture() wrote to holds one `plan-<pid>-<thread>-<n>.json` per openCapture():
+ * A directory openCapture() wrote to holds one `plan-<pid>-<thread>-<n>-<random>.json` per openCapture():
  * the snapshots its stories() listed, whether it was limited to some stories, and whether close()
  * ran. compareSnapshot() also writes `excluded-<pid>-<thread>.ndjson`, the snapshots their own
  * parameters now exclude while they have a baseline.
@@ -31,12 +31,12 @@ import { join } from "node:path";
 import { classify, DEFAULT_THRESHOLD, readBaseline } from "./compare.mjs";
 import { BASELINE_NAME, fileName, pngsIn, provenance, toolVersion, writeResults } from "./compare-run.mjs";
 import { junitFromResults } from "./junit.mjs";
-import { itemsFromLines, parseResultLines } from "./result-line.mjs";
+import { attemptsProblem, itemsFromLines, parseResultLines } from "./result-line.mjs";
 import { validateResults } from "./results.mjs";
 
 const LINE_FILE = /^results-\d+-\d+\.ndjson$/;
-const RUN_FILE = /^run-\d+-\d+\.json$/;
-const PLAN_FILE = /^plan-\d+-\d+-\d+\.json$/;
+const RUN_FILE = /^run-\d+-\d+(?:-[0-9a-f]+)?\.json$/;
+const PLAN_FILE = /^plan-\d+-\d+-\d+(?:-[0-9a-f]+)?\.json$/;
 const EXCLUDED_FILE = /^excluded-\d+-\d+\.ndjson$/;
 /** What a run file says about its run, beside the capture header results.json takes from it. */
 const RUN_KEYS = ["project", "shard", "reported", "missing", "excluded", "files", "ran"];
@@ -312,13 +312,27 @@ export async function collect({ project, baselines, out, dirs, junit = join(out,
             lines.push(line);
         }
     }
+    // A snapshot whose attempts cannot be read (too many, or a gap) is left out and named, so the
+    // capture is still written, as incomplete.
+    const triesOf = new Map();
+    for (const line of lines) {
+        triesOf.set(line.file, [...(triesOf.get(line.file) ?? []), line]);
+    }
+    const unread = new Set();
+    for (const [file, tries] of triesOf) {
+        const problem = attemptsProblem(tries.sort((a, b) => a.attempt - b.attempt));
+        if (problem) {
+            problems.push(problem);
+            unread.add(file);
+        }
+    }
+    const items = itemsFromLines(lines.filter((l) => !unread.has(l.file))).get(project) ?? [];
     let limited = false;
     if (header === null) {
         const plan = planProblems(project, parts, new Set([...where.keys(), ...excluded]), whole);
         problems.push(...plan.problems);
         limited = plan.limited;
     }
-    const items = itemsFromLines(lines).get(project) ?? [];
     for (const item of items) {
         for (const sub of ["", "baselines"]) {
             await copyIfThere(join(where.get(item.file), sub, item.file), join(out, sub, item.file));

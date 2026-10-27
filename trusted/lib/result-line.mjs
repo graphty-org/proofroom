@@ -126,6 +126,22 @@ export function attemptOf(line) {
 }
 
 /**
+ * What is wrong with one snapshot's attempts, if anything: too many, or not numbered 1 to n.
+ * @param {object[]} tries its result lines, sorted by attempt
+ * @returns {string | null} the problem
+ */
+export function attemptsProblem(tries) {
+    const where = `${tries[0].project}/${tries[0].file}`;
+    if (tries.length > MAX_ATTEMPTS + 1) {
+        return `${where} has ${tries.length} attempts; at most ${MAX_ATTEMPTS + 1} are allowed`;
+    }
+    if (tries.some((t, i) => t.attempt !== i + 1)) {
+        return `${where} has attempts ${tries.map((x) => x.attempt).join(", ")}; they must be 1 to ${tries.length}`;
+    }
+    return null;
+}
+
+/**
  * Groups result lines into results.json items, per project: the last attempt of each snapshot is
  * its item, and the earlier ones its `attempts`.
  * @param {object[]} lines valid result lines, in any order
@@ -140,17 +156,10 @@ export function itemsFromLines(lines) {
     const projects = new Map();
     for (const tries of bySnapshot.values()) {
         tries.sort((a, b) => a.attempt - b.attempt);
-        const where = `${tries[0].project}/${tries[0].file}`;
-        if (tries.length > MAX_ATTEMPTS + 1) {
-            throw new Error(`${where} has ${tries.length} attempts; at most ${MAX_ATTEMPTS + 1} are allowed`);
+        const problem = attemptsProblem(tries);
+        if (problem) {
+            throw new Error(problem);
         }
-        tries.forEach((t, i) => {
-            if (t.attempt !== i + 1) {
-                throw new Error(
-                    `${where} has attempts ${tries.map((x) => x.attempt).join(", ")}; they must be 1 to ${tries.length}`,
-                );
-            }
-        });
         const { project, ...item } = tries.at(-1);
         delete item.attempt;
         delete item.passed;

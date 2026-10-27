@@ -241,7 +241,7 @@ attempt, and `collect` takes the last one as its result. A new run of a commit n
 directory.
 
 A story test renders each story several times in one page -- once for the test, again for each
-mode, and again when a shot differs -- where `capture` gives every render a fresh page. So a story
+mode, and again for each retry the adapter's `retries` option allows -- where `capture` gives every render a fresh page. So a story
 must draw the same picture however often it is rendered: state its play changes (a store, a module
 variable, a registry keyed by it) is made anew for each render, in a loader, never once when the
 story file loads. Between renders the page's local and session storage are cleared, every IndexedDB
