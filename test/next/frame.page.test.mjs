@@ -100,7 +100,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await expect.poll(() => box(page).locator("h3").innerText()).toBe("Keys");
                 const text = await box(page).innerText();
                 expect(text).toContain("Every key is also printed on its button.");
-                for (const words of ["Next change that needs you", "Find in the focused pane", "This sheet", "Image only"]) {
+                for (const words of [
+                    "Next change that needs you",
+                    "Find in the focused pane",
+                    "This sheet",
+                    "Image only",
+                ]) {
                     expect(text).toContain(words);
                 }
                 // Keys whose actions this page does not have yet are not listed.
@@ -145,6 +150,13 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await expect
                     .poll(() => message(page))
                     .toBe("Letter, digit and symbol keys off: only arrows, Enter, Esc, Tab and Space act.");
+                // The sheet's own letter boxes hide too; the arrows' stay.
+                const sheetKey = (k) =>
+                    box(page)
+                        .locator(".keys kbd")
+                        .filter({ hasText: new RegExp(`^${k}$`) });
+                await expect.poll(() => sheetKey("J").isVisible()).toBe(false);
+                expect(await sheetKey("Left").isVisible()).toBe(true);
                 await closeBox(page);
                 await expect.poll(() => visibleKeys(page)).toEqual([{ act: "openchg", key: "Enter" }]);
                 const from = t.actions.length;
@@ -230,7 +242,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
 
             it("switches the theme to Light, Dark and Match the system", async () => {
                 const page = await open({});
-                const bg = () => page.evaluate(() => globalThis.getComputedStyle(globalThis.document.body).backgroundColor);
+                const bg = () =>
+                    page.evaluate(() => globalThis.getComputedStyle(globalThis.document.body).backgroundColor);
                 await page.emulateMedia({ colorScheme: "light" });
                 const light = await bg();
                 await page.getByRole("button", { name: "Settings" }).click();
@@ -294,7 +307,9 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     expect(await row.innerText()).toBe("Passkeys\nNone. Register passkey...");
                     await row.getByRole("button", { name: "Register passkey..." }).click();
                     await row.getByRole("button", { name: "Create the passkey" }).click();
-                    await expect.poll(() => message(page)).toMatch(/^Passkey registered \((Linux|Mac|Windows) passkey, /);
+                    await expect
+                        .poll(() => message(page))
+                        .toMatch(/^Passkey registered \((Linux|Mac|Windows) passkey, /);
                     const { credentials } = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
                     expect(credentials).toHaveLength(1);
                     const id = Buffer.from(credentials[0].credentialId, "base64").toString("base64url");
@@ -351,7 +366,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     /^Offline: the server is unreachable\. Showing what was loaded at \d\d:\d\d\. Decisions cannot be saved\. Click to retry\.$/,
                 );
                 expect(await message(page)).toMatch(
-                    /^Offline: the server is unreachable\. Showing what was loaded at \d\d:\d\d\. Decisions cannot be saved\.$/,
+                    /^Offline: the server is unreachable\. Showing what was loaded at \d\d:\d\d; decisions cannot be saved\.$/,
                 );
                 expect(await writers()).toEqual([["rowundo", "true", OFFLINE_WHY]]);
                 // A press by key and by pointer: nothing sent, nothing queued, and the reason said.
@@ -359,12 +374,16 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 const sent = decides();
                 await undo.focus();
                 await page.keyboard.press("Enter");
-                await expect.poll(() => message(page)).toBe("Not saved: the server is unreachable. Nothing was queued.");
+                await expect
+                    .poll(() => message(page))
+                    .toBe("Not saved: the server is unreachable. Nothing was queued.");
                 await page.getByRole("button", { name: "Messages" }).click();
                 await closeBox(page);
                 // aria-disabled: Playwright would wait for it to be enabled, so the mouse presses it as is.
                 await undo.click({ force: true });
-                await expect.poll(() => message(page)).toBe("Not saved: the server is unreachable. Nothing was queued.");
+                await expect
+                    .poll(() => message(page))
+                    .toBe("Not saved: the server is unreachable. Nothing was queued.");
                 expect(decides()).toBe(sent);
                 // Settings opens, and says it could not read the passkeys.
                 await page.getByRole("button", { name: "Settings" }).click();
@@ -393,6 +412,29 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     "Back online: decisions are saved again.",
                 ]);
                 expect(await box(page).locator("li.c-failed").count()).toBeGreaterThan(0);
+                await closeBox(page);
+            });
+
+            it("with Settings open across a stop and a restart: Register passkey... follows, and Back online is said once", async () => {
+                const page = await open({ clock: true });
+                await page.getByRole("button", { name: "Settings" }).click();
+                const register = box(page).getByRole("button", { name: "Register passkey..." });
+                await register.waitFor();
+                const state = async () => [
+                    await register.getAttribute("aria-disabled"),
+                    await register.getAttribute("title"),
+                ];
+                expect(await state()).toEqual([null, null]);
+                await t.stopServer();
+                await page.clock.runFor(15000);
+                await expect.poll(state).toEqual(["true", OFFLINE_WHY]);
+                await t.startServer();
+                await page.clock.runFor(15000);
+                await expect.poll(state).toEqual([null, null]);
+                await closeBox(page);
+                await page.getByRole("button", { name: "Messages" }).click();
+                const said = await box(page).locator("li").allInnerTexts();
+                expect(said.filter((m) => m.endsWith("Back online: decisions are saved again."))).toHaveLength(1);
                 await closeBox(page);
             });
         });

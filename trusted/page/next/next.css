@@ -1572,7 +1572,13 @@ dialog {
     background: var(--surface);
     color: var(--ink);
     max-height: 86vh;
-    max-width: 720px;
+    max-width: min(720px, calc(100% - 2em - 42px));
+}
+dialog.settings {
+    width: 620px;
+}
+dialog.keys-sheet {
+    width: 720px;
 }
 dialog::backdrop {
     background: rgba(20, 30, 50, 0.35);
@@ -1600,7 +1606,7 @@ dialog label {
     align-items: center;
     margin: 3px 0;
 }
-/* The Keys sheet's map: its boxes show whether letter keys are on or off. */
+/* The Keys sheet's map: its letter boxes hide with letter keys off, as every key hint does. */
 .keys {
     display: grid;
     grid-template-columns: auto 1fr auto 1fr;

@@ -338,6 +338,23 @@ export function runAction(app, id, ctx, via) {
 
 // Each control's context, for the key handler: the change or snapshot it stands for.
 const contexts = new WeakMap();
+// Each control's tooltip while it is available.
+const titles = new WeakMap();
+
+/**
+ * Marks every control inside `root` available or not as it is now, for a part of the page that is
+ * not drawn again (an open box) when the server stops answering or answers again.
+ * @param {any} app the page
+ * @param {Element} root where the controls are
+ */
+export function syncAvailability(app, root) {
+    for (const node of root.querySelectorAll("[data-act]")) {
+        const ok = availability(app, node.dataset.act, contextOf(node));
+        const set = (name, value) => (value ? node.setAttribute(name, value) : node.removeAttribute(name));
+        set("aria-disabled", ok === true ? null : "true");
+        set("title", ok === true ? titles.get(node) : ok);
+    }
+}
 
 /**
  * The context a control was built with.
@@ -366,6 +383,7 @@ export function control(
     const ok = availability(app, id, ctx);
     const text = label ?? labelOf(app, id, ctx);
     const key = keyed ? a.key : undefined;
+    const own = attrs.title ?? (typeof a.title === "function" ? a.title(app, ctx) : a.title) ?? null;
     const node = el(
         tag,
         {
@@ -374,16 +392,13 @@ export function control(
             "data-zone": zone,
             "data-key": key,
             "aria-disabled": ok === true ? null : "true",
-            title:
-                ok === true
-                    ? (attrs.title ?? (typeof a.title === "function" ? a.title(app, ctx) : a.title) ?? null)
-                    : ok,
             ...attrs,
-            ...(ok !== true && { title: ok }),
+            title: ok === true ? own : ok,
         },
         children ?? [text, key ? kb(key) : null],
     );
     contexts.set(node, ctx);
+    titles.set(node, own);
     node.addEventListener("click", (e) => {
         e.stopPropagation();
         runAction(app, id, { ...ctx, el: node }, "pointer");

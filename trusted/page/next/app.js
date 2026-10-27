@@ -9,7 +9,7 @@
  * the Keys sheet (keys-sheet.js), the messages, the offline state and the tab title.
  */
 
-import { ACTIONS, control, runAction } from "./actions.js";
+import { ACTIONS, control, runAction, syncAvailability } from "./actions.js";
 import { formatAddress, parseAddress, snapParts } from "./address.js";
 import {
     api,
@@ -149,7 +149,7 @@ function drawTop() {
             attrs: {
                 class: `status ${trouble ? "trouble" : ""}`,
                 id: "srvstatus",
-                ...(app.offline() && { title: `${offlineText()} Click to retry.` }),
+                ...(app.offline() && { title: `${offlineText(true)} Click to retry.` }),
             },
             children: [
                 app.refreshing ? ic("spin") : trouble ? ic("offline") : null,
@@ -160,9 +160,15 @@ function drawTop() {
     $("frame-slot").replaceChildren(control(app, "keys", { zone: "top" }), control(app, "settings", { zone: "top" }));
 }
 
-// The offline sentence: the status's tooltip and the message line's (design 10).
-const offlineText = () =>
-    `Offline: the server is unreachable.${app.listAt ? ` Showing what was loaded at ${clock(app.listAt)}.` : ""} Decisions cannot be saved.`;
+// The offline sentence (design 10): the message line's joins its last two clauses with a
+// semicolon, the status's tooltip with a period.
+function offlineText(tooltip = false) {
+    const head = "Offline: the server is unreachable.";
+    if (!app.listAt) {
+        return `${head} Decisions cannot be saved.`;
+    }
+    return `${head} Showing what was loaded at ${clock(app.listAt)}${tooltip ? ". D" : "; d"}ecisions cannot be saved.`;
+}
 
 app.statusText = () => {
     if (app.refreshing) {
@@ -992,7 +998,13 @@ app.rowMenu = (id, anchor) => {
 };
 
 function openBox(title, ...body) {
+    openSheet("", title, ...body);
+}
+
+// A box with a class of its own: Settings and the Keys sheet are as wide as the design draws them.
+function openSheet(kind, title, ...body) {
     const d = /** @type {HTMLDialogElement} */ ($("dlg"));
+    d.className = kind;
     d.replaceChildren(
         el("h3", {}, title),
         ...body,
@@ -1057,6 +1069,7 @@ app.messagesBox = () => {
 
 app.draw = draw;
 app.openBox = openBox;
+app.openSheet = openSheet;
 app.keysSheet = () => keysSheet(app);
 app.settingsSheet = () => settingsSheet(app);
 app.setLetters = (on) => setLetters(app, on);
@@ -1080,6 +1093,7 @@ whenConnection(() => {
         say("Back online: decisions are saved again.");
     }
     draw();
+    syncAvailability(app, $("dlg")); // an open box is not drawn again
 });
 
 app.showReview = () => {

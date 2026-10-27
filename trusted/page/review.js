@@ -9,7 +9,7 @@
  * scrolls: only its two panes do, so its buttons stay where the reader's hand already is.
  */
 
-import { approve, prepareRegistration, registerPasskey } from "/passkey.js";
+import { approve, passkeyName, passkeyWrongHost, prepareRegistration, registerPasskey } from "/passkey.js";
 import { cropOf } from "./spot.js";
 import { afterPaint, createStage, el, GUARD_MS, spinner } from "./viewer/stage.js";
 
@@ -1713,40 +1713,9 @@ function passkeyLine(pk) {
     );
 }
 
-// What a passkey is called in visual-review/passkeys.json and on every device: the kind of device
-// that made it and the day, never "this device" (the file is read on every device).
-function passkeyName(platform) {
-    const day = new Date().toISOString().slice(0, 10);
-    if (!platform) {
-        return `security key, ${day}`;
-    }
-    const ua = navigator.userAgent;
-    const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-    const device = iPad ? "iPad" : (PASSKEY_DEVICES.find(([pattern]) => pattern.test(ua))?.[1] ?? "device");
-    return `${device} passkey, ${day}`;
-}
-
-// The kind of device a user agent names, checked in this order after the iPad (which can call
-// itself a Mac).
-const PASSKEY_DEVICES = [
-    [/iPhone/, "iPhone"],
-    [/Android/, "Android"],
-    [/Mac OS X|Macintosh/, "Mac"],
-    [/Windows/, "Windows"],
-    [/Linux|CrOS/, "Linux"],
-];
-
-// The browser's refusal of a passkey, said with its likely cause: a page opened from another
-// address than the one the passkey was made on.
+// The browser's refusal of a passkey, said with its likely cause.
 function passkeyFailure(err, pk) {
-    const hosts = [...new Set((pk?.keys ?? []).map((k) => k.rpId))];
-    if (hosts.length > 0 && !hosts.includes(location.hostname)) {
-        return (
-            `Your passkey belongs to ${hosts.join(" or ")}, and this page is open at ${location.hostname}: ` +
-            `open it from https://${hosts[0]} instead. Nothing was changed.`
-        );
-    }
-    return `Passkey failed (${err?.message ?? err}): nothing was changed.`;
+    return passkeyWrongHost(pk?.keys ?? []) ?? `Passkey failed (${err?.message ?? err}): nothing was changed.`;
 }
 
 // Register passkey: the server's challenge is fetched first, so the sheet's button can start Face

@@ -89,17 +89,18 @@ export const whenConnection = (fn) => {
 
 // A request, noting whether it reached the server; one that did not fails as an ApiError.
 async function reach(request) {
-    const was = offlineAt;
+    // Checked when the answer comes, not when the request starts: several requests sent while
+    // offline that all succeed report one change.
     try {
         const res = await request;
-        offlineAt = null;
-        if (was !== null) {
+        if (offlineAt !== null) {
+            offlineAt = null;
             onConnection();
         }
         return res;
     } catch {
-        offlineAt ??= Date.now();
-        if (was === null) {
+        if (offlineAt === null) {
+            offlineAt = Date.now();
             onConnection();
         }
         throw new ApiError("the server is unreachable", 0);

@@ -6,7 +6,7 @@
  * Face ID inside its own press, as iPad Safari requires.
  */
 
-import { prepareRegistration, registerPasskey } from "../passkey.js";
+import { passkeyName, passkeyWrongHost, prepareRegistration, registerPasskey } from "../passkey.js";
 import { control, runAction } from "./actions.js";
 import { api } from "./api.js";
 import { letterKeysOn, setLetterKeys, syncHints } from "./keys.js";
@@ -141,36 +141,9 @@ function radio(app, id, { name, value, label, current, ctx }) {
     return el("label", {}, input, ` ${label}`);
 }
 
-// What a passkey is called in visual-review/passkeys.json and on every device: the kind of device
-// that made it and the day, never "this device" (the file is read on every device).
-const DEVICES = [
-    [/iPhone/, "iPhone"],
-    [/Android/, "Android"],
-    [/Mac OS X|Macintosh/, "Mac"],
-    [/Windows/, "Windows"],
-    [/Linux|CrOS/, "Linux"],
-];
-function passkeyName(platform) {
-    const day = new Date().toISOString().slice(0, 10);
-    if (!platform) {
-        return `security key, ${day}`;
-    }
-    const ua = navigator.userAgent;
-    const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-    return `${iPad ? "iPad" : (DEVICES.find(([p]) => p.test(ua))?.[1] ?? "device")} passkey, ${day}`;
-}
-
 // The browser's refusal of a passkey, said with its likely cause.
-function passkeyFailure(err, keys) {
-    const hosts = [...new Set(keys.map((k) => k.rpId))];
-    if (hosts.length > 0 && !hosts.includes(location.hostname)) {
-        return (
-            `Your passkey belongs to ${hosts.join(" or ")}, and this page is open at ${location.hostname}: ` +
-            `open it from https://${hosts[0]} instead. Nothing was changed.`
-        );
-    }
-    return `Passkey not created: ${err?.message ?? err}. Nothing was changed.`;
-}
+const passkeyFailure = (err, keys) =>
+    passkeyWrongHost(keys) ?? `Passkey not created: ${err?.message ?? err}. Nothing was changed.`;
 
 let shown = { rpId: "", keys: [] }; // the last GET /api/passkeys answer
 
@@ -272,7 +245,8 @@ export function cancelPasskey(app, { row }) {
  */
 export function settingsSheet(app) {
     const row = el("div", { class: "q", id: "set-passkeys" }, el("b", {}, "Passkeys"), "Reading...");
-    app.openBox(
+    app.openSheet(
+        "settings",
         "Settings",
         row,
         el("div", { class: "q" }, el("b", {}, "Keys"), letterSwitch(app, "Letter, digit and symbol keys on")),
