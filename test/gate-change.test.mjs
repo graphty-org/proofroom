@@ -191,6 +191,28 @@ describe("change statements in the gate", () => {
         expect(check(r)).toEqual([]);
     });
 
+    it("fails a file two changes checked together decided differently, and passes it when they agree", () => {
+        const both = { changes: ["pr:7", "pr:8"] };
+        const r = changeRepo();
+        git(r.repo, "checkout", "-q", "-b", "other", "master");
+        acceptCard(r, "image A", { change: "pr:8" });
+        git(r.repo, "checkout", "-q", "pr");
+        git(r.repo, "merge", "-q", "--no-edit", "other");
+        acceptCard(r, "image B");
+        // pr:7 alone approves exactly what the head holds.
+        expect(check(r)).toEqual([]);
+        expect(check(r, both)).toEqual([
+            `${CARD_FILE}: the changes checked together hold different decisions for it; check them one at a time, or decide it the same way in each`,
+        ]);
+        const same = changeRepo();
+        git(same.repo, "checkout", "-q", "-b", "other", "master");
+        acceptCard(same, "image B", { change: "pr:8" });
+        git(same.repo, "checkout", "-q", "pr");
+        git(same.repo, "merge", "-q", "--no-edit", "other");
+        finish(same, statementOf(same, [entry(same, CARD)]));
+        expect(check(same, both)).toEqual([]);
+    });
+
     it("refuses a landed statement replayed: kept under its own name it is not new, copied under another it is misplaced", () => {
         const r = changeRepo();
         const landed = acceptCard(r);

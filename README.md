@@ -203,7 +203,8 @@ branch instead of commenting. How to set it up, capture, review and finish:
   accepts a review record for any of them. It compares baseline changes with the commit the batch
   sits on (its `checking_base_sha`), so a batch stacked on another is not charged with that
   batch's changes. Every capture must still equal a baseline, so a batch passes only on images
-  already approved on its pull requests.
+  already approved on its pull requests. When two pull requests in a batch decided the same
+  baseline file differently, the batch fails.
 
 The capture job also makes the pictures the review page's list shows (WebP, a few KB each, drawn
 by the same Chromium that took the captures) and records which browser drew them, so the artifact

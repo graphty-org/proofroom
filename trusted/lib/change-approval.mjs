@@ -570,10 +570,14 @@ function decisionProblem(found, { full, b, h }) {
     if (reject) {
         return `${full}: rejected (${reject.reason ?? "no reason given"}); a rejected item needs a code change, not another review`;
     }
-    if (found.some((e) => e.from === b && e.to === h)) {
+    const [first] = found;
+    if (found.some((e) => e.decision !== first.decision || e.from !== first.from || e.to !== first.to)) {
+        return `${full}: the changes checked together hold different decisions for it; check them one at a time, or decide it the same way in each`;
+    }
+    if (first.from === b && first.to === h) {
         return null;
     }
-    if (found.some((e) => e.from !== b)) {
+    if (first.from !== b) {
         return `the default branch changed ${full} after the review; update and decide it again`;
     }
     return `${full}: the head holds another file than the one approved; review it again`;
