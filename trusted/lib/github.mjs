@@ -445,8 +445,15 @@ export async function newestMasterCapture(gh, project, tmp, { workflow, defaultB
     // The branch's newest commits, then each one's run: GitHub's list of a workflow's runs filtered
     // by branch now and then answers with a stale page (runs from weeks ago), which made a pull
     // request compare with an old capture or none. Commits and a run by head sha answer consistently.
-    const commits = await api(gh, `repos/{owner}/{repo}/commits?sha=${encodeURIComponent(defaultBranch)}&per_page=10`);
-    for (const { sha } of commits) {
+    // The list holds every ancestor, a merged branch's own commits too, whose pull request runs
+    // captured the branch and not the default branch: only its first-parent line is walked.
+    const commits = await api(gh, `repos/{owner}/{repo}/commits?sha=${encodeURIComponent(defaultBranch)}&per_page=30`);
+    let next = commits[0]?.sha;
+    for (const { sha, parents } of commits) {
+        if (sha !== next) {
+            continue;
+        }
+        next = parents?.[0]?.sha;
         const run = await newestCiRun(gh, sha, { workflow });
         if (!run) {
             continue;

@@ -2659,6 +2659,23 @@ describe("newestMasterCapture", () => {
         );
     });
 
+    it("skips a merged branch's own commit, whose run captured the branch", async () => {
+        const r = makeRepo();
+        const gh = fakeGh({
+            masterRuns: [
+                { id: 3000, head: "3".repeat(40), parent: r.master },
+                { id: 2000, head: "2".repeat(40) },
+                { id: 1000, head: r.master },
+            ],
+            artifacts: { 3000: [], 2000: ["visual-compact-mantine-1"], 1000: ["visual-compact-mantine-1"] },
+            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null } },
+        });
+        const tmp = join(r.dir, "reference");
+        expect(await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG)).toBe(
+            join(tmp, "1000-1", "compact-mantine"),
+        );
+    });
+
     it("finds nothing when no master run has a complete capture", async () => {
         const r = makeRepo();
         const gh = fakeGh({
