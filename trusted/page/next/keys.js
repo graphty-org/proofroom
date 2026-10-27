@@ -5,7 +5,10 @@
  * visible controls carry the same key, the one in the earliest zone (actions.js ZONES) takes it and
  * alone shows its key box. No key acts while a text field, box or menu has focus. Letter keys can
  * be switched off (WCAG 2.1.4): every key made of a letter, digit or symbol then does nothing and
- * its hints are hidden; arrows, Enter, Esc, Tab and Space stay.
+ * its hints are hidden; arrows, Enter, Esc, Tab and Space stay. A control may print two keys
+ * ("Left / J"): either acts. Holding Space flashes the viewer while held and never presses a
+ * focused button. A key printed only in a closed menu (Options > Outline [B]) acts through the
+ * visible button that opens that menu, which names it in `data-menukeys`.
  */
 
 import { ZONES, contextOf, runAction } from "./actions.js";
@@ -26,12 +29,27 @@ export function letterKeysOn() {
 }
 
 /**
- * Whether a key event is the key printed as `printed` ("Shift+1", "Shift+N", "Enter", "Esc", "/").
- * @param {string} printed the printed key
+ * Which of the keys printed as `printed` ("Shift+1", "Enter", "/", or two as "Left / J") a key
+ * event is.
+ * @param {string} printed the printed key or keys
+ * @param {{ key: string, code: string, shiftKey: boolean }} e the event
+ * @returns {string | null} the one it is, or null
+ */
+export const matchedKey = (printed, e) => printed.split(" / ").find((k) => matchesOne(k, e)) ?? null;
+
+/**
+ * Whether a key event is the key printed as `printed` ("Shift+1", "Shift+N", "Enter", "Esc", "/",
+ * "Left / J").
+ * @param {string} printed the printed key or keys
  * @param {{ key: string, code: string, shiftKey: boolean }} e the event
  * @returns {boolean} it is
  */
-export function matches(printed, e) {
+export const matches = (printed, e) => matchedKey(printed, e) !== null;
+
+function matchesOne(printed, e) {
+    if (printed === "Left" || printed === "Right") {
+        return e.key === `Arrow${printed}` && !e.shiftKey;
+    }
     if (printed === "Enter" || printed === "Esc") {
         return e.key === (printed === "Esc" ? "Escape" : "Enter") && !e.shiftKey;
     }
@@ -56,6 +74,20 @@ export function matches(printed, e) {
 export const isLetterKey = (printed) => !NONLETTER.has(printed);
 
 const visible = (node) => node.getClientRects().length > 0;
+
+// The keys printed only in a closed menu, each with the action it runs and the visible button
+// that opens that menu.
+function menuKeys() {
+    const out = [];
+    for (const node of document.querySelectorAll("[data-menukeys]")) {
+        if (visible(node)) {
+            for (const [printed, act] of Object.entries(JSON.parse(node.dataset.menukeys))) {
+                out.push({ printed, act, node });
+            }
+        }
+    }
+    return out;
+}
 // Find [/] goes to the Find box of the pane the reader is in (body's data-pane, set by the page),
 // so it outranks the other pane's box.
 const inFocusedPane = (node) =>
@@ -128,6 +160,16 @@ export function syncHints() {
  *     in a field, `closeMenu()` closes the open menu, `say(text)` writes the message line
  */
 export function startKeys(app) {
+    // Space, outside a text field: never a press of the focused button (it would decide), and
+    // while the viewer shows a snapshot, held, it flashes the view.
+    const space = (e) => e.key === " " || e.code === "Space";
+    document.addEventListener("keyup", (e) => {
+        const t = /** @type {HTMLElement} */ (e.target);
+        if (space(e) && !t.matches?.("input, textarea, select") && !document.querySelector("dialog[open]")) {
+            e.preventDefault();
+            app.holdSpace?.(false);
+        }
+    });
     document.addEventListener("keydown", (e) => {
         if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) {
             return;
@@ -152,6 +194,13 @@ export function startKeys(app) {
             }
             return;
         }
+        if (space(e) && !e.shiftKey) {
+            e.preventDefault();
+            if (!e.repeat) {
+                app.holdSpace?.(true);
+            }
+            return;
+        }
         // A button or link the reader focused with Tab takes Enter, as it shows.
         if (e.key === "Enter" && t.matches?.("button, a")) {
             return;
@@ -163,10 +212,11 @@ export function startKeys(app) {
             return;
         }
         for (const printed of new Set([...document.querySelectorAll("[data-key]")].map((n) => n.dataset.key))) {
-            if (!matches(printed, e)) {
+            const one = matchedKey(printed, e);
+            if (one === null) {
                 continue;
             }
-            if (isLetterKey(printed) && !letterKeysOn()) {
+            if (isLetterKey(one) && !letterKeysOn()) {
                 return;
             }
             const node = ownerOf(printed);
@@ -176,6 +226,16 @@ export function startKeys(app) {
             e.preventDefault();
             runAction(app, node.dataset.act, { ...contextOf(node), el: node }, "key");
             return;
+        }
+        for (const { printed, act, node } of menuKeys()) {
+            if (matches(printed, e)) {
+                if (isLetterKey(printed) && !letterKeysOn()) {
+                    return;
+                }
+                e.preventDefault();
+                runAction(app, act, { el: node }, "key");
+                return;
+            }
         }
     });
 }

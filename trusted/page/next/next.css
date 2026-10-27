@@ -1056,6 +1056,159 @@ body.infind .fk {
     background: var(--stage);
     position: relative;
     outline: none;
+    container-type: inline-size;
+    container-name: viewer;
+}
+/* Two pressed styles, one meaning each: the dark fill only for the selected segment of View and
+   Zoom; every on/off toggle (Baseline, Flash in Spotlight, Blink, Image only) is the outline and check. */
+button.on {
+    background: var(--ink);
+    color: var(--on-ink);
+    border-color: var(--ink);
+}
+button .chk {
+    display: none;
+}
+button[aria-pressed="true"] .chk {
+    display: inline-flex;
+    color: var(--focus);
+    margin-right: 3px;
+}
+button.flashing {
+    outline: 2px solid var(--focus);
+}
+body.nokeys kbd .lk {
+    display: none;
+}
+.seg {
+    display: inline-flex;
+}
+.seg button {
+    border-radius: 0;
+    margin-left: -1px;
+}
+.seg button:first-child {
+    border-radius: 6px 0 0 6px;
+    margin-left: 0;
+}
+.seg button:last-child {
+    border-radius: 0 6px 6px 0;
+}
+.seg button[aria-pressed="true"] {
+    position: relative;
+    z-index: 1;
+}
+/* The toolbar: exactly one 44 px row. View, Blink, Zoom and Baseline never move; below a viewer
+   width of 1100 px Image only, Layout and Options move into More (a container query, no measuring). */
+.vtb {
+    height: 44px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 6px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    overflow: hidden;
+    flex-wrap: nowrap;
+}
+.vtb button {
+    padding: 2px 4px;
+    font-size: 11.5px;
+    flex: none;
+}
+.vtb kbd {
+    margin-left: 3px;
+    font-size: 10px;
+    padding: 1px 2px;
+    min-width: 12px;
+}
+.vtb kbd + kbd {
+    margin-left: 2px;
+}
+.tg {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+}
+.tg + .tg {
+    border-left: 1px solid var(--line);
+    padding-left: 5px;
+}
+.vtb > .grow + .tg,
+.vtb > .itemsum + .tg {
+    border-left: 0;
+    padding-left: 0;
+}
+#morebtn {
+    display: none;
+}
+.vtb .itemsum {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    font-size: 12px;
+}
+.vtb .itemsum > button,
+.vtb .itemsum .iright {
+    flex: none;
+}
+.vtb .itemsum .name {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+@container viewer (max-width: 1099px) {
+    .vtb .tg[data-g="display"] {
+        display: none;
+    }
+    #morebtn {
+        display: inline-block;
+    }
+}
+@container viewer (max-width: 899px) {
+    .vtb {
+        gap: 4px;
+    }
+    .vtb button {
+        font-size: 11px;
+        padding: 2px 3px;
+    }
+    .vtb kbd {
+        font-size: 9.5px;
+        min-width: 11px;
+        margin-left: 2px;
+        padding: 1px;
+    }
+    .vtb button[aria-pressed="true"] .chk {
+        margin-right: 1px;
+    }
+    .tg + .tg {
+        padding-left: 4px;
+    }
+}
+/* Image only, 1300 px and wider: the item line is merged into the toolbar's middle. */
+@container viewer (min-width: 1300px) {
+    .iline.ionly {
+        display: none;
+    }
+    .vtb.merged .tg[data-g="display"] {
+        display: none;
+    }
+    .vtb.merged #morebtn {
+        display: inline-block;
+    }
+}
+@container viewer (max-width: 1299px) {
+    .vtb .itemsum {
+        display: none;
+    }
 }
 .iline {
     min-height: 32px;
@@ -1083,10 +1236,246 @@ body.infind .fk {
     gap: 6px;
     flex: none;
 }
+.iline .name {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0;
+}
+.iline .comp {
+    flex: 0 5 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0;
+}
+.iline .keep,
+.iline .badge,
+.iline .tag,
+.iline .st,
+.iline .asay {
+    flex: none;
+}
+.badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--rail);
+    color: var(--ink-2);
+    line-height: 17px;
+    white-space: nowrap;
+}
+.details {
+    flex: none;
+    padding: 8px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    display: grid;
+    grid-template-columns: repeat(4, auto 1fr);
+    gap: 3px 10px;
+}
+.details[hidden] {
+    display: none;
+}
+.details .dcon {
+    grid-column: span 7;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow: auto;
+}
+.stagewrap {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+}
 .stage {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     display: flex;
+}
+/* The stage's frames (viewer/stage.js): each a label strip above its frame, side by side or over
+   and under. */
+.stagewrap .stage {
+    gap: 8px;
+    padding: 8px 10px 10px;
+}
+.stage.stacked {
+    flex-direction: column;
+}
+.stage figure {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+}
+/* Frame labels sit in a fixed strip above the frame, in --ink on --surface, never on the image. */
+.stage .label {
+    color: var(--ink);
+    background: var(--surface);
+    font-size: 12px;
+    font-weight: 600;
+    height: 22px;
+    flex: none;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 0 8px;
+    border-radius: 3px 3px 0 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.stage .label .lt {
+    min-width: 110px;
+}
+.stage .label .note {
+    color: var(--ink-2);
+    font-weight: 400;
+}
+.stage .frame {
+    position: relative;
+    display: flex;
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: auto;
+}
+.stage.zoom-fit .frame {
+    overflow: hidden;
+}
+.stage .frame.empty {
+    background: transparent;
+}
+/* A removed snapshot's frame: diagonal hatching and a gray tint, as its row picture. */
+.stage[data-status="removed"] .frame {
+    background: repeating-linear-gradient(135deg, #b9bec6 0 8px, #6b7280 8px 11px);
+    padding: 8px;
+}
+.stage[data-status="removed"] .sheet::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(107, 114, 128, 0.28);
+}
+.stage .frame .wait,
+.stage .frame .failed {
+    margin: auto;
+    padding: 16px;
+    text-align: center;
+}
+.stage .frame .failed {
+    color: var(--st-failed);
+}
+.sheet {
+    position: relative;
+    display: grid;
+    flex: none;
+    margin: auto;
+    background: #fff;
+}
+.sheet > img,
+.sheet > canvas {
+    grid-area: 1 / 1;
+    display: block;
+    max-width: none;
+}
+.sheet > .crisp {
+    image-rendering: pixelated;
+}
+.sheet > canvas.diffmark {
+    pointer-events: none;
+}
+.boxmark {
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px solid #ff00aa;
+    box-shadow: 0 0 0 1px #fff;
+    pointer-events: none;
+}
+.stagewrap .note {
+    position: absolute;
+    left: 50%;
+    top: 40px;
+    transform: translateX(-50%);
+    background: var(--surface);
+    color: var(--ink);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    z-index: 2;
+}
+.locator {
+    position: absolute;
+    right: 18px;
+    bottom: 18px;
+    width: 120px;
+    border: 1px solid #fff;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    cursor: crosshair;
+    z-index: 4;
+}
+.locator img {
+    width: 100%;
+    display: block;
+}
+.locator .lr {
+    position: absolute;
+    border: 2px solid var(--focus);
+    pointer-events: none;
+}
+.locator .ld {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    margin: -3px 0 0 -3px;
+    border-radius: 50%;
+    background: #ff00aa;
+    pointer-events: none;
+}
+.errpanel {
+    margin: auto;
+    max-width: 640px;
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 16px 18px;
+    font-size: 12px;
+}
+.errpanel .big {
+    font-size: 14px;
+    margin-bottom: 6px;
+}
+.errpanel pre {
+    background: var(--bg);
+    padding: 8px;
+    border-radius: 4px;
+    overflow: auto;
+    font-size: 11px;
+    max-height: 240px;
+    white-space: pre-wrap;
+}
+/* The decision bar (design 6.1); this stage has its Previous and Next. */
+.decide {
+    height: 52px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+}
+.decide > button,
+.decide .pos {
+    flex: none;
+    white-space: nowrap;
 }
 /* No text is drawn on --stage: the empty state sits on a --surface card. */
 .emptyv {
@@ -1152,6 +1541,9 @@ body.infind .fk {
 .menu .mi[aria-disabled="true"] {
     opacity: 0.45;
     cursor: default;
+}
+.menu .mi .mk {
+    flex: 1;
 }
 .menu .mi .tick {
     width: 12px;

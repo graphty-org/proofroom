@@ -4,11 +4,11 @@
  * Plain ES modules, no framework and no build step. Every control comes from the action table
  * (actions.js); every text that came from a pull request is set as text.
  *
- * Opening a change shows its snapshot list (list.js); the viewer and the decisions arrive with
- * their own modules.
+ * Opening a change shows its snapshot list (list.js) and the current snapshot in the viewer
+ * (viewer.js); the decisions arrive with their own module.
  */
 
-import { control, runAction } from "./actions.js";
+import { ACTIONS, control, runAction } from "./actions.js";
 import { formatAddress, parseAddress, snapParts } from "./address.js";
 import { api, currentToken, logControls, logUsage, startUsage, useToken, whenRefused } from "./api.js";
 import { SORTS, changeOf, drawChanges, nextNeeding, sectionsOf, SECTIONS, sharesOf, walkOrder } from "./changes.js";
@@ -41,10 +41,11 @@ import {
     viewItems,
     visibleRows,
 } from "./list.js";
-import { ORDER, STATUS, mark, statusMark } from "./marks.js";
+import { ORDER, STATUS, mark } from "./marks.js";
 import { history as messageHistory, say, sayAgain } from "./messages.js";
 import { applyPanes, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
 import { el, fmt, ic, kb } from "./ui.js";
+import { createViewer } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
 const POLL_MS = 15000;
@@ -272,6 +273,12 @@ function drawSnaps() {
 function drawViewer() {
     const v = $("viewer");
     const c = app.open();
+    const s = c ? app.snaps.find((x) => x.key === app.snap) : null;
+    if (s) {
+        app.viewer.draw(s);
+        return;
+    }
+    app.viewer.stop();
     if (app.changes.length === 0 && !c) {
         v.replaceChildren();
         return;
@@ -295,8 +302,7 @@ function drawViewer() {
         );
         return;
     }
-    const s = app.snaps.find((x) => x.key === app.snap);
-    if (!s && app.snaps.length > 0) {
+    if (app.snaps.length > 0) {
         // Show or Find hides every row: nothing for a key to act on.
         v.replaceChildren(
             el("div", { class: "iline" }, app.level >= 1 ? control(app, "back", { zone: "iline" }) : null),
@@ -304,30 +310,12 @@ function drawViewer() {
         );
         return;
     }
-    if (!s) {
-        v.replaceChildren(
-            el(
-                "div",
-                { class: "stage" },
-                el("div", { class: "emptyv" }, el("p", {}, `${c.count}. Nothing to review yet.`)),
-            ),
-        );
-        return;
-    }
-    const two = twoLevels(app.snaps.length, innerWidth);
     v.replaceChildren(
         el(
             "div",
-            { class: "iline" },
-            app.level >= 1 ? control(app, "back", { zone: "iline" }) : null,
-            el("b", { class: "num" }, `#${s.n}`),
-            statusMark(s.status),
-            el("b", { class: "ell", title: s.id }, s.name),
-            s.mode ? el("span", { class: "tag" }, s.mode) : null,
-            el("span", { class: "muted ell" }, `${s.project} > ${s.component}`),
-            el("span", { class: "iright" }, app.level === 1 && two ? control(app, "openrow", { zone: "iline" }) : null),
+            { class: "stage" },
+            el("div", { class: "emptyv" }, el("p", {}, `${c.count}. Nothing to review yet.`)),
         ),
-        el("div", { class: "stage", id: "stage" }),
     );
 }
 
@@ -415,6 +403,7 @@ function settle() {
     syncHints();
     logControls(document.querySelectorAll("[data-act]"));
 }
+app.settle = settle;
 
 // ---------------------------------------------------------------- the address
 
@@ -681,7 +670,12 @@ app.arrow = (d) => {
         document.querySelector(".chg.cur")?.scrollIntoView({ block: "nearest" });
         return true;
     }
-    // Every row Show and Find keep, collapsed groups' too: a row in a collapsed group opens it.
+    return app.stepSnap(d);
+};
+
+// Previous and Next (and Up and Down in the list): every row Show and Find keep, collapsed groups'
+// too; a row in a collapsed group opens it.
+app.stepSnap = (d) => {
     const rows = layoutOf(app.lv, app.snaps).groups.flatMap((g) => g.rows);
     if (rows.length > 0) {
         const at = rows.findIndex((s) => s.key === app.snap);
@@ -692,6 +686,22 @@ app.arrow = (d) => {
         return true;
     }
     return false;
+};
+
+// A snapshot's whole item (its console and earlier attempts, which the list's rows leave out):
+// one request per project of the loaded run, kept until another run is loaded.
+const fullItems = new Map();
+app.fullItem = (s) => {
+    const at = `${app.loadedRun}|${s.project}`;
+    if (!fullItems.has(at)) {
+        const q = app.loadedRun ? `?${new URLSearchParams({ run: app.loadedRun })}` : "";
+        const asked = api(`/api/pr/${encodeURIComponent(app.openId)}/${encodeURIComponent(s.project)}${q}`).then(
+            (answer) => new Map(answer.items.map((i) => [i.file, i])),
+        );
+        asked.catch(() => fullItems.delete(at));
+        fullItems.set(at, asked);
+    }
+    return fullItems.get(at).then((byFile) => byFile.get(s.file) ?? null);
 };
 
 // Esc in a field: the first clears its text and stays; the second leaves it for its list.
@@ -756,9 +766,16 @@ function showMenu(anchor, items) {
                 el("span", { class: "tick" }, it.checked ? ic("accept") : null),
                 it.mark ? mark(it.mark[0], it.mark[1]) : null,
                 el("span", {}, it.label),
+                // A menu item prints its key in its right column (design 8.1.1).
+                ACTIONS[it.id].key ? el("span", { class: "mk" }) : null,
+                ACTIONS[it.id].key ? kb(ACTIONS[it.id].key) : null,
             ],
         });
         node.addEventListener("click", () => {
+            // An item that opened another menu (More > Layout) leaves that one open.
+            if (app.menu !== m) {
+                return;
+            }
             closeMenu();
             if (!document.querySelector("dialog[open]")) {
                 restoreFocus();
@@ -1278,6 +1295,9 @@ async function loadFirst() {
         );
     }
 }
+
+app.viewer = createViewer(app);
+app.holdSpace = (on) => app.viewer.holdSpace(on);
 
 logUsage("load", { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, page: "next" });
 startKeys(app);

@@ -93,6 +93,10 @@ export function snapsOf(answers, reviewable) {
                 reReview: i.reReview === true,
                 pic: i.pic ?? null,
                 areas: i.areas ?? null,
+                reason: i.reason ?? null,
+                // The capture's scale (CSS pixels per image pixel), for the viewer's real size.
+                scale: a.results?.scale ?? 1,
+                renderer: a.results?.renderer ?? null,
                 look: look.get(i.file) ?? null,
                 decision: null,
                 before: false,
@@ -648,11 +652,10 @@ export function drawHead(app, h1) {
     const left = snaps.length - decided;
     const lay = layoutOf(lv, snaps);
     const shownN = lay.filtering ? `${fmt(lay.shown)} of ${fmt(snaps.length)} shown` : "";
-    const bar = el(
-        "div",
-        { class: "bar3" },
-        el("div", { style: `width:${snaps.length ? (100 * decided) / snaps.length : 0}%` }),
-    );
+    // Set through the element's style: the page's content security policy refuses style attributes.
+    const fill = el("div");
+    fill.style.width = `${snaps.length ? (100 * decided) / snaps.length : 0}%`;
+    const bar = el("div", { class: "bar3" }, fill);
     const head = $("snaps-head");
     const h2 = line("h2");
     const h3 = line("h3");
@@ -783,7 +786,12 @@ const NAME_FONT = () => `600 12px ${FONT()}`;
 const BADGE_FONT = () => `11px ${FONT()}`;
 
 // The change size on line 4: never cut.
-function sizeText(s) {
+/**
+ * A snapshot's change size, as its row and the viewer's item line show it.
+ * @param {any} s the snapshot
+ * @returns {string} "1,234 px, 3 areas", "image identical", or ""
+ */
+export function sizeText(s) {
     if (s.status === "changed") {
         const px = s.changedPixels === null ? "" : `${fmt(s.changedPixels)} px`;
         const a = s.areas ? `${fmt(s.areas.count)} area${s.areas.count === 1 ? "" : "s"}` : "";
@@ -876,8 +884,13 @@ function pictureOf(app, s) {
     return box;
 }
 
-// The badges that apply, as text and tooltip.
-function badgesOf(app, s) {
+/**
+ * A snapshot's badges, as its row and the viewer's item line show them.
+ * @param {any} app the page
+ * @param {any} s the snapshot
+ * @returns {{ text: string, title?: string }[]} the badges
+ */
+export function badgesOf(app, s) {
     const out = [];
     if (s.status === "changed" && s.size && s.baselineSize && String(s.size) !== String(s.baselineSize)) {
         out.push({ text: "size changed" });
