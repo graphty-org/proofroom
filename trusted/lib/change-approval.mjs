@@ -471,7 +471,9 @@ function checkStatement(file, bytes, at) {
     if (statement.type === SEED_TYPE) {
         return onBase
             ? { statement, id: statementId(statement) }
-            : { problem: `its capturedHead ${c} is not on the default branch, so it did not review a capture of the default branch` };
+            : {
+                  problem: `its capturedHead ${c} is not on the default branch, so it did not review a capture of the default branch`,
+              };
     }
     if (!succeeds(git, ["merge-base", "--is-ancestor", c, head])) {
         return { problem: `its capturedHead ${c} is not in this change's history` };
@@ -530,9 +532,14 @@ export function withdrawnStatements(git, { base, head, approvals, keys }) {
         return [];
     }
     const onBase = new Set(
-        git(["ls-tree", "-r", "-z", "--name-only", base, "--", `${approvals}/`]).toString("utf8").split("\0"),
+        git(["ls-tree", "-r", "-z", "--name-only", base, "--", `${approvals}/`])
+            .toString("utf8")
+            .split("\0"),
     );
-    const blobs = readBlobs(git, [...found.values()].map((f) => f.old));
+    const blobs = readBlobs(
+        git,
+        [...found.values()].map((f) => f.old),
+    );
     const out = [];
     for (const [path, { commit: sha, old, status }] of found) {
         if (onBase.has(path) || (keys && !verifiesWith(blobs.get(old), keys))) {
