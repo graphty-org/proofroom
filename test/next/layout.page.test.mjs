@@ -36,6 +36,9 @@ const SIZES = [
     [1180, 820],
 ];
 const box = (page, sel) => page.locator(sel).evaluate((n) => n.getBoundingClientRect().toJSON());
+// The item line's control `act` a reader sees: on the item line, or in the toolbar's middle where
+// Image only merges the item line into it at 1300 px and wider.
+const itemControl = (page, act) => page.locator(`:is(.iline, .itemsum) [data-act="${act}"] >> visible=true`);
 // The viewer's width while it shows a snapshot (null while it shows none).
 const viewerWidth = async (page) =>
     (await page.locator(".iline").count()) > 0 ? (await box(page, "#viewer")).width : null;
@@ -61,21 +64,21 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
             }
         };
         await page.locator(`.chg[data-chg="${id}"]`).click();
-        await page.locator(".iline").waitFor();
+        await page.locator(".iline").waitFor({ state: "attached" });
         await look("opened");
         for (const key of ["Shift+Digit1", "Shift+Digit2", "Shift+Digit1", "Shift+Digit2"]) {
             await page.keyboard.press(key);
             await look(`after ${key}`);
         }
-        if ((await page.locator('.iline [data-act="openrow"]').count()) > 0) {
-            await page.locator('.iline [data-act="openrow"]').click();
+        if ((await itemControl(page, "openrow").count()) > 0) {
+            await itemControl(page, "openrow").click();
             await look("viewing");
             await page.keyboard.press("Shift+Digit2");
             await look("viewing, Shift+2");
-            await page.locator('.iline [data-act="back"]').click();
+            await itemControl(page, "back").click();
             await look("back to the list");
         }
-        await page.locator('.iline [data-act="back"]').click();
+        await itemControl(page, "back").click();
         await expect.poll(() => message(page)).toBe("Back to the changes.");
         await look("back to the changes");
         for (const key of ["Shift+Digit2", "Shift+Digit1", "Shift+Digit2"]) {
@@ -93,7 +96,7 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
         expect((await box(page, "#changes")).width).toBe(480);
         expect((await box(page, "#snaps")).width).toBe(420);
         await page.locator('.chg[data-chg="3484"]').click();
-        await page.locator(".iline").waitFor();
+        await page.locator(".iline").waitFor({ state: "attached" });
         expect((await box(page, "#changes")).width).toBe(44);
         expect((await box(page, "#snaps")).width).toBe(44);
     });
@@ -104,7 +107,7 @@ describe("levels by pointer", () => {
         t = await openNext(browser, { targets: fiftyChanges(), viewport: { width: 1280, height: 800 } });
         const page = t.page;
         await page.locator('.chg[data-chg="3486"]').click();
-        await page.locator(".iline").waitFor();
+        await page.locator(".iline").waitFor({ state: "attached" });
         // The list level: Snapshots shown, Open [Enter] on the item line.
         expect(await page.locator('.iline [data-act="openrow"]').innerText()).toBe("OpenEnter");
         await page.locator('.srow[data-snap="graphty-element/component-1--story-7.dark.png"]').click();

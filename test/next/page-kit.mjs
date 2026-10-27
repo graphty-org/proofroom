@@ -164,7 +164,9 @@ export const message = (page) => page.locator("#msg-t").innerText();
 
 /**
  * The key boxes a reader sees now, with the action of the control each is on: every visible,
- * enabled control's visible boxes, and a Find box's key where its placeholder prints it.
+ * enabled control's visible boxes, a Find box's key where its placeholder prints it, and the keys
+ * a visible menu button's closed menu prints in its right column (`data-menukeys`), each with the
+ * action its item runs, while letter keys are on.
  * @param {import("playwright").Page} page the tab
  * @returns {Promise<{ act: string, key: string }[]>} the boxes
  */
@@ -177,8 +179,20 @@ export const visibleKeys = (page) =>
                     ? n.placeholder.endsWith(`[${n.dataset.key}]`)
                         ? [{ act: n.dataset.act, key: n.dataset.key }]
                         : []
-                    : [...n.querySelectorAll(":scope > kbd")]
-                          .filter((k) => k.getClientRects().length > 0)
-                          .map((k) => ({ act: n.dataset.act, key: k.textContent })),
+                    : [
+                          ...[...n.querySelectorAll(":scope > kbd")]
+                              .filter((k) => k.getClientRects().length > 0)
+                              // innerText: a box's letter half ("F / " of "F / hold Space") is
+                              // hidden while letter keys are off.
+                              .map((k) => ({ act: n.dataset.act, key: k.innerText })),
+                          // A menu's keys are all letter, digit or symbol keys: none acts while
+                          // letter keys are off.
+                          ...(globalThis.document.body.classList.contains("nokeys")
+                              ? []
+                              : Object.entries(JSON.parse(n.dataset.menukeys ?? "{}")).map(([key, act]) => ({
+                                    act,
+                                    key,
+                                }))),
+                      ],
             ),
     );

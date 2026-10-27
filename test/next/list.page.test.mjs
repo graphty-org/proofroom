@@ -80,7 +80,7 @@ async function openChange(id, options = {}) {
     t.errors = [];
     page.on("pageerror", (err) => t.errors.push(err.message));
     await page.locator(`.chg[data-chg="${id}"]`).click();
-    await page.locator(".iline").waitFor();
+    await page.locator(".iline").waitFor({ state: "attached" });
     if ((await page.locator("#snaps").getAttribute("class")).includes("rail")) {
         await page.keyboard.press("Shift+Digit2");
     }
@@ -117,7 +117,7 @@ async function currentIsShown(page) {
     });
     expect(cur, "one current row").not.toBeNull();
     expect(cur.inside, "the current row inside the list").toBe(true);
-    expect(await page.locator(".iline .num").innerText()).toBe(cur.n);
+    expect(await page.locator(".iline b.num").innerText()).toBe(cur.n);
 }
 // A shape as the page's DOM serializes it, to compare with a mark's innerHTML.
 const serialized = (page, shape) =>
@@ -410,7 +410,7 @@ describe("Show, Find and the status summary", () => {
         // Enter opens it and empties the box.
         await find.click();
         await page.keyboard.type("#47");
-        await expect.poll(() => page.locator(".iline .num").innerText()).toBe("#47");
+        await expect.poll(() => page.locator(".iline b.num").innerText()).toBe("#47");
         expect(await page.locator("#snaps-head > .h2").innerText()).not.toContain("shown");
         expect(await big.getAttribute("aria-expanded")).toBe("true");
         await currentIsShown(page);
