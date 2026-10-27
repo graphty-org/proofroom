@@ -373,8 +373,26 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         // component timed with it (graphty-element's input playback and recording, for one).
         await page.clock.install({ time: CLOCK_START });
         await page.clock.resume();
-        await page.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
-        const phase = await page
+        // The story loads in a same-origin iframe of the viewport's size, as in Storybook's own UI
+        // and the story tests: Chromium draws text in an iframe up to one color level differently
+        // from a top-level page, so a top-level shot never matched the story tests' picture.
+        const wrapper = new URL("__visual-review-frame.html", url).href;
+        await page.route(wrapper, (route) =>
+            route.fulfill({
+                contentType: "text/html",
+                body: `<!doctype html><style>html,body{margin:0}</style><iframe style="border:0;position:absolute;left:0;top:0;width:${VIEWPORT.width}px;height:${VIEWPORT.height}px"></iframe>`,
+            }),
+        );
+        await page.goto(wrapper, { waitUntil: "load", timeout: RENDER_TIMEOUT });
+        // The empty frame takes the focus before the story loads in it, as the story had when it
+        // was the page itself and as story-test.mjs's visualPark focuses the tester iframe before
+        // the play function. Focusing it after the story loaded would blur a control a play
+        // function already focused.
+        const element = await page.waitForSelector("iframe");
+        await element.focus();
+        const frame = await element.contentFrame();
+        await frame.goto(url, { waitUntil: "load", timeout: RENDER_TIMEOUT });
+        const phase = await frame
             .waitForFunction(
                 () => {
                     if (document.body.classList.contains("sb-show-errordisplay")) {
@@ -390,7 +408,7 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         if (phase === "errored" || phase === "aborted") {
             // Storybook's error screen holds the thrown message and its stack (a play function's
             // failed expect included).
-            const shown = await page.evaluate(() =>
+            const shown = await frame.evaluate(() =>
                 ["error-message", "error-stack"].map((id) => document.getElementById(id)?.textContent?.trim() ?? ""),
             );
             return fail([`story render ${phase}`, ...shown].join("\n"));
@@ -399,13 +417,13 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         // render completed; a capture taken before it arrives draws the fallback face, so the
         // text and anything placed beside the text differ from a later capture.
         // Wait for every font in use, then for one frame drawn with them.
-        await page.evaluate(async () => {
+        await frame.evaluate(async () => {
             await document.fonts.ready;
             await new Promise((r) => requestAnimationFrame(() => r()));
             await document.fonts.ready;
         });
         if (waitFor) {
-            await page.evaluate(
+            await frame.evaluate(
                 async ({ selector, method }) => {
                     const found = [...document.querySelectorAll(selector)];
                     await Promise.all(found.map((el) => /** @type {any} */ (el)[method]()));
@@ -424,7 +442,7 @@ async function shootOnce(browser, url, { delay, waitFor }) {
         // full page of the story iframe -- the viewport, or everything a scroll would reach when
         // the story is taller or wider -- so every story of a project is the same size unless
         // it overflows.
-        const png = await screenshotWholePage(page);
+        const png = await screenshotWholePage(page, frame);
         return { png, reason: null, console: lines };
     } catch (e) {
         return fail(e.message);
@@ -448,14 +466,16 @@ export const SHOT = /** @type {const} */ ({ animations: "disabled", caret: "hide
  * its size; a bigger one is shot in viewport-sized tiles (see shootTiles), never with Chromium's
  * beyond-viewport capture, which drew a story's `monospace` text in another font.
  * @param {import("playwright").Page} page the page, at device scale factor SCALE
+ * @param {import("playwright").Page | import("playwright").Frame} [frame] the document to shoot: the
+ *     page itself, or a viewport-sized iframe at the page's top left
  * @returns {Promise<Buffer>} the PNG
  */
-export async function screenshotWholePage(page) {
+export async function screenshotWholePage(page, frame = page) {
     // A throwaway screenshot and two frames first: a story that redraws on a screenshot (Cytoscape's
     // canvases) is done redrawing before the real one.
     await page.screenshot({ ...SHOT, clip: { x: 0, y: 0, width: 1, height: 1 } });
-    await page.evaluate(twoFramesInPage);
-    const size = await page.evaluate(() => {
+    await frame.evaluate(twoFramesInPage);
+    const size = await frame.evaluate(() => {
         const [b, d] = [document.body, document.documentElement];
         const most = (key) =>
             Math.max(...[b, d].flatMap((e) => [e[`scroll${key}`], e[`offset${key}`], e[`client${key}`]]));
@@ -465,7 +485,7 @@ export async function screenshotWholePage(page) {
     if (size.width <= vp.width && size.height <= vp.height) {
         return page.screenshot({ ...SHOT, clip: { x: 0, y: 0, ...size } });
     }
-    return shootTiles(page, page, size, vp);
+    return shootTiles(page, frame, size, vp);
 }
 
 /**
