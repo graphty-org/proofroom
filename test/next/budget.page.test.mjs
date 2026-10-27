@@ -51,7 +51,9 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         it("shows the budget and what is in use in Settings", async () => {
             t = await openNext(browser, { list: listAnswer([target(1)], { disk: DISK }) });
             const page = t.page;
-            await page.locator(".chg").first().waitFor();
+            // The list has arrived. Its one change opens by itself and its row may then be hidden,
+            // so wait for the row to exist, not to show.
+            await page.locator(".chg").first().waitFor({ state: "attached" });
             await page.getByRole("button", { name: "Settings" }).click();
             const row = page.locator("dialog[open] #set-disk");
             await expect
