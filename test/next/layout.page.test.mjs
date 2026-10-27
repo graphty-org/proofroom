@@ -3,13 +3,15 @@
  * viewer is never narrower than 800 px while it shows a snapshot, in every level and after every
  * pane key, with 3 and 300 snapshots; the levels move by clicks on the rows, Open, Back and the
  * viewer as they do by keys; and the top bar's 36 px, the message line's 24 px and the rails' 44 px.
+ * The Baselines screen too: its viewer at 800 px or more after every pane key, and its toolbar in
+ * one row with every zoom segment showing.
  */
 
 import { chromium } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { COVERS } from "./covers.mjs";
-import { fiftyChanges, message, openNext } from "./page-kit.mjs";
+import { fiftyChanges, message, openNext, routeBaselines } from "./page-kit.mjs";
 
 let browser;
 let t = null;
@@ -124,6 +126,65 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
         await page.locator(".iline").waitFor({ state: "attached" });
         expect((await box(page, "#changes")).width).toBe(44);
         expect((await box(page, "#snaps")).width).toBe(44);
+    });
+});
+
+describe.each(SIZES)("the Baselines screen at %i x %i", (width, height) => {
+    it("keeps its viewer at 800 px or more after every pane key, its toolbar in one row with each zoom segment", async () => {
+        t = await openNext(browser, { targets: fiftyChanges(), viewport: { width, height } });
+        const page = t.page;
+        await routeBaselines(page);
+        await page.locator(".chg").first().waitFor();
+        await page.locator('#tabs [data-act="screen-baselines"]').click();
+        await page.locator("#bl-vtb").waitFor();
+        const look = async (what) => {
+            expect((await box(page, "#bl-viewer")).width, what).toBeGreaterThanOrEqual(800);
+            const bad = await page.evaluate(() => {
+                const bar = globalThis.document.getElementById("bl-vtb").getBoundingClientRect();
+                const out = [];
+                for (const b of globalThis.document.querySelectorAll("#bl-vtb button")) {
+                    const r = b.getBoundingClientRect();
+                    if (r.width === 0) {
+                        continue;
+                    }
+                    if (r.left < bar.left - 0.5 || r.right > bar.right + 0.5) {
+                        out.push(`${b.dataset.act} outside the row`);
+                    }
+                    if (r.top < bar.top || r.bottom > bar.bottom || r.height > 30) {
+                        out.push(`${b.dataset.act} in a second row or wrapped`);
+                    }
+                    if (b.scrollWidth > b.clientWidth + 1) {
+                        out.push(`${b.dataset.act} cut`);
+                    }
+                }
+                return out;
+            });
+            expect(bad, what).toEqual([]);
+            // Never in More: View, Blink and the whole Zoom group, each digit's segment showing.
+            for (const act of ["view-side", "view-flash", "view-highlight", "view-spotlight", "blink", "zoomcycle"]) {
+                expect(await page.locator(`#bl-vtb [data-act="${act}"]`).isVisible(), `${what}: ${act}`).toBe(true);
+            }
+            for (const z of ["fit", "1", "2", "4", "8"]) {
+                expect(await page.locator(`#bl-vtb [data-act="zoom-${z}"]`).isVisible(), `${what}: zoom ${z}`).toBe(
+                    true,
+                );
+            }
+        };
+        await look("opened");
+        for (const key of [
+            "Shift+Digit1",
+            "Shift+Digit2",
+            "Shift+Digit1",
+            "Shift+Digit2",
+            "Shift+Digit3",
+            "Shift+Digit3",
+        ]) {
+            await page.keyboard.press(key);
+            await look(`after ${key}`);
+        }
+        await page.keyboard.press("Digit4");
+        await expect.poll(() => page.locator('#bl-vtb [data-act="zoom-4"]').getAttribute("class")).toContain("on");
+        await look("at 4x");
     });
 });
 

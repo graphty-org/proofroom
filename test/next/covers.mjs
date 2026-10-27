@@ -6,6 +6,17 @@
  */
 
 export const COVERS = {
+    "baselines.page.test.mjs": [
+        "screen-baselines",
+        "blref",
+        "blnode",
+        "blrow",
+        "blgroupmenu",
+        "blgroup",
+        "bldl",
+        "bldlver",
+        "blcmp",
+    ],
     "changes.page.test.mjs": [
         "screen-review",
         "refresh",

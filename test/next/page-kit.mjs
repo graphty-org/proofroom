@@ -253,3 +253,175 @@ export const visibleKeys = (page, { unavailable = false } = {}) =>
                 ),
         unavailable,
     );
+
+// ---------------------------------------------------------------- the Baselines screen
+
+const BL_W = 640;
+const BL_H = 400;
+// A baseline image: a blue panel, moved right by `shift` px, with red areas when `marked`.
+function baselinePicture(shift, marked) {
+    const png = new PNG({ width: BL_W, height: BL_H });
+    png.data.fill(255);
+    const rect = (x0, y0, w, h, [r, g, b]) => {
+        for (let y = y0; y < y0 + h; y++) {
+            for (let x = x0; x < x0 + w; x++) {
+                const i = (y * BL_W + x) * 4;
+                [png.data[i], png.data[i + 1], png.data[i + 2]] = [r, g, b];
+            }
+        }
+    };
+    rect(80 + shift, 80, 240, 160, [80, 90, 200]);
+    if (marked) {
+        rect(400, 260, 90, 60, [220, 30, 30]);
+    }
+    return PNG.sync.write(png);
+}
+const hashOf = (c) => c.repeat(64);
+/** The hashes of the fixture's baselines: the three versions of button--primary.dark and the rest. */
+export const BL_HASH = {
+    current: hashOf("c"),
+    previous: hashOf("b"),
+    first: hashOf("a"),
+    other: hashOf("d"),
+    fresh: hashOf("e"),
+};
+const BL_IMAGES = {
+    [BL_HASH.current]: baselinePicture(0, true),
+    [BL_HASH.previous]: baselinePicture(0, false),
+    [BL_HASH.first]: baselinePicture(30, false),
+};
+/** The baseline with three versions in its history. */
+export const BL_THREE = "visual-baselines/compact-mantine/button--primary.dark.png";
+
+/**
+ * Answers the Baselines screen's routes from plain data, as the server shapes them: the default
+ * branch's baselines (every one downloaded), change 3486's (two of them Git LFS pointers not
+ * downloaded), one baseline with three versions (its first not downloaded: its change statement,
+ * a tree statement and no approval), the images by hash and the downloads, which make exactly the
+ * paths asked for downloaded.
+ * @param {import("playwright").Page} page the tab
+ * @param {{ more?: number }} [options] `more`: that many more images of the change not downloaded
+ * @returns {Promise<{ downloads: object[], asked: string[] }>} each download's body, and each
+ *     list and history request
+ */
+export async function routeBaselines(page, { more = 0 } = {}) {
+    const local = new Set();
+    const downloads = [];
+    const asked = [];
+    const item = (project, file, hash, more = {}) => ({
+        project,
+        file,
+        hash,
+        bytes: 2_400_000,
+        local: true,
+        change: null,
+        at: null,
+        ...more,
+    });
+    const master = [
+        item("compact-mantine", "button--primary.dark.png", BL_HASH.current, {
+            change: "pr:71",
+            at: "2026-10-15T08:00:00Z",
+        }),
+        item("compact-mantine", "button--secondary.light.png", BL_HASH.other, {
+            change: "pr:60",
+            at: "2026-09-01T10:00:00Z",
+        }),
+        item("compact-mantine", "chip--default.light.png", BL_HASH.other),
+        item("compact-mantine", "card--legacy.png", BL_HASH.other),
+        item("graphty-element", "graph--basic.png", BL_HASH.other, { change: "pr:12", at: "2026-08-02T10:00:00Z" }),
+        item("graphty-element", "graph--large.dark.png", BL_HASH.other),
+    ];
+    const change = [
+        ...master,
+        item("graphty-element", "graph--fresh.png", BL_HASH.fresh, { local: false, bytes: 3_000_000 }),
+        item("graphty-element", "graph--wide.png", BL_HASH.fresh, { local: false, bytes: 4_000_000 }),
+        ...Array.from({ length: more }, (_, i) =>
+            item("graphty-element", `${"long-story-name-".repeat(15)}${i}.png`, BL_HASH.fresh, { local: false }),
+        ),
+    ];
+    const path = (i) => `visual-baselines/${i.project}/${i.file}`;
+    const at = (path) => (url) => url.pathname === path;
+    await page.route(at("/api/baselines"), (route) => {
+        const ref = new URL(route.request().url()).searchParams.get("ref");
+        asked.push(`list ${ref ?? ""}`);
+        const items = (ref === "3486" ? change : master).map((i) => ({ ...i, local: i.local || local.has(path(i)) }));
+        return route.fulfill({ json: { ref, sha: "f".repeat(40), baselines: "visual-baselines", items } });
+    });
+    const signed = (kind, file, change) => ({
+        kind,
+        file,
+        change,
+        verified: true,
+        signed: true,
+        signer: "MacBook Touch ID",
+    });
+    await page.route(at("/api/baselines/history"), (route) => {
+        const p = new URL(route.request().url()).searchParams.get("file");
+        asked.push(`history ${p}`);
+        const one = [...change].find((i) => path(i) === p);
+        const versions =
+            p === BL_THREE
+                ? [
+                      {
+                          commit: "3".repeat(40),
+                          date: "2026-10-15T08:00:00Z",
+                          author: "apowers",
+                          hash: BL_HASH.current,
+                          bytes: 1000,
+                          local: true,
+                          approval: signed("statement", "visual-review-approvals/pr-71/x.json", "pr:71"),
+                      },
+                      {
+                          commit: "2".repeat(40),
+                          date: "2026-09-18T08:00:00Z",
+                          author: "mlin",
+                          hash: BL_HASH.previous,
+                          bytes: 1000,
+                          local: true,
+                          approval: signed("tree", "visual-review-approvals/tree.json", "pr:60"),
+                      },
+                      {
+                          commit: "1".repeat(40),
+                          date: "2026-08-02T08:00:00Z",
+                          author: "kchen",
+                          hash: BL_HASH.first,
+                          bytes: 1000,
+                          local: local.has(`${p}@${"1".repeat(40)}`),
+                          approval: null,
+                      },
+                  ]
+                : [
+                      {
+                          commit: "4".repeat(40),
+                          date: "2026-09-01T10:00:00Z",
+                          author: "apowers",
+                          hash: one.hash,
+                          bytes: one.bytes,
+                          local: one.local || local.has(p),
+                          approval: null,
+                      },
+                  ];
+        return route.fulfill({ json: { path: p, ref: null, versions } });
+    });
+    await page.route("**/api/baselines/image/*", (route) => {
+        const hash = new URL(route.request().url()).pathname.split("/").pop();
+        return route.fulfill({
+            status: 200,
+            contentType: "image/png",
+            body: BL_IMAGES[hash] ?? baselinePicture(10, false),
+        });
+    });
+    await page.route("**/api/baselines/pic/*", (route) =>
+        route.fulfill({ status: 200, contentType: "image/png", body: PICTURE }),
+    );
+    await page.route("**/api/baselines-download", (route) => {
+        const body = route.request().postDataJSON();
+        downloads.push(body);
+        for (const p of body.paths) {
+            local.add(body.commit ? `${p}@${body.commit}` : p);
+        }
+        return route.fulfill({ json: { fetched: body.paths.length } });
+    });
+    return { downloads, asked };
+}

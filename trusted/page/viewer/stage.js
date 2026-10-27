@@ -168,9 +168,9 @@ export async function diffImages(a, b, { threshold, includeAA }) {
  * @param {(item: object) => void} host.drawn told when a snapshot's images are on the stage
  * @param {(item: object, at: number) => void} host.appeared told when they have been painted
  * @param {(text: string, count: number) => void} host.boxCount shows which changed area Next change is on, or that there is none
- * @param {(item: object, view: string) => { leftLabel?: string, rightLabel?: string, flash?: [string, string], note?: string | null }} [host.labels]
+ * @param {(item: object, view: string) => { leftLabel?: string, rightLabel?: string, flash?: [string, string], note?: string | null, wait?: [string, string] }} [host.labels]
  *   the frames' labels in place of the stage's own: each frame's, the two a flashing frame takes
- *   turns with, and a note beside them
+ *   turns with, a note beside them, and what each frame says it is loading
  * @param {number} [host.flashMs] how long Flash and Spotlight's flash show each image (FLASH_MS)
  * @param {number} [host.blinkMs] how long Blink shows, then hides, the overlays (FLASH_MS)
  * @returns {object} the stage's controls
@@ -335,20 +335,28 @@ export function createStage(host) {
         } else if (viewName === "spotlight") {
             rightLabel = "Spotlight: the new image, dimmed except around each change";
         }
-        const own = { marked, flashing, leftLabel, rightLabel, flash: null, note: null };
+        const own = {
+            marked,
+            flashing,
+            leftLabel,
+            rightLabel,
+            flash: null,
+            note: null,
+            wait: ["baseline", "new image"],
+        };
         return host.labels ? { ...own, ...host.labels(item, viewName) } : own;
     }
 
     // The two panes as they wait for their pictures. A failed capture's artifact holds no copy of
     // its baseline, so none is fetched.
-    function waitingPanes(item, { leftLabel, rightLabel, note }) {
+    function waitingPanes(item, { leftLabel, rightLabel, note, wait }) {
         let left = pane("No baseline", null, true);
         if (item.status === "failed") {
             left = pane("Baseline not shown: the capture failed", null, true);
         } else if (item.baseline) {
-            left = pane(leftLabel, paneWait("baseline"), false, note);
+            left = pane(leftLabel, paneWait(wait[0]), false, note);
         }
-        const right = item.capture ? pane(rightLabel, paneWait("new image"), false, note) : noCapturePane(item);
+        const right = item.capture ? pane(rightLabel, paneWait(wait[1]), false, note) : noCapturePane(item);
         return { left, right };
     }
 

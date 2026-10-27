@@ -1,5 +1,5 @@
 /*
- * The Review screen's panes and levels. The rules are pure functions of the window width, the
+ * The panes of the Review and Baselines screens, and the Review screen's levels. The rules are pure functions of the window width, the
  * open change's snapshot count and the reader's pane choices, so they are tested as a table before
  * any DOM exists; `applyPanes` puts the answer on the page.
  *
@@ -12,13 +12,16 @@ export const RAIL = 44;
 export const SMALL = 10; // a change of this many snapshots or fewer is small
 export const ONE_LEVEL_WIDTH = 1400; // a large change in a window this wide or wider has one level
 
+/** Each screen's two side panes, left to right: Review's Changes and Snapshots, Baselines' Projects and Baselines. */
+export const PANES = { review: ["changes", "snaps"], baselines: ["bl-proj", "bl-list-pane"] };
+
 /**
  * A side pane's width when shown.
- * @param {"changes" | "snaps"} id the pane
+ * @param {string} id the pane
  * @param {boolean} open whether a change is open (Changes is 480 px while none is)
  * @returns {number} its width in CSS px
  */
-export const paneWidth = (id, open) => (id === "changes" ? (open ? 320 : 480) : 420);
+export const paneWidth = (id, open) => (id === "changes" ? (open ? 320 : 480) : id === "bl-proj" ? 280 : 420);
 
 /**
  * Whether the open change has a separate viewing level: more than 10 snapshots in a window under
@@ -61,18 +64,18 @@ export function defaultPanes(level, count) {
  *     to keep
  * @returns {[boolean, boolean]} the panes after the floor
  */
-export function keepFloor([changes, snaps], { width, open, holds, prefer }) {
+export function keepFloor([changes, snaps], { width, open, holds, prefer, ids = PANES.review }) {
     if (!holds || !changes || !snaps) {
         return [changes, snaps];
     }
-    if (width - paneWidth("changes", open) - paneWidth("snaps", open) >= FLOOR) {
+    if (width - paneWidth(ids[0], open) - paneWidth(ids[1], open) >= FLOOR) {
         return [changes, snaps];
     }
-    return prefer === "changes" ? [true, false] : [false, true];
+    return prefer === ids[0] ? [true, false] : [false, true];
 }
 
 /** The narrowest each side pane gets, as the reader's resizing would stop it. */
-export const MIN_WIDTH = { changes: 240, snaps: 320 };
+export const MIN_WIDTH = { changes: 240, snaps: 320, "bl-proj": 240, "bl-list-pane": 320 };
 
 /**
  * The widths of the side panes as shown: each at its own width, or narrower, down to its minimum,
@@ -81,17 +84,17 @@ export const MIN_WIDTH = { changes: 240, snaps: 320 };
  * @param {{ width: number, open: boolean, holds: boolean }} at the window and viewer
  * @returns {[number, number]} their widths in CSS px, a rail's for a hidden one
  */
-export function paneWidths([changes, snaps], { width, open, holds }) {
-    let wc = changes ? paneWidth("changes", open) : RAIL;
-    let ws = snaps ? paneWidth("snaps", open) : RAIL;
+export function paneWidths([changes, snaps], { width, open, holds, ids = PANES.review }) {
+    let wc = changes ? paneWidth(ids[0], open) : RAIL;
+    let ws = snaps ? paneWidth(ids[1], open) : RAIL;
     let over = holds ? wc + ws + FLOOR - width : 0;
     if (over > 0 && snaps) {
-        const cut = Math.min(over, ws - MIN_WIDTH.snaps);
+        const cut = Math.min(over, ws - MIN_WIDTH[ids[1]]);
         ws -= cut;
         over -= cut;
     }
     if (over > 0 && changes) {
-        wc -= Math.min(over, wc - MIN_WIDTH.changes);
+        wc -= Math.min(over, wc - MIN_WIDTH[ids[0]]);
     }
     return [wc, ws];
 }
@@ -122,7 +125,7 @@ export function layoutFor({ level, count, width, open, holds, remembered = null,
  *     pane moved to its rail
  */
 export function togglePane(shown, id, at) {
-    const i = id === "changes" ? 0 : 1;
+    const i = (at.ids ?? PANES.review).indexOf(id);
     const next = /** @type {[boolean, boolean]} */ ([...shown]);
     next[i] = !next[i];
     const after = next[i] ? keepFloor(next, { ...at, prefer: id }) : next;
@@ -149,22 +152,23 @@ export function pressImageOnly(shown, before, at) {
     if (!imageOnlyPressed(shown)) {
         return { shown: [false, false], before: shown };
     }
-    return { shown: keepFloor(before ?? [false, true], { ...at, prefer: "snaps" }), before: null };
+    return { shown: keepFloor(before ?? [false, true], { ...at, prefer: (at.ids ?? PANES.review)[1] }), before: null };
 }
 
 // ---------------------------------------------------------------- on the page
 
-const memKey = (level, count) => `proofroom:panes:review:${level}:${sizeClass(count)}`;
+const memKey = (level, count, screen) => `proofroom:panes:${screen}:${level}:${sizeClass(count)}`;
 
 /**
  * The reader's last pane choice for a level and size class, kept in this browser.
  * @param {number} level the level
  * @param {number} count the open change's snapshots
+ * @param {string} [screen] the screen
  * @returns {[boolean, boolean] | null} the choice, or null
  */
-export function remembered(level, count) {
+export function remembered(level, count, screen = "review") {
     try {
-        const v = JSON.parse(localStorage.getItem(memKey(level, count)) ?? "null");
+        const v = JSON.parse(localStorage.getItem(memKey(level, count, screen)) ?? "null");
         return Array.isArray(v) && v.length === 2 ? /** @type {[boolean, boolean]} */ (v) : null;
     } catch {
         return null; // a private window: the defaults only
@@ -176,34 +180,38 @@ export function remembered(level, count) {
  * @param {number} level the level
  * @param {number} count the open change's snapshots
  * @param {[boolean, boolean]} shown the choice
+ * @param {string} [screen] the screen
  */
-export function remember(level, count, shown) {
+export function remember(level, count, shown, screen = "review") {
     try {
-        localStorage.setItem(memKey(level, count), JSON.stringify(shown));
+        localStorage.setItem(memKey(level, count, screen), JSON.stringify(shown));
     } catch {
         // Not kept; the defaults apply next time.
     }
 }
 
 /**
- * Whether each side pane is shown on the page now.
- * @returns {[boolean, boolean]} Changes, Snapshots
+ * Whether each side pane of a screen is shown on the page now.
+ * @param {string[]} [ids] the screen's panes (PANES)
+ * @returns {[boolean, boolean]} Changes, Snapshots (or Projects, Baselines)
  */
-export const shownNow = () => [
-    !document.getElementById("changes").classList.contains("rail"),
-    !document.getElementById("snaps").classList.contains("rail"),
+export const shownNow = (ids = PANES.review) => [
+    !document.getElementById(ids[0]).classList.contains("rail"),
+    !document.getElementById(ids[1]).classList.contains("rail"),
 ];
 
 /**
  * Shows the side panes as given, the rest becoming rails, at the widths that keep the viewer at
  * 800 px or more.
- * @param {[boolean, boolean]} shown Changes, Snapshots
- * @param {{ width: number, open: boolean, holds: boolean }} at the window and viewer
+ * @param {[boolean, boolean]} shown Changes, Snapshots (or Projects, Baselines)
+ * @param {{ width: number, open: boolean, holds: boolean, ids?: string[] }} at the window and
+ *     viewer, and the screen's panes (PANES; Review's by default)
  */
 export function applyPanes(shown, at) {
+    const ids = at.ids ?? PANES.review;
     const [wc, ws] = paneWidths(shown, at);
-    const c = document.getElementById("changes");
-    const sn = document.getElementById("snaps");
+    const c = document.getElementById(ids[0]);
+    const sn = document.getElementById(ids[1]);
     c.classList.toggle("rail", !shown[0]);
     sn.classList.toggle("rail", !shown[1]);
     c.style.width = shown[0] ? `${wc}px` : "";

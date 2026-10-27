@@ -87,7 +87,7 @@
  * `<tmp>/state/groups.jsonl`, to count approvals per group.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
     appendFileSync,
@@ -103,6 +103,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { gzipSync } from "node:zlib";
 
@@ -236,6 +237,7 @@ const CHANGES = new Set(["changed", "moved", "new", "unseeded", "removed"]);
 // The Sec-Fetch-Site values of a request this server's own page made, or one typed in the address bar.
 const SAME_SITE = new Set(["same-origin", "none"]);
 const WRITES = new Set([
+    "baselines-download",
     "decide",
     "decide-group",
     "accept-all",
@@ -311,7 +313,9 @@ async function earlierAccepts(repo, head, pr, { baselines, approvals }) {
         }
     }
     const change = `pr:${pr}`;
-    const files = await git(["ls-tree", "-r", "--name-only", head, `${approvals}/${changeFolder(change)}/`]).catch(() => "");
+    const files = await git(["ls-tree", "-r", "--name-only", head, `${approvals}/${changeFolder(change)}/`]).catch(
+        () => "",
+    );
     const chain = [];
     for (const file of files.split("\n").filter((n) => n.endsWith(".json"))) {
         const st = await git(["show", `${head}:${file}`]).then(JSON.parse, () => null);
@@ -1868,10 +1872,13 @@ export function createApp({
             info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${pick.queued.length} queued)`;
             info.candidate = { commit, runId, queued: pick.queued.map((c) => ({ commit: c.commit, runId: c.runId })) };
         }
-        return store.run(runId)
-            // When CI last touched the run, as a pull request's "4 min ago".
-            .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
-            .catch((err) => keptOr(info, err));
+        return (
+            store
+                .run(runId)
+                // When CI last touched the run, as a pull request's "4 min ago".
+                .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
+                .catch((err) => keptOr(info, err))
+        );
     }
 
     async function load() {
@@ -1879,7 +1886,9 @@ export function createApp({
         if (results) {
             const list = await Promise.all(
                 names.map((n) =>
-                    resultsStore.has(null, n) ? project(n, resultsStore.dir(null, n), null) : project(n, null, "no capture"),
+                    resultsStore.has(null, n)
+                        ? project(n, resultsStore.dir(null, n), null)
+                        : project(n, null, "no capture"),
                 ),
             );
             const r = list.find((p) => p.results)?.results;
@@ -2918,7 +2927,12 @@ export function createApp({
             // Each of them, so the sheet lists them and opens any one: none is included unseen.
             approvedBeforeItems: list
                 .filter((x) => x.approvedBefore)
-                .map((x) => ({ project: x.project, file: x.file, pr: x.approvedBefore.pr, change: x.approvedBefore.change })),
+                .map((x) => ({
+                    project: x.project,
+                    file: x.file,
+                    pr: x.approvedBefore.pr,
+                    change: x.approvedBefore.change,
+                })),
             notOpened: s.projects.reduce((n, p) => n + p.notOpened, 0),
             undecided: s.projects
                 .filter((p) => p.undecided > 0)
@@ -3646,6 +3660,336 @@ export function createApp({
         return [200, bytes, "image/png"];
     }
 
+    // ---------------------------------------------------------------- the Baselines screen
+
+    /** What each baseline blob holds, by git blob id (a blob never changes): its image's hash and size, and whether it is a Git LFS pointer. */
+    const baselineBlobs = new Map();
+    /** Each baseline image the Baselines screen named, by its hash: a blob that holds it. */
+    const baselineImages = new Map();
+    let lfsObjects = null;
+    /** When each baseline last changed at one commit (`at`): path -> commit date. */
+    let lastChanged = { at: null, dates: new Map() };
+    const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+    // A baseline's path as the page may send it: no option-like start, no glob or list characters
+    // (git lfs fetch --include reads them as patterns), no parent directory.
+    const baselinePathOk = (p) =>
+        typeof p === "string" &&
+        p.startsWith(`${config.baselines}/`) &&
+        /^[^-][^,*?[\]\\]*\.png$/.test(p) &&
+        !p.split("/").includes("..");
+
+    /**
+     * The commit whose baselines the Baselines screen shows: the default branch's tip, or a listed
+     * change's head.
+     * @param {string | null} id the change, or null for the default branch
+     * @returns {Promise<{ id: string | null, sha: string } | Array<unknown>>} it, or the answer to send
+     */
+    async function baselineRef(id) {
+        if (!id) {
+            const sha =
+                tips.get(defaultBranch) ??
+                (await gitIn(["rev-parse", "--verify", "-q", `refs/remotes/origin/${defaultBranch}`]).catch(() => ""));
+            return SHA.test(sha) ? { id: null, sha } : [404, { error: `${defaultBranch} is not fetched yet` }];
+        }
+        const t = targets.get(id);
+        const sha = t?.head ?? t?.headSha ?? null;
+        if (!t || !SHA.test(String(sha)) || !(await haveCommit(sha))) {
+            return [404, { error: `${id} has no fetched commit to read baselines from` }];
+        }
+        return { id, sha };
+    }
+
+    /**
+     * Reads the baseline blobs not read before, in one `git cat-file --batch`: a Git LFS pointer
+     * gives its object's hash and size without the image.
+     * @param {string[]} ids the blob ids
+     */
+    async function readBaselineBlobs(ids) {
+        const fresh = [...new Set(ids)].filter((b) => !baselineBlobs.has(b));
+        for (const [blob, bytes] of await blobsOf(repo, fresh)) {
+            const pointer =
+                /^version https:\/\/git-lfs\.github\.com\/spec\/v1\noid sha256:([0-9a-f]{64})\nsize (\d+)\n/.exec(
+                    bytes.subarray(0, 200).toString("latin1"),
+                );
+            baselineBlobs.set(
+                blob,
+                pointer
+                    ? { hash: pointer[1], bytes: Number(pointer[2]), lfs: true }
+                    : { hash: sha256(bytes), bytes: bytes.length, lfs: false },
+            );
+        }
+    }
+
+    // Whether a blob's image is on this disk: a Git LFS object only once fetched.
+    // ponytail: the default LFS storage only; with lfs.storage set, every pointer reads as not downloaded.
+    async function baselineLocal(info) {
+        if (!info.lfs) {
+            return true;
+        }
+        lfsObjects ??= join(await gitIn(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "lfs", "objects");
+        return existsSync(join(lfsObjects, info.hash.slice(0, 2), info.hash.slice(2, 4), info.hash));
+    }
+
+    // When each of `paths` last changed in the history of `sha`: one `git log` over the baselines
+    // directory, newest first, read until every path is seen (a large backlog's whole history
+    // need not be read).
+    async function lastChangeDates(sha, paths) {
+        if (lastChanged.at === sha) {
+            return lastChanged.dates;
+        }
+        const left = new Set(paths);
+        const dates = new Map();
+        const child = spawn(
+            "git",
+            [
+                "-c",
+                "core.quotePath=off",
+                "log",
+                "--format=%x01%cI",
+                "--name-only",
+                "--no-renames",
+                sha,
+                "--",
+                `${config.baselines}/`,
+            ],
+            { cwd: repo, stdio: ["ignore", "pipe", "ignore"] },
+        );
+        const done = new Promise((resolve) => {
+            child.on("close", resolve);
+            child.on("error", resolve);
+        });
+        let date = null;
+        for await (const line of createInterface({ input: child.stdout })) {
+            if (line.startsWith("\x01")) {
+                date = line.slice(1);
+            } else if (left.delete(line)) {
+                dates.set(line, date);
+                if (left.size === 0) {
+                    child.kill();
+                    break;
+                }
+            }
+        }
+        await done;
+        lastChanged = { at: sha, dates };
+        return dates;
+    }
+
+    // What approved an image at a path: the default branch's change statement or review record
+    // (filters.mjs baselineWriters), else the approval Approved before reads on a branch.
+    function writerOf(path, hash) {
+        const w = writers.get(`${path} ${hash}`);
+        if (w) {
+            return w;
+        }
+        const a = approved.get(`${path} ${hash}`);
+        return a
+            ? { file: a.record, change: a.change ?? (a.pr ? `pr:${a.pr}` : null), at: a.reviewedAt, verified: true }
+            : null;
+    }
+
+    /**
+     * GET /api/baselines?ref=: every baseline at the ref, from one `git ls-tree`.
+     * @param {URLSearchParams} query `ref`, a change id (none: the default branch)
+     * @returns {Promise<Array<unknown>>} the answer
+     */
+    async function baselineList(query) {
+        const at = await baselineRef(query?.get("ref") ?? null);
+        if (Array.isArray(at)) {
+            return at;
+        }
+        const files = await pngBlobs(repo, at.sha, `${config.baselines}/`);
+        await readBaselineBlobs([...files.values()]);
+        const dates = await lastChangeDates(
+            at.sha,
+            [...files.keys()].map((rest) => `${config.baselines}/${rest}`),
+        );
+        const items = [];
+        for (const [rest, blob] of files) {
+            const cut = rest.indexOf("/");
+            if (cut < 0) {
+                continue;
+            }
+            const info = baselineBlobs.get(blob);
+            const path = `${config.baselines}/${rest}`;
+            baselineImages.set(info.hash, { blob, path });
+            const w = writerOf(path, info.hash);
+            items.push({
+                project: rest.slice(0, cut),
+                file: rest.slice(cut + 1),
+                hash: info.hash,
+                bytes: info.bytes,
+                local: await baselineLocal(info),
+                change: w?.change ?? null,
+                at: w?.at ?? dates.get(path) ?? null,
+            });
+        }
+        return [200, { ref: at.id, sha: at.sha, baselines: config.baselines, items }];
+    }
+
+    // One version's approval: what wrote its image (`w`), else the tree statement of `tree`.
+    function versionApproval(w, tree, doc, keys) {
+        const signer = (d) => keys?.find((k) => k.id === d?.approval?.credentialId)?.label ?? null;
+        if (w) {
+            const d = doc(w.file);
+            const kind = w.file.startsWith(`${config.approvals}/`) ? "statement" : "record";
+            return {
+                kind,
+                file: w.file,
+                change: w.change,
+                verified: w.verified,
+                signed: Boolean(d?.approval),
+                signer: signer(d),
+            };
+        }
+        const file = `${config.approvals}/${tree}.json`;
+        const d = tree ? doc(file) : null;
+        if (!d) {
+            return null;
+        }
+        const verified =
+            keys !== null &&
+            d.version === 1 &&
+            d.tree === tree &&
+            d.baselines === config.baselines &&
+            verifyApproval(d, keys) === null;
+        const change = typeof d.pr === "number" ? `pr:${d.pr}` : null;
+        return { kind: "tree", file, change, verified, signed: Boolean(d.approval), signer: signer(d) };
+    }
+
+    /**
+     * GET /api/baselines/history?file=&ref=: one baseline's versions, newest first, from one
+     * `git log` on its file, each with who accepted it and its approval: the change statement or
+     * review record that wrote that image, or for a version approved before them, the tree
+     * statement of the baselines tree at its commit (one `git rev-parse` for them all).
+     * @param {URLSearchParams} query `file` (a path under the baselines directory) and `ref`
+     * @returns {Promise<Array<unknown>>} the answer
+     */
+    async function baselineHistory(query) {
+        const path = query?.get("file") ?? "";
+        if (!baselinePathOk(path)) {
+            return [400, { error: "path must be a baseline image under the baselines directory" }];
+        }
+        const at = await baselineRef(query.get("ref"));
+        if (Array.isArray(at)) {
+            return at;
+        }
+        const log = await gitIn([
+            "log",
+            "--format=%x01%H%x09%cI%x09%an",
+            "--raw",
+            "--no-abbrev",
+            "--no-renames",
+            at.sha,
+            "--",
+            path,
+        ]);
+        const versions = [];
+        for (const chunk of log.split("\x01").filter(Boolean)) {
+            const [head, ...raw] = chunk.split("\n").filter(Boolean);
+            const [commit, date, author] = head.split("\t");
+            // ":100644 100644 <old> <new> M": a deleted file's new blob is all zeros.
+            const blob = raw.map((l) => l.split(" ")[3]).find((b) => b && !/^0+$/.test(b));
+            if (blob) {
+                versions.push({ commit, date, author, blob });
+            }
+        }
+        await readBaselineBlobs(versions.map((v) => v.blob));
+        const keys = passkeyState.main.length > 0 ? passkeyState.main : null;
+        const main = await baselineRef(null);
+        const tip = Array.isArray(main) ? null : main.sha;
+        const wrote = versions.map((v) => writerOf(path, baselineBlobs.get(v.blob).hash));
+        const older = versions.filter((_, i) => !wrote[i]);
+        const trees = older.length
+            ? (await gitIn(["rev-parse", ...older.map((v) => `${v.commit}:${config.baselines}`)])).split("\n")
+            : [];
+        const treeOf = new Map(older.map((v, i) => [v.commit, trees[i]]));
+        const names = [
+            ...wrote.filter(Boolean).map((w) => w.file),
+            ...trees.map((t) => `${config.approvals}/${t}.json`),
+        ];
+        const docs = tip
+            ? await blobsOf(
+                  repo,
+                  [...new Set(names)].map((n) => `${tip}:${n}`),
+              )
+            : new Map();
+        const doc = (name) => {
+            try {
+                return JSON.parse(docs.get(`${tip}:${name}`)?.toString("utf8") ?? "null");
+            } catch {
+                return null;
+            }
+        };
+        const out = [];
+        for (const [i, v] of versions.entries()) {
+            const info = baselineBlobs.get(v.blob);
+            baselineImages.set(info.hash, { blob: v.blob, path });
+            out.push({
+                commit: v.commit,
+                date: v.date,
+                author: v.author,
+                hash: info.hash,
+                bytes: info.bytes,
+                local: await baselineLocal(info),
+                approval: versionApproval(wrote[i], treeOf.get(v.commit), doc, keys),
+            });
+        }
+        return [200, { path, ref: at.id, versions: out }];
+    }
+
+    /**
+     * A baseline image the Baselines screen named, by its hash, read from git (a Git LFS pointer
+     * from its fetched object only: nothing is downloaded unasked).
+     * @param {string} hash the image's hash
+     * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
+     */
+    async function baselineImage(hash) {
+        const where = baselineImages.get(String(hash));
+        const info = where && baselineBlobs.get(where.blob);
+        if (!info) {
+            return [404, { error: "no such baseline" }];
+        }
+        if (!(await baselineLocal(info))) {
+            return [404, { error: `${where.path}: not downloaded`, code: "not-downloaded" }];
+        }
+        const blob = (await blobsOf(repo, [where.blob])).get(where.blob);
+        const bytes = info.lfs ? await gitBytes(repo, ["lfs", "smudge"], blob) : blob;
+        return sha256(bytes) === hash
+            ? [200, bytes, "image/png", IMMUTABLE]
+            : [409, { error: `${where.path}: the image does not match its hash` }];
+    }
+
+    /**
+     * POST /api/baselines-download: fetches the Git LFS objects of exactly these baselines, at the
+     * ref (or at `commit`, a version in the ref's history), with one `git lfs fetch`.
+     * @param {{ ref?: string | null, commit?: string, paths?: string[] }} body what to fetch
+     * @returns {Promise<Array<unknown>>} the answer
+     */
+    async function baselineDownload(body) {
+        const at = await baselineRef(body.ref ?? null);
+        if (Array.isArray(at)) {
+            return at;
+        }
+        const paths = Array.isArray(body.paths) ? body.paths : [];
+        if (paths.length === 0 || !paths.every(baselinePathOk)) {
+            return [400, { error: "paths must be baseline images under the baselines directory" }];
+        }
+        const commit = body.commit ?? at.sha;
+        const inHistory =
+            commit === at.sha ||
+            (SHA.test(String(commit)) &&
+                (await gitIn(["merge-base", "--is-ancestor", commit, at.sha]).then(
+                    () => true,
+                    () => false,
+                )));
+        if (!inHistory) {
+            return [400, { error: "commit is not in the ref's history" }];
+        }
+        await gitIn(["lfs", "fetch", "origin", commit, "--include", paths.join(",")]);
+        return [200, { fetched: paths.length }];
+    }
+
     /**
      * Runs a write route from another route, as the router would.
      * @param {string} route the route
@@ -3848,6 +4192,31 @@ export function createApp({
             const answer = await pictureNamed(name);
             return answer[0] === 200 ? [...answer, IMMUTABLE] : answer;
         },
+        // The Baselines screen: the list at a ref, one file's history, a baseline image by its
+        // hash, and its plain picture, made once and kept by the hash (refs share it).
+        "GET /api/baselines": async ([what, hash], _, query) => {
+            if (what === undefined) {
+                return baselineList(query);
+            }
+            if (what === "history") {
+                return baselineHistory(query);
+            }
+            if (what === "image") {
+                return baselineImage(hash);
+            }
+            if (what !== "pic" || !baselineImages.has(String(hash))) {
+                return [404, { error: "no such baseline" }];
+            }
+            const answer = await keptOnce({ plain: join(tmp, "thumbs", `${hash}.png`) }, "plain", "now", async () => {
+                const full = await baselineImage(hash);
+                if (full[0] !== 200) {
+                    throw Object.assign(new Error(/** @type {{ error: string }} */ (full[1]).error), { answer: full });
+                }
+                return { image: full[1], label: baselineImages.get(hash).path };
+            });
+            return answer[0] === 200 ? [...answer, IMMUTABLE] : answer;
+        },
+        "POST /api/baselines-download": async (_, body) => baselineDownload(body),
         "POST /api/decide": async (_, body) => {
             const { p, t } = await projectOf(String(body.id), body.project, body.run);
             if (!t) {

@@ -45,6 +45,33 @@
                 <div class="list" id="snap-list" tabindex="0" role="listbox" aria-label="Snapshots"></div>
             </section>
             <main class="viewer" id="viewer" tabindex="-1" aria-label="Viewer"></main>
+            <nav id="bl-proj" class="pane bl" aria-label="Projects">
+                <div id="rail-p"></div>
+                <div class="pane-head">
+                    <div class="pane-title"><span class="grow">Projects</span><span id="hide-p"></span></div>
+                    <label class="small muted">Baselines of <span id="bl-ref-slot"></span></label>
+                </div>
+                <div class="list tree" id="bl-tree" tabindex="0" role="listbox" aria-label="Projects"></div>
+            </nav>
+            <section id="bl-list-pane" class="pane bl" aria-label="Baselines">
+                <div id="rail-b"></div>
+                <div class="pane-head">
+                    <div class="pane-title" id="bl-title"></div>
+                    <input
+                        type="search"
+                        id="bl-find"
+                        data-act="find"
+                        data-key="/"
+                        data-zone="snaps-head"
+                        data-find="Find a story, or a number"
+                        aria-label="Find a story, or a number"
+                        autocomplete="off"
+                    />
+                    <div class="row-ctrl" id="bl-ctrl"></div>
+                </div>
+                <div class="list" id="bl-list" tabindex="0" role="listbox" aria-label="Baselines"></div>
+            </section>
+            <main class="viewer bl" id="bl-viewer" tabindex="-1" aria-label="Baseline viewer"></main>
         </div>
         <footer id="msgline">
             <span class="t" id="msg-t" role="status"></span><span id="msg-x"></span><span id="msg-btn"></span>

@@ -11,7 +11,7 @@
  * visible button that opens that menu, which names it in `data-menukeys`.
  */
 
-import { ZONES, contextOf, runAction } from "./actions.js";
+import { ZONES, contextOf, hostOf, runAction } from "./actions.js";
 
 // The decision keys: held down, each decides once, never the snapshots after it unseen.
 const ONCE = new Set(["accept", "reject", "exclude", "undo", "gaccept", "select"]);
@@ -247,7 +247,7 @@ export function startKeys(app) {
             if (e.shiftKey) {
                 // Extend up [Shift+Up] and Extend down [Shift+Down], printed in the selection bar's
                 // menu: the selection grows from the current snapshot.
-                if (app.snap && app.focusPane !== "changes") {
+                if (app.snap && app.focusPane !== "changes" && app.screen === "review") {
                     e.preventDefault();
                     runAction(app, e.key === "ArrowUp" ? "extendup" : "extenddown", {}, "key");
                 }
@@ -272,12 +272,18 @@ export function startKeys(app) {
             if (e.repeat && ONCE.has(node.dataset.act)) {
                 return;
             }
-            runAction(app, node.dataset.act, { ...contextOf(node), el: node }, "key");
+            runAction(hostOf(node) ?? app, node.dataset.act, { ...contextOf(node), el: node }, "key");
             return;
         }
         // Shift+A on a group with nothing left to accept: its header has no Accept to print the key
         // on, and the message line says so.
-        if (matches("Shift+A", e) && letterKeysOn() && app.snap) {
+        // P on the Baselines screen, which has no Baseline toggle: the history compares versions.
+        if (matches("P", e) && letterKeysOn() && app.screen === "baselines") {
+            e.preventDefault();
+            app.say("Baseline [P] is for reviews: here, tick two versions in the history to compare them.");
+            return;
+        }
+        if (matches("Shift+A", e) && letterKeysOn() && app.snap && app.screen === "review") {
             e.preventDefault();
             app.groupAccept(app.currentGroup());
             return;
@@ -288,7 +294,7 @@ export function startKeys(app) {
                     return;
                 }
                 e.preventDefault();
-                runAction(app, act, { el: node }, "key");
+                runAction(hostOf(node) ?? app, act, { el: node }, "key");
                 return;
             }
         }

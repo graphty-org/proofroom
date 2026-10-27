@@ -43,6 +43,8 @@ PORT=4800 proofroom serve --ui next
   area [O], Details and Copy link. **Next area [N]** steps through the changed areas, and
   **Previous [Left / J]** and **Next [Right / K]** move between snapshots. Decisions come next;
   until then, decide on today's page.
+- **The Baselines tab.** Every approved baseline, at the default branch or at any change's head:
+  see [Browsing baselines](../README.md#browsing-baselines).
 - **Addresses.** Every change and snapshot you open is in the address, so a copied link opens it
   again and the browser's Back and Forward move between them. Links today's page wrote, such as
   those in pull request comments, open the same change and snapshot here.
