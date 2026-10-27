@@ -240,7 +240,8 @@ export function openCapture({
     const fontconfig = config.fontconfig ? join(root, config.fontconfig) : null;
     const planned = new Map();
     // A file of its own per openCapture(), read by collect.
-    const planFile = out && join(out, `plan-${process.pid}-${threadId}-${++plans}-${randomBytes(4).toString("hex")}.json`);
+    const planFile =
+        out && join(out, `plan-${process.pid}-${threadId}-${++plans}-${randomBytes(4).toString("hex")}.json`);
     let plan = null;
     const writePlan = async () => {
         await mkdir(out, { recursive: true });

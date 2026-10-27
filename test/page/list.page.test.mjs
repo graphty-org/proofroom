@@ -459,7 +459,7 @@ describe("projects with no capture", () => {
             rows: (id, name) => rowsAnswer(name, 2),
         });
         await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(2);
-        expect(await page.locator(".chg[data-chg=\"8000\"]").innerText()).toContain("2 undecided");
+        expect(await page.locator('.chg[data-chg="8000"]').innerText()).toContain("2 undecided");
         expect(await message(page)).not.toMatch(/Nothing to review yet/);
         await currentIsShown(page);
     });

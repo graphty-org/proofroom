@@ -38,8 +38,15 @@ describe("row states", () => {
 
     it("leaves out a project with no capture, unless no project was captured at all", () => {
         const none = (problem) => project("graphty", { problem });
-        const some = rowOf(target(1, { projects: [project("graphty-element", { reviewable: 2 }), none("no capture")] }));
-        expect([some.section, some.count, some.ready, some.notReady]).toEqual(["needs", "2 undecided", "1 of 1", false]);
+        const some = rowOf(
+            target(1, { projects: [project("graphty-element", { reviewable: 2 }), none("no capture")] }),
+        );
+        expect([some.section, some.count, some.ready, some.notReady]).toEqual([
+            "needs",
+            "2 undecided",
+            "1 of 1",
+            false,
+        ]);
         const nothing = rowOf(target(2, { projects: [none("no capture"), none("not affected")] }));
         expect([nothing.section, nothing.count]).toEqual(["notready", "Capture failed: graphty"]);
         const skipped = rowOf(target(3, { projects: [none("not affected")] }));
