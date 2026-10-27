@@ -313,3 +313,38 @@ function parse(text) {
     }
     return normalizeConfig(raw);
 }
+
+/**
+ * The approvals Finish writes, as the default branch's config chooses them (docs/approval-format.md,
+ * "approvalFormat"), so a change that edits its own config never switches them: its
+ * `approvalFormat` when set; else "tree" when the approvals directory there holds tree statements
+ * (files at its top) and no change statement (files in a folder), which keeps a repository whose CI
+ * still runs `@graphty/visual-review`'s gate on the statements that gate reads; else "change".
+ * @param {string} ref the default branch, as fetched
+ * @param {string} root the repository
+ * @returns {{ format: "change" | "tree", repositoryId: string | null }} the format, and the
+ *     `repositoryId` of that config (null when unset)
+ */
+export function approvalFormatAt(ref, root) {
+    const config = loadConfigAt(ref, root);
+    const repositoryId = config.repositoryId ?? null;
+    if (config.approvalFormat) {
+        return { format: config.approvalFormat, repositoryId };
+    }
+    let files = "";
+    try {
+        files = execFileSync("git", ["ls-tree", "-r", "--name-only", ref, "--", `${config.approvals}/`], {
+            cwd: root,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        });
+    } catch {
+        // No such ref: nothing is there, so nothing says "tree".
+    }
+    const inside = files
+        .split("\n")
+        .filter((f) => f.endsWith(".json"))
+        .map((f) => f.slice(config.approvals.length + 1));
+    const tree = inside.some((f) => !f.includes("/")) && !inside.some((f) => f.includes("/"));
+    return { format: tree ? "tree" : "change", repositoryId };
+}
