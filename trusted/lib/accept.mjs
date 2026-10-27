@@ -1840,7 +1840,7 @@ async function notFinishCommit(repo, sha, change, { base, keys, config }) {
  * Before a fresh seed branch: closes every open pull request of this repository whose added
  * statements carry this capture's commit, whatever its branch is named, since a reject in the new
  * seed does nothing to an older one, which would stay green holding the earlier accept. Refuses,
- * naming it, when one cannot be closed (a code host without `closeChange`, plain git).
+ * naming it, when one cannot be fetched or closed (a code host without `closeChange`, plain git).
  * @param {object} input commitSeed's input
  * @param {{ base: string, fetch: (b: string) => Promise<any> }} at the captured commit and the fetcher
  */
@@ -1852,9 +1852,11 @@ async function retireSeeds(input, { base, fetch }) {
     const open = await net("listing the open changes", () => host.listChanges({ ...config, ignoreBranches: [] }));
     const tracking = ownRef(config.defaultBranch);
     for (const c of open.filter((o) => o.branch && !o.fork)) {
-        if (!(await fetch(c.branch).then(() => true, () => false))) {
-            continue;
-        }
+        await fetch(c.branch).catch((err) => {
+            throw new AcceptError(
+                `${c.url ?? c.branch} may hold an earlier seed of this capture and fetching it failed (${err.message}): press Finish again`,
+            );
+        });
         const added = (
             await git(repo, ["diff", "-z", "--name-only", "--diff-filter=A", `${tracking}...${ownRef(c.branch)}`, "--", `${config.approvals}/`])
         )
@@ -2100,6 +2102,10 @@ async function pushChange(input, { tree, writes, branch, statement, fetch, lease
         const others = (await statementsAt(repo, tip, config, statement.change)).filter((st) => !before.has(st.file));
         if (others.length > 0) {
             throw new AcceptError(otherFinishMessage(statement, others));
+        }
+        if (statement.type === SEED_TYPE) {
+            // A seed pull request holds only Finish commits (reuseProblem), so nothing is rebuilt onto a push.
+            throw new AcceptError("the seed branch moved while Finish ran; nothing was pushed: press Finish again");
         }
         const mine = (await git(tree, ["diff-tree", "-r", "-z", "--name-only", "--no-renames", parent, own]))
             .split("\0")

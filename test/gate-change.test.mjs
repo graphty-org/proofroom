@@ -700,6 +700,19 @@ describe("statements a change takes back", () => {
         }
     });
 
+    it("fail a reject dropped by an ours merge whose tree equals the parent that never had it", () => {
+        const r = changeRepo();
+        const accepted = acceptCard(r);
+        const before = git(r.repo, "rev-parse", "HEAD");
+        const rejected = rejectAfter(r, accepted);
+        const adding = git(r.repo, "rev-parse", "HEAD");
+        git(r.repo, "checkout", "-q", "-b", "x", before);
+        git(r.repo, "merge", "-q", "-s", "ours", "--no-edit", "pr");
+        git(r.repo, "checkout", "-q", "pr");
+        git(r.repo, "merge", "-q", "--ff-only", "x");
+        expect(check(r)).toEqual([dropped(rejected.file, adding)]);
+    });
+
     it("fail a statement modified by a later commit, and let one that never verified be removed", () => {
         const r = changeRepo();
         const done = acceptCard(r);

@@ -507,6 +507,7 @@ export function withdrawnStatements(git, { base, head, approvals, keys }) {
         "-z",
         "--no-abbrev",
         "--no-renames",
+        "--full-history",
         "--diff-filter=A",
         `${base}..${head}`,
         "--",
