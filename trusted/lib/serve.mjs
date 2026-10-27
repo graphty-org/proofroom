@@ -3814,7 +3814,9 @@ export function createApp({
                         saved[key] = {
                             decision,
                             reason: decision === "accept" ? null : reason,
-                            ...(decision === "accept" && { bulk: true }),
+                            // Not opened, unless the page says these were (`bulk: false`: an Undo
+                            // giving back accepts made one at a time).
+                            ...(decision === "accept" && body.bulk !== false && { bulk: true }),
                             hash: imageHash(item),
                             base: item.baseline ?? null,
                         };

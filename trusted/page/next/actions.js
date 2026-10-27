@@ -34,6 +34,11 @@ export const ZONES = [
 ];
 
 const NO_CHANGES = "No changes yet";
+const master = (app) => app.list?.defaultBranch ?? "master";
+// How many snapshots the selection holds while the current row is in it (then A, R and E act on
+// the selection), else 0.
+const selN = (app) => (app.curInSel() ? app.sel.size : 0);
+const groupN = (app, ctx, what) => app.groupScope(ctx.group)?.[what].length ?? 0;
 
 /** Why a control that writes is unavailable while the server is unreachable. */
 export const OFFLINE_WHY = "Offline: decisions cannot be saved";
@@ -137,7 +142,11 @@ export const ACTIONS = {
         title: "Open this snapshot: Snapshots collapses to its rail",
         run: (app) => app.openSnapshot(),
     },
-    pickrow: { label: "", run: (app, ctx) => app.pickSnapshot(ctx.snap) },
+    // A click on a row makes it current; with Ctrl or Cmd it goes in or out of the selection instead.
+    pickrow: {
+        label: "",
+        run: (app, ctx) => (ctx.ev?.ctrlKey || ctx.ev?.metaKey ? app.toggleSel(ctx.snap) : app.pickSnapshot(ctx.snap)),
+    },
 
     // The snapshot list (design 4).
     statshow: {
@@ -168,7 +177,88 @@ export const ACTIONS = {
         title: "Undo this decision",
         writes: true,
         run: (app, ctx) => app.undoRow(ctx.key),
-        available: (app) => (app.open()?.lookOnly ? "A look-only capture is viewed, never decided" : true),
+        available: (app) => app.writeOK(),
+    },
+    rowcheck: {
+        label: "",
+        title: "Select [X]; Shift-click selects a range",
+        run: (app, ctx) => (ctx.ev?.shiftKey && app.anchor ? app.rangeSel(ctx.key) : app.toggleSel(ctx.key)),
+    },
+    // A group header's actions (design 4.5): on exactly the rows the group shows.
+    gaccept: {
+        label: (app, ctx) => app.groupAcceptLabel(ctx.group),
+        key: "Shift+A",
+        title: "Accept the current snapshot's group",
+        run: (app, ctx) => app.groupAccept(ctx.group),
+        available: (app) => app.writeOK(),
+    },
+    gundo: {
+        label: (app, ctx) => `Undo ${groupN(app, ctx, "undoable")}`,
+        run: (app, ctx) => app.groupUndo(ctx.group),
+        available: (app) => app.writeOK(),
+    },
+    gmenu: { label: "...", title: "More for this group", run: (app, ctx) => app.groupMenu(ctx.group, ctx.el) },
+    greject: {
+        label: (app, ctx) => `Reject ${groupN(app, ctx, "all")}...`,
+        run: (app, ctx) => app.groupReason("reject", ctx.group),
+        available: (app) => app.writeOK(),
+    },
+    gexclude: {
+        label: (app, ctx) => `Exclude ${groupN(app, ctx, "all")}...`,
+        run: (app, ctx) => app.groupReason("exclude", ctx.group),
+        available: (app) => app.writeOK(),
+    },
+    gselect: {
+        label: (app, ctx) => `Select all ${app.groupScope(ctx.group)?.rows.length ?? 0}`,
+        run: (app, ctx) => app.selectKeys(app.groupScope(ctx.group).rows.map((s) => s.key)),
+    },
+    // The selection bar (design 4.6).
+    accsel: {
+        label: (app) => `Accept ${app.sel.size}`,
+        title: "Accept the selection",
+        run: (app) => app.acceptMany(app.selected(), `${app.sel.size} selected`),
+        available: (app) => app.writeOK(),
+    },
+    rejsel: {
+        label: (app) => `Reject ${app.sel.size}...`,
+        title: "Reject the selection, with one reason",
+        run: (app) => app.reasonBox("reject", app.selected()),
+        available: (app) => app.writeOK(),
+    },
+    excsel: {
+        label: (app) => `Exclude ${app.sel.size}...`,
+        title: "Exclude the selection, with one reason",
+        run: (app) => app.reasonBox("exclude", app.selected()),
+        available: (app) => app.writeOK(),
+    },
+    clearsel: { label: "Clear", key: "Esc", title: "Clear the selection", run: (app) => app.clearSel() },
+    selmenu: {
+        label: "...",
+        title: "Extend up, Extend down, Select all shown",
+        run: (app, ctx) => app.selMenu(ctx.el),
+    },
+    extendup: { label: "Extend up", key: "Shift+Up", run: (app) => app.extendSel(-1) },
+    extenddown: { label: "Extend down", key: "Shift+Down", run: (app) => app.extendSel(1) },
+    selshown: { label: "Select all shown", run: (app) => app.selectShown() },
+    // The list menu.
+    acceptshown: {
+        label: "Accept all shown...",
+        run: (app) => app.acceptShown(),
+        available: (app) => app.writeOK(),
+    },
+    undoall: { label: "Undo all decisions...", run: (app) => app.undoAll(), available: (app) => app.writeOK() },
+    // The stale capture: what changed on the default branch, and Update from it.
+    chgonmaster: {
+        label: (app) => `Changed on ${master(app)}`,
+        title: "The baselines that changed there since this capture",
+        run: (app, ctx) => app.changedOnMaster(ctx.id),
+    },
+    updatefrom: {
+        label: (app) => `Update from ${master(app)}...`,
+        title: (app) => `Merges ${master(app)} into the branch and pushes it; CI captures again`,
+        run: (app, ctx) => app.updateFrom(ctx.id),
+        available: (app, ctx) =>
+            app.change(ctx.id)?.kind === "PR" ? true : `Only a pull request is updated from ${master(app)}`,
     },
     picretry: { label: "Retry", title: "Ask for the picture again", run: (app, ctx) => app.retryPicture(ctx.key) },
     loadnewer: { label: "Load it", title: "Show the newer capture's rows", run: (app) => app.loadNewer() },
@@ -267,6 +357,53 @@ export const ACTIONS = {
         title: "The whole image: click to move the view there",
         run: (app, ctx) => app.viewer.locate(ctx.el),
     },
+    // The decision bar (design 6.1). A, R and E act on the selection while the current row is in it.
+    accept: {
+        label: (app) => (selN(app) ? `Accept ${selN(app)} selected` : "Accept"),
+        key: "A",
+        title: (app) => app.acceptTitle(),
+        run: (app) => app.accept(),
+        available: (app) => app.decideOK("accept"),
+    },
+    reject: {
+        label: (app) => (selN(app) ? `Reject ${selN(app)} selected...` : "Reject..."),
+        key: "R",
+        title: "Reject, with a reason the author sees",
+        run: (app) => app.reject("reject"),
+        available: (app) => app.decideOK("reject"),
+    },
+    exclude: {
+        label: (app) => (selN(app) ? `Exclude ${selN(app)} selected...` : "Exclude..."),
+        key: "E",
+        title: "Exclude, with a reason: the story stops being captured",
+        run: (app) => app.reject("exclude"),
+        available: (app) => app.decideOK("exclude"),
+    },
+    undo: {
+        label: "Undo",
+        key: "U",
+        title: "Undo the last decision",
+        run: (app) => app.undo(),
+        available: (app) => (app.writeOK() !== true ? app.writeOK() : app.undoSteps() > 0 ? true : "Nothing to undo"),
+    },
+    select: {
+        label: (app) => (app.sel.has(app.snap) ? "Unselect" : "Select"),
+        key: "X",
+        title: (app) => (app.sel.has(app.snap) ? "Selected: X takes it out of the selection" : "Add to the selection"),
+        run: (app) => app.toggleSel(),
+    },
+    // The end card (design 6.6).
+    endfinish: {
+        label: (app) => app.endFinishLabel(),
+        key: "Enter",
+        title: "Finish runs on today's page until this page has its own: it shares these decisions",
+        run: (app) => app.endFinish(),
+    },
+    endback: {
+        label: (app) => (app.level === 2 ? "Back to list" : "Back to changes"),
+        key: "Esc",
+        run: (app) => app.endBack(),
+    },
     prev: {
         label: "Previous",
         key: "Left / J",
@@ -282,6 +419,16 @@ export const ACTIONS = {
 
     // Boxes and the message line.
     closebox: { label: "Close", key: "Esc", run: (app) => app.closeBox() },
+    // The reason box of Reject and Exclude (design 6.3, 6.4), and the confirm box.
+    reasonok: { label: (app, ctx) => ctx.label, key: "Enter", run: (app) => app.reasonOK() },
+    reasoncancel: { label: (app, ctx) => ctx.label, key: "Esc", run: (app) => app.closeReason(true) },
+    reasonpick: {
+        label: (app, ctx) => ctx.reason,
+        title: "Use this reason",
+        run: (app, ctx) => app.pickReason(ctx.reason),
+    },
+    confirmok: { label: (app, ctx) => ctx.label, key: "Enter", run: (app) => app.confirmOK() },
+    confirmcancel: { label: "Cancel", key: "Esc", run: (app) => app.closeBox() },
     // The message line's own button: Retry after a failed list or a failed open (ctx.run retries it).
     retry: { label: "Retry", run: (app, ctx) => ctx.run() },
     messages: { label: "Messages", title: "The last 20 messages", run: (app) => app.messagesBox() },
@@ -401,7 +548,7 @@ export function control(
     titles.set(node, own);
     node.addEventListener("click", (e) => {
         e.stopPropagation();
-        runAction(app, id, { ...ctx, el: node }, "pointer");
+        runAction(app, id, { ...ctx, el: node, ev: e }, "pointer");
     });
     return node;
 }

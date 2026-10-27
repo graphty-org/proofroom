@@ -175,6 +175,10 @@ kbd {
     margin-left: 5px;
     opacity: 0.65;
 }
+/* A key box on a control the key does not act on now (keys.js syncHints). */
+kbd[hidden] {
+    display: none;
+}
 kbd + kbd {
     margin-left: 3px;
 }
@@ -185,7 +189,9 @@ body.nokeys kbd.lk {
 /* While a menu, box or field will take Esc and Enter, Back and Open show their labels alone. */
 body.held [data-act="back"] kbd,
 body.held [data-act="openrow"] kbd,
-body.held [data-act="openchg"] kbd {
+body.held [data-act="openchg"] kbd,
+body.held [data-act="clearsel"] kbd,
+body.held [data-zone="end"] kbd {
     display: none;
 }
 .muted {
@@ -674,6 +680,25 @@ body.held [data-act="openchg"] kbd {
     padding: 0 7px;
     flex: none;
 }
+/* The selection bar, in place of the controls line at the same height (design 4.6). */
+#snaps-head > .h5.lselbar {
+    margin: 0 -10px;
+    padding: 0 8px;
+    gap: 3px;
+    font-size: 12px;
+    background: var(--sel);
+}
+#snaps-head > .h5.lselbar .selcount {
+    flex: none;
+    white-space: nowrap;
+}
+#snaps-head > .h5.lselbar button {
+    padding: 0 5px;
+    font-size: 12px;
+}
+#snaps-head > .h5.lselbar.tight button .ic {
+    display: none;
+}
 #snaps-head .ssum button {
     flex: none;
     min-height: 24px;
@@ -760,6 +785,25 @@ body.infind .fk {
     height: 24px;
     flex: none;
     margin-right: -8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.srow .rcheck span {
+    width: 15px;
+    height: 15px;
+    border-radius: 3px;
+    border: 1.5px solid var(--ink-2);
+    background: var(--surface);
+    display: block;
+}
+.srow.selx:not(.cur) {
+    background: color-mix(in srgb, var(--sel) 60%, var(--surface));
+}
+.srow.selx .rcheck span {
+    background: var(--focus);
+    border-color: var(--focus);
+    box-shadow: inset 0 0 0 2px var(--surface);
 }
 .pic {
     width: clamp(120px, calc(100% - 246px), 190px);
@@ -1003,6 +1047,14 @@ body.infind .fk {
     height: 24px;
     font-weight: 400;
 }
+.ghead .acc {
+    border-color: var(--accept);
+    color: var(--ink);
+    font-weight: 700;
+}
+.ghead .acc .ic {
+    color: var(--accept);
+}
 .ghead .split {
     font-weight: 400;
     display: inline-flex;
@@ -1030,11 +1082,16 @@ body.infind .fk {
     align-items: center;
     gap: 4px;
 }
+/* The split never wraps the buttons onto a third line: it starts at no width and takes the room
+   the buttons leave, shrinking (its title holds every word) when even the folded split is too wide. */
 .ghead.two .split {
-    flex: 0 1 auto;
+    flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
+}
+.ghead.two .split + .gsp {
+    display: none;
 }
 .ghead.before {
     background: color-mix(in srgb, var(--accept) 8%, var(--ghead));
@@ -1465,7 +1522,7 @@ body.nokeys kbd .lk {
     max-height: 240px;
     white-space: pre-wrap;
 }
-/* The decision bar (design 6.1); this stage has its Previous and Next. */
+/* The decision bar (design 6.1): Accept 120 x 36 and Reject 100 x 36, filled, on the right. */
 .decide {
     height: 52px;
     flex: none;
@@ -1480,6 +1537,128 @@ body.nokeys kbd .lk {
 .decide .pos {
     flex: none;
     white-space: nowrap;
+}
+.decide .gap8 {
+    width: 8px;
+    flex: none;
+}
+.decide .rc {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    min-width: 228px;
+    justify-content: flex-end;
+}
+.decide .big {
+    min-height: 36px;
+    font-weight: 700;
+    color: #fff;
+    border: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+.decide .big .ic {
+    color: #fff;
+}
+.decide .acc {
+    background: var(--accept);
+    min-width: 120px;
+}
+.decide .rej {
+    background: var(--reject);
+    min-width: 100px;
+}
+.decide.tight {
+    gap: 4px;
+}
+.decide.tight button {
+    font-size: 11px;
+    padding: 2px 3px;
+}
+.decide.tight kbd {
+    font-size: 9.5px;
+    min-width: 11px;
+    margin-left: 2px;
+    padding: 1px;
+}
+.decide.tight .rc {
+    gap: 4px;
+}
+/* A click flashes its button as its key does. */
+.decide button:active {
+    filter: brightness(0.85);
+}
+
+/* The reason box of Reject and Exclude, anchored above the decision bar (design 6.3). */
+.popbox {
+    position: absolute;
+    right: 12px;
+    bottom: 60px;
+    width: 400px;
+    max-width: calc(100% - 24px);
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+    padding: 12px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.popbox .recent {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.popbox .recent button {
+    font-size: 11px;
+    min-height: 24px;
+}
+.popbox .perr {
+    color: var(--st-failed);
+    font-weight: 600;
+    font-size: 12px;
+}
+.popbox .pfoot {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+/* The end card, in place of the image (design 6.6). */
+.endwrap {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+}
+.endwrap[hidden],
+.stage[hidden] {
+    display: none;
+}
+.card {
+    margin: auto;
+    background: var(--surface);
+    color: var(--ink);
+    border-radius: 10px;
+    padding: 22px 26px;
+    min-width: 380px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+}
+.card h2 {
+    margin: 0;
+    font-size: 18px;
+}
+.cbody {
+    margin: 0;
+    max-width: 460px;
 }
 /* No text is drawn on --stage: the empty state sits on a --surface card. */
 .emptyv {

@@ -1,6 +1,6 @@
 /*
- * The viewer at /next/ (design section 5): the toolbar, the item line, Details, the stage and the
- * decision bar's Previous and Next. All drawing is the stage's (viewer/stage.js, with its diffs in
+ * The viewer at /next/ (design section 5): the toolbar, the item line, Details, the stage, the
+ * end card and the decision bar (design 6.1; its decisions are decide.js's). All drawing is the stage's (viewer/stage.js, with its diffs in
  * a worker and worked out ahead); this module chooses what it draws: the view, the zoom, whether
  * the baseline is shown, one frame or two, side by side or over and under, the one-sided and
  * failed rules, and the locator at 2x and above.
@@ -10,7 +10,7 @@
  */
 
 import { createStage } from "../viewer/stage.js";
-import { control } from "./actions.js";
+import { control, labelOf } from "./actions.js";
 import { badgesOf, decisionWords, layoutOf, sizeText } from "./list.js";
 import { makeLocator, moveToPressed } from "./locator.js";
 import { STATUS, statusMark } from "./marks.js";
@@ -192,6 +192,8 @@ export function createViewer(app) {
             const s = current();
             if (s && parts) {
                 fillLine(s);
+                // The item line's controls are new: their key boxes follow the zones again.
+                app.settle?.();
             }
         },
         labels: (item, view) => labelsOf(item.snap, view),
@@ -456,11 +458,15 @@ export function createViewer(app) {
         ];
     }
 
-    // The item line's right end: Open [Enter] at the list level of a two-level change.
+    // The item line's right end: Select [X], and Open [Enter] at the list level of a two-level change.
     const lineEnd = (s) =>
         el(
             "span",
             { class: "iright" },
+            control(app, "select", {
+                zone: "iline",
+                attrs: { "aria-pressed": app.sel.has(s.key) ? "true" : "false" },
+            }),
             app.level === 1 && twoLevels(app.snaps.length, innerWidth) && s
                 ? control(app, "openrow", { zone: "iline" })
                 : null,
@@ -548,25 +554,69 @@ export function createViewer(app) {
         );
     }
 
+    // Previous, the position, Next; Undo and Exclude...; Reject... and Accept, the largest, on the
+    // right. With the current row in the selection the right labels say how many they decide, and
+    // the position text goes. Only the position text ever drops, whole: ", N left", then "#47".
     function fillBar(s) {
         const left = app.snaps.filter((x) => !x.decision).length;
-        parts.bar.replaceChildren(
-            control(app, "prev", {
-                zone: "decision",
-                children: [el("span", { class: "lbl" }, "Previous"), kb("Left / J")],
-            }),
-            el(
-                "span",
-                { class: "pos num small" },
-                el("b", {}, `#${s.n}`),
-                el("span", { class: "pl" }, `, ${fmt(left)} left`),
-            ),
-            control(app, "next", {
-                zone: "decision",
-                children: [el("span", { class: "lbl" }, "Next"), kb("Right / K")],
-            }),
+        const zone = "decision";
+        parts.bar.classList.remove("tight");
+        fill(
+            parts.bar,
+            control(app, "prev", { zone, children: [el("span", { class: "lbl" }, "Previous"), kb("Left / J")] }),
+            app.curInSel()
+                ? null
+                : el(
+                      "span",
+                      { class: "pos num small" },
+                      el("b", {}, `#${s.n}`),
+                      el("span", { class: "pl" }, `, ${fmt(left)} left`),
+                  ),
+            control(app, "next", { zone, children: [el("span", { class: "lbl" }, "Next"), kb("Right / K")] }),
+            el("span", { class: "gap8" }),
+            control(app, "undo", { zone }),
+            control(app, "exclude", { zone }),
             el("span", { class: "grow" }),
+            el(
+                "div",
+                { class: "rc" },
+                control(app, "reject", {
+                    zone,
+                    attrs: { class: "big rej" },
+                    children: [ic("reject"), labelOf(app, "reject"), kb("R")],
+                }),
+                control(app, "accept", {
+                    zone,
+                    attrs: { class: "big acc" },
+                    children: [ic("accept"), labelOf(app, "accept"), kb("A")],
+                }),
+            ),
         );
+        const d = parts.bar;
+        const over = () => d.scrollWidth > d.clientWidth + 1;
+        if (over()) {
+            d.querySelector(".pos .pl")?.remove();
+        }
+        if (over()) {
+            d.querySelector(".pos")?.remove();
+        }
+        // The selection's longer labels in an 816 px viewer: the toolbar's compact size, as below 900 px.
+        if (over()) {
+            d.classList.add("tight");
+        }
+    }
+
+    // The end card, in place of the image, after the last undecided snapshot (design 6.6).
+    function fillCard() {
+        const showing = app.endCard === true;
+        const had = !parts.card.hidden;
+        parts.stage.hidden = showing;
+        parts.card.hidden = !showing;
+        parts.card.replaceChildren(...(showing ? [app.endCardOf()] : []));
+        if (showing && !had) {
+            // The one control the page focuses on its own: Finish [Enter] (design 8.1.8).
+            document.getElementById("endfinish")?.focus({ preventScroll: true });
+        }
     }
 
     // The viewer's elements: made once, and put back when the viewer showed something else.
@@ -577,13 +627,14 @@ export function createViewer(app) {
         }
         parts ??= {
             bar: el("div", { class: "decide" }),
+            card: el("div", { class: "endwrap", hidden: true }),
             details: el("div", { class: "details", id: "details", hidden: true }),
             line: el("div", { class: "iline" }),
             stage: el("div", { class: "stage", id: "stage" }),
             tools: el("div", { class: "vtb", id: "vtb", role: "toolbar", "aria-label": "Viewer" }),
             wrap: el("div", { class: "stagewrap" }),
         };
-        parts.wrap.replaceChildren(parts.stage);
+        parts.wrap.replaceChildren(parts.stage, parts.card);
         v.replaceChildren(parts.tools, parts.line, parts.details, parts.wrap, parts.bar);
         shownKey = null;
         resized.disconnect();
@@ -616,6 +667,8 @@ export function createViewer(app) {
         fillDetails(s);
         fillBar(s);
         render(s);
+        fillCard();
+        app.opened.add(s.key);
         // The Layout button says what Auto chose, once the stage has its size.
         const lay = parts.tools.querySelector('[data-act="layoutmenu"]');
         if (lay && vs.layout === "auto") {
@@ -628,9 +681,7 @@ export function createViewer(app) {
     const imageOnly = () => imageOnlyPressed(shownNow());
     const redraw = () => app.draw();
     const layoutTitle = () =>
-        vs.layout === "auto"
-            ? `Auto chose ${stacked ? "over and under" : "side by side"} for this window`
-            : "Layout";
+        vs.layout === "auto" ? `Auto chose ${stacked ? "over and under" : "side by side"} for this window` : "Layout";
 
     function menuItem(id, label, checked) {
         return { id, label, checked, check: true };
@@ -717,33 +768,38 @@ export function createViewer(app) {
         // Below a viewer width of 900 px More also holds Flash while held, and below 800 px Zoom.
         moreMenu: (anchor) => {
             const vw = document.getElementById("viewer")?.clientWidth ?? innerWidth;
-            app.showMenu(anchor, [
-                vw < 900 ? [{ head: "View" }, { id: "flashheld", label: "Flash while held", key: "hold Space" }] : [],
-                vw < 800
-                    ? [
-                          { head: "Zoom" },
-                          ...ZOOMS.map((z) => ({
-                              id: `zoom-${z}`,
-                              label: z === "fit" ? "Fit" : `${z}x`,
-                              checked: vs.zoom === z,
-                          })),
-                      ]
-                    : [],
-                { head: "Display" },
-                menuItem("imageonly", "Image only", imageOnly()),
-                Object.entries(LAYOUTS).map(([k, l]) => ({
-                    id: `layout-${k}`,
-                    label: `Layout: ${l}`,
-                    key: "Y",
-                    checked: vs.layout === k,
-                })),
-                { sep: true },
-                { head: "Options" },
-                menuItem("outline", "Outline", vs.outline),
-                menuItem("centerarea", "Open centered on the area", vs.center),
-                menuItem("details", "Details", vs.details),
-                { id: "listlink", label: "Copy link" },
-            ].flat());
+            app.showMenu(
+                anchor,
+                [
+                    vw < 900
+                        ? [{ head: "View" }, { id: "flashheld", label: "Flash while held", key: "hold Space" }]
+                        : [],
+                    vw < 800
+                        ? [
+                              { head: "Zoom" },
+                              ...ZOOMS.map((z) => ({
+                                  id: `zoom-${z}`,
+                                  label: z === "fit" ? "Fit" : `${z}x`,
+                                  checked: vs.zoom === z,
+                              })),
+                          ]
+                        : [],
+                    { head: "Display" },
+                    menuItem("imageonly", "Image only", imageOnly()),
+                    Object.entries(LAYOUTS).map(([k, l]) => ({
+                        id: `layout-${k}`,
+                        label: `Layout: ${l}`,
+                        key: "Y",
+                        checked: vs.layout === k,
+                    })),
+                    { sep: true },
+                    { head: "Options" },
+                    menuItem("outline", "Outline", vs.outline),
+                    menuItem("centerarea", "Open centered on the area", vs.center),
+                    menuItem("details", "Details", vs.details),
+                    { id: "listlink", label: "Copy link" },
+                ].flat(),
+            );
         },
         pressImageOnly: () => {
             const at = app.at();

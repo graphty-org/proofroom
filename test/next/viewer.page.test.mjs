@@ -403,7 +403,8 @@ describe("one-sided snapshots and failures", () => {
 
 describe("the item line", () => {
     it("removes the Accept sentence whole when there is no room, before the component and the name are cut", async () => {
-        const page = await open(SMALL, NARROW);
+        // At 1440 the short sentence has room beside Select [X]; at 1280 the long one has none.
+        const page = await open(SMALL);
         const line = () =>
             page.evaluate(() => {
                 const n = (sel) => globalThis.document.querySelector(`.iline ${sel}`);
@@ -418,6 +419,7 @@ describe("the item line", () => {
         // A short sentence fits beside everything else.
         await expect.poll(async () => (await line()).say).toBe("Accept replaces the baseline with the new image.");
         expect(await line()).toMatchObject({ sayCut: false, nameCut: false });
+        await page.setViewportSize(NARROW);
         // The failed story's long sentence does not: it goes whole, the name stays whole.
         for (let i = 0; i < 5; i++) {
             await page.keyboard.press("ArrowRight");

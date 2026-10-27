@@ -119,7 +119,8 @@ export function groupsOf(rows, { grouping, clusters, pairs }) {
         groups.get(key).rows.push(s);
     };
     for (const s of rows) {
-        if (s.before) {
+        // The group a row arrived in: a decision taken since never moves it.
+        if (s.beforeGroup ?? s.before) {
             add(BEFORE, "Approved before", "before", s);
             continue;
         }

@@ -13,6 +13,9 @@
 
 import { ZONES, contextOf, runAction } from "./actions.js";
 
+// The decision keys: held down, each decides once, never the snapshots after it unseen.
+const ONCE = new Set(["accept", "reject", "exclude", "undo", "gaccept", "select"]);
+
 const LETTERS_KEY = "proofroom:letter-keys";
 let chosen = null; // the reader's choice in this visit, kept even where storage is not
 const NONLETTER = new Set(["Enter", "Esc", "Up", "Down", "Left", "Right", "Tab", "Space"]);
@@ -125,19 +128,23 @@ const rank = (node) => {
  * @returns {HTMLElement | null} the control
  */
 export function ownerOf(printed) {
+    return owners().get(printed) ?? null;
+}
+
+// The owner of every printed key, in one pass over the controls.
+function owners() {
     const held = document.body.classList.contains("held");
-    let best = null;
+    const best = new Map();
     for (const node of document.querySelectorAll("[data-key]")) {
-        if (
-            node.dataset.key === printed &&
-            visible(node) &&
-            !(held && ["back", "openrow", "openchg"].includes(node.dataset.act)) &&
-            (best === null || rank(node) < rank(best))
-        ) {
-            best = node;
+        const k = node.dataset.key;
+        if (visible(node) && !(held && ["back", "openrow", "openchg"].includes(node.dataset.act))) {
+            const r = rank(node);
+            if (!best.has(k) || r < best.get(k).r) {
+                best.set(k, { node, r });
+            }
         }
     }
-    return best;
+    return new Map([...best].map(([k, v]) => [k, v.node]));
 }
 
 /**
@@ -148,22 +155,22 @@ export function ownerOf(printed) {
 export function syncHints() {
     const ae = document.activeElement;
     const field = ae?.matches?.("input[type=search], input[type=text], input[type=password]") === true;
-    const held = field || document.querySelector(".menu") !== null || document.querySelector("dialog[open]") !== null;
+    const held =
+        field ||
+        document.querySelector(".menu") !== null ||
+        document.querySelector("dialog[open]") !== null ||
+        document.getElementById("popbox") !== null;
     document.body.classList.toggle("held", held);
     document.body.classList.toggle("nokeys", !letterKeysOn());
-    const owners = new Map();
+    const own = owners();
     for (const node of document.querySelectorAll("[data-key]")) {
-        const k = node.dataset.key;
-        if (!owners.has(k)) {
-            owners.set(k, ownerOf(k));
-        }
-        const mine = owners.get(k) === node;
+        const mine = own.get(node.dataset.key) === node;
         for (const box of node.querySelectorAll(":scope > kbd")) {
             box.hidden = !mine;
         }
     }
     // The Find boxes print their key in the placeholder: the one the key goes to.
-    const finder = ownerOf("/");
+    const finder = own.get("/") ?? null;
     for (const f of document.querySelectorAll("input[data-find]")) {
         f.placeholder = `${f.dataset.find}${letterKeysOn() && f === finder ? "  [/]" : ""}`;
     }
@@ -199,6 +206,15 @@ export function startKeys(app) {
         if (document.querySelector("dialog[open]")) {
             return; // the box's own keys: Esc closes it, Tab moves in it
         }
+        if (document.getElementById("popbox")) {
+            // The reason box takes its own keys; one pressed outside it (focus moved on) acts on
+            // nothing, and Esc still closes it.
+            if (e.key === "Escape") {
+                e.preventDefault();
+                app.closeReason(true);
+            }
+            return;
+        }
         const t = /** @type {HTMLElement} */ (e.target);
         if (t.matches?.("input, textarea, select")) {
             if (e.key === "Escape") {
@@ -228,7 +244,14 @@ export function startKeys(app) {
             return;
         }
         if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-            if (!e.shiftKey && app.arrow(e.key === "ArrowUp" ? -1 : 1)) {
+            if (e.shiftKey) {
+                // Extend up [Shift+Up] and Extend down [Shift+Down], printed in the selection bar's
+                // menu: the selection grows from the current snapshot.
+                if (app.snap && app.focusPane !== "changes") {
+                    e.preventDefault();
+                    runAction(app, e.key === "ArrowUp" ? "extendup" : "extenddown", {}, "key");
+                }
+            } else if (app.arrow(e.key === "ArrowUp" ? -1 : 1)) {
                 e.preventDefault();
             }
             return;
@@ -246,7 +269,17 @@ export function startKeys(app) {
                 continue;
             }
             e.preventDefault();
+            if (e.repeat && ONCE.has(node.dataset.act)) {
+                return;
+            }
             runAction(app, node.dataset.act, { ...contextOf(node), el: node }, "key");
+            return;
+        }
+        // Shift+A on a group with nothing left to accept: its header has no Accept to print the key
+        // on, and the message line says so.
+        if (matches("Shift+A", e) && letterKeysOn() && app.snap) {
+            e.preventDefault();
+            app.groupAccept(app.currentGroup());
             return;
         }
         for (const { printed, act, node } of menuKeys()) {

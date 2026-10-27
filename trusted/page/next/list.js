@@ -28,7 +28,7 @@ import {
     undecided,
 } from "./groups.js";
 import { DECISION, ORDER, STATUS, mark, statusMark } from "./marks.js";
-import { el, fmt } from "./ui.js";
+import { el, fmt, ic, kb } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const PICTURES_KEY = "proofroom:pictures";
@@ -102,6 +102,7 @@ export function snapsOf(answers, reviewable) {
                 before: false,
             });
             setDecision(snaps.at(-1), a.decisions?.[i.file] ?? null);
+            snaps.at(-1).beforeGroup = snaps.at(-1).before;
         }
     }
     snaps.forEach((s, i) => {
@@ -119,6 +120,7 @@ export function snapsOf(answers, reviewable) {
  *     approvedBefore?: { pr: number | null } } | null} d the decision
  */
 export function setDecision(s, d) {
+    rowsVersion++;
     s.decision = d;
     s.before = Boolean(d?.approvedBefore);
     s.rejectedBefore = d?.posted === true && d.decision === "reject";
@@ -171,11 +173,40 @@ export function showCounts(snaps) {
  * drawn, in order.
  * @param {any} lv the list's state
  * @param {any[]} snaps the snapshots
- * @returns {{ groups: any[], visible: any[], shown: number, filtering: boolean }} the groups (each
+ * @returns {{ groups: any[], visible: any[], shown: number, filtering: boolean,
+ *     byKey?: Map<string, any> }} the groups (each
  *     with `collapsed` and `drawn`), the drawn rows in order, how many rows Show and Find keep, and
  *     whether Find filters
  */
 export function layoutOf(lv, snaps) {
+    const head = [
+        snaps,
+        snaps.length,
+        rowsVersion,
+        lv.find,
+        lv.show,
+        lv.grouping,
+        lv.clusters,
+        lv.pairs,
+        [...lv.keep].join("\n"),
+        [...lv.collapsed].join("\n"),
+    ];
+    if (lastLayout?.head.length === head.length && lastLayout.head.every((x, i) => x === head[i])) {
+        return lastLayout.out;
+    }
+    const out = computeLayout(lv, snaps);
+    out.byKey = new Map(out.groups.map((g) => [g.key, g]));
+    lastLayout = { head, out };
+    return out;
+}
+
+// The last layout and what it was computed from. Every pane, key and label asks for the layout
+// several times a draw (each group header once); at 3,000 snapshots each ask is a sort, so an ask
+// with nothing changed reuses it. A row changes only through setDecision, which counts.
+let lastLayout = null;
+let rowsVersion = 0;
+
+function computeLayout(lv, snaps) {
     const match = filterOf(lv.find);
     const rows = snaps.filter((s) => shownBy(s, lv.show, lv.keep) && (!match || match(s)));
     const groups = groupsOf(rows, { grouping: lv.grouping, clusters: lv.clusters, pairs: lv.pairs });
@@ -736,7 +767,10 @@ export function drawHead(app, h1) {
                   }),
                   control(app, "listmenu", { zone: "snaps-head" }),
               ];
-    h5.replaceChildren(...controls(0));
+    const selecting = app.sel.size > 0;
+    h5.classList.toggle("lselbar", selecting);
+    h5.classList.remove("tight");
+    h5.replaceChildren(...(selecting ? selectionBar(app) : controls(0)));
     const parts = small ? [h1, h2, h4, h5] : [h1, h2, h3, h4, h5];
     // Only the lines that are new go in: a line already in place never moves, so the Find box
     // keeps the reader's focus and caret while the header is drawn again.
@@ -751,13 +785,66 @@ export function drawHead(app, h1) {
         }
     });
     for (const level of [1, 2]) {
-        if (!small && h5.scrollWidth > h5.clientWidth + 1) {
+        if (!small && !selecting && h5.scrollWidth > h5.clientWidth + 1) {
             h5.replaceChildren(...controls(level));
         }
     }
+    // The selection bar never wraps and never cuts a label: "(3 not shown)" goes into the count's
+    // tooltip first, then the buttons drop their marks.
+    if (selecting && h5.scrollWidth > h5.clientWidth + 1) {
+        h5.querySelector(".nsh").textContent = "";
+    }
+    if (selecting && h5.scrollWidth > h5.clientWidth + 1) {
+        h5.classList.add("tight");
+    }
     foldStatus(app, small ? h2 : h3);
     drawBanner(app);
+    drawStale(app);
     $("snaps").classList.toggle("nopics", lv.pics.none);
+}
+
+// The selection bar, in place of the controls line (design 4.6): the count, Accept N, Reject N...,
+// Exclude N..., Clear [Esc] and its menu.
+function selectionBar(app) {
+    const n = app.sel.size;
+    const hid = app.selHidden();
+    const zone = "selection";
+    return [
+        el(
+            "b",
+            { class: "selcount", title: hid ? `${fmt(n)} selected, ${fmt(hid)} not shown` : `${fmt(n)} selected` },
+            `${fmt(n)} selected`,
+            el("span", { class: "nsh" }, hid ? ` (${fmt(hid)} not shown)` : ""),
+        ),
+        control(app, "accsel", { zone, children: [ic("accept", "c-accept"), ` Accept ${fmt(n)}`] }),
+        control(app, "rejsel", { zone }),
+        control(app, "excsel", { zone }),
+        control(app, "clearsel", { zone, attrs: { class: "clearsel" } }),
+        control(app, "selmenu", { zone }),
+    ];
+}
+
+// "master has 3 newer baselines since this capture": what changed there, and Update from it.
+function drawStale(app) {
+    const b = $("snap-stale");
+    const c = app.open();
+    const n = c?.stale ?? 0;
+    b.hidden = n === 0;
+    const master = app.list?.defaultBranch ?? "master";
+    b.replaceChildren(
+        ...(n > 0
+            ? [
+                  ic("clock", "c-changed"),
+                  el(
+                      "span",
+                      { class: "grow" },
+                      `${master} has ${fmt(n)} newer baseline${n === 1 ? "" : "s"} since this capture.`,
+                  ),
+                  control(app, "chgonmaster", { zone: "snaps-head", ctx: { id: c.id } }),
+                  control(app, "updatefrom", { zone: "snaps-head", ctx: { id: c.id } }),
+              ]
+            : []),
+    );
 }
 
 // "A newer capture of this change is ready": the rows never change under the reader.
@@ -947,7 +1034,7 @@ export function rowOf(app, s, filled = true) {
             tag: "div",
             ctx: { snap: s.key },
             attrs: {
-                class: `srow ${s.key === app.snap ? "cur" : ""} ${s.decision ? "decided" : ""}`,
+                class: `srow ${s.key === app.snap ? "cur" : ""} ${s.decision ? "decided" : ""} ${app.sel.has(s.key) ? "selx" : ""}`,
                 "data-snap": s.key,
                 role: "option",
                 "aria-selected": s.key === app.snap ? "true" : "false",
@@ -1009,7 +1096,19 @@ export function rowOf(app, s, filled = true) {
               ];
     }
     return row([
-        el("span", { class: "rcheck" }),
+        control(app, "rowcheck", {
+            zone: "rows",
+            tag: "span",
+            ctx: { key: s.key },
+            attrs: {
+                class: "rcheck",
+                role: "checkbox",
+                "aria-checked": app.sel.has(s.key) ? "true" : "false",
+                "aria-label": `Select #${s.n}`,
+                title: "Select [X]; Shift-click selects a range",
+            },
+            children: [el("span")],
+        }),
         lv.pics.none ? null : pictureOf(app, s),
         el("div", { class: "info" }, l1, body),
     ]);
@@ -1040,10 +1139,82 @@ function countOf(g, fold) {
     );
 }
 
+/**
+ * What a group header's actions act on: the undecided rows the group shows (Accept N), how many
+ * more undecided rows of the group Show and Find hide (never touched), and the decisions in it its
+ * Undo N takes back. Approved before acts on all its rows: they are decided by the server.
+ * @param {any} app the page
+ * @param {any} g the group, as layoutOf gives it
+ * @returns {{ und: any[], hidden: number, undoable: any[], all: any[] }} the rows
+ */
+export function groupScope(app, g) {
+    const und = g.rows.filter(undecided);
+    const hiddenAll = app.lv.hiddenUnd?.get(g.key) ?? 0;
+    return {
+        und,
+        hidden: hiddenAll,
+        undoable: g.rows.filter(undoable),
+        all: g.key === BEFORE ? g.rows : g.rows.filter((s) => !s.decision),
+    };
+}
+
+/**
+ * Whether a row's decision has an Undo: a decision taken on this capture that no Finish published
+ * (approved before is derived by the server, rejected before and finished are an earlier Finish's).
+ * @param {any} s the snapshot
+ * @returns {boolean} it has
+ */
+export const undoable = (s) => Boolean(s.decision) && !s.finished && !s.before && !s.rejectedBefore;
+
+/**
+ * A group's Accept label: "Accept 14", or "Accept 2 shown (15 hidden)" when Show or Find hides some.
+ * @param {{ und: any[], hidden: number }} scope the group's scope
+ * @returns {string} the label
+ */
+export const acceptLabel = ({ und, hidden }) =>
+    hidden > 0 ? `Accept ${fmt(und.length)} shown (${fmt(hidden)} hidden)` : `Accept ${fmt(und.length)}`;
+
+// How many undecided rows of each group Show and Find hide: counted once per list build, and only
+// while they hide any undecided row.
+function countHidden(app) {
+    const lv = app.lv;
+    lv.hiddenUnd = new Map();
+    if (lv.show === "undecided" && !filterOf(lv.find)) {
+        return;
+    }
+    const shown = new Set(layoutOf(lv, app.snaps).groups.flatMap((g) => g.rows.map((s) => s.key)));
+    const all = layoutOf({ ...lv, show: "all", find: "" }, app.snaps).groups;
+    for (const g of all) {
+        const n = g.rows.filter((s) => undecided(s) && !shown.has(s.key)).length;
+        if (n > 0) {
+            lv.hiddenUnd.set(g.key, n);
+        }
+    }
+}
+
+// A header's buttons, at their labels: Accept N (with the Shift+A box counted, so the layout never
+// depends on the current row), Undo N and [...]; for Approved before, Reject N..., Exclude N...,
+// Show and [...].
+function headButtonLabels(app, g, compact) {
+    const sc = groupScope(app, g);
+    if (g.key === BEFORE) {
+        const n = fmt(g.rows.length);
+        return [...(compact ? [] : [`Reject ${n}...`, `Exclude ${n}...`]), ...(g.collapsed ? ["Show"] : []), "..."];
+    }
+    return [
+        ...(sc.und.length ? [`${acceptLabel(sc)} Shift+A  `] : []),
+        ...(sc.undoable.length ? [`Undo ${fmt(sc.undoable.length)}`] : []),
+        "...",
+    ];
+}
+
 // How the header fits: one line, or the name over its split, the split folding changed and moved
-// into "+N other" only when its own line is still too narrow. The name is never cut.
+// into "+N other" only when its own line is still too narrow. The name is never cut. Approved
+// before stays one line: in a narrow pane its Reject and Exclude move into its [...] menu.
 function headLayout(app, g, name) {
-    const room = app.lv.listW - 28 - (g.collapsed && g.key === BEFORE ? 60 : 0);
+    const room = app.lv.listW - 28;
+    const btnsW = (compact) =>
+        headButtonLabels(app, g, compact).reduce((w, l) => w + textWidth(l, `11px ${FONT()}`) + 22, 0);
     const split = splitOf(g);
     const font = `700 12px ${FONT()}`;
     const nameW =
@@ -1059,10 +1230,16 @@ function headLayout(app, g, name) {
             (fold && keep.length < split.length ? textWidth("+999 other", font) + 18 : 0)
         );
     };
-    if (nameW + splitW(false) <= room) {
-        return { two: false, fold: false };
+    if (nameW + splitW(false) + btnsW(false) <= room) {
+        return { two: false, fold: false, compact: false };
     }
-    return { two: Boolean(split), fold: Boolean(split) && splitW(false) > room };
+    if (g.key === BEFORE) {
+        return { two: false, fold: false, compact: true };
+    }
+    if (!split) {
+        return { two: true, fold: false, compact: false };
+    }
+    return { two: true, fold: splitW(false) + btnsW(false) > room, compact: false };
 }
 
 const groupName = (g) =>
@@ -1102,17 +1279,7 @@ function headerOf(app, g) {
               g.collapsed ? el("span", { class: "muted aa" }, " (already accepted)") : null,
           ]
         : [countOf(g, lay.fold)];
-    const buttons =
-        before && g.collapsed
-            ? [
-                  control(app, "gshowall", {
-                      zone: "rows",
-                      ctx: { group: g.key },
-                      label: "Show",
-                      attrs: { title: `Show the ${g.rows.length} rows` },
-                  }),
-              ]
-            : [];
+    const buttons = headButtons(app, g, name, lay);
     const height = lay.two ? 50 : 32;
     const node = lay.two
         ? el(
@@ -1132,6 +1299,90 @@ function headerOf(app, g) {
               buttons,
           );
     return { node, height };
+}
+
+// A header's buttons (design 4.5), every one acting on exactly the rows the group shows.
+function headButtons(app, g, name, lay) {
+    const ctx = { group: g.key };
+    const zone = "rows";
+    const sc = groupScope(app, g);
+    const menu = control(app, "gmenu", { zone, ctx, attrs: { title: "More for this group" } });
+    const showRows =
+        g.collapsed && g.key === BEFORE
+            ? control(app, "gshowall", {
+                  zone,
+                  ctx,
+                  label: "Show",
+                  attrs: { title: `Show the ${g.rows.length} rows` },
+              })
+            : null;
+    if (g.key === BEFORE) {
+        return [
+            lay.compact
+                ? null
+                : [
+                      control(app, "greject", {
+                          zone,
+                          ctx,
+                          attrs: { title: "Reject every approved-before snapshot here, with one reason" },
+                      }),
+                      control(app, "gexclude", {
+                          zone,
+                          ctx,
+                          attrs: { title: "Exclude every approved-before snapshot here, with one reason" },
+                      }),
+                  ],
+            showRows,
+            menu,
+        ];
+    }
+    const split = splitOf(g);
+    const label = acceptLabel(sc);
+    // Its key box only while the current snapshot is in this group: Shift+A accepts that group.
+    const mine = g.rows.some((s) => s.key === app.snap);
+    return [
+        sc.und.length > 0
+            ? control(app, "gaccept", {
+                  zone,
+                  ctx,
+                  keyed: mine,
+                  attrs: {
+                      class: "acc",
+                      title: `${label} in ${name}${split ? ` (${splitWords(split)})` : ""}`,
+                  },
+                  children: [ic("accept"), ` ${label}`, mine ? kb("Shift+A") : null],
+              })
+            : null,
+        sc.undoable.length > 0 ? control(app, "gundo", { zone, ctx, attrs: { title: "Asks first" } }) : null,
+        menu,
+    ];
+}
+
+/**
+ * Replaces every drawn group header with one built from the state now (after a decision: Accept N
+ * becomes Undo N, the counts change), without touching a row. Given the rows that changed, or the
+ * groups, only those groups' headers, and those whose hidden count changed, are built again.
+ * @param {any} app the page
+ * @param {Set<string>} [rows] the keys of the rows that changed
+ * @param {Set<string | null>} [groups] the keys of the groups that changed
+ */
+export function updateHeads(app, rows, groups) {
+    const hiddenBefore = app.lv.hiddenUnd ?? new Map();
+    countHidden(app);
+    const stale = (g) =>
+        (!rows && !groups) ||
+        hiddenBefore.get(g.key) !== app.lv.hiddenUnd.get(g.key) ||
+        groups?.has(g.key) ||
+        g.rows.some((s) => rows?.has(s.key));
+    const heads = new Map(
+        [...$("snap-list").querySelectorAll(".grp > .ghead")].map((h) => [h.parentElement.dataset.group, h]),
+    );
+    for (const g of layoutOf(app.lv, app.snaps).groups) {
+        const old = g.headed && heads.get(g.key);
+        if (old && stale(g)) {
+            old.replaceWith(headerOf(app, g).node);
+        }
+    }
 }
 
 // The empty list: no match for Find, or nothing for Show.
@@ -1185,6 +1436,7 @@ export function drawRows(app) {
     const picW = Math.max(120, Math.min(190, width - 246));
     lv.textW = lv.pics.none ? width - 46 : width - 32 - 8 - 6 - picW;
     const lay = layoutOf(lv, app.snaps);
+    countHidden(app);
     lv.rowEls = new Map();
     // A long list draws its rows' contents as they come near the screen: every row is its element
     // from the start (its place, number, state and tooltip), and its pictures and lines are added
@@ -1241,6 +1493,7 @@ export function drawRows(app) {
         out.push(el("section", { class: "grp", "data-group": g.key }, node, rows, more));
     }
     lv.visible = lay.visible;
+    lv.curGroup = lv.rowEls.get(app.snap)?.closest(".grp")?.dataset.group ?? null;
     list.replaceChildren(...(lay.shown === 0 && app.snaps.length > 0 ? [emptyOf(app, lay)] : out));
     performance.measure("snapshot-list", "list-start");
     // The bench reads how long the list took to its first frame.
@@ -1262,6 +1515,29 @@ export function syncCurrent(app) {
     if (r && !r.classList.contains("cur")) {
         r.classList.add("cur");
         r.setAttribute("aria-selected", "true");
+    }
+    // Shift+A belongs to the current snapshot's group: its header is drawn again when that moved.
+    const g = r?.closest(".grp")?.dataset.group ?? null;
+    if (g !== app.lv.curGroup) {
+        const was = app.lv.curGroup;
+        app.lv.curGroup = g;
+        updateHeads(app, undefined, new Set([was, g]));
+    }
+}
+
+/**
+ * Marks rows selected or not, in place: their class and their checkbox.
+ * @param {any} app the page
+ * @param {string[]} keys the rows that may have changed
+ */
+export function markSelected(app, keys) {
+    for (const k of keys) {
+        const r = app.lv.rowEls.get(k);
+        if (r) {
+            const on = app.sel.has(k);
+            r.classList.toggle("selx", on);
+            r.querySelector(":scope > .rcheck")?.setAttribute("aria-checked", on ? "true" : "false");
+        }
     }
 }
 
@@ -1363,10 +1639,25 @@ export function pictureItems(app) {
 }
 
 /**
- * The list menu's items.
+ * The list menu's items: Accept all shown (N)..., Undo all decisions..., Copy link.
+ * @param {any} app the page
  * @returns {any[]} the items
  */
-export const listItems = () => [{ id: "listlink", label: "Copy link" }];
+export const listItems = (app) => [
+    { id: "acceptshown", label: `Accept all shown (${fmt(shownUndecided(app).length)})...` },
+    { id: "undoall", label: "Undo all decisions..." },
+    { id: "listlink", label: "Copy link" },
+];
+
+/**
+ * Every undecided row Show and Find keep, collapsed groups' too, that Accept can take.
+ * @param {any} app the page
+ * @returns {any[]} the rows
+ */
+export const shownUndecided = (app) =>
+    layoutOf(app.lv, app.snaps)
+        .groups.flatMap((g) => g.rows)
+        .filter(undecided);
 
 /**
  * The View options menu of a small change: Show, Group, Pictures and the list menu's items.
@@ -1383,7 +1674,7 @@ export const viewItems = (app) => [
     { head: "Pictures" },
     ...pictureItems(app),
     { sep: true },
-    ...listItems(),
+    ...listItems(app),
 ];
 
 /**

@@ -1764,6 +1764,17 @@ describe("serve: review extras", () => {
             "badge--default.light.png": { decision: "accept", reason: null, bulk: true },
             "card--legacy.png": { decision: "accept", reason: null, bulk: true },
         });
+        // `bulk: false`: accepts given back by an Undo that were opened, stored as opened.
+        const opened = await s.api("POST", "/api/accept-all", {
+            ...body,
+            bulk: false,
+            files: ["button--primary.dark.png"],
+        });
+        expect(opened.body).toMatchObject({ accepted: 1, files: ["button--primary.dark.png"] });
+        expect((await s.api("GET", "/api/pr/123/compact-mantine")).body.decisions["button--primary.dark.png"]).toEqual({
+            decision: "accept",
+            reason: null,
+        });
     });
 
     it("posts one commit status when Finish completes, none per decision", async () => {

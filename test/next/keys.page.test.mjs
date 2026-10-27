@@ -126,11 +126,14 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             it.each(KEYS)("acts on %s only as a visible key box says", async (press, printed) => {
                 const page = await STATES[state]();
                 const before = await visibleKeys(page);
+                // A control shown unavailable (Undo [U] with nothing to undo) keeps its key box,
+                // and its key only says why.
+                const shown = await visibleKeys(page, { unavailable: true });
                 const from = t.actions.length;
                 await page.keyboard.press(press);
                 const acted = await settled(page, from);
                 for (const a of acted) {
-                    expect(before, `${press} ran ${a.a}`).toContainEqual({ act: a.a, key: printed });
+                    expect(shown, `${press} ran ${a.a}`).toContainEqual({ act: a.a, key: printed });
                 }
                 // A key a visible box shows acts (unless a menu or a field holds the keys).
                 const owner = before.find((k) => k.key === printed);

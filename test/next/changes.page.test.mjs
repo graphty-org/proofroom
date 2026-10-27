@@ -298,6 +298,7 @@ describe("the row menu", () => {
         expect(await page.getByRole("menuitem").allInnerTexts()).toEqual([
             "Open on GitHub",
             "About this change",
+            "Update from master...",
             "Copy link",
         ]);
         await page.getByRole("menuitem", { name: "About this change" }).click();
@@ -325,9 +326,17 @@ describe("the row menu", () => {
             .toBe("Link copied: #3484. It carries your session token: it opens this change on any device.");
         const link = await page.evaluate(() => navigator.clipboard.readText());
         expect(link).toBe(`${t.origin}/next/#token=${TOKEN}&change=3484`);
-        // A preview has no page on the code host: its menu leaves Open on GitHub out.
+        // A preview has no page on the code host: its menu leaves Open on GitHub out. Update from
+        // master... stays in place, unavailable, and says why.
         await menuOf("local").click();
-        expect(await page.getByRole("menuitem").allInnerTexts()).toEqual(["About this change", "Copy link"]);
+        expect(await page.getByRole("menuitem").allInnerTexts()).toEqual([
+            "About this change",
+            "Update from master...",
+            "Copy link",
+        ]);
+        const update = page.getByRole("menuitem", { name: "Update from master..." });
+        expect(await update.getAttribute("aria-disabled")).toBe("true");
+        expect(await update.getAttribute("title")).toBe("Only a pull request is updated from master");
     });
 
     it("opens by key, and Esc closes it before anything else", async () => {
