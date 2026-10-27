@@ -281,7 +281,8 @@ export const getRun = async (gh, id) => toRun(await api(gh, `repos/{owner}/{repo
  * @param {{ id: number }} run the run
  * @param {number} attempt the attempt
  * @param {string[]} projects project ids
- * @returns {Promise<Record<string, { status?: string, conclusion: string | null, url: string } | undefined>>} by project
+ * @returns {Promise<Record<string, { status?: string, conclusion: string | null, url: string, startedAt?: string,
+ *     endedAt?: string, uploaded?: boolean } | undefined>>} by project
  */
 export async function visualJobs(gh, run, attempt, projects) {
     // Every page: a run that calls the workflow beside other lanes can have more than 100 jobs.
@@ -302,7 +303,21 @@ export async function visualJobs(gh, run, attempt, projects) {
         projects.map((p) => {
             // The exact name: "visual (graphty-element)" also contains "graphty".
             const job = visual.find((j) => j.name === `visual (${p})` || j.name.endsWith(` / visual (${p})`));
-            return [p, job && { ...(job.status && { status: job.status }), conclusion: job.conclusion, url: job.html_url }];
+            return [
+                p,
+                job && {
+                    ...(job.status && { status: job.status }),
+                    conclusion: job.conclusion,
+                    url: job.html_url,
+                    ...(job.started_at && { startedAt: job.started_at }),
+                    ...(job.completed_at && { endedAt: job.completed_at }),
+                    // Whether it uploaded its capture: a job whose "Capture and compare" step found a
+                    // difference fails, and carries on to the upload.
+                    ...(Array.isArray(job.steps) && {
+                        uploaded: job.steps.some((s) => s.name === "Upload captures" && s.conclusion === "success"),
+                    }),
+                },
+            ];
         }),
     );
 }
@@ -371,9 +386,7 @@ function download(gh, runId, name, dir, again = false) {
             return Promise.resolve();
         } catch (err) {
             // Damaged on this disk (CI uploads only results.json it wrote): download it again.
-            console.error(
-                `proofroom: ${join(dir, "results.json")} is unreadable, downloading again: ${err.message}`,
-            );
+            console.error(`proofroom: ${join(dir, "results.json")} is unreadable, downloading again: ${err.message}`);
         }
     }
     if (!downloading.has(dir)) {
