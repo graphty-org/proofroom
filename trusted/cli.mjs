@@ -370,8 +370,10 @@ async function reference(args) {
         return 2;
     }
     const { root, config } = await settings();
-    const { ghRunner, newestMasterCapture } = await import("./lib/github.mjs");
-    console.log((await newestMasterCapture(ghRunner(root), values.project, resolve(values.out), config)) ?? "");
+    const { ghRunner } = await import("./lib/github.mjs");
+    const { captureStoreFor } = await import("./lib/adapters/index.mjs");
+    const store = captureStoreFor(config, { gh: ghRunner(root) });
+    console.log((await store.newestDefault(values.project, resolve(values.out), config)) ?? "");
     return 0;
 }
 
@@ -553,11 +555,13 @@ async function update(args) {
         return 2;
     }
     const { root, config } = await settings();
-    const { downloadCaptures, ghRunner, newestCiRun } = await import("./lib/github.mjs");
+    const { ghRunner } = await import("./lib/github.mjs");
+    const { captureStoreFor, codeHostFor } = await import("./lib/adapters/index.mjs");
     const { AcceptError, updateFromMaster, updateReportLines } = await import("./lib/accept.mjs");
     const { validateResults } = await import("./lib/results.mjs");
     const gh = ghRunner(root);
-    const about = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls/${pr}`]));
+    const store = captureStoreFor(config, { gh });
+    const about = await codeHostFor(config, { gh }).change(pr);
     if (about.state !== "open") {
         console.error(`proofroom update: #${pr} is ${about.state}, not open`);
         return 1;
@@ -573,8 +577,8 @@ async function update(args) {
             // `serve` keeps captures, so one the server already has is not downloaded again.
             captures: async (projects) => {
                 try {
-                    const run = await newestCiRun(gh, about.head.sha, config);
-                    const got = run ? await downloadCaptures(gh, run, projects, join(root, config.workDir)) : {};
+                    const run = await store.newestRun(about.head.sha, config);
+                    const got = run ? await store.fetch(run, projects, join(root, config.workDir)) : {};
                     const read = async (dir) => {
                         const r = JSON.parse(await readFile(join(dir, "results.json"), "utf8"));
                         return validateResults(r).length === 0 ? r : null;
