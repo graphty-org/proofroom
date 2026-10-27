@@ -6,7 +6,9 @@
  *
  * Each handler takes the page (`app`, app.js) and the control's context (`ctx`: the change or
  * snapshot it stands for). `available` answers true, or the reason it is not, which becomes the
- * control's tooltip and, when pressed, the message line.
+ * control's tooltip and, when pressed, the message line. An action that `writes` to the server is
+ * unavailable while the server is unreachable, and pressed then, says it was not saved: nothing is
+ * queued for later (design 10).
  */
 
 import { el, kb } from "./ui.js";
@@ -33,16 +35,37 @@ export const ZONES = [
 
 const NO_CHANGES = "No changes yet";
 
+/** Why a control that writes is unavailable while the server is unreachable. */
+export const OFFLINE_WHY = "Offline: decisions cannot be saved";
+
 /**
  * The actions, by id.
  * @type {Record<string, { label: string | ((app: any, ctx: any) => string), key?: string,
- *     title?: string | ((app: any, ctx: any) => string),
+ *     title?: string | ((app: any, ctx: any) => string), writes?: boolean,
  *     run: (app: any, ctx: any) => void, available?: (app: any, ctx: any) => true | string }>}
  */
 export const ACTIONS = {
     // The top bar.
     "screen-review": { label: "Review", run: (app) => app.showReview() },
     refresh: { label: (app) => app.statusText(), title: "Refresh now", run: (app) => app.refresh() },
+    keys: { label: "Keys", key: "?", title: "Every key, and the last 20 messages", run: (app) => app.keysSheet() },
+    settings: { label: "Settings", run: (app) => app.settingsSheet() },
+
+    // Settings and the Keys sheet (settings.js, keys-sheet.js).
+    letterkeys: { label: "Letter keys", run: (app, ctx) => app.setLetters(ctx.el.checked) },
+    hlcolor: { label: (app, ctx) => ctx.color, run: (app, ctx) => app.setHighlight(ctx.color) },
+    theme: { label: (app, ctx) => ctx.theme, run: (app, ctx) => app.setTheme(ctx.theme) },
+    register: {
+        label: "Register passkey...",
+        writes: true,
+        run: (app, ctx) => app.startRegistration(ctx.row),
+    },
+    createpasskey: {
+        label: "Create the passkey",
+        writes: true,
+        run: (app, ctx) => app.createPasskey(ctx),
+    },
+    cancelpasskey: { label: "Cancel", run: (app, ctx) => app.cancelPasskey(ctx) },
 
     // Panes.
     pane1: {
@@ -143,6 +166,7 @@ export const ACTIONS = {
     rowundo: {
         label: "Undo",
         title: "Undo this decision",
+        writes: true,
         run: (app, ctx) => app.undoRow(ctx.key),
         available: (app) => (app.open()?.lookOnly ? "A look-only capture is viewed, never decided" : true),
     },
@@ -272,6 +296,9 @@ export const ACTIONS = {
  * @returns {true | string} true, or the reason
  */
 export function availability(app, id, ctx = {}) {
+    if (ACTIONS[id].writes && app.offline()) {
+        return OFFLINE_WHY;
+    }
     return ACTIONS[id].available?.(app, ctx) ?? true;
 }
 
@@ -298,6 +325,10 @@ export function labelOf(app, id, ctx = {}) {
 export function runAction(app, id, ctx, via) {
     app.logUsage("action", { a: id, via });
     const ok = availability(app, id, ctx);
+    if (ok === OFFLINE_WHY) {
+        app.notSaved();
+        return;
+    }
     if (ok !== true) {
         app.say(`${labelOf(app, id, ctx)}: ${ok}${String(ok).endsWith(".") ? "" : "."}`);
         return;

@@ -14,6 +14,7 @@
 import { ZONES, contextOf, runAction } from "./actions.js";
 
 const LETTERS_KEY = "proofroom:letter-keys";
+let chosen = null; // the reader's choice in this visit, kept even where storage is not
 const NONLETTER = new Set(["Enter", "Esc", "Up", "Down", "Left", "Right", "Tab", "Space"]);
 
 /**
@@ -21,10 +22,26 @@ const NONLETTER = new Set(["Enter", "Esc", "Up", "Down", "Left", "Right", "Tab",
  * @returns {boolean} on
  */
 export function letterKeysOn() {
+    if (chosen !== null) {
+        return chosen;
+    }
     try {
         return localStorage.getItem(LETTERS_KEY) !== "off";
     } catch {
         return true;
+    }
+}
+
+/**
+ * Switches letter, digit and symbol keys on or off, in this browser.
+ * @param {boolean} on on
+ */
+export function setLetterKeys(on) {
+    chosen = on;
+    try {
+        localStorage.setItem(LETTERS_KEY, on ? "on" : "off");
+    } catch {
+        // Kept for this visit only.
     }
 }
 

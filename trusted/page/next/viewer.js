@@ -15,6 +15,7 @@ import { badgesOf, decisionWords, layoutOf, sizeText } from "./list.js";
 import { makeLocator, moveToPressed } from "./locator.js";
 import { STATUS, statusMark } from "./marks.js";
 import { applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow, twoLevels } from "./panes.js";
+import { HIGHLIGHTS, highlight } from "./settings.js";
 import { el, fmt, ic, kb } from "./ui.js";
 
 const KEPT_KEY = "proofroom:viewer";
@@ -158,6 +159,7 @@ export function createViewer(app) {
                 blink: vs.blink,
                 spotFlash: Boolean(s) && shownView(s) === "spotlight" && (vs.spotFlash || vs.space),
                 motion: !reducedMotion(),
+                color: HIGHLIGHTS[highlight()],
             };
         },
         load: (url, what) =>
@@ -248,6 +250,7 @@ export function createViewer(app) {
             vs.space,
             twoFrames(s),
             stacked,
+            highlight(),
         ]);
         if (key === shownKey) {
             return;

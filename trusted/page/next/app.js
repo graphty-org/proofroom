@@ -5,13 +5,25 @@
  * (actions.js); every text that came from a pull request is set as text.
  *
  * Opening a change shows its snapshot list (list.js) and the current snapshot in the viewer
- * (viewer.js); the decisions arrive with their own module.
+ * (viewer.js); the decisions arrive with their own module. Around them: Settings (settings.js),
+ * the Keys sheet (keys-sheet.js), the messages, the offline state and the tab title.
  */
 
 import { ACTIONS, control, runAction } from "./actions.js";
 import { formatAddress, parseAddress, snapParts } from "./address.js";
-import { api, currentToken, logControls, logUsage, startUsage, useToken, whenRefused } from "./api.js";
+import {
+    api,
+    currentToken,
+    logControls,
+    logUsage,
+    offlineSince,
+    startUsage,
+    useToken,
+    whenConnection,
+    whenRefused,
+} from "./api.js";
 import { SORTS, changeOf, drawChanges, nextNeeding, sectionsOf, SECTIONS, sharesOf, walkOrder } from "./changes.js";
+import { keysSheet } from "./keys-sheet.js";
 import { startKeys, syncHints } from "./keys.js";
 import {
     clearFind,
@@ -44,6 +56,16 @@ import {
 import { ORDER, STATUS, mark } from "./marks.js";
 import { history as messageHistory, say, sayAgain } from "./messages.js";
 import { applyPanes, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
+import {
+    applyTheme,
+    cancelPasskey,
+    createPasskey,
+    setHighlight,
+    setLetters,
+    setTheme,
+    settingsSheet,
+    startRegistration,
+} from "./settings.js";
 import { el, fmt, ic, kb } from "./ui.js";
 import { createViewer } from "./viewer.js";
 
@@ -52,6 +74,14 @@ const POLL_MS = 15000;
 const DISMISSED_KEY = "proofroom:dismissed";
 
 const REVIEWABLE = ORDER;
+
+applyTheme();
+
+// A time of day as the reader's clock shows it: "14:02".
+const clock = (ms) => {
+    const at = new Date(ms);
+    return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+};
 
 // The finished rows dismissed in this browser; null on the first visit, when there are none yet.
 const loadDismissed = () => {
@@ -96,6 +126,7 @@ const app = {
     logUsage,
     say,
     sayAgain,
+    offline: () => offlineSince() !== null,
     change: (id) => app.changes.find((c) => c.id === id) ?? null,
     open: () => app.change(app.openId),
     currentChangeId: () => app.pendingId ?? (app.level === 0 ? (app.curId ?? app.openId) : app.openId),
@@ -111,22 +142,34 @@ const app = {
 function drawTop() {
     $("repo").textContent = app.list?.repository ?? "";
     $("tabs").replaceChildren(control(app, "screen-review", { zone: "top", attrs: { "aria-current": "page" } }));
-    const trouble = app.failed !== null || Boolean(app.list?.error);
+    const trouble = app.failed !== null || Boolean(app.list?.error) || app.offline();
     $("status-slot").replaceChildren(
         control(app, "refresh", {
             zone: "top",
-            attrs: { class: `status ${trouble ? "trouble" : ""}`, id: "srvstatus" },
+            attrs: {
+                class: `status ${trouble ? "trouble" : ""}`,
+                id: "srvstatus",
+                ...(app.offline() && { title: `${offlineText()} Click to retry.` }),
+            },
             children: [
                 app.refreshing ? ic("spin") : trouble ? ic("offline") : null,
                 el("span", { class: "ell" }, app.statusText()),
             ],
         }),
     );
+    $("frame-slot").replaceChildren(control(app, "keys", { zone: "top" }), control(app, "settings", { zone: "top" }));
 }
+
+// The offline sentence: the status's tooltip and the message line's (design 10).
+const offlineText = () =>
+    `Offline: the server is unreachable.${app.listAt ? ` Showing what was loaded at ${clock(app.listAt)}.` : ""} Decisions cannot be saved.`;
 
 app.statusText = () => {
     if (app.refreshing) {
         return "Refreshing...";
+    }
+    if (app.offline()) {
+        return `Offline since ${clock(offlineSince())}`;
     }
     if (app.failed !== null) {
         return "Server not answering";
@@ -1007,12 +1050,37 @@ app.messagesBox = () => {
             : el(
                   "ul",
                   { class: "small" },
-                  kept.map((m) => el("li", {}, `${m.at} ${m.text}`)),
+                  kept.map((m) => el("li", { class: m.kind === "err" ? "c-failed" : null }, `${m.at} ${m.text}`)),
               ),
     );
 };
 
 app.draw = draw;
+app.openBox = openBox;
+app.keysSheet = () => keysSheet(app);
+app.settingsSheet = () => settingsSheet(app);
+app.setLetters = (on) => setLetters(app, on);
+app.setHighlight = (c) => setHighlight(app, c);
+app.setTheme = (t) => setTheme(app, t);
+app.startRegistration = (row) => startRegistration(app, row);
+app.createPasskey = (ctx) => createPasskey(app, ctx);
+app.cancelPasskey = (ctx) => cancelPasskey(app, ctx);
+
+// A press of a control that writes, while the server is unreachable: nothing sent, nothing queued.
+app.notSaved = () => {
+    say("Not saved: the server is unreachable. Nothing was queued.", "err", [
+        control(app, "retry", { zone: "msgline", ctx: { run: () => app.refresh() } }),
+    ]);
+};
+
+// The server stopped answering, or answers again: every control that writes follows.
+whenConnection(() => {
+    if (!app.offline()) {
+        app.failed = null;
+        say("Back online: decisions are saved again.");
+    }
+    draw();
+});
 
 app.showReview = () => {
     draw();
@@ -1090,16 +1158,26 @@ function rebuild() {
     }
 }
 
-async function loadList(query = "?cached=1") {
+// The list, asked again. A failure says so once: while the server stays unreachable a poll says
+// nothing more, and a Retry or Refresh the reader pressed says it is still unreachable.
+async function loadList(query = "?cached=1", asked = false) {
+    const wasOffline = app.offline();
     try {
         app.list = await api(`/api/prs${query}`);
         app.listAt = Date.now();
         app.failed = null;
     } catch (err) {
         app.failed = err.message;
-        say(`The review server did not answer: ${err.message}`, "err", [
+        const retry = [
             control(app, "retry", { zone: "msgline", ctx: { run: () => (arrived ? app.refresh() : firstLoad()) } }),
-        ]);
+        ];
+        if (!arrived || !app.offline()) {
+            say(`The review server did not answer: ${err.message}`, "err", retry);
+        } else if (!wasOffline) {
+            say(offlineText(), "err", retry);
+        } else if (asked) {
+            say("Still unreachable.", "err", retry);
+        }
         return false;
     }
     if (app.list.targets === null) {
@@ -1114,7 +1192,7 @@ app.refresh = async () => {
     drawTop();
     settle();
     // A failed load leaves the old answer, still refreshing: stop there, the failure said once.
-    await loadList("?refresh=1");
+    await loadList("?refresh=1", true);
     while (app.failed === null && app.list?.refreshing) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         await loadList();

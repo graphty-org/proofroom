@@ -1,7 +1,8 @@
 /*
  * The server, as the new page talks to it: the session token (from the address or kept in this
  * browser, shared with today's page), the session cookie the server sets for it, JSON requests,
- * and the usage events the server's owner may have turned on.
+ * whether the server is reachable at all, and the usage events the server's owner may have turned
+ * on.
  */
 
 const TOKEN_KEY = "visual-review:token";
@@ -67,17 +68,63 @@ export const whenRefused = (fn) => {
     onRefused = fn;
 };
 
+// Offline: since when no request reached the server (null while one does). Any answer, an error
+// included, means it is reachable again; only a request that never got one means it is not.
+let offlineAt = null;
+let onConnection = () => {};
+
+/**
+ * Since when the server has been unreachable, or null while it answers.
+ * @returns {number | null} the time it was first found unreachable
+ */
+export const offlineSince = () => offlineAt;
+
+/**
+ * What the page does when the server stops answering or answers again.
+ * @param {() => void} fn the handler
+ */
+export const whenConnection = (fn) => {
+    onConnection = fn;
+};
+
+// A request, noting whether it reached the server; one that did not fails as an ApiError.
+async function reach(request) {
+    const was = offlineAt;
+    try {
+        const res = await request;
+        offlineAt = null;
+        if (was !== null) {
+            onConnection();
+        }
+        return res;
+    } catch {
+        offlineAt ??= Date.now();
+        if (was === null) {
+            onConnection();
+        }
+        throw new ApiError("the server is unreachable", 0);
+    }
+}
+
 // The session: the token posted once for an HttpOnly cookie every request then carries.
 let signing = null;
 function signIn() {
     if (signing?.token !== token) {
         const sent = token;
-        const done = fetch("/api/session", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ token: sent }),
-        }).then((res) => res.status !== 401 && res.ok);
+        const done = reach(
+            fetch("/api/session", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ token: sent }),
+            }),
+        ).then((res) => res.status !== 401 && res.ok);
         signing = { token: sent, done };
+        // Not signed in because the server was not reached: the next request tries again.
+        done.catch(() => {
+            if (signing?.done === done) {
+                signing = null;
+            }
+        });
     }
     return signing.done;
 }
@@ -108,11 +155,13 @@ export async function api(path, body) {
         await signIn().catch(() => false);
     }
     const send = () =>
-        fetch(path, {
-            method: body ? "POST" : "GET",
-            headers: body ? { "content-type": "application/json" } : {},
-            body: body ? JSON.stringify(body) : undefined,
-        });
+        reach(
+            fetch(path, {
+                method: body ? "POST" : "GET",
+                headers: body ? { "content-type": "application/json" } : {},
+                body: body ? JSON.stringify(body) : undefined,
+            }),
+        );
     let res = await send();
     // No cookie yet, or one of a server since restarted: signed in again, the request sent again.
     if (res.status === 401 && sent && sent === token) {

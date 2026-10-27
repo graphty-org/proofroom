@@ -1171,6 +1171,8 @@ export function drawRows(app) {
         filterOf(lv.find) ? lv.find.trim().toLowerCase() : "",
         [...lv.collapsed].sort(),
         width,
+        // Offline, a row's Undo is unavailable: the rows are built again when it goes or comes back.
+        app.offline(),
     ]);
     if (sig === lv.built) {
         syncCurrent(app);

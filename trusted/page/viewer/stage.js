@@ -155,7 +155,7 @@ export async function diffImages(a, b, { threshold, includeAA }) {
 /**
  * A stage, drawn from what `host` gives it.
  * @param {object} host what the stage reads of the page
- * @param {() => { zoom: "fit" | number, scale: number, focus: boolean, showBox: boolean, baselinePane: boolean, blink: boolean, spotFlash: boolean, motion: boolean }} host.settings
+ * @param {() => { zoom: "fit" | number, scale: number, focus: boolean, showBox: boolean, baselinePane: boolean, blink: boolean, spotFlash: boolean, motion: boolean, color?: number[] }} host.settings
  *   the reader's view settings now
  * @param {(url: string, what: string) => Promise<HTMLImageElement>} host.load loads an image
  * @param {(hash: string) => string} host.imageUrl an image's address, by its hash
@@ -811,15 +811,19 @@ export function createStage(host) {
         }
     }
 
-    // The changed pixels alone, in solid red, transparent everywhere else: laid over an image in
-    // the same grid cell, so it lines up with the image at every zoom.
+    // The changed pixels alone, in solid red (or the page's Highlight color), transparent
+    // everywhere else: laid over an image in the same grid cell, so it lines up with the image at
+    // every zoom.
     function overlay(diff) {
         const canvas = el("canvas", { width: String(diff.w), height: String(diff.h), class: "diffmark" });
         const ctx = canvas.getContext("2d");
         const out = ctx.createImageData(diff.w, diff.h);
+        const [r, g, b] = opt().color ?? [255, 0, 0];
         for (let i = 0; i < diff.w * diff.h; i++) {
             if (diff.mask[i * 4 + 3] !== 0) {
-                out.data[i * 4] = 255;
+                out.data[i * 4] = r;
+                out.data[i * 4 + 1] = g;
+                out.data[i * 4 + 2] = b;
                 out.data[i * 4 + 3] = 255;
             }
         }
