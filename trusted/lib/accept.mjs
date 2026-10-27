@@ -652,7 +652,16 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  *     branch's config, docs/approval-format.md) no record but the change `statement` to sign,
  *     which pushApproval adds to the commit
  */
-export async function prepareApproval({ repo, target, projects, decisions, now, config, retryDelays, repository = null }) {
+export async function prepareApproval({
+    repo,
+    target,
+    projects,
+    decisions,
+    now,
+    config,
+    retryDelays,
+    repository = null,
+}) {
     const { accepts, rejects } = check(projects, decisions, target.pr);
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first || accepts.length === 0) {
@@ -679,7 +688,9 @@ export async function prepareApproval({ repo, target, projects, decisions, now, 
     });
     if (built.statement !== undefined) {
         if (built.alreadyFinished || built.statement === null) {
-            throw new AcceptError("an earlier Finish of this change already holds these decisions: nothing is left to sign");
+            throw new AcceptError(
+                "an earlier Finish of this change already holds these decisions: nothing is left to sign",
+            );
         }
         return {
             commit: built.commit,
@@ -996,7 +1007,10 @@ async function pushSignedChange(input) {
             `Approval: ${path}`,
         );
         await git(tree, ["commit", "-q", "--no-verify", "--amend", "-F", "-"], `${message}\n`);
-        const pushed = await pushChange({ repo, progress, net, config }, { tree, writes: [], branch, statement, fetch });
+        const pushed = await pushChange(
+            { repo, progress, net, config },
+            { tree, writes: [], branch, statement, fetch },
+        );
         return { commit: pushed, branch, record: null };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
@@ -1304,7 +1318,10 @@ const rejectEntries = (rejects) =>
  */
 function chainEnds(chain) {
     const named = new Set(chain.flatMap((st) => (st.previous === null ? [] : [st.previous].flat())));
-    const ends = chain.map((st) => st.id).filter((id) => !named.has(id)).sort();
+    const ends = chain
+        .map((st) => st.id)
+        .filter((id) => !named.has(id))
+        .sort();
     return ends.length === 0 ? null : ends.length === 1 ? ends[0] : ends;
 }
 
@@ -1379,7 +1396,9 @@ async function changeParent(repo, config, at) {
         const finishOnly = (await onlyFinishCommits(repo, base, tip, config)) && !since.some((f) => differ.includes(f));
         const why = finishOnly ? null : await masterMergeProblem(repo, base, tip, ownRef(config.defaultBranch), differ);
         if (why) {
-            throw new AcceptError(`capture is stale, wait for CI: the branch has moved past the captured head (${why})`);
+            throw new AcceptError(
+                `capture is stale, wait for CI: the branch has moved past the captured head (${why})`,
+            );
         }
     }
     // Once the default branch holds a key, a statement it does not verify (one committed unsigned
@@ -1446,7 +1465,9 @@ async function pushChange(input, { tree, writes, branch, statement, fetch }) {
         const clash = mine.find((f) => theirs.has(f));
         if (clash !== undefined || !(await gitOk(repo, ["merge-base", "--is-ancestor", statement.capturedHead, tip]))) {
             const why = clash === undefined ? "the branch no longer holds the captured head" : `it changed ${clash}`;
-            throw new AcceptError(`capture is stale, wait for CI: the branch moved while Finish ran (${why}); nothing was pushed`);
+            throw new AcceptError(
+                `capture is stale, wait for CI: the branch moved while Finish ran (${why}); nothing was pushed`,
+            );
         }
         // The same files on the new tip: it copies nobody's commit, so nothing is rebased.
         await git(tree, ["checkout", "-q", "--detach", tip]);
@@ -1884,8 +1905,9 @@ export async function newerOnMaster(
  *
  * The rule for a conflicting path under the baselines directory: a pointer both sides changed, a
  * pointer one side deleted and a settings file take the default branch's side (kept or deleted);
- * a project's `renames.json` is merged as a list of pairs, the default branch's pair winning when
- * both name the same old id.
+ * a project's `renames.json` is merged as a list of pairs against the version both started from,
+ * the default branch's pair winning when both name the same old id, a pair it removed staying
+ * removed, and its deletion of the file winning.
  *
  * It accepts nothing and writes no review record: a baseline that ends up as on the default
  * branch is no change for the gate, which diffs the pull request against its base.
@@ -1947,8 +1969,11 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
             }
             const show = (rev, path) => work(["show", `${rev}:${path}`]).catch(() => null);
             const merged = [];
+            const base = await git(repo, ["merge-base", head, master]);
             for (const path of conflicts) {
-                const both = isRenamesFile(path, baselines) && mergeRenames(await show(head, path), await show(master, path));
+                const both =
+                    isRenamesFile(path, baselines) &&
+                    mergeRenames(await show(base, path), await show(head, path), await show(master, path));
                 if (both) {
                     await writeFile(join(tree, path), both);
                     await work(["add", "--", path]);
@@ -2020,15 +2045,21 @@ export async function updateFromMaster({ repo, pr, branch, config, progress = ()
 const isRenamesFile = (path, baselines) => /^[^/]+\/renames\.json$/.test(path.slice(baselines.length + 1));
 
 /**
- * Two sides' renames files merged as lists of `{ from, to }` pairs: every pair of the default
- * branch's, then the change's pairs whose old id the default branch does not rename. A side
- * without the file counts as an empty list.
+ * Two sides' renames files merged against the version both started from, as lists of
+ * `{ from, to }` pairs: every pair of the default branch's, then the pairs the change added or
+ * changed whose old id the default branch does not rename. A pair the default branch removed stays
+ * removed. A side without the file counts as an empty list, except the default branch's: when it
+ * deleted the file, its side (the deletion) is taken.
+ * @param {string | null} common the file both sides started from
  * @param {string | null} mine the change's file
  * @param {string | null} theirs the default branch's file
- * @returns {string | null} the merged file, or null when a side is not a list (the default
- *     branch's side is then taken whole)
+ * @returns {string | null} the merged file, or null when the default branch has no file or a side
+ *     is not a list (the default branch's side is then taken whole)
  */
-function mergeRenames(mine, theirs) {
+function mergeRenames(common, mine, theirs) {
+    if (theirs === null) {
+        return null;
+    }
     const list = (text) => {
         try {
             const v = text === null ? [] : JSON.parse(text);
@@ -2037,12 +2068,14 @@ function mergeRenames(mine, theirs) {
             return null;
         }
     };
-    const [a, b] = [list(mine), list(theirs)];
-    if (a === null || b === null) {
+    const [o, a, b] = [list(common), list(mine), list(theirs)];
+    if (o === null || a === null || b === null) {
         return null;
     }
+    const before = new Set(o.map((r) => JSON.stringify(r)));
     const taken = new Set(b.map((r) => r?.from));
-    return `${JSON.stringify([...b, ...a.filter((r) => !taken.has(r?.from))], null, 4)}\n`;
+    const added = a.filter((r) => !before.has(JSON.stringify(r)) && !taken.has(r?.from));
+    return `${JSON.stringify([...b, ...added], null, 4)}\n`;
 }
 
 /**
@@ -2210,7 +2243,14 @@ async function planWrites(repo, base, writes, baselines) {
     const files = [];
     // A change statement's entry for the same decision: its path inside the baselines directory.
     const entry = (path, from, to, decision, reason, more = {}) =>
-        entries.push({ path: path.slice(baselines.length + 1), from, to, decision, ...(reason !== null && { reason }), ...more });
+        entries.push({
+            path: path.slice(baselines.length + 1),
+            from,
+            to,
+            decision,
+            ...(reason !== null && { reason }),
+            ...more,
+        });
     const counts = { accept: 0, exclude: 0, remove: 0 };
     // A settings file written earlier in this Finish (two modes of one story) is read as written.
     const written = new Map();

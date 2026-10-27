@@ -308,6 +308,41 @@ describe("update's per-path rule and its report", () => {
         ]);
     });
 
+    it("keeps a renames.json pair the default branch removed removed, and its deletion of the file", async () => {
+        const list = (pairs) => `${JSON.stringify(pairs.map(([from, to]) => ({ from, to })))}\n`;
+        const r = diverged(
+            { "renames.json": list([["kept", "kept-new"]]) },
+            {
+                "renames.json": list([
+                    ["kept", "kept-new"],
+                    ["x", "x-new"],
+                ]),
+            },
+            { "renames.json": list([["other", "other-new"]]) },
+        );
+        const out = await update(r);
+        expect(out.merged).toEqual([`${DIR}/renames.json`]);
+        expect(JSON.parse(at(r, "renames.json"))).toEqual([
+            { from: "other", to: "other-new" },
+            { from: "x", to: "x-new" },
+        ]);
+
+        const d = diverged(
+            { "renames.json": list([["kept", "kept-new"]]) },
+            {
+                "renames.json": list([
+                    ["kept", "kept-new"],
+                    ["x", "x-new"],
+                ]),
+            },
+            { "renames.json": null },
+        );
+        const gone = await update(d);
+        expect(gone.taken).toEqual([`${DIR}/renames.json`]);
+        expect(gone.merged).toEqual([]);
+        expect(at(d, "renames.json")).toBeNull();
+    });
+
     it("counts the conflicting snapshots the last capture already draws as the default branch has them", async () => {
         const names = ["a.png", "b.png", "c.png", "d.png", "e.png"];
         const r = diverged(
