@@ -4472,6 +4472,15 @@ function passkeySentence(f, prepared) {
                 `unsigned, so they count as approved before. The baselines are not signed: ${blocked}`,
         );
     }
+    // A change statement signs this Finish's decisions alone, whatever is left undecided.
+    if (prepared.required && prepared.signs === "change") {
+        const n = prepared.accepts + prepared.excludes + prepared.rejects;
+        return el(
+            "p",
+            { class: "passkey" },
+            `Your passkey signs this Finish's ${n} ${n === 1 ? "decision" : "decisions"}, in one prompt (Face ID or a security key).`,
+        );
+    }
     if (prepared.required && prepared.tree) {
         return el(
             "p",

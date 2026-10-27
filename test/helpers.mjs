@@ -162,7 +162,9 @@ export function buildRepo() {
     git(repo, "lfs", "install", "--local", "--skip-repo");
     put(join(repo, ".gitattributes"), `${LFS_ATTRIBUTES}\n`);
     put(join(repo, "README.md"), "test\n");
-    put(join(repo, CONFIG_FILE), CONFIG_TEXT);
+    // Tree statements, as graphty-monorepo writes them: the suites written before change
+    // statements run as they did (finish-change.test.mjs covers the other format).
+    put(join(repo, CONFIG_FILE), `${JSON.stringify({ ...JSON.parse(CONFIG_TEXT), approvalFormat: "tree" }, null, 4)}\n`);
     for (const file of ["button--primary.dark.png", "card--legacy.png", "tooltip--hover.png"]) {
         cpSync(join(FIXTURE, "compact-mantine/baselines", file), join(repo, "visual-baselines/compact-mantine", file));
     }

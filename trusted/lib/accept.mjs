@@ -36,6 +36,13 @@
  *
  * Without a passkey (none registered) the same statement is committed unsigned. `proposeKey` opens
  * the pull request that registers a passkey.
+ *
+ * That is tree mode. In change mode (the default branch's config, config.mjs approvalFormatAt;
+ * docs/approval-format.md) a Finish writes no review record and no tree statement: the accept
+ * commit X holds the baselines and one change statement of this Finish's decisions, which the
+ * owner signs once whatever is left undecided (prepareApproval returns it, pushApproval writes it
+ * into X once signed, at the place its id gives). A push the branch refused because it moved is
+ * made again on the new tip when nothing it writes changed there (pushChange).
  */
 
 import { execFile, spawn } from "node:child_process";
@@ -44,7 +51,15 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { PASSKEYS_FILE, parsePasskeys, verifyApproval } from "./approval.mjs";
-import { statementPath, statementProblem } from "./change-approval.mjs";
+import {
+    changeFolder,
+    contentHash,
+    newestDecisions,
+    statementId,
+    statementPath,
+    statementProblem,
+} from "./change-approval.mjs";
+import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
 import {
     commentOnPullRequest,
     createIssue,
@@ -72,6 +87,7 @@ const EXCLUDABLE = new Set([...DECIDABLE, "unstable", "failed"]);
 export class AcceptError extends Error {
     committed = null;
     pullRequestMissing = false;
+    raced = false;
 }
 
 /**
@@ -140,11 +156,13 @@ export async function lfsProblem(repo) {
  * The generated commit message.
  * @param {{ pr: number | null, counts: { accept: number, exclude: number, remove: number },
  *     runId: number | null, runAttempt: number | null, record: string, prefix: string,
- *     local?: object[] }} input what the commit holds, the conventional-commit type and scope it
- *     starts with (`commitPrefix`), and the projects captured by a local preview
+ *     local?: object[], label?: string }} input what the commit holds, the conventional-commit type
+ *     and scope it starts with (`commitPrefix`), the projects captured by a local preview, and what
+ *     its last line names: the review record ("Record", the default) or a change statement
+ *     ("Approval")
  * @returns {string} a conventional commit message
  */
-export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, local = [] }) {
+export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, local = [], label = "Record" }) {
     const subject = pr === null ? `${prefix}: seed visual baselines` : `${prefix}: accept visual baselines for #${pr}`;
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     return [
@@ -158,7 +176,7 @@ export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, l
                   "CI checks it; anything CI draws differently comes back to review.",
               ]
             : [`Captured by CI run ${runId}, attempt ${runAttempt}.`]),
-        `Record: ${record}`,
+        `${label}: ${record}`,
         "",
     ].join("\n");
 }
@@ -277,6 +295,8 @@ function check(projects, decisions, pr) {
  *     `approval` when the Finish signs the tree, the keys registered but not yet on the default
  *     branch, and the page's origin; `resign`: the commit only signs the record of an earlier
  *     Finish, so nothing is posted again
+ * @param {string | null} [input.repository] this repository's id (`github:<id>`) for a change
+ *     statement; null takes the default branch config's `repositoryId`
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
  *     issue: string | null, rejects: number, acceptNotes: number, state: string | null,
  *     status: string | null, statusError: string | null, commentError: string | null,
@@ -301,6 +321,7 @@ export async function finish({
     config,
     sign = false,
     approval = null,
+    repository = null,
 }) {
     const { progress, net } = stepRunner(tell, retryDelays);
     progress("checking");
@@ -325,6 +346,7 @@ export async function finish({
         net,
         config,
         sign,
+        repository,
     });
     if (made.done) {
         return made.done;
@@ -357,7 +379,20 @@ export async function finish({
 // Pushes what a Finish decided: the accept commit the owner signed, or the accepts committed here.
 // `pushed` is null when there was nothing to push; `done` is the whole Finish result when an
 // earlier Finish already posted everything, so nothing is posted again.
-async function pushDecisions({ repo, target, approval, accepts, rejects, first, now, progress, net, config, sign }) {
+async function pushDecisions({
+    repo,
+    target,
+    approval,
+    accepts,
+    rejects,
+    first,
+    now,
+    progress,
+    net,
+    config,
+    sign,
+    repository,
+}) {
     if (approval) {
         const pushed = await pushApproval({ repo, target, approval, progress, net, config });
         // Only the earlier Finish's record was signed: its comment and status stand as posted.
@@ -380,6 +415,7 @@ async function pushDecisions({ repo, target, approval, accepts, rejects, first, 
         net,
         config,
         statement: sign,
+        repository,
     });
     // The earlier Finish posted the comment and the status too: nothing is posted again.
     return {
@@ -608,12 +644,15 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  *     statement's `approvedAt`
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
  * @param {number[]} [input.retryDelays] as in finish
- * @returns {Promise<{ commit: string, branch: string, record: string, recordBody: object,
- *     pushed: boolean, accepts: number, excludes: number, rejects: number }>} the accept commit and
- *     branch it goes to, the record's path and the record to sign, whether the commit is pushed
- *     already, and what the Finish holds
+ * @param {string | null} [input.repository] as in finish
+ * @returns {Promise<{ commit: string, branch: string, record: string | null, recordBody: object | null,
+ *     statement?: object, pushed: boolean, accepts: number, excludes: number, rejects: number }>}
+ *     the accept commit and branch it goes to, the record's path and the record to sign, whether
+ *     the commit is pushed already, and what the Finish holds; in change mode (the default
+ *     branch's config, docs/approval-format.md) no record but the change `statement` to sign,
+ *     which pushApproval adds to the commit
  */
-export async function prepareApproval({ repo, target, projects, decisions, now, config, retryDelays }) {
+export async function prepareApproval({ repo, target, projects, decisions, now, config, retryDelays, repository = null }) {
     const { accepts, rejects } = check(projects, decisions, target.pr);
     const first = (accepts[0] ?? rejects[0])?.capture.results;
     if (!first || accepts.length === 0) {
@@ -636,7 +675,24 @@ export async function prepareApproval({ repo, target, projects, decisions, now, 
         config,
         push: false,
         recordVersion: 2,
+        repository,
     });
+    if (built.statement !== undefined) {
+        if (built.alreadyFinished || built.statement === null) {
+            throw new AcceptError("an earlier Finish of this change already holds these decisions: nothing is left to sign");
+        }
+        return {
+            commit: built.commit,
+            branch: built.branch,
+            record: null,
+            recordBody: null,
+            statement: built.statement,
+            pushed: false,
+            accepts: accepts.filter((a) => a.decision === "accept").length,
+            excludes: accepts.filter((a) => a.decision !== "accept").length,
+            rejects: rejects.length,
+        };
+    }
     const message = await git(repo, ["log", "-1", "--format=%B", built.commit]);
     const record = built.record ?? /^Record: (.+)$/m.exec(message)?.[1];
     const recordBody = record
@@ -874,6 +930,9 @@ export async function unsignedRecordAt(repo, tip, pr, config) {
  */
 async function pushApproval({ repo, target, approval, progress, net, config }) {
     const { statement, commit, branch } = approval;
+    if (statement?.version === 2) {
+        return pushSignedChange({ repo, target, approval, progress, net, config });
+    }
     if (statement) {
         progress("checking the approval");
         const tracking = ownRef(config.defaultBranch);
@@ -900,6 +959,45 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
         }
         const pushed = await pushAccepts({ progress, net }, { tree, writes: [], branch });
         return { commit: pushed, branch, record: approval.record };
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    } finally {
+        await removeWorktree(repo, tree).catch((err) =>
+            console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
+        );
+    }
+}
+
+/**
+ * pushApproval in change mode: the signed statement, checked with the gate's own code, goes into
+ * the accept commit at the place its content gives, and the commit is pushed (pushChange).
+ * @param {object} input as pushApproval's
+ * @returns {Promise<{ commit: string, branch: string, record: null }>} what was pushed
+ */
+async function pushSignedChange(input) {
+    const { repo, target, approval, progress, net, config } = input;
+    const { statement, commit, branch } = approval;
+    progress("checking the approval");
+    const fetch = (b) =>
+        net(`git fetch ${b}`, () =>
+            git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${ownRef(b)}`]),
+        );
+    await fetch(config.defaultBranch);
+    await requireApproval(repo, ownRef(config.defaultBranch), statement, approval);
+    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr === null ? "master" : target.pr}`);
+    await removeWorktree(repo, tree);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, commit]);
+    try {
+        const path = statementPath(config.approvals, statement);
+        await put(join(tree, path), `${JSON.stringify(statement, null, 2)}\n`);
+        await git(tree, ["add", "--", path]);
+        const message = (await git(repo, ["log", "-1", "--format=%B", commit])).replace(
+            /^Approval: pending$/m,
+            `Approval: ${path}`,
+        );
+        await git(tree, ["commit", "-q", "--no-verify", "--amend", "-F", "-"], `${message}\n`);
+        const pushed = await pushChange({ repo, progress, net, config }, { tree, writes: [], branch, statement, fetch });
+        return { commit: pushed, branch, record: null };
     } catch (err) {
         throw err instanceof AcceptError ? err : new AcceptError(err.message);
     } finally {
@@ -1006,9 +1104,12 @@ async function keysAt(repo, ref) {
  * @param {boolean} [input.statement] also commit the unsigned tree statement (no key known)
  * @param {2 | 3} [input.recordVersion] 2 for a record the owner signs next: then an accept commit
  *     an earlier Finish pushed is reused only when its record holds exactly these decisions
- * @returns {Promise<{ commit: string, branch: string, record: string | null, alreadyFinished?: true }>}
- *     the commit (pushed unless `push` is false) and branch, and the record's path (null for a seed
- *     pushed earlier and reused)
+ * @param {string | null} [input.repository] this repository's id for a change statement
+ *     (`github:<id>`); null takes the default branch's `repositoryId`
+ * @returns {Promise<{ commit: string, branch: string, record: string | null, alreadyFinished?: true,
+ *     statement?: object }>} the commit (pushed unless `push` is false) and branch, and the record's
+ *     path (null for a seed pushed earlier and reused, and in change mode, whose commit holds its
+ *     `statement` instead: unsigned, and not yet in the commit when it is not pushed)
  */
 async function commitAccepts({
     repo,
@@ -1023,6 +1124,7 @@ async function commitAccepts({
     push = true,
     statement = false,
     recordVersion = 3,
+    repository = null,
 }) {
     const { baselines, defaultBranch } = config;
     const isMaster = target.pr === null;
@@ -1048,6 +1150,13 @@ async function commitAccepts({
             git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin", `+refs/heads/${b}:${ownRef(b)}`]),
         );
     await fetch(defaultBranch);
+    // The format the default branch's config chooses, never this checkout's (config.mjs).
+    const settings = approvalFormatAt(ownRef(defaultBranch), repo);
+    if (settings.format === "change") {
+        const input = { repo, target, rejects, first, now, progress, net, config, push };
+        const id = repository ?? settings.repositoryId;
+        return commitChange(input, { base, branch, plan, writes, fetch, repository: id });
+    }
     const exact = recordVersion === 2;
     const { parent, seed } = await acceptParent(
         { repo, target, net, config, rejects },
@@ -1098,6 +1207,268 @@ async function commitAccepts({
             console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
         );
     }
+}
+
+/**
+ * commitAccepts in change mode (docs/approval-format.md): the accepted baselines and one change
+ * statement, no review record and no tree statement. The statement's `previous` names the newest
+ * statement of this change on the branch (both ends of a fork), and `capturedHead` the change's own
+ * head. When the commit is not pushed (prepareApproval) it holds only the baselines: the statement's
+ * file name comes from its id, which covers the signature, so pushApproval adds it once signed.
+ * Without a key the unsigned statement is committed and pushed at once.
+ * @param {object} input commitAccepts' repo, target, rejects, first, now, progress, net, config and push
+ * @param {{ base: string, branch: string, plan: object, writes: object[],
+ *     fetch: (b: string) => Promise<any>, repository: string | null }} work the captured commit,
+ *     the branch, the planned writes, the verified writes, the fetcher and the repository's id
+ * @returns {Promise<{ commit: string, branch: string, record: null, statement: object,
+ *     alreadyFinished?: true }>} what was committed (and pushed, unless `push` is false)
+ */
+async function commitChange(input, { base, branch, plan, writes, fetch, repository }) {
+    const { repo, target, rejects, now, config, push } = input;
+    if (repository === null) {
+        throw new AcceptError(
+            `this repository has no id for its change statements: set "repositoryId" in the default branch's ${CONFIG_FILE} (docs/approval-format.md, "Repository")`,
+        );
+    }
+    // A seed's capture is of a default branch commit, which is on its pull request's base, and the
+    // pull request's id is not known before Finish opens it: no statement of it could ever count.
+    if (target.pr === null) {
+        throw new AcceptError(
+            "a capture of the default branch cannot be approved with change statements: accept these snapshots on a pull request's capture instead (docs/approval-format.md)",
+        );
+    }
+    const change = `pr:${target.pr}`;
+    const entries = [...plan.entries, ...rejectEntries(rejects)].sort((a, b) => a.path.localeCompare(b.path));
+    const found = await changeParent(repo, config, { base, branch, plan, fetch, entries, change });
+    if (found.seed) {
+        return { ...found.seed, statement: null };
+    }
+    /** @type {any} */
+    const statement = {
+        version: 2,
+        type: "change-approval",
+        repository,
+        baselines: config.baselines,
+        change,
+        capturedHead: base,
+        previous: chainEnds(found.chain),
+        approvedAt: now.toISOString().replace(/\.\d+Z$/, "Z"),
+        entries,
+    };
+    const why = statementProblem(statement);
+    if (why) {
+        throw new AcceptError(`this Finish's change statement is not valid (${why})`);
+    }
+    const tree = join(repo, config.workDir, "worktrees", `accept-${target.pr}`);
+    await removeWorktree(repo, tree);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, found.parent]);
+    try {
+        if (found.dead.length > 0) {
+            await git(tree, ["rm", "-q", "--", ...found.dead]);
+        }
+        const local = previewsOf([...input.rejects, ...writes], target.pr);
+        await writeAcceptCommit(input, { tree, plan, writes, body: null, local, statement: push ? statement : null });
+        if (!push) {
+            return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, record: null, statement };
+        }
+        const commit = await pushChange(input, { tree, writes, branch, statement, fetch });
+        return { commit, branch, record: null, statement };
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    } finally {
+        await removeWorktree(repo, tree).catch((err) =>
+            console.error(`proofroom: could not remove the accept worktree ${tree}: ${err.message}`),
+        );
+    }
+}
+
+/**
+ * The change statement entries of the checked rejects, with their reasons.
+ * @param {object[]} rejects the checked rejects
+ * @returns {object[]} the entries
+ */
+const rejectEntries = (rejects) =>
+    rejects.map((r) => ({
+        path: `${r.project}/${r.item.file}`,
+        from: r.item.baseline ?? null,
+        to: r.item.capture ?? null,
+        decision: "reject",
+        ...(r.reason !== null && { reason: r.reason }),
+    }));
+
+/**
+ * What `previous` names: null with no statement before, else the id of the chain's newest
+ * statement, or every newest one when two Finishes forked it (the array closes the fork).
+ * @param {{ id: string, previous: string | string[] | null }[]} chain the change's statements
+ * @returns {string | string[] | null} it
+ */
+function chainEnds(chain) {
+    const named = new Set(chain.flatMap((st) => (st.previous === null ? [] : [st.previous].flat())));
+    const ends = chain.map((st) => st.id).filter((id) => !named.has(id)).sort();
+    return ends.length === 0 ? null : ends.length === 1 ? ends[0] : ends;
+}
+
+/**
+ * The well-formed statements of one change at a commit, in its folder of the approvals directory.
+ * @param {string} repo the repository
+ * @param {string} ref the commit
+ * @param {{ approvals: string }} config the settings
+ * @param {string} change the change id
+ * @returns {Promise<{ file: string, id: string, previous: any, entries: object[] }[]>} them
+ */
+async function statementsAt(repo, ref, config, change) {
+    const dir = `${config.approvals}/${changeFolder(change)}/`;
+    const names = await git(repo, ["ls-tree", "-r", "--name-only", ref, "--", dir]).catch(() => "");
+    const out = [];
+    for (const file of names.split("\n").filter((n) => n.endsWith(".json"))) {
+        const st = await git(repo, ["show", `${ref}:${file}`]).then(JSON.parse, () => null);
+        if (statementProblem(st) === null && st.change === change) {
+            out.push({ ...st, file, id: statementId(st) });
+        }
+    }
+    return out;
+}
+
+const sameDecision = (a, b) =>
+    a.decision === b.decision && a.from === b.from && a.to === b.to && (a.reason ?? null) === (b.reason ?? null);
+
+/**
+ * The files of a plan the commit at `ref` does not already hold as the plan writes them. Only the
+ * files `ref` changed since the captured commit are read, one git call each: the others are as
+ * the capture showed them, which a decision changes.
+ * @param {string} repo the repository
+ * @param {string} ref the commit
+ * @param {{ files: { path: string, bytes: Buffer | string | null }[] }} plan the planned writes
+ * @param {Set<string>} since the files `ref` changed since the captured commit
+ * @returns {Promise<string[]>} their paths
+ */
+async function differingFiles(repo, ref, plan, since) {
+    const out = [];
+    for (const f of plan.files) {
+        if (!since.has(f.path)) {
+            out.push(f.path);
+            continue;
+        }
+        const held = await blobAt(repo, ref, f.path);
+        if ((held === null ? null : contentHash(held)) !== (f.bytes === null ? null : sha256(f.bytes))) {
+            out.push(f.path);
+        }
+    }
+    return out;
+}
+
+/**
+ * The commit a change mode Finish of a pull request goes on: the branch's tip, when it is the
+ * captured head plus Finish commits (or a merge of the default branch, masterMergeProblem) that
+ * changed no file this Finish writes into something else; and the change's statements there.
+ * A tip whose chain already holds every one of these decisions, with nothing left to write, is
+ * an earlier Finish of the same decisions (sent again): nothing is left to do.
+ * @param {string} repo the repository
+ * @param {object} config the settings
+ * @param {object} at the captured commit, the branch, the plan, the fetcher, the entries and the change
+ * @returns {Promise<{ parent?: string, chain: object[], dead: string[], seed?: object }>} it, and
+ *     the files of the change's statements the default branch's keys do not verify
+ */
+async function changeParent(repo, config, at) {
+    const { base, branch, plan, fetch, entries, change } = at;
+    await fetch(branch);
+    const tip = await git(repo, ["rev-parse", ownRef(branch)]);
+    const since = tip === base ? [] : await changedSince(repo, base, tip);
+    const differ = await differingFiles(repo, tip, plan, new Set(since));
+    if (tip !== base) {
+        const finishOnly = (await onlyFinishCommits(repo, base, tip, config)) && !since.some((f) => differ.includes(f));
+        const why = finishOnly ? null : await masterMergeProblem(repo, base, tip, ownRef(config.defaultBranch), differ);
+        if (why) {
+            throw new AcceptError(`capture is stale, wait for CI: the branch has moved past the captured head (${why})`);
+        }
+    }
+    // Once the default branch holds a key, a statement it does not verify (one committed unsigned
+    // before the key landed) would fail the gate: this Finish removes it and decides afresh.
+    const keys = await keysAt(repo, ownRef(config.defaultBranch));
+    const all = await statementsAt(repo, tip, config, change);
+    const docOf = (st) => Object.fromEntries(Object.entries(st).filter(([k]) => k !== "file" && k !== "id"));
+    const verified = (st) => keys.length === 0 || verifyApproval(docOf(st), keys) === null;
+    const chain = all.filter(verified);
+    const dead = all.filter((st) => !verified(st)).map((st) => st.file);
+    const newest = chain.length > 0 ? newestDecisions(chain) : null;
+    const held =
+        newest !== null &&
+        "decisions" in newest &&
+        differ.length === 0 &&
+        entries.every((e) => {
+            const d = newest.decisions.get(e.path);
+            return d !== undefined && !("conflict" in d) && sameDecision(d, e);
+        });
+    if (held && dead.length === 0) {
+        return { chain, dead, seed: { commit: tip, branch, record: null, alreadyFinished: true } };
+    }
+    return { parent: tip, chain, dead };
+}
+
+/**
+ * Pushes a change mode accept commit (the worktree's HEAD, its statement in it). When the branch
+ * moved meanwhile and the push is refused, the branch is fetched again:
+ * - it holds another statement of this change: nothing is pushed, and the error names the
+ *   snapshots that statement decided differently, or asks for a Finish after it (one passkey
+ *   touch, `previous` naming it);
+ * - its new commits hold the captured head and change no file this commit writes: the same
+ *   commit, signed statement and all, is made again on the new tip and pushed, with no new touch;
+ * - otherwise the capture is stale.
+ * @param {object} input finish's repo, progress, net and config
+ * @param {{ tree: string, writes: object[], branch: string, statement: object,
+ *     fetch: (b: string) => Promise<any> }} work the worktree, the writes, the branch, the
+ *     statement and the fetcher
+ * @returns {Promise<string>} the pushed commit
+ */
+async function pushChange(input, { tree, writes, branch, statement, fetch }) {
+    const { repo, config } = input;
+    for (let rebuilt = 0; ; rebuilt++) {
+        try {
+            return await pushAccepts(input, { tree, writes, branch });
+        } catch (err) {
+            if (!(err instanceof AcceptError && err.raced) || rebuilt >= 2) {
+                throw err;
+            }
+        }
+        await fetch(branch);
+        const tip = await git(repo, ["rev-parse", ownRef(branch)]);
+        const own = await git(tree, ["rev-parse", "HEAD"]);
+        const parent = await git(tree, ["rev-parse", "HEAD^"]);
+        const before = new Set((await statementsAt(repo, parent, config, statement.change)).map((st) => st.file));
+        const others = (await statementsAt(repo, tip, config, statement.change)).filter((st) => !before.has(st.file));
+        if (others.length > 0) {
+            throw new AcceptError(otherFinishMessage(statement, others));
+        }
+        const mine = (await git(tree, ["diff-tree", "-r", "-z", "--name-only", "--no-renames", parent, own]))
+            .split("\0")
+            .filter(Boolean);
+        const theirs = new Set(await changedSince(repo, parent, tip));
+        const clash = mine.find((f) => theirs.has(f));
+        if (clash !== undefined || !(await gitOk(repo, ["merge-base", "--is-ancestor", statement.capturedHead, tip]))) {
+            const why = clash === undefined ? "the branch no longer holds the captured head" : `it changed ${clash}`;
+            throw new AcceptError(`capture is stale, wait for CI: the branch moved while Finish ran (${why}); nothing was pushed`);
+        }
+        // The same files on the new tip: it copies nobody's commit, so nothing is rebased.
+        await git(tree, ["checkout", "-q", "--detach", tip]);
+        await git(tree, ["restore", `--source=${own}`, "--staged", "--worktree", "--", ...mine]);
+        await git(tree, ["commit", "-q", "--no-verify", "-C", own]);
+    }
+}
+
+/**
+ * Why a push lost to another Finish of the same change.
+ * @param {{ entries: object[] }} statement this Finish's statement
+ * @param {{ entries: object[] }[]} others the other statements the branch gained
+ * @returns {string} the message
+ */
+function otherFinishMessage(statement, others) {
+    const theirs = new Map(others.flatMap((st) => st.entries.map((e) => [e.path, e])));
+    const differ = statement.entries.filter((e) => theirs.has(e.path) && !sameDecision(theirs.get(e.path), e));
+    if (differ.length > 0) {
+        const names = differ.map((e) => e.path).join(", ");
+        return `another Finish of this change was pushed while yours ran and decided ${names} differently; nothing was pushed: look at ${differ.length === 1 ? "it" : "them"} again and Finish`;
+    }
+    return "another Finish of this change was pushed while yours ran and decided no snapshot differently; nothing was pushed: press Finish again to sign yours after it (one passkey touch)";
 }
 
 /**
@@ -1257,13 +1628,16 @@ async function finishedBefore(repo, { tip, base, target, config, items, rejects,
 }
 
 /**
- * Writes the accepts and the record in the accept worktree and commits them.
+ * Writes the accepts and the record in the accept worktree and commits them. In change mode
+ * (`body` null) no record is written: the commit holds `statement` instead, or, with none yet
+ * (it is signed next, pushApproval), only the baselines.
  * @param {object} input finish's repo, target, first, now, progress and config
- * @param {{ tree: string, plan: object, writes: object[], body: object, local: object[] }} work the
- *     worktree, the planned writes, the record and the local previews
- * @returns {Promise<string>} the record's path
+ * @param {{ tree: string, plan: object, writes: object[], body: object | null, local: object[],
+ *     statement?: object | null }} work the worktree, the planned writes, the record, the local
+ *     previews and, in change mode, the statement to commit
+ * @returns {Promise<string>} the path of the record (or of the statement; "pending" before it is signed)
  */
-async function writeAcceptCommit(input, { tree, plan, writes, body, local }) {
+async function writeAcceptCommit(input, { tree, plan, writes, body, local, statement = null }) {
     const { repo, target, first, now, progress, config } = input;
     const { baselines } = config;
     const isMaster = target.pr === null;
@@ -1281,8 +1655,16 @@ async function writeAcceptCommit(input, { tree, plan, writes, body, local }) {
         await (f.bytes === null ? rm(join(tree, f.path), { force: true }) : put(join(tree, f.path), f.bytes));
     }
     const stamp = now.toISOString().replaceAll(/[-:]/g, "").replace(/\.\d+/, "");
-    const record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
-    await put(join(tree, record), `${JSON.stringify(body, null, 2)}\n`);
+    let record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
+    if (body === null) {
+        record = statement ? statementPath(config.approvals, statement) : "pending";
+        if (statement) {
+            await put(join(tree, record), `${JSON.stringify(statement, null, 2)}\n`);
+            await git(tree, ["add", "--", record]);
+        }
+    } else {
+        await put(join(tree, record), `${JSON.stringify(body, null, 2)}\n`);
+    }
     progress("committing");
     await git(tree, ["add", "-A", "--", baselines]);
     const message = commitMessage({
@@ -1293,8 +1675,10 @@ async function writeAcceptCommit(input, { tree, plan, writes, body, local }) {
         record,
         prefix: config.commitPrefix,
         local,
+        label: body === null ? "Approval" : "Record",
     });
-    await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
+    // Before a statement is signed, the commit may hold nothing: every file already as decided.
+    await git(tree, ["commit", "-q", "--no-verify", ...(body === null ? ["--allow-empty"] : []), "-F", "-"], message);
     await requireLfsPointers(tree, plan.items);
     return record;
 }
@@ -1363,11 +1747,15 @@ async function pushAccepts({ progress, net }, { tree, writes, branch }) {
         }
     }).catch((err) => {
         // git's own advice ("git pull") is wrong here: the capture no longer matches the branch.
-        throw /\[rejected\].*\((fetch first|non-fast-forward)\)/.test(err.message)
-            ? new AcceptError(
-                  "capture is stale, wait for CI: the branch moved past the captured head while Finish ran; nothing was pushed",
-              )
-            : err;
+        if (!/\[rejected\].*\((fetch first|non-fast-forward)\)/.test(err.message)) {
+            throw err;
+        }
+        const stale = new AcceptError(
+            "capture is stale, wait for CI: the branch moved past the captured head while Finish ran; nothing was pushed",
+        );
+        // The branch moved: a change mode Finish may make its commit again on the new tip (pushChange).
+        stale.raced = true;
+        throw stale;
     });
     return head;
 }
@@ -1686,15 +2074,20 @@ async function masterMergeProblem(repo, head, tip, tracking, paths) {
  *     commit, an accept's verified bytes)
  * @param {string} baselines the baselines directory
  * @returns {Promise<{ items: { path: string, from: string | null, to: string | null,
- *     reason: string | null, movedFrom?: string, movedTo?: string }[],
+ *     reason: string | null, movedFrom?: string, movedTo?: string }[], entries: object[],
  *     files: { path: string, bytes: Buffer | string | null }[],
  *     counts: { accept: number, exclude: number, remove: number } }>} the record items (two for a
- *     renamed story, whose baseline moves to its new name), the files to write in order (null
- *     bytes delete), and the tallies for the commit message
+ *     renamed story, whose baseline moves to its new name), the same decisions as change statement
+ *     entries (rejects not among them), the files to write in order (null bytes delete), and the
+ *     tallies for the commit message
  */
 async function planWrites(repo, base, writes, baselines) {
     const items = [];
+    const entries = [];
     const files = [];
+    // A change statement's entry for the same decision: its path inside the baselines directory.
+    const entry = (path, from, to, decision, reason, more = {}) =>
+        entries.push({ path: path.slice(baselines.length + 1), from, to, decision, ...(reason !== null && { reason }), ...more });
     const counts = { accept: 0, exclude: 0, remove: 0 };
     // A settings file written earlier in this Finish (two modes of one story) is read as written.
     const written = new Map();
@@ -1710,6 +2103,7 @@ async function planWrites(repo, base, writes, baselines) {
             files.push({ path, bytes });
             counts.exclude++;
             items.push({ path, from: before && sha256(before), to: sha256(bytes), reason: `exclude: ${w.reason}` });
+            entry(path, before && sha256(before), sha256(bytes), "exclude", w.reason);
             continue;
         }
         const path = `${dir}/${w.item.file}`;
@@ -1717,12 +2111,14 @@ async function planWrites(repo, base, writes, baselines) {
             files.push({ path, bytes: null });
             counts.remove++;
             items.push({ path, from: w.item.baseline, to: null, reason: w.reason });
+            entry(path, w.item.baseline, null, "accept", w.reason);
             continue;
         }
         files.push({ path, bytes: w.bytes ?? null });
         counts.accept++;
         if (!w.item.from) {
             items.push({ path, from: w.item.baseline, to: w.item.capture, reason: w.reason, ...provenance(w) });
+            entry(path, w.item.baseline, w.item.capture, "accept", w.reason);
             continue;
         }
         // A rename: the old id's baseline (of this mode) goes, the new one takes its place. For a
@@ -1733,8 +2129,11 @@ async function planWrites(repo, base, writes, baselines) {
             { path: oldPath, from: w.item.baseline, to: null, reason: w.reason, movedTo: path },
             { path, from: null, to: w.item.capture, reason: w.reason, movedFrom: oldPath },
         );
+        const rel = (p) => p.slice(baselines.length + 1);
+        entry(oldPath, w.item.baseline, null, "accept", w.reason, { movedTo: rel(path) });
+        entry(path, null, w.item.capture, "accept", w.reason, { movedFrom: rel(oldPath) });
     }
-    return { items, files, counts };
+    return { items, entries: mergeEntries(entries), files, counts };
 }
 
 /**
@@ -1757,6 +2156,16 @@ const provenance = (w) => (w.approvedBefore ? { approvedBefore: w.approvedBefore
 
 // Two modes of one story excluded together write one settings file: keep one record item.
 const dedupe = (items) => [...new Map(items.map((i) => [i.path, i])).values()];
+
+// The same for a change statement, whose entry starts from the file the default branch side holds
+// (the first write's `from`) and ends at the last write's `to`.
+const mergeEntries = (entries) => {
+    const byPath = new Map();
+    for (const e of entries) {
+        byPath.set(e.path, byPath.has(e.path) ? { ...e, from: byPath.get(e.path).from } : e);
+    }
+    return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+};
 
 async function put(path, data) {
     await mkdir(dirname(path), { recursive: true });
