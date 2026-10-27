@@ -445,15 +445,20 @@ export async function newestMasterCapture(gh, project, tmp, { workflow, defaultB
     // The branch's newest commits, then each one's run: GitHub's list of a workflow's runs filtered
     // by branch now and then answers with a stale page (runs from weeks ago), which made a pull
     // request compare with an old capture or none. Commits and a run by head sha answer consistently.
-    // The list holds every ancestor, a merged branch's own commits too, whose pull request runs
-    // captured the branch and not the default branch: only its first-parent line is walked.
+    // The list holds every ancestor. A push to the default branch captures nothing, so a capture
+    // comes from the pull request run of a head merged into it (a merge's later parent, whose run
+    // captured the merged tree); a merged branch's earlier commits captured an older branch state
+    // and are skipped by walking the first-parent line and only each commit's own parents.
     const commits = await api(gh, `repos/{owner}/{repo}/commits?sha=${encodeURIComponent(defaultBranch)}&per_page=30`);
+    const shas = [];
     let next = commits[0]?.sha;
-    for (const { sha, parents } of commits) {
-        if (sha !== next) {
-            continue;
+    for (const { sha, parents = [] } of commits) {
+        if (sha === next) {
+            shas.push(sha, ...parents.slice(1).map((p) => p.sha));
+            next = parents[0]?.sha;
         }
-        next = parents?.[0]?.sha;
+    }
+    for (const sha of shas) {
         const run = await newestCiRun(gh, sha, { workflow });
         if (!run) {
             continue;

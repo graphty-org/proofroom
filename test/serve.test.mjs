@@ -2659,21 +2659,33 @@ describe("newestMasterCapture", () => {
         );
     });
 
-    it("skips a merged branch's own commit, whose run captured the branch", async () => {
+    it("uses a merged head's run, never an earlier commit of the merged branch", async () => {
         const r = makeRepo();
-        const gh = fakeGh({
-            masterRuns: [
-                { id: 3000, head: "3".repeat(40), parent: r.master },
-                { id: 2000, head: "2".repeat(40) },
-                { id: 1000, head: r.master },
-            ],
-            artifacts: { 3000: [], 2000: ["visual-compact-mantine-1"], 1000: ["visual-compact-mantine-1"] },
-            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null } },
-        });
-        const tmp = join(r.dir, "reference");
-        expect(await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG)).toBe(
-            join(tmp, "1000-1", "compact-mantine"),
+        const [m2, b2, b1] = ["4", "3", "2"].map((c) => c.repeat(40));
+        const reference = (headArtifacts) =>
+            newestMasterCapture(
+                fakeGh({
+                    masterRuns: [
+                        { id: null, head: m2, parents: [r.master, b2] },
+                        { id: 3000, head: b2, parents: [b1] },
+                        { id: 2000, head: b1, parents: [r.master] },
+                        { id: 1000, head: r.master },
+                    ],
+                    artifacts: {
+                        3000: headArtifacts,
+                        2000: ["visual-compact-mantine-1"],
+                        1000: ["visual-compact-mantine-1"],
+                    },
+                    results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null } },
+                }),
+                "compact-mantine",
+                join(r.dir, "reference"),
+                FIXTURE_CONFIG,
+            );
+        expect(await reference(["visual-compact-mantine-1"])).toBe(
+            join(r.dir, "reference", "3000-1", "compact-mantine"),
         );
+        expect(await reference([])).toBe(join(r.dir, "reference", "1000-1", "compact-mantine"));
     });
 
     it("finds nothing when no master run has a complete capture", async () => {
