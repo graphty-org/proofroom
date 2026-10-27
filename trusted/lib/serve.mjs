@@ -111,6 +111,7 @@ import { contentHash } from "../gate.mjs";
 import {
     AcceptError,
     behindMaster,
+    isBranchCapture,
     cleanReason,
     commitStatus,
     decisionProblem,
@@ -133,6 +134,7 @@ import { evict, evictedAt, evictionOrder, sizes as diskSizes } from "./budget.mj
 import { PASSKEYS_FILE, parsePasskeys, recordHash, verifyApproval, verifyRegistration } from "./approval.mjs";
 import { isLfsPointer, sha256 } from "./compare.mjs";
 import { captureStoreFor, codeHostFor, localFolderStore } from "./adapters/index.mjs";
+import { branchCaptures, branchTargetId, captureQueue, CaptureRefused, lookCaptures } from "./captures.mjs";
 import { exec, retrying } from "./github.mjs";
 import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
@@ -760,6 +762,21 @@ export function createApp({
     const repository = repositoryName(repo);
     /** @type {Map<string, object>} targets by id: a pull request number, or "master" */
     let targets = new Map();
+    // Captures started from the page (captures.mjs): one at a time on this machine. Each that ends
+    // refreshes the list, so its capture is listed.
+    const captures = captureQueue({
+        repo,
+        config,
+        tmp,
+        previews,
+        changes: () =>
+            [...targets.values()]
+                .filter((t) => t.pr !== null && !t.local)
+                .map((t) => ({ pr: t.pr, head: t.head, branch: t.branch, title: t.title, author: t.author ?? null })),
+        onEnd: () => {
+            refresh().catch((err) => console.error(`proofroom: refresh after a capture failed: ${err.message}`));
+        },
+    });
     // Each pull request branch's fetched tip, read once per refresh, and the review records at a
     // tip (by tip and pull request, kept while the tip is current) for decisionsOf's "still on
     // the branch" check.
@@ -881,8 +898,12 @@ export function createApp({
      * @returns {Promise<{ main: object[], pending: object[], trusted: object[] }>} the keys
      */
     async function knownKeys() {
-        const ref = `refs/remotes/origin/${defaultBranch}`;
         const git = (args) => exec("git", args, { cwd: repo });
+        // origin's default branch; a repository with no origin (captures made from the page only) its own.
+        const ref = await git(["rev-parse", "--verify", "-q", `refs/remotes/origin/${defaultBranch}`]).then(
+            () => `refs/remotes/origin/${defaultBranch}`,
+            () => `refs/heads/${defaultBranch}`,
+        );
         const listed = await git(["ls-tree", "--name-only", ref, "--", PASSKEYS_FILE]);
         const text = listed === "" ? null : await git(["show", `${ref}:${PASSKEYS_FILE}`]);
         let main = [];
@@ -1847,6 +1868,57 @@ export function createApp({
         })());
 
     /**
+     * The captures started from the page that finished (captures.mjs): each local branch's newest,
+     * decided and finished onto the branch, and the look-only ones. A change's capture is its local
+     * preview, listed with the change.
+     * @returns {Promise<object[]>} their targets
+     */
+    async function localCaptureTargets() {
+        const out = [];
+        const listed = async (dir, status) => {
+            const list = [];
+            for (const n of (status.projects ?? []).filter((x) => names.includes(x))) {
+                list.push(await project(n, join(dir, n), null));
+            }
+            return list;
+        };
+        const common = (status) => ({
+            title: `Capture of ${status.label ?? "this machine"}`,
+            url: null,
+            head: status.head,
+            commit: status.head,
+            runId: null,
+            runAttempt: null,
+            runUrl: null,
+            readyAt: status.updatedAt ?? null,
+            author: null,
+            capture: { id: status.capture ?? null, label: status.label ?? null },
+        });
+        for (const c of branchCaptures(previews)) {
+            out.push({
+                id: branchTargetId(c.branch),
+                pr: null,
+                localBranch: true,
+                branch: c.branch,
+                ...common(c.status),
+                projects: await listed(c.dir, c.status),
+            });
+        }
+        for (const c of lookCaptures(tmp)) {
+            out.push({
+                id: `capture-${c.id}`,
+                pr: null,
+                local: true,
+                branch: c.status.branch ?? null,
+                ...common(c.status),
+                look: c.status.look ?? null,
+                projects: await listed(c.dir, c.status),
+            });
+        }
+        return out;
+    }
+
+    /**
      * The default branch's target: the run given with --master-run (a seed), or the candidate
      * offered (offeredCandidate), or null when there is neither.
      * @returns {Promise<object | null>} the target
@@ -1993,6 +2065,11 @@ export function createApp({
             const master = await masterTarget();
             if (master) {
                 next.set("master", master);
+            }
+        }
+        if (!results) {
+            for (const t of await localCaptureTargets()) {
+                next.set(t.id, t);
             }
         }
         let seen = pushes;
@@ -2559,6 +2636,11 @@ export function createApp({
             id: t.id,
             pr: t.pr,
             local: t.local === true,
+            // A local branch's capture made from the page, finished onto the branch.
+            localBranch: t.localBranch === true,
+            // The page's capture it came from, and why one is look only.
+            capture: t.capture ?? null,
+            look: t.look ?? null,
             title: t.title,
             url: t.url,
             branch: t.branch,
@@ -2759,13 +2841,16 @@ export function createApp({
     // taken on it and it has no Finish. The exception is a preview of this pull request's head
     // (tools/visual-preview.sh): Finish accepts it, and the gate checks CI's capture against the
     // baselines it leaves.
+    // A local branch's capture made from the page (captures.mjs) is decided and finished onto it.
     const isLocal = (t, name) => {
         const r = t.projects.find((x) => x.project === name)?.results;
-        return t.local === true || (Boolean(r?.local) && !isPreviewOf(r, t.pr));
+        const branch = t.localBranch ? t.branch : null;
+        return t.local === true || (Boolean(r?.local) && !isPreviewOf(r, t.pr) && !isBranchCapture(r, branch));
     };
     const acceptable = (t, name) =>
         // seedFromDefaultBranch is about seeding: a candidate's changed images are accepted like a pull request's.
-        !isLocal(t, name) && (t.pr !== null || Boolean(t.candidate) || projects[name].seedFromDefaultBranch === true);
+        !isLocal(t, name) &&
+        (t.pr !== null || t.localBranch === true || Boolean(t.candidate) || projects[name].seedFromDefaultBranch === true);
     const LOCAL = "is a local preview: nothing is decided on it; only CI captures of a pushed commit are";
 
     async function targetOf(id) {
@@ -3657,6 +3742,20 @@ export function createApp({
         const [status, answer] = await routes[route]([], body);
         return [/** @type {number} */ (status), /** @type {{ error?: string, files?: string[] }} */ (answer)];
     };
+    // The page's captures, and what the New capture sheet says about where they can run: CI only
+    // when the capture store can start a job (none can yet), a change from the code host here only
+    // through the config's captureCommand.
+    const CI_NAMES = { "github-actions": "GitHub Actions" };
+    const captureList = () => ({
+        ...captures.list(),
+        ci: {
+            available: false,
+            label: `CI (${CI_NAMES[store.name] ?? store.name})`,
+            why: "your capture store cannot start CI jobs",
+        },
+        changeHere: Boolean(config.captureCommand),
+        hostName: host.vocabulary?.hostName ?? "the code host",
+    });
     const routes = {
         "GET /api/prs": async (_, __, query) => {
             // ?cached=1 answers at once (starting the first load if there is none); ?refresh=1
@@ -3698,8 +3797,38 @@ export function createApp({
                     // Why the last refresh got no list at all; a gh call waiting to retry.
                     error: failure,
                     network: networkTrouble(),
+                    // The captures started from the page, without their logs.
+                    captures: captureList(),
                 },
             ];
+        },
+        // The page's captures (captures.mjs): every one, or (with an id) one with its progress and
+        // its log since `since`; with ?sources=1, what the New capture sheet offers.
+        "GET /api/captures": async ([id], _, query) => {
+            if (id !== undefined) {
+                const one = captures.get(Number(id), Number(query?.get("since") ?? 0));
+                return one ? [200, one] : [404, { error: `no capture ${id}` }];
+            }
+            return [200, { ...captureList(), ...(query?.get("sources") === "1" && { sources: await captures.sources() }) }];
+        },
+        // Starts a capture, or (POST /api/captures/<id>/cancel) cancels one.
+        "POST /api/captures": async ([id, verb], body) => {
+            if (id !== undefined) {
+                if (verb !== "cancel") {
+                    return [404, { error: "not found" }];
+                }
+                const j = captures.cancel(Number(id));
+                return j ? [200, { id: j.id, state: j.state }] : [404, { error: `no capture ${id}` }];
+            }
+            try {
+                const j = await captures.start(body);
+                return [202, { id: j.id, target: j.target }];
+            } catch (err) {
+                if (err instanceof CaptureRefused) {
+                    return [err.status, { error: err.message }];
+                }
+                throw err;
+            }
         },
         // The pending-approvals inbox, from the cached list.
         "GET /api/inbox": async () => {
@@ -4505,10 +4634,18 @@ export function createApp({
         if (t.candidate) {
             return `the candidate ${t.candidate.commit.slice(0, 10)}`;
         }
+        if (t.localBranch) {
+            return `the branch ${t.branch}`;
+        }
         return t.pr === null ? "the master seed" : `#${t.pr}`;
     };
-    // What accept.mjs is told about the target: on a candidate, its commit too.
-    const finishTarget = (t) => ({ pr: t.pr, branch: t.branch, ...(t.candidate && { candidate: t.candidate.commit }) });
+    // What accept.mjs is told about the target: on a candidate, its commit too; a local branch's.
+    const finishTarget = (t) => ({
+        pr: t.pr,
+        branch: t.branch,
+        ...(t.candidate && { candidate: t.candidate.commit }),
+        ...(t.localBranch && { localBranch: true }),
+    });
 
     const tokenOk = (given, expected = token) => {
         const a = Buffer.from(String(given ?? ""));
@@ -4617,7 +4754,8 @@ export function createApp({
             if ((from !== undefined && from !== origin) || (byCookie && site !== undefined && !SAME_SITE.has(site))) {
                 return send(res, 403, { error: "foreign origin" });
             }
-            const writes = WRITES.has(route);
+            // Starting or cancelling a capture writes; listing them reads.
+            const writes = WRITES.has(route) || (route === "captures" && req.method === "POST");
             const handler = routes[`${req.method} /api/${route}`];
             if (!handler) {
                 return send(res, writes || Object.hasOwn(routes, `GET /api/${route}`) ? 405 : 404, {
@@ -4664,10 +4802,12 @@ export function createApp({
 
     /**
      * Settles once no tile is being made in the background (the thumbnails and spotlit tiles made
-     * in advance), so whoever stops the server can wait for that work instead of leaving it running.
+     * in advance) and no capture runs, so whoever stops the server can wait for that work instead
+     * of leaving it running.
      * @returns {Promise<void>}
      */
     handler.idle = async () => {
+        await captures.idle();
         while (making.size || budgeting) {
             await Promise.allSettled([...making.values()].map((m) => m.done));
             await budgeting;

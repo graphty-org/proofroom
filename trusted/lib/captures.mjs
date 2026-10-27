@@ -1,0 +1,786 @@
+/**
+ * Captures started from the review page, on this machine: a queue that runs one capture at a time.
+ *
+ * A capture is of the working tree, a local branch, or a change from the code host. Each of its
+ * projects is one child process of `proofroom run` (after the project's `build` command), run
+ * through the config's `captureCommand` when it names one, with its own process group, so Cancel
+ * stops it and every browser it started. The working tree is captured in place; a branch or a
+ * change is checked out, detached, into a worktree of its own under the work directory, removed
+ * afterwards.
+ *
+ * Where a capture is written decides what the page can do with it:
+ * - a change from the code host, every project and story: as that change's local preview,
+ *   `<previews>/<number>/<project>/`, decided and finished like CI's capture of it;
+ * - a local branch (or a clean working tree, which is its branch's head), every project and story:
+ *   `<previews>/branch/<name>/<project>/`, a target of its own, decided and finished onto the branch;
+ * - anything else (uncommitted changes, a story prefix, other baselines than the change's target):
+ *   `<work dir>/captures/<id>/<project>/`, to look at only.
+ * Each of those folders holds a `status.json`: the state, the commit and the projects. A capture
+ * whose commit moved while it ran is refused at the end, so a capture that can be decided always
+ * matches a commit.
+ *
+ * `run` writes `progress.json` beside each project's result lines; the queue reads it when asked,
+ * and keeps the newest log lines of each capture in memory. The jobs (without their logs) are kept
+ * in `<work dir>/captures/jobs.json`, so a restarted server still lists them.
+ */
+
+import { spawn } from "node:child_process";
+import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { PROGRESS_FILE } from "./compare-run.mjs";
+import { exec } from "./github.mjs";
+import { writeJson } from "./inbox.mjs";
+
+const CLI = fileURLToPath(new URL("../cli.mjs", import.meta.url));
+/** The folder of a work directory that holds the page's captures. */
+export const CAPTURES_DIR = "captures";
+/** The folder of the previews directory that holds local branches' captures. */
+export const BRANCH_DIR = "branch";
+// The log lines kept per capture, and the most a request is answered with.
+const LOG_KEPT = 500;
+const LOG_SENT = 200;
+// The finished captures kept in the list, and the look-only ones kept on disk.
+const FINISHED_KEPT = 50;
+const LOOK_KEPT = 10;
+const STORY_PREFIX = /^[a-z0-9][a-z0-9-]*$/;
+const SHA = /^[0-9a-f]{7,40}$/;
+
+/** A capture request the server refuses, with the HTTP status it answers. */
+export class CaptureRefused extends Error {
+    /**
+     * A refusal.
+     * @param {number} status the HTTP status
+     * @param {string} message why
+     */
+    constructor(status, message) {
+        super(message);
+        this.status = status;
+    }
+}
+
+/**
+ * Where a local branch's capture is kept.
+ * @param {string} previews the previews directory
+ * @param {string} branch the branch
+ * @returns {string} its folder
+ */
+export const branchFolder = (previews, branch) => join(previews, BRANCH_DIR, encodeURIComponent(branch));
+
+/**
+ * The review target a local branch's capture is listed as.
+ * @param {string} branch the branch
+ * @returns {string} its id
+ */
+export const branchTargetId = (branch) => `branch-${encodeURIComponent(branch)}`;
+
+const readJson = (file) => {
+    try {
+        return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+        return null;
+    }
+};
+
+/**
+ * The local branches' captures in a previews directory that finished, each with its status.json.
+ * @param {string | null} previews the previews directory
+ * @returns {{ branch: string, dir: string, status: any }[]} them
+ */
+export function branchCaptures(previews) {
+    const root = previews && join(previews, BRANCH_DIR);
+    let names = [];
+    try {
+        names = root ? readdirSync(root) : [];
+    } catch {
+        return [];
+    }
+    return names
+        .map((n) => ({ branch: decodeURIComponent(n), dir: join(root, n), status: readJson(join(root, n, "status.json")) }))
+        .filter((c) => c.status?.state === "done" && c.status.branch === c.branch);
+}
+
+/**
+ * The look-only captures in a work directory that finished, each with its status.json.
+ * @param {string} tmp the work directory
+ * @returns {{ id: number, dir: string, status: any }[]} them, newest first
+ */
+export function lookCaptures(tmp) {
+    const root = join(tmp, CAPTURES_DIR);
+    let names = [];
+    try {
+        names = readdirSync(root).filter((n) => /^\d+$/.test(n));
+    } catch {
+        return [];
+    }
+    return names
+        .map((n) => ({ id: Number(n), dir: join(root, n), status: readJson(join(root, n, "status.json")) }))
+        .filter((c) => c.status?.state === "done")
+        .sort((a, b) => b.id - a.id);
+}
+
+/**
+ * The capture queue.
+ * @param {object} options its settings
+ * @param {string} options.repo the repository the server runs in: its working tree is "the working tree"
+ * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} options.config the settings
+ * @param {string} options.tmp the work directory
+ * @param {string | null} options.previews where local previews are; null when this server has none
+ * @param {() => { pr: number, head: string, branch: string, title: string, author: string | null }[]} [options.changes]
+ *     the code host's changes as last listed
+ * @param {(job: object) => void} [options.onEnd] told when a capture ends, however it ends
+ * @param {string} [options.cli] the proofroom command line to run (this package's)
+ * @returns the queue
+ */
+export function captureQueue({ repo, config, tmp, previews, changes = () => [], onEnd = () => {}, cli = CLI }) {
+    const root = join(tmp, CAPTURES_DIR);
+    const jobsFile = join(root, "jobs.json");
+    const git = (args, cwd = repo, env) => exec("git", args, { cwd, env: env && { ...process.env, ...env } });
+    /** @type {any[]} every capture, oldest first */
+    let jobs = [];
+    const logs = new Map();
+    const children = new Map();
+    let running = null;
+    let idle = Promise.resolve();
+    const saved = readJson(jobsFile);
+    if (Array.isArray(saved?.jobs)) {
+        jobs = saved.jobs.map((j) =>
+            j.state === "running" || j.state === "queued"
+                ? { ...j, state: "failed", error: "the review server stopped while this capture was waiting or running" }
+                : j,
+        );
+    }
+    let next = jobs.reduce((n, j) => Math.max(n, j.id), 0) + 1;
+    const save = () => {
+        try {
+            writeJson(jobsFile, { jobs: jobs.slice(-FINISHED_KEPT) });
+        } catch (err) {
+            console.error(`proofroom: could not keep the list of captures: ${err.message}`);
+        }
+    };
+    const log = (j, line) => {
+        const l = logs.get(j.id) ?? { first: 0, lines: [] };
+        l.lines.push(line);
+        if (l.lines.length > LOG_KEPT) {
+            l.lines.splice(0, l.lines.length - LOG_KEPT);
+            l.first = (j.logged ?? 0) + 1 - LOG_KEPT;
+        }
+        logs.set(j.id, l);
+        j.logged = (j.logged ?? 0) + 1;
+    };
+
+    /**
+     * Turns the page's request into a capture, or refuses it: what, which baselines, which
+     * projects and stories, and where.
+     * @param {any} body the request: `{ what, baselines, projects, stories, where, confirmed }`
+     * @returns {Promise<object>} the planned capture
+     */
+    async function plan(body) {
+        const what = body?.what ?? {};
+        if (body?.where !== undefined && body.where !== "here") {
+            throw new CaptureRefused(409, "this capture store cannot start CI jobs: capture on this machine");
+        }
+        if (!previews) {
+            throw new CaptureRefused(409, "this server shows a local results folder: it starts no captures");
+        }
+        const names = Object.keys(config.projects);
+        const projects = body.projects === undefined ? names : body.projects;
+        if (!Array.isArray(projects) || projects.length === 0 || projects.some((p) => !names.includes(p))) {
+            throw new CaptureRefused(400, `projects must be some of ${names.join(", ")}`);
+        }
+        const stories = String(body.stories ?? "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+        if (stories.some((s) => !STORY_PREFIX.test(s))) {
+            throw new CaptureRefused(400, "a story prefix is the start of a story id, such as button--");
+        }
+        const p = { projects: names.filter((n) => projects.includes(n)), stories: stories.length ? stories : null };
+        if (what.kind === "tree") {
+            Object.assign(p, await treePlan());
+        } else if (what.kind === "branch") {
+            Object.assign(p, await branchPlan(String(what.branch ?? "")));
+        } else if (what.kind === "change") {
+            Object.assign(p, await changePlan(what, body.confirmed === true));
+        } else {
+            throw new CaptureRefused(400, 'what.kind must be "tree", "branch" or "change"');
+        }
+        p.baselines = await baselinesPlan(body.baselines ?? "target");
+        // Only a whole capture against the change's own target is decided: a story prefix reports
+        // every story it skipped as removed, and other baselines are not what the gate compares.
+        if (p.stories) {
+            p.look ??= "a partial capture";
+        } else if (p.baselines.kind === "commit") {
+            p.look ??= "a capture against another commit's baselines";
+        }
+        if (p.look) {
+            p.decidable = null;
+        }
+        return p;
+    }
+
+    async function treePlan() {
+        const branch = await git(["symbolic-ref", "--short", "-q", "HEAD"]).catch(() => "");
+        const head = await git(["rev-parse", "HEAD"]);
+        const dirty = (await changedFiles()) > 0;
+        if (!dirty && branch) {
+            return {
+                ...(await asBranch(branch, head)),
+                kind: "tree",
+                label: "working tree",
+                inPlace: true,
+            };
+        }
+        return {
+            kind: "tree",
+            label: "working tree",
+            branch: branch || null,
+            head,
+            inPlace: true,
+            decidable: null,
+            look: dirty ? "uncommitted changes" : "a detached checkout",
+        };
+    }
+
+    async function branchPlan(branch) {
+        const ok = branch !== "" && (await git(["check-ref-format", "--branch", branch]).then(() => true, () => false));
+        const head = ok ? await git(["rev-parse", "--verify", "-q", `refs/heads/${branch}^{commit}`]).catch(() => "") : "";
+        if (!head) {
+            throw new CaptureRefused(404, `no local branch ${branch}`);
+        }
+        return { kind: "branch", label: `branch ${branch}`, inPlace: false, ...(await asBranch(branch, head)) };
+    }
+
+    // A local branch's capture: the open change of that branch when the code host lists one at
+    // this head (its preview), else the branch as a target of its own.
+    async function asBranch(branch, head) {
+        const change = changes().find((c) => c.branch === branch && c.head === head);
+        return change
+            ? { branch, head, number: change.pr, decidable: "change", author: change.author }
+            : { branch, head, decidable: "branch" };
+    }
+
+    async function changePlan(what, confirmed) {
+        const number = Number(what.number);
+        const change = changes().find((c) => c.pr === number);
+        if (!change) {
+            throw new CaptureRefused(404, `no open change ${what.number}`);
+        }
+        // Never a head the page did not show: the reader confirmed this commit's author and code.
+        if (what.head !== change.head) {
+            throw new CaptureRefused(409, `#${number} has a newer head than the page showed: look at it again`);
+        }
+        if (!config.captureCommand) {
+            throw new CaptureRefused(
+                403,
+                `capturing #${number} here builds and runs its code: set captureCommand in ${"visual-review.config.json"} to isolate it, or capture it on CI`,
+            );
+        }
+        if (!confirmed) {
+            throw new CaptureRefused(428, `capturing #${number} here builds and runs its code: confirm it first`);
+        }
+        if (!(await haveCommit(change.head))) {
+            await git(["fetch", "-q", "--no-write-fetch-head", "origin", `refs/pull/${number}/head`]).catch(() => {});
+            if (!(await haveCommit(change.head))) {
+                throw new CaptureRefused(409, `the head of #${number} (${change.head.slice(0, 10)}) is not fetched here`);
+            }
+        }
+        return {
+            kind: "change",
+            label: `#${number} ${change.title}`,
+            number,
+            branch: change.branch,
+            head: change.head,
+            author: change.author,
+            inPlace: false,
+            decidable: "change",
+        };
+    }
+
+    async function baselinesPlan(given) {
+        const target = await defaultRef();
+        if (given === "target" || given === "default") {
+            return { kind: given, ref: target, label: config.defaultBranch };
+        }
+        const sha = typeof given === "object" && given !== null ? String(given.commit ?? "") : "";
+        const commit = SHA.test(sha) ? await git(["rev-parse", "--verify", "-q", `${sha}^{commit}`]).catch(() => "") : "";
+        if (!commit) {
+            throw new CaptureRefused(400, "baselines must be target, default or { commit: <sha> } of a commit here");
+        }
+        return { kind: "commit", ref: commit, label: commit.slice(0, 10) };
+    }
+
+    // The default branch as this repository has it: origin's, else the local branch.
+    async function defaultRef() {
+        for (const ref of [`refs/remotes/origin/${config.defaultBranch}`, `refs/heads/${config.defaultBranch}`]) {
+            if (await git(["rev-parse", "--verify", "-q", ref]).then(() => true, () => false)) {
+                return ref;
+            }
+        }
+        throw new CaptureRefused(409, `no ${config.defaultBranch} here to take the baselines from`);
+    }
+
+    const haveCommit = (sha) => git(["cat-file", "-e", `${sha}^{commit}`]).then(() => true, () => false);
+
+    // The working tree's changed files, leaving out the work directory.
+    async function changedFiles() {
+        const out = await git(["status", "--porcelain", "--", ".", `:(exclude)${config.workDir}`]);
+        const inside = relative(repo, tmp);
+        return out
+            .split("\n")
+            .filter(Boolean)
+            .filter((l) => inside.startsWith("..") || !l.slice(3).startsWith(inside)).length;
+    }
+
+    /**
+     * What the New capture sheet offers: the working tree's branch and its changed files, the
+     * local branches (the current one first).
+     * @returns {Promise<{ branch: string | null, changed: number, branches: string[] }>} them
+     */
+    async function sources() {
+        const branch = (await git(["symbolic-ref", "--short", "-q", "HEAD"]).catch(() => "")) || null;
+        const all = (await git(["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads/"]))
+            .split("\n")
+            .filter(Boolean);
+        const branches = branch ? [branch, ...all.filter((b) => b !== branch)] : all;
+        return { branch, changed: await changedFiles(), branches };
+    }
+
+    /**
+     * Queues a capture the page asked for.
+     * @param {any} body the request
+     * @returns {Promise<object>} the capture
+     */
+    async function start(body) {
+        const p = await plan(body);
+        const id = next++;
+        const out = p.look
+            ? join(root, String(id))
+            : p.decidable === "change"
+              ? join(previews, String(p.number))
+              : branchFolder(previews, p.branch);
+        const j = {
+            id,
+            what: { kind: p.kind, label: p.label, branch: p.branch ?? null, number: p.number ?? null, author: p.author ?? null },
+            head: p.head,
+            inPlace: p.inPlace,
+            decidable: p.decidable,
+            look: p.look ?? null,
+            baselines: p.baselines,
+            projects: p.projects,
+            stories: p.stories,
+            out,
+            target: p.look ? `capture-${id}` : p.decidable === "change" ? String(p.number) : branchTargetId(p.branch),
+            state: "queued",
+            step: null,
+            error: null,
+            createdAt: Date.now(),
+            startedAt: null,
+            endedAt: null,
+        };
+        jobs.push(j);
+        log(j, running ? "Waiting: local captures run one at a time" : `Starting the capture of ${p.label}`);
+        save();
+        pump();
+        return j;
+    }
+
+    function pump() {
+        if (running) {
+            return;
+        }
+        const j = jobs.find((x) => x.state === "queued");
+        if (!j) {
+            return;
+        }
+        running = j;
+        idle = work(j)
+            .catch((err) => {
+                if (!j.cancelling) {
+                    j.state = "failed";
+                    j.error = err.message;
+                    log(j, `Failed: ${j.error}`);
+                }
+            })
+            .then(() => {
+                if (j.cancelling) {
+                    j.state = "cancelled";
+                    j.error = "Cancelled by you";
+                    log(j, "Cancelled");
+                }
+            })
+            .finally(() => {
+                j.endedAt = Date.now();
+                j.step = null;
+                running = null;
+                writeStatus(j);
+                save();
+                pruneLook();
+                onEnd(j);
+                pump();
+            });
+    }
+
+    // The folder's status.json: what the server reads to list it, and a change's preview state.
+    function writeStatus(j) {
+        const state = j.state === "running" ? "running" : j.state === "done" ? "done" : "failed";
+        try {
+            writeJson(join(j.out, "status.json"), {
+                state,
+                step: j.step,
+                pr: j.what.number,
+                branch: j.decidable === "branch" ? j.what.branch : null,
+                head: j.head,
+                merge: j.head,
+                startedAt: new Date(j.startedAt ?? j.createdAt).toISOString(),
+                updatedAt: new Date().toISOString(),
+                projects: j.projects,
+                capture: j.id,
+                label: j.what.label,
+                look: j.look,
+                error: j.error,
+            });
+        } catch (err) {
+            console.error(`proofroom: could not write ${join(j.out, "status.json")}: ${err.message}`);
+        }
+    }
+
+    async function work(j) {
+        j.state = "running";
+        j.startedAt = Date.now();
+        rmSync(j.out, { recursive: true, force: true });
+        mkdirSync(j.out, { recursive: true });
+        writeStatus(j);
+        save();
+        const scratch = join(root, "work", String(j.id));
+        rmSync(scratch, { recursive: true, force: true });
+        mkdirSync(scratch, { recursive: true });
+        let checkout = repo;
+        try {
+            if (!j.inPlace) {
+                checkout = join(scratch, "checkout");
+                j.step = "checking out";
+                log(j, `Checking out ${j.head.slice(0, 10)}`);
+                await git(["worktree", "add", "-q", "--detach", checkout, j.head]);
+            }
+            const baselines = join(scratch, "baselines");
+            j.step = `reading ${j.baselines.label}'s baselines`;
+            await extractBaselines(j.baselines.ref, baselines);
+            for (const name of j.projects) {
+                if (j.cancelling) {
+                    break;
+                }
+                j.current = name;
+                const build = config.projects[name].build;
+                if (build) {
+                    j.step = `building ${name}`;
+                    log(j, `[${name}] building: ${build}`);
+                    await runChild(j, name, ["sh", "-c", build], checkout, false);
+                }
+                if (j.cancelling) {
+                    break;
+                }
+                j.step = `capturing ${name}`;
+                const args = [process.execPath, cli, "run", "--project", name, "--out", join(j.out, name), "--no-fail"];
+                args.push("--baselines", join(baselines, config.baselines, name));
+                if (j.stories) {
+                    args.push("--stories", j.stories.join(","));
+                }
+                const wrapped = config.captureCommand ? ["sh", "-c", `${config.captureCommand} "$@"`, "proofroom", ...args] : args;
+                await runChild(j, name, wrapped, checkout, true);
+            }
+            if (j.cancelling) {
+                rmSync(j.out, { recursive: true, force: true });
+                mkdirSync(j.out, { recursive: true });
+                return;
+            }
+            j.step = "checking the commit";
+            await checkHead(j, checkout);
+            j.state = "done";
+            log(j, "Done");
+        } catch (err) {
+            if (!j.cancelling) {
+                // Nothing half made is offered: a decided capture always matches a commit.
+                for (const name of j.projects) {
+                    rmSync(join(j.out, name, "results.json"), { force: true });
+                }
+            }
+            throw err;
+        } finally {
+            if (!j.inPlace) {
+                await git(["worktree", "remove", "--force", checkout]).catch(() => {});
+            }
+            rmSync(scratch, { recursive: true, force: true });
+        }
+    }
+
+    // A capture whose commit moved while it ran is refused: its folder would say it is of a commit
+    // that is no longer the branch's or the change's head.
+    async function checkHead(j, checkout) {
+        const now = await git(["rev-parse", "HEAD"], checkout);
+        let moved = now !== j.head ? `the checkout is at ${now.slice(0, 10)} now` : null;
+        if (!moved && j.decidable === "branch") {
+            const tip = await git(["rev-parse", "--verify", "-q", `refs/heads/${j.what.branch}`]).catch(() => "");
+            moved = tip === j.head ? null : `${j.what.branch} is at ${tip.slice(0, 10) || "nothing"} now`;
+        }
+        if (!moved && j.decidable === "change") {
+            const tip = changes().find((c) => c.pr === j.what.number)?.head;
+            moved = tip === undefined || tip === j.head ? null : `#${j.what.number} is at ${tip.slice(0, 10)} now`;
+        }
+        if (!moved && j.inPlace && j.decidable && (await changedFiles()) > 0) {
+            moved = "the working tree was changed while it was captured";
+        }
+        if (moved) {
+            throw new Error(`the commit moved while it was captured (${moved}): capture it again`);
+        }
+    }
+
+    // The baselines a capture is compared with: the ref's baselines folder, smudged (a Git LFS
+    // pointer becomes its image), checked out of a scratch index so nothing of the repository's own
+    // index or working tree is touched.
+    async function extractBaselines(ref, dir) {
+        mkdirSync(dir, { recursive: true });
+        const index = join(dir, ".index");
+        const env = { GIT_INDEX_FILE: index };
+        await git(["read-tree", ref], repo, env);
+        const files = (await git(["ls-files", "--", `${config.baselines}/`], repo, env)).split("\n").filter(Boolean);
+        if (files.length > 0) {
+            await exec("git", ["checkout-index", "-f", `--prefix=${dir}/`, "--stdin"], {
+                cwd: repo,
+                input: `${files.join("\n")}\n`,
+                env: { ...process.env, ...env },
+            });
+        }
+        rmSync(index, { force: true });
+        for (const name of Object.keys(config.projects)) {
+            mkdirSync(join(dir, config.baselines, name), { recursive: true });
+        }
+    }
+
+    // One child process, in a process group of its own, logged line by line; a capture's result
+    // lines are logged as "[project] <status> <file>". Resolves when it ends; a failure rejects.
+    function runChild(j, name, argv, cwd, results) {
+        return new Promise((resolve, reject) => {
+            const child = spawn(argv[0], argv.slice(1), {
+                cwd,
+                detached: true,
+                stdio: ["ignore", "pipe", "pipe"],
+                env: { ...process.env, PROOFROOM_CAPTURE_JOB: String(j.id), ...previewEnv(j) },
+            });
+            children.set(j.id, child);
+            const lines = (stream, each) => {
+                let rest = "";
+                stream.setEncoding("utf8");
+                stream.on("data", (chunk) => {
+                    const parts = (rest + chunk).split("\n");
+                    rest = parts.pop();
+                    parts.forEach(each);
+                });
+                stream.on("end", () => rest && each(rest));
+            };
+            lines(child.stdout, (l) => log(j, results ? resultText(name, l) : `[${name}] ${l}`));
+            lines(child.stderr, (l) => log(j, `[${name}] ${l}`));
+            child.on("error", reject);
+            child.on("close", (code, signal) => {
+                children.delete(j.id);
+                if (j.cancelling) {
+                    // The capture ends once nothing of it is left (cancel).
+                    stragglersGone(j.id).then(() => resolve(null));
+                } else if (code === 0) {
+                    resolve(null);
+                } else {
+                    reject(new Error(`${results ? "the capture" : "the build"} of ${name} ${signal ? `was stopped (${signal})` : `exited with ${code}`}`));
+                }
+            });
+        });
+    }
+
+    // A change's capture names the change and its head, as a preview of it.
+    const previewEnv = (j) =>
+        j.decidable === "change" ? { VISUAL_REVIEW_PREVIEW_PR: String(j.what.number), VISUAL_REVIEW_PREVIEW_HEAD: j.head } : {};
+
+    const resultText = (name, line) => {
+        try {
+            const r = JSON.parse(line);
+            if (typeof r?.file === "string") {
+                return `[${name}] ${r.status} ${r.file}${r.reason ? `: ${r.reason}` : ""}`;
+            }
+        } catch {
+            // Not a result line.
+        }
+        return `[${name}] ${line}`;
+    };
+
+    function pruneLook() {
+        for (const c of lookCaptures(tmp).slice(LOOK_KEPT)) {
+            rmSync(c.dir, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * Cancels a capture: one waiting is dropped; one running is stopped with every process it
+     * started.
+     * @param {number} id the capture
+     * @returns {object | null} the capture, or null when there is none
+     */
+    function cancel(id) {
+        const j = jobs.find((x) => x.id === id);
+        if (!j) {
+            return null;
+        }
+        if (j.state === "queued") {
+            j.state = "cancelled";
+            j.endedAt = Date.now();
+            log(j, "Cancelled");
+            save();
+            onEnd(j);
+        } else if (j.state === "running" && !j.cancelling) {
+            j.cancelling = true;
+            log(j, "Cancelling: stopping its processes");
+            // ponytail: killed at once, not asked to close: Playwright's own SIGTERM handler waited on
+            // a page stuck loading, and a killed browser leaves its temporary profile folder behind.
+            const child = children.get(j.id);
+            if (child) {
+                kill(-child.pid, "SIGKILL");
+            }
+            // A browser runs in a process group of its own: every process naming the capture goes.
+            stragglersGone(j.id);
+        }
+        return j;
+    }
+
+    const progressOf = (j) =>
+        j.projects.map((name) => {
+            const p = readJson(join(j.out, name, PROGRESS_FILE));
+            return {
+                project: name,
+                done: p?.done ?? 0,
+                total: p?.total ?? 0,
+                current: p?.current ?? null,
+                failures: p?.failures ?? 0,
+                failed: p?.failed ?? [],
+            };
+        });
+
+    // A capture as the list shows it: no log, its stories counted over its projects.
+    const row = (j) => {
+        const progress = j.state === "queued" ? [] : progressOf(j);
+        return {
+            id: j.id,
+            what: j.what,
+            head: j.head,
+            where: "this machine",
+            state: j.state,
+            cancelling: j.cancelling === true,
+            step: j.step,
+            error: j.error,
+            look: j.look,
+            target: j.target,
+            projects: j.projects,
+            stories: j.stories,
+            baselines: { kind: j.baselines.kind, label: j.baselines.label },
+            done: progress.reduce((n, p) => n + p.done, 0),
+            total: progress.reduce((n, p) => n + p.total, 0),
+            failures: progress.reduce((n, p) => n + p.failures, 0),
+            createdAt: j.createdAt,
+            startedAt: j.startedAt,
+            endedAt: j.endedAt,
+        };
+    };
+
+    return {
+        sources,
+        start,
+        cancel,
+        /**
+         * Every capture: the one running, the ones waiting in order, the finished ones newest first.
+         * @returns {{ running: object[], queued: object[], finished: object[] }} them
+         */
+        list() {
+            const all = [...jobs].reverse();
+            return {
+                running: all.filter((j) => j.state === "running").map(row),
+                queued: all.filter((j) => j.state === "queued").reverse().map(row),
+                finished: all.filter((j) => !["running", "queued"].includes(j.state)).map(row),
+            };
+        },
+        /**
+         * One capture with each project's progress and its log since a line.
+         * @param {number} id the capture
+         * @param {number} [since] the number of the first log line wanted
+         * @returns {object | null} it
+         */
+        get(id, since = 0) {
+            const j = jobs.find((x) => x.id === id);
+            if (!j) {
+                return null;
+            }
+            const l = logs.get(j.id) ?? { first: 0, lines: [] };
+            const end = l.first + l.lines.length;
+            const from = Math.max(l.first, Math.min(end, Number.isInteger(since) ? since : 0), end - LOG_SENT);
+            return {
+                ...row(j),
+                progress: progressOf(j),
+                log: { from, lines: l.lines.slice(from - l.first) },
+            };
+        },
+        /**
+         * Settles once no capture runs.
+         * @returns {Promise<void>} once idle
+         */
+        idle: async () => {
+            while (running) {
+                await idle;
+            }
+        },
+    };
+}
+
+/**
+ * Kills every process left of a capture, and settles once none is: a killed process takes a moment
+ * to go.
+ * @param {number} id the capture
+ * @returns {Promise<void>} once none is left
+ */
+async function stragglersGone(id) {
+    for (let left = captureProcesses(id); left.length > 0; left = captureProcesses(id)) {
+        for (const pid of left) {
+            kill(pid, "SIGKILL");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+}
+
+const kill = (target, signal) => {
+    try {
+        process.kill(target, signal);
+    } catch {
+        // Already gone.
+    }
+};
+
+/**
+ * The processes whose environment names a capture (Linux's /proc; none elsewhere).
+ * @param {number} id the capture
+ * @returns {number[]} their pids
+ */
+export function captureProcesses(id) {
+    const marker = `\0PROOFROOM_CAPTURE_JOB=${id}\0`;
+    let pids = [];
+    try {
+        pids = readdirSync("/proc").filter((n) => /^\d+$/.test(n));
+    } catch {
+        return [];
+    }
+    return pids
+        .filter((pid) => {
+            try {
+                return `\0${readFileSync(join("/proc", pid, "environ"), "latin1")}\0`.includes(marker);
+            } catch {
+                return false;
+            }
+        })
+        .map(Number)
+        .filter((pid) => pid !== process.pid);
+}
