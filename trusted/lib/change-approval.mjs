@@ -20,7 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
-import { canonical, recordHash, verifyApproval } from "./approval.mjs";
+import { canonical, PASSKEYS_FILE, recordHash, verifyApproval } from "./approval.mjs";
 
 export const STATEMENT_VERSION = 2;
 export const STATEMENT_TYPE = "change-approval";
@@ -298,13 +298,14 @@ function changedFiles(git, base, head, dirs) {
  *     are not counted
  * @param {(args: string[], input?: string) => Buffer} input.git the git runner (gitIn)
  * @returns {{ history: string[], statements: string[], treeFiles: string[], counted: number,
- *     coverage: string[], notices: string[] }} what fails the append-only rule, the statements
- *     that fail their checks, the top-level files added under the approvals directory (tree
- *     statements), how many statements of these changes count, what of the change is not
- *     approved by them (empty: every altered file is), and what the gate only reports
+ *     own: object[], coverage: string[], notices: string[] }} what fails the append-only rule, the
+ *     statements that fail their checks, the top-level files added under the approvals directory
+ *     (tree statements), how many statements of these changes count and those statements (each
+ *     with its `file`), what of the change is not approved by them (empty: every altered file
+ *     is), and what the gate only reports
  */
 export function changeApprovals({ base, head, baselines, approvals, keys, repository, changes, git }) {
-    const out = { history: [], statements: [], treeFiles: [], counted: 0, coverage: [], notices: [] };
+    const out = { history: [], statements: [], treeFiles: [], counted: 0, own: [], coverage: [], notices: [] };
     const files = changedFiles(git, base, head, [baselines, approvals]);
     const under = (dir, f) => f.path.startsWith(`${dir}/`);
     const reviews = `${baselines}/reviews`;
@@ -347,6 +348,7 @@ export function changeApprovals({ base, head, baselines, approvals, keys, reposi
         }
     }
     out.counted = mine.length;
+    out.own = mine;
     const hashOf = (id) => (id === null ? null : contentHash(blobs.get(id)));
     const d = altered.map((f) => ({ path: f.path.slice(baselines.length + 1), b: hashOf(f.from), h: hashOf(f.to) }));
     out.coverage = coverageProblems(d, mine, baselines);
@@ -363,7 +365,18 @@ export function changeApprovals({ base, head, baselines, approvals, keys, reposi
  * @returns {string[]} the blob ids
  */
 function historyOf(git, base, approvals) {
-    const parts = git(["log", "--format=", "--raw", "-z", "--no-abbrev", "--no-renames", "--full-history", base, "--", `${approvals}/`])
+    const parts = git([
+        "log",
+        "--format=",
+        "--raw",
+        "-z",
+        "--no-abbrev",
+        "--no-renames",
+        "--full-history",
+        base,
+        "--",
+        `${approvals}/`,
+    ])
         .toString("utf8")
         .split("\0");
     const ids = new Set();
@@ -564,4 +577,211 @@ function decisionProblem(found, { full, b, h }) {
         return `the default branch changed ${full} after the review; update and decide it again`;
     }
     return `${full}: the head holds another file than the one approved; review it again`;
+}
+
+const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const hasControl = (text) => [...text].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f);
+
+/**
+ * The commits of a change, each with its parents and its author and committer e-mails, and
+ * whether it counts as a contribution. Two kinds do not: the tool's own commit (Finish's),
+ * recognized by what it changes, never by who made it -- it adds one statement and changes nothing
+ * but the baseline files that statement's entries name -- and a merge that adds nothing of its own
+ * (every file is one parent's, as in a clean merge of the default branch or a merge result CI
+ * builds).
+ *
+ * The commits and their parents come from `git rev-list --parents`, which prints nothing a
+ * contributor chooses; the files and the e-mails each from their own `git log`, whose output is
+ * checked against that list, so an e-mail or a file name holding a separator cannot invent a
+ * commit or hide one. Statements are read in one batch.
+ * @param {(args: string[], input?: string) => Buffer} git the runner
+ * @param {object} at what to read
+ * @param {string} at.base the base
+ * @param {string} at.head the head
+ * @param {string} at.baselines the baselines directory
+ * @param {string} at.approvals the approvals directory
+ * @returns {Map<string, { counts: boolean, parents: string[], emails: string[] }>} by commit
+ * @throws {Error} when git's output does not match the commit list, or an e-mail holds a control character
+ */
+export function changeCommits(git, { base, head, baselines, approvals }) {
+    const range = `${base}..${head}`;
+    const parentsOf = new Map();
+    for (const line of git(["rev-list", "--parents", range]).toString("utf8").split("\n").filter(Boolean)) {
+        const [sha, ...parents] = line.split(" ");
+        parentsOf.set(sha, parents);
+    }
+    const filesOf = commitFiles(git, range, parentsOf);
+    const emailsOf = commitEmails(git, range, parentsOf);
+    const commits = new Map();
+    const stated = new Map();
+    for (const [sha, parents] of parentsOf) {
+        const files = filesOf.get(sha);
+        const added = files.filter((f) => f.startsWith(`${approvals}/`) && f.slice(approvals.length + 1).includes("/"));
+        commits.set(sha, { counts: !(parents.length > 1 && files.length === 0), parents, emails: emailsOf.get(sha) });
+        if (added.length === 1 && parents.length === 1) {
+            stated.set(sha, { file: added[0], files });
+        }
+    }
+    const blobs = readBlobs(
+        git,
+        [...stated].map(([sha, { file }]) => `${sha}:${file}`),
+    );
+    for (const [sha, { file, files }] of stated) {
+        const bytes = blobs.get(`${sha}:${file}`);
+        if (bytes && toolsOwn(bytes, files, file, baselines)) {
+            commits.get(sha).counts = false;
+        }
+    }
+    return commits;
+}
+
+/**
+ * Takes one commit of a `git log` that names it, refusing one the commit list does not hold or
+ * that the log names twice.
+ * @param {Map<string, any>} seen what the log named so far
+ * @param {string} sha the commit the log names
+ * @param {Map<string, string[]>} parentsOf the commit list
+ * @param {string} range the range
+ */
+function logCommit(seen, sha, parentsOf, range) {
+    if (!SHA.test(sha) || !parentsOf.has(sha) || seen.has(sha)) {
+        throw new Error(`git log of ${range} names a commit its commit list does not hold once`);
+    }
+}
+
+/**
+ * The files each commit changes (a merge's: what no parent has), from one `git log`.
+ * @param {(args: string[]) => Buffer} git the runner
+ * @param {string} range the range
+ * @param {Map<string, string[]>} parentsOf the commit list
+ * @returns {Map<string, string[]>} by commit
+ */
+function commitFiles(git, range, parentsOf) {
+    const text = git([
+        "log",
+        "--format=%x01%H",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--diff-merges=combined",
+        range,
+    ]).toString("utf8");
+    const out = new Map();
+    let files = null;
+    for (const raw of text.split("\0")) {
+        const token = raw.replace(/^\n/, "");
+        if (token.startsWith("\x01")) {
+            const sha = token.slice(1);
+            logCommit(out, sha, parentsOf, range);
+            files = [];
+            out.set(sha, files);
+        } else if (token && files) {
+            files.push(token);
+        } else if (token) {
+            throw new Error(`git log of ${range} names a file before any commit`);
+        }
+    }
+    if (out.size !== parentsOf.size) {
+        throw new Error(`git log of ${range} leaves out a commit of its commit list`);
+    }
+    return out;
+}
+
+/**
+ * Each commit's author and committer e-mails, from one `git log`.
+ * @param {(args: string[]) => Buffer} git the runner
+ * @param {string} range the range
+ * @param {Map<string, string[]>} parentsOf the commit list
+ * @returns {Map<string, string[]>} by commit
+ */
+function commitEmails(git, range, parentsOf) {
+    const text = git(["log", "--format=%x01%H%x00%ae%x00%ce", range]).toString("utf8");
+    const out = new Map();
+    for (const record of text.split("\x01").slice(1)) {
+        const fields = record.replace(/\n$/, "").split("\0");
+        if (fields.length !== 3) {
+            throw new Error(`git log of ${range} prints a commit whose e-mails do not parse`);
+        }
+        const [sha, ...emails] = fields;
+        logCommit(out, sha, parentsOf, range);
+        if (emails.some(hasControl)) {
+            throw new Error(`commit ${sha.slice(0, 12)} carries an e-mail address holding a control character`);
+        }
+        out.set(sha, emails.filter(Boolean));
+    }
+    if (out.size !== parentsOf.size) {
+        throw new Error(`git log of ${range} leaves out a commit of its commit list`);
+    }
+    return out;
+}
+
+/**
+ * Whether a commit's files are exactly one statement and the baseline files its entries name.
+ * @param {Buffer} bytes the statement the commit adds
+ * @param {string[]} files every file the commit changes
+ * @param {string} file the statement's path
+ * @param {string} baselines the baselines directory
+ * @returns {boolean} whether it is the tool's own commit
+ */
+function toolsOwn(bytes, files, file, baselines) {
+    let s;
+    try {
+        s = JSON.parse(bytes.toString("utf8"));
+    } catch {
+        return false;
+    }
+    if (statementProblem(s) !== null) {
+        return false;
+    }
+    const named = new Set(s.entries.map((e) => `${baselines}/${e.path}`));
+    return files.every((f) => f === file || named.has(f));
+}
+
+/**
+ * The self-approval rule (`"selfApproval": "forbid"`, docs/approval-format.md): no counted
+ * statement may be signed by a key whose identity contributed to its change. It fails closed:
+ * when no key is registered, when a key names no identity, and on every problem found gathering
+ * the contributors (an unsigned or unverified commit, a code host that could not be asked).
+ * @param {object} input what to check
+ * @param {{ file: string, change: string, approval?: { credentialId?: string } }[]} input.statements
+ *     the counted statements (changeApprovals' `own`)
+ * @param {object[] | null} input.keys the base's keys, null when none is registered
+ * @param {Map<string, { logins: Set<string>, emails: Set<string>, signers: Set<string>,
+ *     problems: string[] }>} input.contributors by change: the code host user names and e-mail
+ *     addresses that contributed, the ids of the keys whose signing keys signed a commit, and what
+ *     stopped the gate from knowing them
+ * @returns {string[]} one line per problem
+ */
+export function selfApprovalProblems({ statements, keys, contributors }) {
+    if (statements.length === 0) {
+        return [];
+    }
+    if (keys === null) {
+        return [`no passkey is registered in ${PASSKEYS_FILE} on the base, so who signed a statement cannot be known`];
+    }
+    const name = (k) => (k.label ? `${k.label} (${k.id})` : k.id);
+    const problems = keys
+        .filter((k) => !k.identity)
+        .map((k) => `the key ${name(k)} in ${PASSKEYS_FILE} names no identity, so it could be anyone's`);
+    for (const change of new Set(statements.map((s) => s.change))) {
+        problems.push(...(contributors.get(change)?.problems ?? [`who contributed to ${change} is not known`]));
+    }
+    const lower = (list) => (list ?? []).filter(Boolean).map((v) => v.toLowerCase());
+    for (const s of statements) {
+        const key = keys.find((k) => k.id === s.approval?.credentialId);
+        const who = contributors.get(s.change);
+        if (!key?.identity || !who) {
+            continue;
+        }
+        const own =
+            who.signers.has(key.id) ||
+            lower([key.identity.user]).some((u) => who.logins.has(u)) ||
+            lower(key.identity.emails).some((e) => who.emails.has(e));
+        if (own) {
+            problems.push(
+                `${s.file}: signed by ${name(key)}, who contributed to ${s.change}; this repository forbids approving your own change`,
+            );
+        }
+    }
+    return problems;
 }

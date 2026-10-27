@@ -2923,6 +2923,9 @@ describe("serve: passkeys", () => {
                         opened.push(JSON.parse(input));
                         return JSON.stringify({ html_url: "https://gh/pull/500" });
                     }
+                    if (args[1] === "user") {
+                        return JSON.stringify({ login: "rita" });
+                    }
                     return gh(args, input);
                 };
             },
@@ -3031,6 +3034,8 @@ describe("serve: passkeys", () => {
             rpId: "127.0.0.1",
             label: "iPad Keychain",
         });
+        // Whose key it is, for the self-approval rule: gh's login and git's e-mail.
+        expect(body.entry.identity).toEqual({ user: "rita", emails: [git(s.repo, "config", "user.email")] });
         expect(body.pullRequest).toBe("https://gh/pull/500");
         expect(body.branch).toMatch(/^visual\/passkey-\d{8}T\d{6}Z$/);
         expect(parsePasskeys(git(s.remote, "show", `${body.branch}:visual-review/passkeys.json`))[0].id).toBe(
