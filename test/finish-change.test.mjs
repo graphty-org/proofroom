@@ -494,6 +494,7 @@ describe("Finish of a seed in change mode", () => {
             origin: ORIGIN,
             pendingKeys: [],
             retire,
+            close: prepared.close,
         };
         meanwhile();
         return { prepared, result: await finish({ ...input, approval }), touches: 1 + retire.length };
@@ -774,6 +775,71 @@ describe("Finish of a seed in change mode", () => {
         expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
         git(r.remote, "branch", old.branch, heads.get(900));
         expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+    });
+
+    it("retires a candidate's accept pull request closed with its branch deleted, from the head GitHub keeps", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, candidate: r.master });
+        const [old] = host.opened;
+        // Closed by hand and "Delete branch" pressed: only refs/pull/900/head keeps the accept.
+        await host.closeChange(old.number);
+        git(r.remote, "update-ref", `refs/pull/${old.number}/head`, old.head);
+        git(r.remote, "branch", "-D", old.branch);
+        const { prepared, result } = await seedFinish(r, host, [[BADGE, "reject", "clipped"]], {
+            projects,
+            candidate: r.master,
+        });
+        expect(prepared.statement).toMatchObject({ change: "pr:900", entries: [{ decision: "reject" }] });
+        expect(result).toMatchObject({ closedPullRequest: "https://fake/changes/900" });
+        expect(old.state).toBe("closed");
+        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+        // "Restore branch" at the head GitHub kept, then reopen: it holds the retiring statement.
+        git(r.remote, "branch", old.branch, old.head);
+        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+    });
+
+    it("leaves alone another pull request whose branch only carries a seed's commits", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects });
+        const [old] = host.opened;
+        git(r.remote, "branch", "dev/x", old.branch);
+        const list = host.listChanges;
+        host.listChanges = async (c) => [
+            ...(await list(c)),
+            { number: 77, url: "https://fake/changes/77", branch: "dev/x", fork: false },
+        ];
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await seedFinish(r, host, [[BUTTON]], { projects, touch: false });
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(host.posted.filter((p) => p.number === 77)).toEqual([]);
+        expect(git(r.remote, "branch", "--list", "dev/x")).not.toBe("");
+        expect(old.state).toBe("closed");
+    });
+
+    it("closes a run's seed pull request holding only its images after a restart, but only after the touch", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, touch: false });
+        const [old] = host.opened;
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await seedFinish(r, host, [[BUTTON]], { projects, touch: false });
+        expect(old.state).toBe("open");
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        await seedFinish(r, host, [[BUTTON]], { projects });
+        expect(old.state).toBe("closed");
+        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+    });
+
+    it("refuses a seed Finish on a code host that cannot list its changes", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        delete host.listChanges;
+        await expect(seedFinish(r, host, [[BADGE]])).rejects.toThrow("the code host cannot list its changes");
     });
 
     it("reopens an earlier seed someone closed after the prepare, so its head reaches the retiring commit", async () => {
@@ -1106,7 +1172,6 @@ describe("Finish of a seed in change mode", () => {
         const r = changeRepo();
         const host = fakeCodeHost();
         delete host.openChange;
-        delete host.listChanges;
         const { prepared, result } = await seedFinish(r, host, [[BADGE]]);
         expect(prepared.opened).toBeUndefined();
         expect(prepared.statement.change).toBe(`branch:${prepared.branch}`);

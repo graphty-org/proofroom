@@ -362,12 +362,14 @@ function check(projects, decisions, pr, branch = null) {
  *     rejected, nothing undecided): with `approval` the statement carries the owner's signature,
  *     without it (no key known) it is committed unsigned
  * @param {{ statement?: object, commit: string, branch: string, record: string,
- *     pendingKeys?: object[], origin: string, resign?: boolean, retire?: object[] } | null} [input.approval] the accept
+ *     pendingKeys?: object[], origin: string, resign?: boolean, retire?: object[],
+ *     close?: object[] } | null} [input.approval] the accept
  *     commit prepareApproval built and signRecord signed, and its statement with the owner's
  *     `approval` when the Finish signs the tree, the keys registered but not yet on the default
  *     branch, and the page's origin; `resign`: the commit only signs the record of an earlier
  *     Finish, so nothing is posted again; `retire`: for a seed, the earlier seeds prepareApproval
- *     returned, each `statement` with its own `approval`, retired before the seed is pushed
+ *     returned, each `statement` with its own `approval`, retired before the seed is pushed; `close`:
+ *     the earlier seed branches with nothing to retire, closed and deleted then
  * @param {string | null} [input.repository] this repository's id (`github:<id>`) for a change
  *     statement; null takes the default branch config's `repositoryId`
  * @returns {Promise<{ commit: string | null, branch: string | null, pullRequest: string | null,
@@ -722,7 +724,11 @@ export async function closeCandidatePullRequest(host, target, at = null) {
             const net = at.net ?? quietNet();
             const found = await seedsOf(
                 { repo: at.repo, config: at.config, host, net },
-                { base: target.candidate, fetch: fetcher(at.repo, target, net), named: `${branch}-` },
+                {
+                    base: target.candidate,
+                    fetch: fetcher(at.repo, target, net),
+                    named: seedBranches(target, target.candidate),
+                },
             );
             const open = found.flatMap((b) => b.open);
             for (const c of open) {
@@ -780,9 +786,9 @@ async function changeModeAt(repo, config, target, net) {
  * read.
  * @param {{ repo: string, config: object, target: { candidate?: string }, net: any, host?: any, now: Date }} input
  *     the repository, the settings, the candidate, the network runner, the code host and the time
- * @returns {Promise<{ found: object[], retire: object[] } | null>} the branches found (seedsOf), and
- *     one retiring statement per pull request they name (retireStatements; a branch with none has
- *     its pull requests closed and is deleted there); null when the default branch uses tree statements
+ * @returns {Promise<{ found: object[], retire: object[], close: object[] } | null>} the branches
+ *     found (seedsOf), one retiring statement per pull request they name, and the branches with
+ *     none, to close (retireStatements); null when the default branch uses tree statements
  */
 async function candidateSeeds({ repo, config, target, net, host, now }) {
     if (!(await changeModeAt(repo, config, target, net))) {
@@ -793,10 +799,10 @@ async function candidateSeeds({ repo, config, target, net, host, now }) {
     const found = await seedsOf(input, {
         base,
         fetch: fetcher(repo, target, net),
-        named: `${candidateBranch(base)}-`,
+        named: seedBranches(target, base),
     });
-    const retire = await retireStatements(input, found, { base, repository: null });
-    return { found, retire };
+    const { retire, close } = await retireStatements(input, found, { base, repository: null });
+    return { found, retire, close };
 }
 
 /**
@@ -864,6 +870,7 @@ async function retireCandidate(host, target, { repo, config, net, now, approval 
         }
         await retireSeeds({ repo, config, host, net }, statements);
     }
+    await closeSeeds({ repo, host, net }, seeds.close);
     await keepSeedRecord(repo, config, `candidate:${target.candidate}`, null);
     const closed = found.flatMap((b) => [...b.numbers, ...b.open]);
     return closed.length > 0 ? { closedPullRequest: urlsOf(closed) } : {};
@@ -1021,7 +1028,7 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * @param {import("./adapters/index.mjs").CodeHost} [input.codeHost] as in finish: a seed's pull
  *     request is opened here, before the passkey touch, when the seed has none yet
  * @returns {Promise<{ commit: string, branch: string, record: string | null, recordBody: object | null,
- *     statement?: object, pushed: boolean, opened?: string, retire?: object[], accepts: number, excludes: number, rejects: number } | null>}
+ *     statement?: object, pushed: boolean, opened?: string, retire?: object[], close?: object[], accepts: number, excludes: number, rejects: number } | null>}
  *     the accept commit and branch it goes to, the record's path and the record to sign, whether
  *     the commit is pushed already, the seed pull request this call opened (`opened`), and what the Finish holds; in change mode (the default
  *     branch's config, docs/approval-format.md) no record but the change `statement` to sign,
@@ -1047,7 +1054,8 @@ export async function prepareApproval({
     if (first && accepts.length === 0 && target.pr === null && target.candidate) {
         // A Finish rejecting an image of a candidate signs only the retirement of its accept pull request.
         const { net } = stepRunner(() => {}, retryDelays ?? RETRY_DELAYS);
-        const r = await candidateRetirement({ repo, config, target, net, now, host: codeHost });
+        const host = codeHost ?? (gh ? githubCodeHost(gh) : null);
+        const r = await candidateRetirement({ repo, config, target, net, now, host });
         return r === null
             ? null
             : {
@@ -1098,6 +1106,7 @@ export async function prepareApproval({
             pushed: false,
             ...(built.opened && { opened: built.pullRequest }),
             retire: built.retire ?? [],
+            close: built.close ?? [],
             accepts: accepts.filter((a) => a.decision === "accept").length,
             excludes: accepts.filter((a) => a.decision !== "accept").length,
             rejects: rejects.length,
@@ -1332,7 +1341,7 @@ export async function unsignedRecordAt(repo, tip, pr, config) {
  * @param {string} input.repo the repository
  * @param {{ pr: number | null, branch?: string | null, candidate?: string, localBranch?: boolean }} input.target as in finish
  * @param {{ statement?: object, commit: string, branch: string, record: string, pendingKeys?: object[],
- *     origin: string, retire?: object[] }} input.approval as in finish, the statement with its
+ *     origin: string, retire?: object[], close?: object[] }} input.approval as in finish, the statement with its
  *     `approval`, and for a seed the earlier seeds it retires, each statement signed too
  * @param {(step: string) => void} input.progress as in finish
  * @param {Function} input.net as in finish
@@ -1406,6 +1415,8 @@ async function pushSignedChange(input) {
         progress(`retiring ${retire.map((s) => s.url ?? s.branch).join(", ")}`);
         await retireSeeds({ repo, config, host, net }, retire);
     }
+    // The earlier seeds with nothing to retire are closed only now, after the touch.
+    await closeSeeds({ repo, host, net }, approval.close);
     const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, commit]);
@@ -1533,7 +1544,7 @@ async function keysAt(repo, ref) {
  *     request is opened, looked up and closed on (change mode)
  * @returns {Promise<{ commit: string, branch: string, record: string | null, alreadyFinished?: true, pending?: boolean,
  *     statement?: object, pullRequest?: string | null, number?: number | null, opened?: boolean,
- *     retire?: object[] }>} the commit (pushed unless `push` is false) and branch, and the record's
+ *     retire?: object[], close?: object[] }>} the commit (pushed unless `push` is false) and branch, and the record's
  *     path (null for a seed pushed earlier and reused, and in change mode, whose commit holds its
  *     `statement` instead: unsigned, and not yet in the commit when it is not pushed)
  */
@@ -1739,16 +1750,17 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
  *     repository: string }} work the captured commit, the planned writes, the verified writes, the
  *     fetcher and the repository's id
  * @returns {Promise<{ commit: string, branch: string, record: null, statement: object,
- *     pullRequest: string | null, number: number | null, opened: boolean, retire: object[] }>} what
- *     was committed (and pushed, unless `push` is false), the seed's pull request, whether this
- *     Finish opened it, and the earlier seeds it retires (retireStatements)
+ *     pullRequest: string | null, number: number | null, opened: boolean, retire: object[],
+ *     close: object[] }>} what was committed (and pushed, unless `push` is false), the seed's pull
+ *     request, whether this Finish opened it, the earlier seeds it retires and the ones it only
+ *     closes (retireStatements)
  */
 async function commitSeed(input, { base, plan, writes, fetch, repository }) {
     const { repo, target, rejects, now, config, push } = input;
     const key = seedKey(target, input.first, base);
     const found = await seedBranchOf(input, { key, base, fetch });
-    const old = await seedsOf(input, { base, fetch, except: found.branch });
-    const retire = await retireStatements(input, old, { base, repository });
+    const old = await seedsOf(input, { base, fetch, except: found.branch, named: seedBranches(target, base) });
+    const { retire, close } = await retireStatements(input, old, { base, repository });
     const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
     await git(repo, ["worktree", "add", "-q", "--detach", tree, found.parent]);
@@ -1786,12 +1798,13 @@ async function commitSeed(input, { base, plan, writes, fetch, repository }) {
         if (why) {
             throw new AcceptError(`this Finish's seed statement is not valid (${why})`);
         }
-        const out = { branch: found.branch, record: null, statement, pullRequest: url, number, opened, retire };
+        const out = { branch: found.branch, record: null, statement, pullRequest: url, number, opened, retire, close };
         if (!push) {
             return { ...out, commit: await git(tree, ["rev-parse", "HEAD"]) };
         }
         // No passkey is registered: the statements go in unsigned, X' replacing X.
         await retireSeeds(input, retire);
+        await closeSeeds(input, close);
         await amendStatement(tree, statement, config);
         const commit = await pushAccepts(input, { tree, writes, branch: found.branch, lease });
         await keepSeedRecord(repo, config, key, { ...record, x: null });
@@ -1829,6 +1842,17 @@ const freshSeedBranch = (target, base, now) => {
         ? `visual/approve-${base.slice(0, 12)}-${random}`
         : `visual/seed-${now.toISOString().slice(0, 10)}-${base.slice(0, 12)}-${random}`;
 };
+
+/**
+ * The names freshSeedBranch gives the seed branches of a capture, whatever the run, day or random part.
+ * @param {{ candidate?: string }} target as in finish
+ * @param {string} base the captured commit
+ * @returns {RegExp} it
+ */
+const seedBranches = (target, base) =>
+    target.candidate
+        ? new RegExp(`^${candidateBranch(base)}-`)
+        : new RegExp(`^visual/seed-\\d{4}-\\d{2}-\\d{2}-${base.slice(0, 12)}-`);
 
 const seedRecordsFile = (repo, config) => join(repo, config.workDir, "seed-branches.json");
 
@@ -2057,20 +2081,23 @@ async function notFinishCommit(repo, sha, change, { base, keys, config }) {
  * the one place a Finish finds the seeds it retires or supersedes (a seed Finish retiring the earlier
  * seeds of its capture, a Finish rejecting an image of a candidate retiring its accept pull request,
  * a refresh closing that pull request). A seed is a branch that adds statements carrying this
- * capture's commit (`capturedHead`) that the default branch's keys verify: the branch of every open
- * pull request of this repository and every branch under `visual/` (where Finish names every seed
- * branch); this server's record of the branches it created plays no part. What is retired
+ * capture's commit (`capturedHead`) that the default branch's keys verify: every branch under
+ * `visual/` (where Finish names every seed branch), the kept head (refs/pull/N/head) of every
+ * closed unmerged pull request from a `visual/` branch since deleted, and the branch of an open
+ * pull request when it is under `visual/` or one of its statements names that pull request (a
+ * branch that only carries a seed's commits is someone else's); this server's record of the
+ * branches it created plays no part. What is retired
  * is the pull request each of those statements names (`pr:N`), looked up by its number, never the
  * branch's current or newest pull request: another pull request opened from the same branch later
  * does not hide it. A merged one is history and is skipped, and so is a branch whose stated pull
- * requests all merged. Refuses, naming it, when the code host or a branch cannot be read, or when a
- * seed cannot be retired (a code host without `change`, `reopenChange` and `closeChange`, plain
+ * requests all merged. Refuses, naming it, when the code host or a branch cannot be read (a code
+ * host that cannot list its open, or closed, changes included), or when a seed cannot be retired (a code host without `change`, `reopenChange` and `closeChange`, plain
  * git). A branch of no open pull request is scanned only on a code host that can do those.
  * @param {object} input the repository, the settings, the code host and the network runner
  * @param {{ base: string, fetch: (b: string) => Promise<any>, except?: string | null,
- *     named?: string | null }} at the captured commit, the fetcher (the default branch fetched
- *     already), a branch to leave out (a seed Finish's own), and a branch name prefix whose open pull
- *     requests count as seeds even with no statement (a candidate's, `visual/approve-<12 hex>-`)
+ *     named?: RegExp | null }} at the captured commit, the fetcher (the default branch fetched
+ *     already), a branch to leave out (a seed Finish's own), and the names of this capture's seed
+ *     branches (seedBranches), whose open pull requests count as seeds even with no statement
  * @returns {Promise<{ branch: string, tip: string, numbers: { number: number, url: string | null }[],
  *     open: { number: number, url: string | null }[] }[]>} each branch: its tip as fetched, the
  *     unmerged pull requests its statements of this capture name, and the open pull requests listed
@@ -2079,7 +2106,9 @@ async function notFinishCommit(repo, sha, change, { base, keys, config }) {
 async function seedsOf(input, { base, fetch, except = null, named = null }) {
     const { repo, config, host, net } = input;
     if (!host?.listChanges) {
-        return [];
+        throw new AcceptError(
+            "the seeds of this capture could not be looked up: the code host cannot list its changes, so an earlier seed would stay green; nothing was changed",
+        );
     }
     const read = (what, run) =>
         net(what, run).catch((err) => {
@@ -2131,28 +2160,37 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
             );
         });
     const open = await read("listing the open changes", () => host.listChanges({ ...config, ignoreBranches: [] }));
+    /** @type {Map<string, number[] | null>} */
+    const stated = new Map();
     /** @type {Map<string, { ref: string, numbers: number[], open: { number: number, url: string | null }[] }>} */
     const found = new Map();
     for (const c of open.filter((o) => o.branch && !o.fork && o.branch !== except)) {
         // A branch plain git lists as local (`remote: null`) is on no remote: it is read where it is.
         const ref = c.remote === null ? `refs/heads/${c.branch}` : ownRef(c.branch);
-        if (!found.has(c.branch)) {
+        if (!stated.has(c.branch)) {
             if (c.remote !== null) {
                 await fetched(c);
             }
             let numbers = await statedOn(ref);
-            if (numbers === null && named !== null && c.branch.startsWith(named) && retires) {
+            if (numbers === null && named?.test(c.branch) && retires) {
                 // A seed whose statement was never pushed (a cancelled passkey touch): only its images.
                 numbers = [];
             }
-            if (numbers === null) {
-                continue;
-            }
-            if (!retires || c.number === null || c.number === undefined) {
-                throw new AcceptError(
-                    `${c.branch} holds an earlier seed of this capture: close or delete it, then press Finish again`,
-                );
-            }
+            stated.set(c.branch, numbers);
+        }
+        const numbers = stated.get(c.branch);
+        // Only this capture's own seeds: a branch under visual/ (where Finish names every seed
+        // branch), or one whose statement names this very pull request. Another branch that only
+        // carries a seed's commits (branched off it, or merged it) is someone else's work.
+        if (numbers === null || !(c.branch.startsWith("visual/") || numbers.includes(c.number))) {
+            continue;
+        }
+        if (!retires || c.number === null || c.number === undefined) {
+            throw new AcceptError(
+                `${c.branch} holds an earlier seed of this capture: close or delete it, then press Finish again`,
+            );
+        }
+        if (!found.has(c.branch)) {
             found.set(c.branch, { ref, numbers, open: [] });
         }
         found.get(c.branch)?.open.push({ number: c.number, url: c.url ?? c.html_url ?? null });
@@ -2162,8 +2200,13 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
         const listed = await read("listing the visual/ branches", () =>
             git(repo, ["ls-remote", "--heads", from, "refs/heads/visual/*"]),
         );
-        for (const line of listed.split("\n").filter(Boolean)) {
-            const branch = line.split("\t")[1].slice("refs/heads/".length);
+        const branches = new Set(
+            listed
+                .split("\n")
+                .filter(Boolean)
+                .map((line) => line.split("\t")[1].slice("refs/heads/".length)),
+        );
+        for (const branch of branches) {
             if (branch === except || found.has(branch)) {
                 continue;
             }
@@ -2171,6 +2214,32 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
             const numbers = await statedOn(ownRef(branch));
             if (numbers !== null && numbers.length > 0) {
                 found.set(branch, { ref: ownRef(branch), numbers, open: [] });
+            }
+        }
+        // A seed pull request closed with its branch deleted: GitHub keeps its head
+        // (refs/pull/N/head), which "Restore branch" and a reopen bring back. Its head is read into
+        // the branch's own ref, so retiring it pushes the branch again on that head.
+        if (!host.closedChanges) {
+            throw new AcceptError(
+                "the seeds of this capture could not be looked up: the code host cannot list its closed changes; nothing was changed",
+            );
+        }
+        const closed = await read("listing the closed visual/ changes", () => host.closedChanges("visual/"));
+        for (const c of closed) {
+            if (c.branch === except || found.has(c.branch) || branches.has(c.branch)) {
+                continue;
+            }
+            const ref = ownRef(c.branch);
+            await net(`git fetch pull request ${c.number}`, () =>
+                git(repo, ["fetch", "-q", "--no-write-fetch-head", from, `+refs/pull/${c.number}/head:${ref}`]),
+            ).catch((err) => {
+                throw new AcceptError(
+                    `${c.url ?? `#${c.number}`} may hold a seed of this capture and could not be read (${err.message}): press Finish again`,
+                );
+            });
+            const numbers = await statedOn(ref);
+            if (numbers !== null && numbers.length > 0) {
+                found.set(c.branch, { ref, numbers, open: [] });
             }
         }
     }
@@ -2204,18 +2273,21 @@ async function seedsOf(input, { base, fetch, except = null, named = null }) {
  * What retires each earlier seed: for each pull request a branch's statements of this capture name,
  * a seed statement of that pull request, chained after its newest statements, that rejects every
  * file they decided, so its newest decision for each is a reject and the gate fails it, reopened or
- * restored, however it comes back. A branch with no such pull request (nothing there counts) has
- * its open pull requests closed and is deleted now.
+ * restored, however it comes back. A branch with no such pull request (nothing there counts) is
+ * returned in `close`: its open pull requests are closed and it is deleted only by the Finish
+ * that runs after the passkey touch (closeSeeds), never by a prepare.
  * @param {object} input commitSeed's input
  * @param {{ branch: string, tip: string, numbers: { number: number, url: string | null }[],
  *     open: { number: number, url: string | null }[] }[]} branches as seedsOf returns them
  * @param {{ base: string, repository: string }} at the captured commit and the repository's id
- * @returns {Promise<object[]>} one per pull request to retire: its branch, number, url, the
- *     branch's tip, and its unsigned `statement`
+ * @returns {Promise<{ retire: object[], close: { branch: string, open: { number: number }[] }[] }>}
+ *     one per pull request to retire: its branch, number, url, the branch's tip, and its unsigned
+ *     `statement`; and the branches only to close and delete
  */
 async function retireStatements(input, branches, { base, repository }) {
-    const { repo, config, host, now, net } = input;
+    const { repo, config, now } = input;
     const out = [];
+    const close = [];
     for (const { branch, tip, numbers, open } of branches) {
         const before = out.length;
         for (const { number, url } of numbers) {
@@ -2232,13 +2304,26 @@ async function retireStatements(input, branches, { base, repository }) {
             }
         }
         if (out.length === before) {
-            for (const { number } of open) {
-                await net("closing the earlier seed", () => host.closeChange(number));
-            }
-            await deleteClosedBranch(repo, branch);
+            close.push({ branch, open });
         }
     }
-    return out;
+    return { retire: out, close };
+}
+
+/**
+ * Closes the open pull requests of seed branches that hold nothing to retire (retireStatements'
+ * `close`), and deletes the branches.
+ * @param {{ repo: string, host: import("./adapters/index.mjs").CodeHost, net: any }} input the
+ *     repository, the code host and the network runner
+ * @param {{ branch: string, open: { number: number }[] }[]} [close] the branches
+ */
+async function closeSeeds({ repo, host, net }, close = []) {
+    for (const { branch, open } of close) {
+        for (const { number } of open) {
+            await net("closing the earlier seed", () => host.closeChange(number));
+        }
+        await deleteClosedBranch(repo, branch);
+    }
 }
 
 /**

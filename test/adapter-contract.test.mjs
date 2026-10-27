@@ -307,14 +307,12 @@ describe.each(codeHosts)("the code host: %s", (_, make) => {
             await host.updateChange(open.number, { body: "accepts, again" });
             await host.closeChange(open.number);
             writes += 2;
-            // A closed change is found by its branch and reopened (Finish retires an earlier seed so).
+            // A closed change is listed by its branch's prefix and reopened (Finish retires an earlier
+            // seed so).
             if (has(host, "reopenChange")) {
-                expect(await host.changeOf("visual/approve-6dfc21d0c4")).toEqual({
-                    number: open.number,
-                    html_url: url,
-                    state: "closed",
-                    merged: false,
-                });
+                expect(await host.closedChanges("visual/")).toEqual([
+                    { number: open.number, url, branch: "visual/approve-6dfc21d0c4" },
+                ]);
                 await host.reopenChange(open.number);
                 writes += 1;
             }

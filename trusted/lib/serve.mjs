@@ -898,7 +898,7 @@ export function createApp({
      * earlier seeds a seed Finish retires, each with a statement to sign too.
      * @type {Map<string, { stage: "record" | "tree" | "signed", challenge: string, commit: string,
      *     branch: string, record: string, recordBody: object, pushed: boolean, tree: boolean,
-     *     change: boolean, resign: boolean, statement?: object, retire?: { statement: object }[], now: string,
+     *     change: boolean, resign: boolean, statement?: object, retire?: { statement: object }[], close?: object[], now: string,
      *     work: object, digest: string, expires: number }>}
      */
     const approvals = new Map();
@@ -3153,7 +3153,7 @@ export function createApp({
         approvals.delete(t.id);
         const { commit, branch, record } = p;
         return {
-            approval: { statement, commit, branch, record, pendingKeys, origin, now: p.now, retire },
+            approval: { statement, commit, branch, record, pendingKeys, origin, now: p.now, retire, close: p.close },
             work: p.work,
         };
     }

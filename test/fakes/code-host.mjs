@@ -87,10 +87,11 @@ export function fakeCodeHost({
             const o = opened.find((x) => x.branch === branch && x.state === "open");
             return o ? { number: o.number, html_url: o.html_url } : null;
         }),
-        changeOf: call("changeOf", (branch) => {
-            const o = opened.findLast((x) => x.branch === branch);
-            return o ? { number: o.number, html_url: o.html_url, state: o.state, merged: o.merged === true } : null;
-        }),
+        closedChanges: call("closedChanges", (prefix) =>
+            opened
+                .filter((x) => x.state === "closed" && x.merged !== true && x.branch.startsWith(prefix))
+                .map((x) => ({ number: x.number, url: x.html_url, branch: x.branch })),
+        ),
         change: call("change", (number) => {
             const o = listOpened ? opened.find((x) => x.number === number) : undefined;
             if (o) {

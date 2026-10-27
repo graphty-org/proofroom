@@ -46,12 +46,25 @@ export function githubCodeHost(gh) {
             const open = list.find((p) => p.head?.ref === branch);
             return open ? { number: open.number, html_url: open.html_url } : null;
         },
-        // The newest pull request of a branch of this repository in any state, or null; throws when
+        // Every closed, unmerged pull request of this repository whose branch starts with `prefix`,
+        // whether or not the branch still exists (GitHub keeps refs/pull/N/head); throws when
         // GitHub cannot say.
-        async changeOf(branch) {
-            const list = JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls?state=all&head={owner}:${branch}`]));
-            const p = list.find((x) => x.head?.ref === branch);
-            return p ? { number: p.number, html_url: p.html_url, state: p.state, merged: Boolean(p.merged_at) } : null;
+        async closedChanges(prefix) {
+            const out = [];
+            for (let page = 1; ; page++) {
+                const list = JSON.parse(
+                    await gh(["api", `repos/{owner}/{repo}/pulls?state=closed&per_page=100&page=${page}`]),
+                );
+                for (const p of list) {
+                    const own = p.head?.repo?.id !== undefined && p.head?.repo?.id === p.base?.repo?.id;
+                    if (!p.merged_at && own && p.head.ref.startsWith(prefix)) {
+                        out.push({ number: p.number, url: p.html_url, branch: p.head.ref });
+                    }
+                }
+                if (list.length < 100) {
+                    return out;
+                }
+            }
         },
         // One pull request as REST answers it: state, head ref and sha.
         change: async (number) => JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls/${number}`])),

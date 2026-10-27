@@ -70,15 +70,38 @@
             }
         ],
         "api repos/{owner}/{repo}/pulls?state=open&head={owner}:no-such-branch": [],
-        "api repos/{owner}/{repo}/pulls?state=all&head={owner}:visual/approve-6dfc21d0c4": [
+        "api repos/{owner}/{repo}/pulls?state=closed&per_page=100&page=1": [
             {
                 "number": 3501,
                 "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3501",
                 "state": "closed",
                 "merged_at": null,
-                "head": {
-                    "ref": "visual/approve-6dfc21d0c4"
-                }
+                "head": { "ref": "visual/approve-6dfc21d0c4", "repo": { "id": 7 } },
+                "base": { "ref": "master", "repo": { "id": 7 } }
+            },
+            {
+                "number": 3490,
+                "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3490",
+                "state": "closed",
+                "merged_at": "2026-10-01T00:00:00Z",
+                "head": { "ref": "visual/approve-1111111111", "repo": { "id": 7 } },
+                "base": { "ref": "master", "repo": { "id": 7 } }
+            },
+            {
+                "number": 3480,
+                "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3480",
+                "state": "closed",
+                "merged_at": null,
+                "head": { "ref": "visual/approve-2222222222", "repo": { "id": 8 } },
+                "base": { "ref": "master", "repo": { "id": 7 } }
+            },
+            {
+                "number": 3470,
+                "html_url": "https://github.com/graphty-org/graphty-monorepo/pull/3470",
+                "state": "closed",
+                "merged_at": null,
+                "head": { "ref": "feature/x", "repo": { "id": 7 } },
+                "base": { "ref": "master", "repo": { "id": 7 } }
             }
         ],
         "api -X PATCH repos/{owner}/{repo}/pulls/3501 -f state=open": {
