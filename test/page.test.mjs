@@ -3761,7 +3761,8 @@ describe("review page: safe filters and the pull request's context", () => {
         await tile.waitFor({ state: "visible" });
         expect(await page.locator("#spot-all").getAttribute("aria-pressed")).toBe("false");
         expect(await page.locator("#zoom-all").getAttribute("aria-pressed")).toBe("true");
-        expect(await look()).toEqual([false, true]);
+        // The plain thumbnail shows first, until the zoomed one comes.
+        expect(await shown(false, true)).toEqual(zoomOnly);
     });
 
     it("loads spotlit tiles the server made, and makes the same tile itself when the server cannot", async () => {

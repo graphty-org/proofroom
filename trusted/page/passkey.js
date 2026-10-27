@@ -92,3 +92,46 @@ export async function approve(prepared) {
         signature: toB64u(r.signature),
     };
 }
+
+// The kind of device a user agent names, checked in this order after the iPad (which can call
+// itself a Mac).
+const DEVICES = [
+    [/iPhone/, "iPhone"],
+    [/Android/, "Android"],
+    [/Mac OS X|Macintosh/, "Mac"],
+    [/Windows/, "Windows"],
+    [/Linux|CrOS/, "Linux"],
+];
+
+/**
+ * What a passkey is called in visual-review/passkeys.json and on every device: the kind of device
+ * that made it and the day, never "this device" (the file is read on every device).
+ * @param {boolean} platform whether the device itself made it (else a security key)
+ * @returns {string} the name
+ */
+export function passkeyName(platform) {
+    const day = new Date().toISOString().slice(0, 10);
+    if (!platform) {
+        return `security key, ${day}`;
+    }
+    const ua = navigator.userAgent;
+    const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    return `${iPad ? "iPad" : (DEVICES.find(([p]) => p.test(ua))?.[1] ?? "device")} passkey, ${day}`;
+}
+
+/**
+ * The likely cause of the browser refusing a passkey: a page opened from another address than the
+ * one the registered passkeys were made on.
+ * @param {{ rpId: string }[]} keys the passkeys registered
+ * @returns {string | null} that sentence, or null when the address is not the cause
+ */
+export function passkeyWrongHost(keys) {
+    const hosts = [...new Set(keys.map((k) => k.rpId))];
+    if (hosts.length > 0 && !hosts.includes(location.hostname)) {
+        return (
+            `Your passkey belongs to ${hosts.join(" or ")}, and this page is open at ${location.hostname}: ` +
+            `open it from https://${hosts[0]} instead. Nothing was changed.`
+        );
+    }
+    return null;
+}

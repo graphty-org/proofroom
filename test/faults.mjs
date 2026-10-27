@@ -370,7 +370,8 @@ export async function startApp(r, options) {
     const box = {};
     const server = createServer((req, res) => box.app(req, res));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    // `host` localhost: WebAuthn needs a host name (an IP address is never a passkey's site).
+    const origin = `http://${options.host ?? "127.0.0.1"}:${server.address().port}`;
     const token = options.token ?? "t".repeat(43);
     try {
         box.app = createApp({ repo: r.repo, tmp, config: FIXTURE_CONFIG, token, origin, ...options });

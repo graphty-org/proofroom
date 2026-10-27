@@ -70,18 +70,20 @@ export function ic(name, cls = "") {
 const NONLETTER = /^(Left|Right|Up|Down|Enter|Esc|Tab|Space|hold Space|Shift\+Up|Shift\+Down)$/;
 
 /**
+ * The class of a key's box: `lk` on a letter, digit or symbol key (hidden while letter keys are
+ * off) and `ek` on Enter (hidden while a focused button takes Enter).
+ * @param {string} k the printed key
+ * @returns {string | null} the class
+ */
+export const kbClass = (k) => (NONLETTER.test(k) ? (k === "Enter" ? "ek" : null) : "lk");
+
+/**
  * The key hint boxes for a key's printed name ("Shift+1", "Enter", "Left / J"): a box per key,
- * with class `lk` on a letter, digit or symbol key (hidden while letter keys are off) and `ek` on
- * Enter (hidden while a focused button takes Enter).
+ * classed by kbClass.
  * @param {string} keys the printed keys, " / " between two
  * @returns {HTMLElement[]} the boxes
  */
-export const kb = (keys) =>
-    keys
-        .split(" / ")
-        .map((k) =>
-            el("kbd", { class: NONLETTER.test(k) ? (k === "Enter" ? "ek" : null) : "lk", "aria-hidden": "true" }, k),
-        );
+export const kb = (keys) => keys.split(" / ").map((k) => el("kbd", { class: kbClass(k), "aria-hidden": "true" }, k));
 
 /**
  * A number with thousands separators.

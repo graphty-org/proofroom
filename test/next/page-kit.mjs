@@ -50,20 +50,28 @@ export const BROWSERS = { chromium, webkit };
  * @param {{ targets?: object[], list?: object, rows?: (id: string, project: string) => object,
  *     viewport?: { width: number, height: number }, hash?: string, storage?: Record<string, string>,
  *     clock?: boolean, ui?: "review" | "next", path?: string, failList?: number,
- *     pictures?: (name: string) => boolean, decide?: (body: object) => object }} [options]
+ *     pictures?: (name: string) => boolean, decide?: (body: object) => object, host?: string }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
  *     project's reviewable), the window, the address after #, local storage to start with,
  *     whether the test controls the page's clock, the server's page at /, the path to open, and
  *     how many of the first asks for the list answer HTTP 500, which pictures to answer (the rest
- *     fail with HTTP 500), and the answer to each POST /api/decide (by default `{ ok: true }`)
+ *     fail with HTTP 500), the answer to each POST /api/decide (by default `{ ok: true }`), and the
+ *     host name the page is opened at (localhost for a passkey)
  * @returns {Promise<{ page: import("playwright").Page, context: import("playwright").BrowserContext,
  *     close: () => Promise<void>, actions: object[],
- *     requests: string[], origin: string, setList: (answer: object) => void }>} the tab, how to
- *     close it, the actions it logged (`{ a, via }`), every path it asked for, and how to change
- *     the list's next answer
+ *     requests: string[], origin: string, setList: (answer: object) => void,
+ *     stopServer: () => Promise<void>, startServer: () => Promise<void> }>} the tab, how to
+ *     close it, the actions it logged (`{ a, via }`), every path it asked for, how to change
+ *     the list's next answer, and how to stop the server (every request the test answers for it
+ *     then fails as one to a stopped server does) and start it again on the same port
  */
 export async function openNext(browser, options = {}) {
-    const s = await startApp(makeRepo(), { gh: fakeGh({}), token: TOKEN, ...(options.ui && { ui: options.ui }) });
+    const s = await startApp(makeRepo(), {
+        gh: fakeGh({}),
+        token: TOKEN,
+        ...(options.ui && { ui: options.ui }),
+        ...(options.host && { host: options.host }),
+    });
     const context = await browser.newContext({ viewport: options.viewport ?? { width: 1440, height: 900 } });
     // Copy link writes to the clipboard: Chromium asks for the permission. WebKit has none to give,
     // and asked for one, it refuses every new tab.
@@ -126,6 +134,15 @@ export async function openNext(browser, options = {}) {
             },
         }),
     );
+    // Added last, so it is asked first: while the server is stopped, the answers the test gives
+    // in its place are refused too. The usage events are the test's own record, never refused.
+    let down = false;
+    await page.route("**/api/**", (route) =>
+        down && !new URL(route.request().url()).pathname.startsWith("/api/usage")
+            ? route.abort("connectionrefused")
+            : route.fallback(),
+    );
+    const port = new URL(s.origin).port;
     if (options.storage) {
         await context.addInitScript((kept) => {
             for (const [k, v] of Object.entries(kept)) {
@@ -147,6 +164,15 @@ export async function openNext(browser, options = {}) {
         origin: s.origin,
         setList: (answer) => {
             list = answer;
+        },
+        stopServer: async () => {
+            down = true;
+            s.server.closeAllConnections();
+            await new Promise((resolve) => s.server.close(() => resolve()));
+        },
+        startServer: async () => {
+            await new Promise((resolve) => s.server.listen(Number(port), "127.0.0.1", resolve));
+            down = false;
         },
         close: async () => {
             await context.close();
