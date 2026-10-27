@@ -119,12 +119,12 @@ function approvalSettings(raw, out, fail) {
 }
 
 /**
- * The built-in adapters each adapter key may name, the first its default (README, "Configuration").
- * Only one of each is built today.
+ * The built-in adapters each adapter key may name, the first its default (README, "Configuration";
+ * under plain git the capture store's default is the local folder).
  */
 export const ADAPTERS = Object.freeze({
-    codeHost: ["github"],
-    captureStore: ["github-actions"],
+    codeHost: ["github", "plain-git"],
+    captureStore: ["github-actions", "local-folder"],
     stories: ["storybook"],
     renderer: ["playwright-chromium"],
 });
@@ -144,6 +144,12 @@ function adapterSettings(raw, out, fail) {
             }
             out[key] = raw[key];
         }
+    }
+    // Plain git has no repository id of its own for change statements to name (docs/plain-git.md).
+    if (raw.codeHost === "plain-git" && raw.repositoryId === undefined) {
+        fail(
+            'codeHost "plain-git" needs a repositoryId, such as a random UUID (proofroom init --code-host plain-git writes one)',
+        );
     }
 }
 

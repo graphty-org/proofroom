@@ -20,12 +20,12 @@ const REPO_ID = "1b7e4c2a-9d3f-4e8a-b6c1-2f0a9e8d7c65";
  * Git LFS files, and Finish writes change statements.
  * @param {string} sbServer the server the stand-in Storybook's stories ask (stand-in-storybook.mjs
  *     countingServer; one that never answers keeps a story loading)
- * @param {{ captureCommand?: string, other?: boolean }} [o] the config's captureCommand, and whether
- *     a second project, other, captures the same Storybook
+ * @param {{ captureCommand?: string, other?: boolean, codeHost?: string }} [o] the config's
+ *     captureCommand, whether a second project, other, captures the same Storybook, and the code host
  * @returns {{ repo: string, config: object, main: string, head: string, mark: string }} it, its
  *     config, main's and feat/x's commits, and the file a wrapper script appends to
  */
-export function captureRepo(sbServer, { captureCommand, other = false } = {}) {
+export function captureRepo(sbServer, { captureCommand, other = false, codeHost } = {}) {
     const repo = tempDir("vr-capture-repo-");
     const mark = join(tempDir("vr-capture-mark-"), "wrapped.txt");
     const run = (...args) => git(repo, ...args);
@@ -40,6 +40,7 @@ export function captureRepo(sbServer, { captureCommand, other = false } = {}) {
         approvalFormat: "change",
         repositoryId: REPO_ID,
         ...(captureCommand && { captureCommand }),
+        ...(codeHost && { codeHost }),
         projects: {
             demo: { storybook: "storybook-static", workers: 2 },
             ...(other && { other: { storybook: "storybook-static", workers: 2 } }),

@@ -8,6 +8,7 @@
 
 import { control, runAction } from "./actions.js";
 import { api } from "./api.js";
+import { wordsOf } from "./messages.js";
 import { el } from "./ui.js";
 
 const PARTIAL =
@@ -33,7 +34,13 @@ export async function newCapture(app, prefill = null) {
     }
     const caps = app.captures ?? {};
     const master = app.list?.defaultBranch ?? "master";
-    const prs = app.changes.filter((c) => c.kind === "PR" && c.capId === null && c.head);
+    const words = wordsOf(app.list);
+    // A change from the code host: a pull request, or under plain git a branch only on a remote.
+    const byBranch = words.numberPrefix === "";
+    const fromHost = `A ${words.changeNoun} from ${byBranch ? "the remote" : (caps.hostName ?? words.hostName)}`;
+    const prs = byBranch
+        ? (sources.remote ?? []).map((r) => ({ id: r.name, pr: null, label: r.name, ...r }))
+        : app.changes.filter((c) => c.kind === "PR" && c.capId === null && c.head);
     // Capture again... asks what the row was; otherwise the working tree when it has changes.
     const what0 =
         { PR: "pr", branch: "br", "working tree": "wt" }[prefill?.kind] ?? (sources.changed > 0 ? "wt" : "br");
@@ -49,14 +56,15 @@ export async function newCapture(app, prefill = null) {
         "select",
         {
             id: "nc-pr",
-            "aria-label": `A pull request from ${caps.hostName ?? "GitHub"}`,
+            "aria-label": fromHost,
             ...(prs.length === 0 && { disabled: true }),
         },
         prs.map((c) =>
             el(
                 "option",
-                { value: c.id, ...(prefill?.pr === c.pr && { selected: true }) },
-                `#${c.pr} ${c.title}${c.author ? ` (${c.author})` : ""}`,
+                { value: c.id, ...(!byBranch && prefill?.pr === c.pr && { selected: true }) },
+                // A remote branch by its name on the remote (origin/feat/y is feat/y).
+                `${byBranch ? c.name.slice(c.name.indexOf("/") + 1) : `${words.numberPrefix}${c.pr}`} ${c.title}${c.author ? ` (${c.author})` : ""}`,
             ),
         ),
     );
@@ -93,9 +101,15 @@ export async function newCapture(app, prefill = null) {
             el("label", {}, radio("what", "br", what0 === "br"), "A local branch ", brSelect),
             el(
                 "label",
-                prs.length === 0 ? { class: "muted", title: "No pull request is open", "aria-disabled": "true" } : {},
+                prs.length === 0
+                    ? {
+                          class: "muted",
+                          title: byBranch ? "No branch is only on the remote" : `No ${words.changeNoun} is open`,
+                          "aria-disabled": "true",
+                      }
+                    : {},
                 radio("what", "pr", what0 === "pr", prs.length === 0 ? { disabled: true } : {}),
-                `A pull request from ${caps.hostName ?? "GitHub"} `,
+                `${fromHost} `,
                 prSelect,
             ),
             asTheyAre,
@@ -169,7 +183,7 @@ export async function newCapture(app, prefill = null) {
         start,
         request() {
             const what = value("what");
-            const pr = app.change(prSelect.value);
+            const pr = byBranch ? prs.find((c) => c.id === prSelect.value) : app.change(prSelect.value);
             const vs = value("vs");
             return {
                 body: {
@@ -178,21 +192,26 @@ export async function newCapture(app, prefill = null) {
                             ? { kind: "tree" }
                             : what === "br"
                               ? { kind: "branch", branch: brSelect.value }
-                              : { kind: "change", number: pr?.pr, head: pr?.head },
+                              : byBranch
+                                ? { kind: "change", branch: pr?.name, head: pr?.head }
+                                : { kind: "change", number: pr?.pr, head: pr?.head },
                     baselines: vs === "commit" ? { commit: commit.value.trim() } : vs,
                     projects: [...form.querySelectorAll("input[name=project]:checked")].map((n) => n.value),
                     stories: prefix.value.trim(),
                     where: value("where"),
                 },
                 change: what === "pr" ? pr : null,
-                label:
-                    what === "wt" ? "working tree" : what === "br" ? `branch ${brSelect.value}` : pr ? `#${pr.pr}` : "",
+                label: what === "wt" ? "working tree" : what === "br" ? `branch ${brSelect.value}` : (pr?.label ?? ""),
             };
         },
     };
     app.openForm(form);
     start.focus();
 }
+
+// A change named as its row is, or as the server's refusal names it (a number, or under plain git
+// the remote branch).
+const changeName = (app, c) => c.label ?? c.remote ?? `${wordsOf(app.list).numberPrefix}${c.pr}`;
 
 /**
  * The sheet's second step for a change from the code host captured on this machine: it names the
@@ -211,7 +230,7 @@ export function confirmChange(app, req) {
             el(
                 "p",
                 { class: "cbody" },
-                `This builds and runs the code of #${c.pr} by ${c.author ?? "an unknown author"} on this computer.`,
+                `This builds and runs the code of ${changeName(app, c)} by ${c.author ?? "an unknown author"} on this computer.`,
             ),
             el("div", { class: "foot" }, control(app, "capback", { zone: "box" }), ok),
         ),

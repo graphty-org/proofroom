@@ -46,6 +46,8 @@ const FINISHED_KEPT = 50;
 const LOOK_KEPT = 10;
 const STORY_PREFIX = /^[a-z0-9][a-z0-9-]*$/;
 const SHA = /^[0-9a-f]{7,40}$/;
+/** The git config key, under `branch.<name>`, marking a local branch made from a remote one: its remote ref. */
+const FROM_REMOTE = "proofroomRemote";
 
 /** A capture request the server refuses, with the HTTP status it answers. */
 export class CaptureRefused extends Error {
@@ -133,8 +135,9 @@ export function lookCaptures(tmp) {
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} options.config the settings
  * @param {string} options.tmp the work directory
  * @param {string | null} options.previews where local previews are; null when this server has none
- * @param {() => { pr: number, head: string, branch: string, title: string, author: string | null }[]} [options.changes]
- *     the code host's changes as last listed
+ * @param {() => { pr: number | null, head: string, branch: string, title: string, author: string | null, remote?: string }[]} [options.changes]
+ *     the code host's changes as last listed: pull requests, or under plain git the branches only on
+ *     a remote (`remote` names one, such as origin/feat-x, and `pr` is null)
  * @param {() => Promise<string | null>} [options.whoAmI] the code host login of the person running the server
  * @param {(job: object) => void} [options.onEnd] told when a capture ends, however it ends
  * @param {string} [options.cli] the proofroom command line to run (this package's)
@@ -245,6 +248,11 @@ export function captureQueue({
         if (p.look) {
             p.decidable = null;
         }
+        // Only now, with the whole request accepted, does a decided capture of a remote branch make
+        // its local branch (a look-only one captures the remote commit and leaves no branch behind).
+        if (p.fromRemote && p.decidable) {
+            await trackRemote(p.branch, p.fromRemote);
+        }
         return p;
     }
 
@@ -294,7 +302,13 @@ export function captureQueue({
         if (branch === config.defaultBranch) {
             return { branch, head, decidable: null, look: "the default branch" };
         }
-        const change = changes().find((c) => c.branch === branch && c.head === head);
+        // A local branch proofroom made from a remote one is still someone else's code.
+        const remote = await git(["config", "--get", `branch.${branch}.${FROM_REMOTE}`]).catch(() => "");
+        if (remote) {
+            const author = (await git(["log", "-1", "--format=%cn", head]).catch(() => "")) || null;
+            mayRun({ pr: null, remote, author }, confirmed);
+        }
+        const change = changes().find((c) => c.pr !== null && c.branch === branch && c.head === head);
         if (!change) {
             return { branch, head, decidable: "branch" };
         }
@@ -307,20 +321,24 @@ export function captureQueue({
     // Another person's change builds and runs their code here: only through captureCommand, and
     // only once the reader confirmed it, naming its author.
     function mayRun(change, confirmed) {
+        const name = change.pr === null ? change.remote : `#${change.pr}`;
         if (!config.captureCommand) {
             throw new CaptureRefused(
                 403,
-                `capturing #${change.pr} here builds and runs its code: set captureCommand in ${"visual-review.config.json"} to isolate it, or capture it on CI`,
+                `capturing ${name} here builds and runs its code: set captureCommand in ${"visual-review.config.json"} to isolate it${change.pr === null ? "" : ", or capture it on CI"}`,
             );
         }
         if (!confirmed) {
-            throw new CaptureRefused(428, `capturing #${change.pr} here builds and runs its code: confirm it first`, {
-                change: { pr: change.pr, author: change.author },
+            throw new CaptureRefused(428, `capturing ${name} here builds and runs its code: confirm it first`, {
+                change: { pr: change.pr, author: change.author, ...(change.pr === null && { remote: change.remote }) },
             });
         }
     }
 
     async function changePlan(what, confirmed) {
+        if (what.number === undefined && typeof what.branch === "string") {
+            return remotePlan(what, confirmed);
+        }
         const number = Number(what.number);
         const change = changes().find((c) => c.pr === number);
         if (!change) {
@@ -351,6 +369,39 @@ export function captureQueue({
             inPlace: false,
             decidable: "change",
         };
+    }
+
+    // Plain git: a branch only on a remote is someone's code from elsewhere, so it is captured here
+    // only as a change from the code host is. A decided capture makes it a local branch tracking the
+    // remote one (plan, trackRemote), then captured, decided and finished as any local branch: Finish
+    // pushes it back there.
+    async function remotePlan(what, confirmed) {
+        const change = changes().find((c) => c.pr === null && c.remote === what.branch);
+        if (!change) {
+            throw new CaptureRefused(404, `no branch ${what.branch} on a remote`);
+        }
+        if (what.head !== change.head) {
+            throw new CaptureRefused(409, `${what.branch} has a newer head than the page showed: look at it again`);
+        }
+        mayRun(change, confirmed);
+        return {
+            kind: "branch",
+            label: `branch ${change.branch}`,
+            inPlace: false,
+            branch: change.branch,
+            head: change.head,
+            decidable: "branch",
+            fromRemote: change.remote,
+        };
+    }
+
+    // The local branch of a remote one, marked as made from it so that capturing it again as a
+    // local branch still asks first and runs through captureCommand (asBranch).
+    async function trackRemote(branch, remote) {
+        await git(["branch", "--track", branch, `refs/remotes/${remote}`]).catch((err) => {
+            throw new CaptureRefused(409, `${branch} could not be made a local branch: ${err.message}`);
+        });
+        await git(["config", `branch.${branch}.${FROM_REMOTE}`, remote]);
     }
 
     async function baselinesPlan(given) {
@@ -401,8 +452,9 @@ export function captureQueue({
 
     /**
      * What the New capture sheet offers: the working tree's branch and its changed files, the
-     * local branches (the current one first).
-     * @returns {Promise<{ branch: string | null, changed: number, branches: string[] }>} them
+     * local branches (the current one first), and under plain git the branches only on a remote.
+     * @returns {Promise<{ branch: string | null, changed: number, branches: string[],
+     *     remote: { name: string, head: string, title: string, author: string | null }[] }>} them
      */
     async function sources() {
         const branch = (await git(["symbolic-ref", "--short", "-q", "HEAD"]).catch(() => "")) || null;
@@ -410,7 +462,10 @@ export function captureQueue({
             .split("\n")
             .filter(Boolean);
         const branches = branch ? [branch, ...all.filter((b) => b !== branch)] : all;
-        return { branch, changed: await changedFiles(), branches };
+        const remote = changes()
+            .filter((c) => c.pr === null && c.remote)
+            .map((c) => ({ name: c.remote, head: c.head, title: c.title, author: c.author }));
+        return { branch, changed: await changedFiles(), branches, remote };
     }
 
     /**

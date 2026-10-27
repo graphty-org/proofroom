@@ -11,6 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,11 +126,14 @@ function ignored(root, dir) {
 /**
  * Sets up a repository.
  * @param {string} root the repository's top level
- * @param {{ force?: boolean }} [options] rewrite the workflows init wrote before (never the
- *     config, which is the repository's own, and never a workflow written by hand)
+ * @param {{ force?: boolean, codeHost?: "github" | "plain-git" }} [options] rewrite the workflows
+ *     init wrote before (never the config, which is the repository's own, and never a workflow
+ *     written by hand); and the code host: plain git gets a random `repositoryId` (its change
+ *     statements name the repository by it, and the gate requires it there) and no workflows
  * @returns {string[]} one line per file: what was written or kept
  */
-export function init(root, { force = false } = {}) {
+export function init(root, { force = false, codeHost = "github" } = {}) {
+    const plainGit = codeHost === "plain-git";
     const report = [];
     const manager = packageManager(root);
     const configFile = join(root, CONFIG_FILE);
@@ -143,6 +147,7 @@ export function init(root, { force = false } = {}) {
             workDir: ".visual-review",
             commitPrefix: "test",
             issueLabels: ["bug"],
+            ...(plainGit && { codeHost: "plain-git", repositoryId: randomUUID() }),
             projects: {
                 storybook: {
                     storybook: "storybook-static",
@@ -171,6 +176,14 @@ export function init(root, { force = false } = {}) {
             : "kept     .gitignore",
     );
 
+    if (plainGit) {
+        report.push(
+            "",
+            `Next: edit ${CONFIG_FILE} (one entry per Storybook) and commit these files.`,
+            "Then start the review page (proofroom serve) and capture a branch with New capture (docs/plain-git.md).",
+        );
+        return report;
+    }
     const version = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8")).version;
     const values = { branch: config.defaultBranch, manager, version };
     for (const [template, file] of [
