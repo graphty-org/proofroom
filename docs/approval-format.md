@@ -383,7 +383,9 @@ pull request into the default branch. The branch is named by run and made ungues
 `visual/seed-<date>-<first 12 hex of the captured commit>-<32 random hex>`, or
 `visual/approve-<commit>-<32 random hex>` for a candidate. The review server records the branch it
 created for each run in `.visual-review/seed-branches.json` (the config's `workDir`) and only ever
-reuses that exact name.
+reuses that exact name. That record decides only which branch a later Finish of the same run adds
+to: finding the seeds to retire never depends on it (see below), so a second clone, another
+reviewer's machine or a cleaned `workDir` retires them the same way.
 
 The statement must sign `pr:N`, so a seed Finish opens the pull request before it asks for your
 passkey: it pushes the accepted baselines alone, opens the pull request, then asks for the touch and
@@ -414,9 +416,17 @@ If GitHub refuses to reopen the pull request (its branch was force-pushed or rec
 closed), Finish names the pull request and its branch: reopen it by hand and Finish again, or delete
 the branch, so Finish no longer finds it, and remove the key that signed it.
 
-A Finish that rejects an image of a candidate retires the candidate's accept pull request the same
-way, before it posts the rejects: you sign that retiring statement with one touch (unsigned without
-a registered key).
+A Finish that rejects an image of a candidate retires the candidate's accept pull requests the same
+way, before it posts the rejects, whichever server opened them: it finds them by the seed statements
+of the candidate's commit on every open pull request's branch and every `visual/` branch, and also
+closes any open pull request from a `visual/approve-<commit>-` branch that holds no statement yet (a
+cancelled touch), deleting its branch. You sign each retiring statement with one touch (unsigned
+without a registered key).
+
+Finding seeds reads the code host (the open pull requests, and each pull request a statement names)
+and git (the `visual/` branches and their contents). If any of that cannot be read, Finish refuses,
+names what failed, and changes nothing: press Finish again. It never retires only what it could
+read.
 
 What that guarantees: GitHub keeps a closed pull request's last head (`refs/pull/N/head`) and
 offers "Restore branch", and anyone with write access can restore the branch and reopen the pull

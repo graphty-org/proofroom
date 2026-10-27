@@ -922,6 +922,55 @@ describe("Finish of a seed in change mode", () => {
         expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
     });
 
+    it("retires a candidate's accept pull request from a second server that holds no record of it", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const heads = keptHeads(r, host);
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r), candidate: r.master });
+        const [old] = host.opened;
+        const second = secondCheckout(r, "second");
+        const { prepared, result, touches } = await seedFinish(second, host, [[BADGE, "reject", "clipped"]], {
+            projects: capture(second),
+            candidate: r.master,
+        });
+        expect(prepared.statement).toMatchObject({ change: "pr:900", entries: [{ decision: "reject" }] });
+        expect(touches).toBe(1);
+        expect(result).toMatchObject({ rejects: 1, closedPullRequest: "https://fake/changes/900" });
+        expect(old.state).toBe("closed");
+        expect(git(r.remote, "branch", "--list", old.branch)).toBe("");
+        git(r.remote, "branch", old.branch, heads.get(900));
+        expect(gateOn(r, old.branch, "pr:900").join("\n")).toContain("rejected (retired:");
+    });
+
+    it("refuses a candidate reject when the code host cannot be read, posting nothing", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const projects = capture(r);
+        await seedFinish(r, host, [[BADGE]], { projects, candidate: r.master });
+        const [old] = host.opened;
+        rmSync(join(r.repo, FIXTURE_CONFIG.workDir, "seed-branches.json"));
+        const before = host.posted.length;
+        host.listChanges = async () => {
+            throw new Error("HTTP 502");
+        };
+        const input = {
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null, candidate: r.master },
+            projects,
+            decisions: [{ project: "compact-mantine", file: BADGE, decision: "reject", reason: "clipped" }],
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+        };
+        const refused = "the seeds of this capture could not be looked up: listing the open changes failed (HTTP 502)";
+        await expect(prepareApproval({ ...input, now: new Date() })).rejects.toThrow(refused);
+        await expect(finish(input)).rejects.toThrow(refused);
+        expect(old.state).toBe("open");
+        expect(host.posted.slice(before)).toEqual([]);
+        expect(git(r.remote, "branch", "--list", old.branch)).not.toBe("");
+    });
+
     it("refuses a candidate reject when its accept branch cannot be fetched, keeping the pull request and its record", async () => {
         const r = changeRepo();
         const host = seedHost(r);
