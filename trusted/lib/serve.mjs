@@ -726,7 +726,7 @@ async function loadResults(dir, name) {
  * @param {string} [options.serverId] what names this server's session cookie; random per start
  * @param {"review" | "next"} [options.ui] the page served at /: today's ("review", the default) or the
  *     new one ("next"), which is served at /next/ either way
- * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string }}
+ * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string, stopCaptures: () => void }}
  *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
  *     tile is being made in the background, and `serverId`
  */
@@ -773,6 +773,7 @@ export function createApp({
             [...targets.values()]
                 .filter((t) => t.pr !== null && !t.local)
                 .map((t) => ({ pr: t.pr, head: t.head, branch: t.branch, title: t.title, author: t.author ?? null })),
+        whoAmI: () => (reviewer ??= host.whoAmI().catch(() => null)),
         onEnd: () => {
             refresh().catch((err) => console.error(`proofroom: refresh after a capture failed: ${err.message}`));
         },
@@ -1903,7 +1904,11 @@ export function createApp({
                 pr: null,
                 localBranch: true,
                 branch: c.branch,
-                unpushed: upstream === "" && tip !== "" && tip !== c.status.head,
+                unpushed:
+                    upstream === "" &&
+                    tip !== "" &&
+                    tip !== c.status.head &&
+                    (await onlyFinishCommits(repo, c.status.head, tip, config)),
                 ...common(c.status),
                 projects: await listed(c.dir, c.status),
             });
@@ -2861,7 +2866,10 @@ export function createApp({
     const acceptable = (t, name) =>
         // seedFromDefaultBranch is about seeding: a candidate's changed images are accepted like a pull request's.
         !isLocal(t, name) &&
-        (t.pr !== null || t.localBranch === true || Boolean(t.candidate) || projects[name].seedFromDefaultBranch === true);
+        (t.pr !== null ||
+            (t.localBranch === true && t.branch !== defaultBranch) ||
+            Boolean(t.candidate) ||
+            projects[name].seedFromDefaultBranch === true);
     const LOCAL = "is a local preview: nothing is decided on it; only CI captures of a pushed commit are";
 
     async function targetOf(id) {
@@ -3757,8 +3765,8 @@ export function createApp({
     // when the capture store can start a job (none can yet), a change from the code host here only
     // through the config's captureCommand.
     const CI_NAMES = { "github-actions": "GitHub Actions" };
-    const captureList = () => ({
-        ...captures.list(),
+    const captureList = (watch = null) => ({
+        ...captures.list(watch),
         ci: {
             available: false,
             label: `CI (${CI_NAMES[store.name] ?? store.name})`,
@@ -3822,7 +3830,13 @@ export function createApp({
                 const one = captures.get(Number(id), Number(query?.get("since") ?? 0));
                 return one ? [200, one] : [404, { error: `no capture ${id}` }];
             }
-            return [200, { ...captureList(), ...(query?.get("sources") === "1" && { sources: await captures.sources() }) }];
+            // ?watch=<ids>: of the finished captures, only those (the ones the page saw waiting or running).
+            const watch = query?.get("watch");
+            const ids = watch === null || watch === undefined ? null : new Set(watch.split(",").map(Number));
+            return [
+                200,
+                { ...captureList(ids), ...(query?.get("sources") === "1" && { sources: await captures.sources() }) },
+            ];
         },
         // Starts a capture, or (POST /api/captures/<id>/cancel) cancels one.
         "POST /api/captures": async ([id, verb], body) => {
@@ -3838,7 +3852,7 @@ export function createApp({
                 return [202, { id: j.id, target: j.target }];
             } catch (err) {
                 if (err instanceof CaptureRefused) {
-                    return [err.status, { error: err.message }];
+                    return [err.status, { error: err.message, ...err.more }];
                 }
                 throw err;
             }
@@ -4828,6 +4842,8 @@ export function createApp({
     };
     handler.serverId = serverId;
     handler.work = work;
+    // Stops the capture running from the page, and every process it started, as the server stops.
+    handler.stopCaptures = () => captures.stop();
     // A target's decisions as the list shows them, by `<project>/<file>`: for the bench's lookup timing.
     handler.decisionsOf = (id) => (targets.has(id) ? decisionsOf(targets.get(id)) : null);
     // The default branch's newest record or statement that wrote an image to a baseline path, as of

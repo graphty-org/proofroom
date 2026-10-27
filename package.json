@@ -38,7 +38,7 @@
         "node": ">=20.0.0"
     },
     "scripts": {
-        "test": "vitest run && node --test eslint-rules/*.test.mjs",
+        "test": "sh -c 'ulimit -c 0 && vitest run' && node --test eslint-rules/*.test.mjs",
         "test:watch": "vitest",
         "coverage": "vitest run --coverage",
         "lint": "eslint . && npm run typecheck",

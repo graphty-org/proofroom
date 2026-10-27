@@ -1257,6 +1257,12 @@ async function commitAccepts({
 }) {
     const { baselines, defaultBranch } = config;
     const isMaster = target.pr === null && !target.localBranch;
+    // Finished onto the default branch, a capture would skip the pull request and its gate.
+    if (target.localBranch && target.branch === defaultBranch) {
+        throw new AcceptError(
+            `a capture of ${defaultBranch}, the default branch, is not finished onto it: finish a pull request's capture instead`,
+        );
+    }
     const lfs = await lfsProblem(repo);
     if (lfs) {
         throw new AcceptError(lfs);

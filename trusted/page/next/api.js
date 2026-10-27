@@ -136,10 +136,12 @@ export class ApiError extends Error {
      * An error answer.
      * @param {string} message the server's message
      * @param {number} status the HTTP status
+     * @param {any} [body] the whole answer
      */
-    constructor(message, status) {
+    constructor(message, status, body = {}) {
         super(message);
         this.status = status;
+        this.body = body;
     }
 }
 
@@ -180,7 +182,7 @@ export async function api(path, body) {
     }
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
-        throw new ApiError(json.error ?? `${res.status} ${res.statusText}`, res.status);
+        throw new ApiError(json.error ?? `${res.status} ${res.statusText}`, res.status, json);
     }
     return json;
 }

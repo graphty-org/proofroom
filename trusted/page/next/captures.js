@@ -45,9 +45,18 @@ const span = (ms) => {
     return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min`;
 };
 
-const clock = (ms) => {
+// "17:20" today, "yesterday 17:20", "Oct 24 17:20" before.
+const clock = (ms, now) => {
     const at = new Date(ms);
-    return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    const time = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    const day = new Date(now);
+    if (at.toDateString() === day.toDateString()) {
+        return time;
+    }
+    day.setDate(day.getDate() - 1);
+    return at.toDateString() === day.toDateString()
+        ? `yesterday ${time}`
+        : `${at.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${time}`;
 };
 
 // A capture that finished with stories that did not render is marked as one that failed.
@@ -68,7 +77,7 @@ const timeOf = (c, now) =>
         ? span(now - c.startedAt)
         : c.state === "queued"
           ? "queued"
-          : `${clock(c.endedAt ?? c.createdAt)}, ${span((c.endedAt ?? c.createdAt) - (c.startedAt ?? c.createdAt))}`;
+          : `${clock(c.endedAt ?? c.createdAt, now)}, ${span((c.endedAt ?? c.createdAt) - (c.startedAt ?? c.createdAt))}`;
 
 // A progress bar; its width is set through the style object, as the page's policy allows.
 const bar = (done, total, failed) => {
@@ -131,7 +140,8 @@ export function drawCaptures(app) {
                         el(
                             "div",
                             { class: "small muted" },
-                            `${fmt(c.done)} of ${fmt(c.total)} stories, ${timeOf(c, now)}`,
+                            // No count before the capture has counted its stories.
+                            c.total > 0 ? `${fmt(c.done)} of ${fmt(c.total)} stories, ${timeOf(c, now)}` : timeOf(c, now),
                         ),
                     ],
                 }),

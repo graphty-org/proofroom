@@ -26,7 +26,7 @@
 
 import { spawn } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PROGRESS_FILE } from "./compare-run.mjs";
@@ -53,10 +53,12 @@ export class CaptureRefused extends Error {
      * A refusal.
      * @param {number} status the HTTP status
      * @param {string} message why
+     * @param {object} [more] more fields of the answer
      */
-    constructor(status, message) {
+    constructor(status, message, more = {}) {
         super(message);
         this.status = status;
+        this.more = more;
     }
 }
 
@@ -133,11 +135,21 @@ export function lookCaptures(tmp) {
  * @param {string | null} options.previews where local previews are; null when this server has none
  * @param {() => { pr: number, head: string, branch: string, title: string, author: string | null }[]} [options.changes]
  *     the code host's changes as last listed
+ * @param {() => Promise<string | null>} [options.whoAmI] the code host login of the person running the server
  * @param {(job: object) => void} [options.onEnd] told when a capture ends, however it ends
  * @param {string} [options.cli] the proofroom command line to run (this package's)
  * @returns the queue
  */
-export function captureQueue({ repo, config, tmp, previews, changes = () => [], onEnd = () => {}, cli = CLI }) {
+export function captureQueue({
+    repo,
+    config,
+    tmp,
+    previews,
+    changes = () => [],
+    whoAmI = async () => null,
+    onEnd = () => {},
+    cli = CLI,
+}) {
     const root = join(tmp, CAPTURES_DIR);
     const jobsFile = join(root, "jobs.json");
     const git = (args, cwd = repo, env) => exec("git", args, { cwd, env: env && { ...process.env, ...env } });
@@ -149,6 +161,10 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
     let idle = Promise.resolve();
     const saved = readJson(jobsFile);
     if (Array.isArray(saved?.jobs)) {
+        // A capture the last server left running may still be: nothing of it is kept running.
+        for (const j of saved.jobs.filter((x) => x.state === "running")) {
+            stragglersGone(tmp, j.id);
+        }
         jobs = saved.jobs.map((j) =>
             j.state === "running" || j.state === "queued"
                 ? {
@@ -186,6 +202,7 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
      */
     async function plan(body) {
         const what = body?.what ?? {};
+        const confirmed = body?.confirmed === true;
         if (body?.where !== undefined && body.where !== "here") {
             throw new CaptureRefused(409, "this capture store cannot start CI jobs: capture on this machine");
         }
@@ -206,19 +223,22 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
         }
         const p = { projects: names.filter((n) => projects.includes(n)), stories: stories.length ? stories : null };
         if (what.kind === "tree") {
-            Object.assign(p, await treePlan());
+            Object.assign(p, await treePlan(confirmed));
         } else if (what.kind === "branch") {
-            Object.assign(p, await branchPlan(String(what.branch ?? "")));
+            Object.assign(p, await branchPlan(String(what.branch ?? ""), confirmed));
         } else if (what.kind === "change") {
-            Object.assign(p, await changePlan(what, body.confirmed === true));
+            Object.assign(p, await changePlan(what, confirmed));
         } else {
             throw new CaptureRefused(400, 'what.kind must be "tree", "branch" or "change"');
         }
         p.baselines = await baselinesPlan(body.baselines ?? "target");
         // Only a whole capture against the change's own target is decided: a story prefix reports
-        // every story it skipped as removed, and other baselines are not what the gate compares.
+        // every story it skipped as removed, some projects would replace the change's whole capture,
+        // and other baselines are not what the gate compares.
         if (p.stories) {
             p.look ??= "a partial capture";
+        } else if (p.projects.length < names.length) {
+            p.look ??= "some projects only";
         } else if (p.baselines.kind === "commit") {
             p.look ??= "a capture against another commit's baselines";
         }
@@ -228,13 +248,13 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
         return p;
     }
 
-    async function treePlan() {
+    async function treePlan(confirmed) {
         const branch = await git(["symbolic-ref", "--short", "-q", "HEAD"]).catch(() => "");
         const head = await git(["rev-parse", "HEAD"]);
         const dirty = (await changedFiles()) > 0;
         if (!dirty && branch) {
             return {
-                ...(await asBranch(branch, head)),
+                ...(await asBranch(branch, head, confirmed)),
                 kind: "tree",
                 label: "working tree",
                 inPlace: true,
@@ -251,7 +271,7 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
         };
     }
 
-    async function branchPlan(branch) {
+    async function branchPlan(branch, confirmed) {
         const ok =
             branch !== "" &&
             (await git(["check-ref-format", "--branch", branch]).then(
@@ -264,16 +284,40 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
         if (!head) {
             throw new CaptureRefused(404, `no local branch ${branch}`);
         }
-        return { kind: "branch", label: `branch ${branch}`, inPlace: false, ...(await asBranch(branch, head)) };
+        return { kind: "branch", label: `branch ${branch}`, inPlace: false, ...(await asBranch(branch, head, confirmed)) };
     }
 
     // A local branch's capture: the open change of that branch when the code host lists one at
-    // this head (its preview), else the branch as a target of its own.
-    async function asBranch(branch, head) {
+    // this head (its preview, under the change's rules unless its author runs this server), else
+    // the branch as a target of its own. The default branch is never finished onto: look only.
+    async function asBranch(branch, head, confirmed) {
+        if (branch === config.defaultBranch) {
+            return { branch, head, decidable: null, look: "the default branch" };
+        }
         const change = changes().find((c) => c.branch === branch && c.head === head);
-        return change
-            ? { branch, head, number: change.pr, decidable: "change", author: change.author }
-            : { branch, head, decidable: "branch" };
+        if (!change) {
+            return { branch, head, decidable: "branch" };
+        }
+        if (change.author === null || change.author !== (await whoAmI().catch(() => null))) {
+            mayRun(change, confirmed);
+        }
+        return { branch, head, number: change.pr, decidable: "change", author: change.author };
+    }
+
+    // Another person's change builds and runs their code here: only through captureCommand, and
+    // only once the reader confirmed it, naming its author.
+    function mayRun(change, confirmed) {
+        if (!config.captureCommand) {
+            throw new CaptureRefused(
+                403,
+                `capturing #${change.pr} here builds and runs its code: set captureCommand in ${"visual-review.config.json"} to isolate it, or capture it on CI`,
+            );
+        }
+        if (!confirmed) {
+            throw new CaptureRefused(428, `capturing #${change.pr} here builds and runs its code: confirm it first`, {
+                change: { pr: change.pr, author: change.author },
+            });
+        }
     }
 
     async function changePlan(what, confirmed) {
@@ -286,15 +330,7 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
         if (what.head !== change.head) {
             throw new CaptureRefused(409, `#${number} has a newer head than the page showed: look at it again`);
         }
-        if (!config.captureCommand) {
-            throw new CaptureRefused(
-                403,
-                `capturing #${number} here builds and runs its code: set captureCommand in ${"visual-review.config.json"} to isolate it, or capture it on CI`,
-            );
-        }
-        if (!confirmed) {
-            throw new CaptureRefused(428, `capturing #${number} here builds and runs its code: confirm it first`);
-        }
+        mayRun(change, confirmed);
         if (!(await haveCommit(change.head))) {
             await git(["fetch", "-q", "--no-write-fetch-head", "origin", `refs/pull/${number}/head`]).catch(() => {});
             if (!(await haveCommit(change.head))) {
@@ -605,7 +641,7 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
                 cwd,
                 detached: true,
                 stdio: ["ignore", "pipe", "pipe"],
-                env: { ...process.env, PROOFROOM_CAPTURE_JOB: String(j.id), ...previewEnv(j) },
+                env: { ...process.env, PROOFROOM_CAPTURE_JOB: jobMarker(tmp, j.id), ...previewEnv(j) },
             });
             children.set(j.id, child);
             const lines = (stream, each) => {
@@ -625,7 +661,7 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
                 children.delete(j.id);
                 if (j.cancelling) {
                     // The capture ends once nothing of it is left (cancel).
-                    stragglersGone(j.id).then(() => resolve(null));
+                    stragglersGone(tmp, j.id).then(() => resolve(null));
                 } else if (code === 0) {
                     resolve(null);
                 } else {
@@ -690,9 +726,20 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
                 kill(-child.pid, "SIGKILL");
             }
             // A browser runs in a process group of its own: every process naming the capture goes.
-            stragglersGone(j.id);
+            stragglersGone(tmp, j.id);
         }
         return j;
+    }
+
+    /** Stops the running capture and every process it started, as the server stops. */
+    function stop() {
+        const child = running && children.get(running.id);
+        if (child) {
+            kill(-child.pid, "SIGKILL");
+        }
+        for (const pid of running ? captureProcesses(tmp, running.id) : []) {
+            kill(pid, "SIGKILL");
+        }
     }
 
     const progressOf = (j) =>
@@ -738,11 +785,14 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
         sources,
         start,
         cancel,
+        stop,
         /**
          * Every capture: the one running, the ones waiting in order, the finished ones newest first.
+         * @param {Set<number> | null} [watch] only these finished ones (those a page saw waiting or
+         *     running), so a page following a capture asks for little
          * @returns {{ running: object[], queued: object[], finished: object[] }} them
          */
-        list() {
+        list(watch = null) {
             const all = [...jobs].reverse();
             return {
                 running: all.filter((j) => j.state === "running").map(row),
@@ -750,7 +800,9 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
                     .filter((j) => j.state === "queued")
                     .reverse()
                     .map(row),
-                finished: all.filter((j) => !["running", "queued"].includes(j.state)).map(row),
+                finished: all
+                    .filter((j) => !["running", "queued"].includes(j.state) && (!watch || watch.has(j.id)))
+                    .map(row),
             };
         },
         /**
@@ -785,14 +837,19 @@ export function captureQueue({ repo, config, tmp, previews, changes = () => [], 
     };
 }
 
+// What a capture's processes carry in PROOFROOM_CAPTURE_JOB: its id and the work directory, since
+// ids are counted per work directory and several review servers can run on one machine.
+const jobMarker = (tmp, id) => `${id}@${resolve(tmp)}`;
+
 /**
  * Kills every process left of a capture, and settles once none is: a killed process takes a moment
  * to go.
+ * @param {string} tmp the work directory
  * @param {number} id the capture
  * @returns {Promise<void>} once none is left
  */
-async function stragglersGone(id) {
-    for (let left = captureProcesses(id); left.length > 0; left = captureProcesses(id)) {
+async function stragglersGone(tmp, id) {
+    for (let left = captureProcesses(tmp, id); left.length > 0; left = captureProcesses(tmp, id)) {
         for (const pid of left) {
             kill(pid, "SIGKILL");
         }
@@ -810,11 +867,12 @@ const kill = (target, signal) => {
 
 /**
  * The processes whose environment names a capture (Linux's /proc; none elsewhere).
+ * @param {string} tmp the work directory of the server that runs it
  * @param {number} id the capture
  * @returns {number[]} their pids
  */
-export function captureProcesses(id) {
-    const marker = `\0PROOFROOM_CAPTURE_JOB=${id}\0`;
+export function captureProcesses(tmp, id) {
+    const marker = `\0PROOFROOM_CAPTURE_JOB=${jobMarker(tmp, id)}\0`;
     let pids = [];
     try {
         pids = readdirSync("/proc").filter((n) => /^\d+$/.test(n));

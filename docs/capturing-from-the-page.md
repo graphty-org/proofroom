@@ -38,6 +38,8 @@ made on the Review screen.
 | The working tree, with nothing uncommitted | The same as its branch                                                                           |
 | The working tree, with uncommitted changes | Look only: there is no commit to finish onto. Commit them to review and finish                   |
 | Only some stories (a story prefix)         | Look only: a partial capture reports every story it skipped as removed                           |
+| Only some projects                         | Look only: the change's capture of every project stays as it was                                 |
+| The default branch                         | Look only: it is never finished onto; finish a pull request's capture instead                    |
 | Against a commit's baselines               | Look only: the gate compares a change with its target branch, not with that commit               |
 
 Finishing a local branch commits the accepted baselines and one change statement
@@ -55,7 +57,10 @@ commit.
 
 A capture builds and runs the code it captures. So:
 
-- The working tree and your local branches are captured on this machine without asking.
+- The working tree and your local branches are captured on this machine without asking, unless
+  the branch is at the head of someone else's open pull request: then it is that pull request, and
+  the next point applies. Your own pull requests (by the code host login you are signed in as) are
+  captured without asking.
 - A pull request from the code host can be someone else's code. Capturing it here asks once more,
   naming its author ("This builds and runs the code of #3471 by octocat on this computer"), and the
   server refuses it unless `visual-review.config.json` names a `captureCommand`, the place to

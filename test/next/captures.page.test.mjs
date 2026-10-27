@@ -95,7 +95,8 @@ const captureList = (all = []) => ({
  * @param {object} options openNext's options, and the captures
  * @param {object[]} [options.captures] the captures listed
  * @param {object} [options.sources] what the sheet offers
- * @param {(path: string, body: any) => object} [options.post] the answer to a POST
+ * @param {(path: string, body: any) => object | [number, object]} [options.post] the answer to a POST,
+ *     or its status and answer
  * @returns {Promise<any>} openNext's tab, with `capturePosts` and `setCaptures(list)`
  */
 async function openScripted({ captures = [], sources, post, ...options }) {
@@ -111,10 +112,10 @@ async function openScripted({ captures = [], sources, post, ...options }) {
         if (req.method() === "POST") {
             const body = req.postDataJSON();
             capturePosts.push({ path: u.pathname, body });
-            return route.fulfill({
-                status: 202,
-                json: post ? post(u.pathname, body) : { id: 99, target: "capture-99" },
-            });
+            // post answers the body, or [status, body] for a refusal.
+            const answer = post ? post(u.pathname, body) : { id: 99, target: "capture-99" };
+            const [status, json] = Array.isArray(answer) ? answer : [202, answer];
+            return route.fulfill({ status, json });
         }
         const id = u.pathname.split("/")[3];
         if (id) {
@@ -242,7 +243,7 @@ describe("New capture...", () => {
         await expect.poll(() => sheet(page).count()).toBe(0);
     });
 
-    it("from a pull request row's Capture again..., asks once more, naming its author; Back keeps the sheet", async () => {
+    it("from a pull request row's Capture again..., asks once more, naming its author; Cancel keeps the sheet", async () => {
         const s = await openScripted({
             targets: [
                 target(3486, { head: "b".repeat(40), title: "Storybook 9 upgrade" }),
@@ -261,9 +262,9 @@ describe("New capture...", () => {
         expect(await sheet(page).innerText()).toContain(
             "This builds and runs the code of #3486 by octocat on this computer.",
         );
-        expect(await sheet(page).getByRole("button", { name: /^Back/ }).innerText()).toContain("Esc");
+        expect(await sheet(page).getByRole("button", { name: /^Cancel/ }).innerText()).toContain("Esc");
         expect(s.capturePosts).toEqual([]);
-        // Back [Esc]: the sheet as it was.
+        // Cancel [Esc]: the sheet as it was.
         await page.keyboard.press("Escape");
         await expect.poll(() => sheet(page).locator("h3").innerText()).toBe("New capture");
         expect(await checked(page, "what")).toBe("pr");
@@ -276,10 +277,38 @@ describe("New capture...", () => {
             where: "here",
             confirmed: true,
         });
-        // Back by Esc and Capture here by Enter, each as the box printed it.
+        // Cancel by Esc and Capture here by Enter, each as the box printed it.
         await expect
             .poll(() => s.actions.filter((a) => ["capback", "capconfirm"].includes(a.a)).map((a) => a.a))
             .toEqual(["capback", "capconfirm"]);
+    });
+
+    it("a local branch the server says is someone else's change asks once more, naming its author", async () => {
+        const s = await openScripted({
+            targets: [target(3486)],
+            post: (_, body) =>
+                body.confirmed
+                    ? { id: 7, target: "3486" }
+                    : [
+                          428,
+                          {
+                              error: "capturing #3486 here builds and runs its code: confirm it first",
+                              change: { pr: 3486, author: "mallory" },
+                          },
+                      ],
+        });
+        const { page } = s;
+        await page.getByRole("button", { name: "New capture..." }).first().click();
+        await expect.poll(() => sheet(page).locator("h3").innerText()).toBe("New capture");
+        await page.keyboard.press("Enter");
+        await expect.poll(() => sheet(page).locator("h3").innerText()).toBe("Capture on this computer?");
+        expect(await sheet(page).innerText()).toContain(
+            "This builds and runs the code of #3486 by mallory on this computer.",
+        );
+        await page.keyboard.press("Enter");
+        await expect.poll(() => s.capturePosts.length).toBe(2);
+        expect(s.capturePosts.map((p) => p.body.confirmed)).toEqual([false, true]);
+        expect(s.capturePosts[1].body.what).toEqual({ kind: "branch", branch: "fix/legend-sizing" });
     });
 });
 
@@ -291,7 +320,7 @@ describe("following a capture", () => {
         page.on("requestfinished", (req) => {
             answered += new URL(req.url()).pathname === "/api/captures" ? 1 : 0;
         });
-        const asked = () => requests.filter((r) => r === "/api/captures").length;
+        const asked = () => requests.filter((r) => r.startsWith("/api/captures")).length;
         // The page's clock stands still; each second is run by the test.
         await page.clock.pauseAt(Date.now() + 5000);
         await expect.poll(() => asked() > 0 && answered === asked()).toBe(true);
@@ -302,7 +331,8 @@ describe("following a capture", () => {
             await page.clock.runFor(1000);
             await expect.poll(() => (answered === asked() ? since().length : -1)).toBe(second);
         }
-        expect(since()).toEqual(["/api/captures", "/api/captures", "/api/captures"]);
+        // Only the running capture is named: the finished ones are not sent again.
+        expect(since()).toEqual(["/api/captures?watch=1", "/api/captures?watch=1", "/api/captures?watch=1"]);
     });
 });
 
@@ -343,6 +373,11 @@ describe("the Captures screen", () => {
         await expect
             .poll(() => page.locator("#cap-rows .sec").evaluateAll((ns) => ns.map((n) => n.textContent.trim())))
             .toEqual(["Running1", "Queued1", "Finished today1", "Earlier1"]);
+        // A queued capture has no count yet; one that ended before today says the day.
+        expect(await page.locator('.caprow[data-cap="2"] .small').innerText()).toBe("queued");
+        expect(await page.locator('.caprow[data-cap="4"] .small').innerText()).toMatch(
+            /^230 of 230 stories, (yesterday|[A-Z][a-z]{2} \d{1,2}) \d\d:\d\d, 1 min$/,
+        );
         expect(await page.locator(".caprow.cur").innerText()).toContain("120 of 230 stories, 4 min");
         await expect
             .poll(() => page.locator("#cap-detail").innerText())

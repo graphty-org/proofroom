@@ -136,7 +136,7 @@ describe("a capture from the page", () => {
             (await s.api("GET", `/api/captures/${first.body.id}?since=${one.log.from + one.log.lines.length}`)).body.log
                 .lines,
         ).toEqual([]);
-        expect((await ended(s, second.body.id)).state).toBe("done");
+        expect(await ended(s, second.body.id)).toMatchObject({ state: "done", look: "the default branch" });
         // Both ran through the config's captureCommand, one project each.
         expect(readFileSync(r.mark, "utf8").trim().split("\n")).toHaveLength(2);
         const t = await listed(s, "branch-feat%2Fx");
@@ -147,7 +147,9 @@ describe("a capture from the page", () => {
             title: "Capture of working tree",
         });
         expect(t.projects[0].counts).toMatchObject({ new: 2, failed: 1 });
-        expect((await listed(s, "branch-main")).title).toBe("Capture of branch main");
+        // The default branch is never finished onto: its capture is look only.
+        expect(second.body.target).toBe(`capture-${second.body.id}`);
+        expect(await listed(s, second.body.target)).toMatchObject({ lookOnly: true, title: "Capture of branch main" });
         // Its capture is of the branch's head, with nothing uncommitted.
         const results = JSON.parse(
             readFileSync(join(r.repo, "tmp/visual-review/local/branch/feat%2Fx/demo/results.json"), "utf8"),
@@ -208,6 +210,13 @@ describe("a capture from the page", () => {
             return t?.unpushed;
         });
         expect(t.unpushed).toBe(true);
+        // A commit of the author's own after it is not a Finish waiting to be pushed.
+        writeFileSync(join(r.repo, "feature.txt"), "more\n");
+        git(r.repo, "commit", "-q", "-am", "more");
+        await until(async () => {
+            t = (await s.api("GET", "/api/prs?refresh=1")).body.targets?.find((x) => x.id === id);
+            return t?.unpushed === false;
+        });
     });
 
     it("captures a dirty working tree to look at only", async () => {
@@ -233,9 +242,9 @@ describe("a capture from the page", () => {
     it("leaves the server pruning the downloads of CI runs nothing lists", async () => {
         const r = captureRepo(counter.url);
         const s = await serve(r);
-        const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "main" } });
+        const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "feat/x" } });
         expect((await ended(s, started.body.id)).state).toBe("done");
-        await listed(s, "branch-main");
+        await listed(s, "branch-feat%2Fx");
         // A CI run's download no change lists: the next refresh removes it, beside a capture made here.
         const old = join(r.repo, "tmp/visual-review/555-1");
         mkdirSync(old, { recursive: true });
@@ -244,14 +253,14 @@ describe("a capture from the page", () => {
             await s.api("GET", "/api/prs");
             return !existsSync(old);
         });
-        expect((await s.api("GET", "/api/prs?cached=1")).body.targets.map((x) => x.id)).toEqual(["branch-main"]);
+        expect((await s.api("GET", "/api/prs?cached=1")).body.targets.map((x) => x.id)).toEqual(["branch-feat%2Fx"]);
     });
 
     it("captures a story prefix to look at only", async () => {
         const r = captureRepo(counter.url);
         const s = await serve(r);
         const started = await s.api("POST", "/api/captures", {
-            what: { kind: "branch", branch: "main" },
+            what: { kind: "branch", branch: "feat/x" },
             stories: "demo--plain",
         });
         const c = await ended(s, started.body.id);
@@ -259,19 +268,49 @@ describe("a capture from the page", () => {
         expect((await listed(s, started.body.target)).lookOnly).toBe(true);
     });
 
+    it("captures some projects only to look at only, leaving the branch's whole capture as it was", async () => {
+        const r = captureRepo(counter.url, { other: true });
+        const s = await serve(r);
+        const whole = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "feat/x" } });
+        expect((await ended(s, whole.body.id)).state).toBe("done");
+        const some = await s.api("POST", "/api/captures", {
+            what: { kind: "branch", branch: "feat/x" },
+            projects: ["demo"],
+        });
+        expect(some.body.target).toBe(`capture-${some.body.id}`);
+        expect(await ended(s, some.body.id)).toMatchObject({ state: "done", look: "some projects only" });
+        expect((await listed(s, some.body.target)).lookOnly).toBe(true);
+        const t = await listed(s, "branch-feat%2Fx");
+        expect(t.projects.map((p) => p.project)).toEqual(["demo", "other"]);
+        expect(existsSync(join(r.repo, "tmp/visual-review/local/branch/feat%2Fx/other/results.json"))).toBe(true);
+    });
+
+    it("follows a capture with the finished ones left out but the ones it names", async () => {
+        const r = captureRepo(counter.url);
+        const s = await serve(r);
+        const first = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "feat/x" } });
+        expect((await ended(s, first.body.id)).state).toBe("done");
+        const second = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "feat/x" } });
+        const list = (await s.api("GET", `/api/captures?watch=${second.body.id}`)).body;
+        expect([...list.running, ...list.queued, ...list.finished].map((c) => c.id)).toEqual([second.body.id]);
+        // One capture's row and the screen's settings: small, however many captures finished.
+        expect(Buffer.byteLength(JSON.stringify(list))).toBeLessThan(2048);
+        await ended(s, second.body.id);
+    });
+
     it("refuses a capture whose branch moved while it ran", async () => {
-        // The wrapper moves main to feat/x's head as the capture of main starts.
+        // The wrapper moves feat/x to main's commit as the capture of feat/x starts.
         const r = captureRepo(counter.url, {
-            captureCommand: "git update-ref refs/heads/main refs/heads/feat/x && exec",
+            captureCommand: "git update-ref refs/heads/feat/x refs/heads/main && exec",
         });
         const s = await serve(r);
-        const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "main" } });
+        const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "feat/x" } });
         const c = await ended(s, started.body.id);
         expect(c.state).toBe("failed");
         expect(c.error).toMatch(
-            /^the commit moved while it was captured \(main is at [0-9a-f]{10} now\): capture it again$/,
+            /^the commit moved while it was captured \(feat\/x is at [0-9a-f]{10} now\): capture it again$/,
         );
-        expect(existsSync(join(r.repo, "tmp/visual-review/local/branch/main/demo/results.json"))).toBe(false);
+        expect(existsSync(join(r.repo, "tmp/visual-review/local/branch/feat%2Fx/demo/results.json"))).toBe(false);
     });
 
     it("Cancel stops the capture and every browser it started", async () => {
@@ -290,11 +329,11 @@ describe("a capture from the page", () => {
                     return "";
                 }
             };
-            await until(() => captureProcesses(id).some((pid) => /chrom/i.test(commandOf(pid))));
+            await until(() => captureProcesses(s.tmp, id).some((pid) => /chrom/i.test(commandOf(pid))));
             const res = await s.api("POST", `/api/captures/${id}/cancel`);
             expect(res.body).toEqual({ id, state: "running" });
             expect((await ended(s, id)).state).toBe("cancelled");
-            expect(captureProcesses(id)).toEqual([]);
+            expect(captureProcesses(s.tmp, id)).toEqual([]);
             expect((await s.api("GET", "/api/captures")).body.finished[0]).toMatchObject({ id, state: "cancelled" });
         } finally {
             hang.closeAllConnections();
@@ -307,9 +346,10 @@ describe("a change from the code host", () => {
     /**
      * The repository with change #7 open on another branch.
      * @param {object} [o] captureRepo's options
+     * @param {string} [o.login] who the reader is signed in as
      * @returns {Promise<{ r: any, s: any, head: string }>} it, its server, and #7's head
      */
-    async function withChange(o) {
+    async function withChange({ login, ...o } = {}) {
         const r = captureRepo(counter.url, o);
         git(r.repo, "checkout", "-q", "-b", "theirs", r.main);
         writeFileSync(join(r.repo, "theirs.txt"), "y\n");
@@ -322,7 +362,7 @@ describe("a change from the code host", () => {
         git(r.repo, "init", "-q", "--bare", "-b", "main", remote);
         git(r.repo, "remote", "add", "origin", remote);
         git(r.repo, "push", "-q", "origin", "main", "theirs");
-        const s = await serve(r, { prs: [{ number: 7, head, branch: "theirs", author: "mallory" }] });
+        const s = await serve(r, { prs: [{ number: 7, head, branch: "theirs", author: "mallory" }], login });
         return { r, s, head };
     }
 
@@ -368,12 +408,29 @@ describe("a change from the code host", () => {
         expect(t.lookOnly).toBe(false);
     });
 
-    it("a local branch the change is open from, at its head, is captured as the change's preview, unasked", async () => {
+    it("a local branch someone else's change is open from, at its head, is that change: refused without captureCommand, asked once more", async () => {
+        const branch = { what: { kind: "branch", branch: "theirs" } };
         const { s } = await withChange();
+        expect((await s.api("POST", "/api/captures", { ...branch, confirmed: true })).status).toBe(403);
+        const { s: s2 } = await withChange({ captureCommand: "exec" });
+        const unconfirmed = await s2.api("POST", "/api/captures", branch);
+        expect(unconfirmed.status).toBe(428);
+        expect(unconfirmed.body).toEqual({
+            error: "capturing #7 here builds and runs its code: confirm it first",
+            change: { pr: 7, author: "mallory" },
+        });
+        const started = await s2.api("POST", "/api/captures", { ...branch, confirmed: true });
+        expect(started.status, JSON.stringify(started.body)).toBe(202);
+        expect(started.body.target).toBe("7");
+        expect((await ended(s2, started.body.id)).state).toBe("done");
+        expect((await listed(s2, "7")).projects[0]).toMatchObject({ preview: true });
+    });
+
+    it("a local branch of the reader's own change is captured as its preview, unasked", async () => {
+        const { s } = await withChange({ login: "mallory" });
         const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "theirs" } });
         expect(started.status, JSON.stringify(started.body)).toBe(202);
         expect(started.body.target).toBe("7");
         expect((await ended(s, started.body.id)).state).toBe("done");
-        expect((await listed(s, "7")).projects[0]).toMatchObject({ preview: true });
     });
 });

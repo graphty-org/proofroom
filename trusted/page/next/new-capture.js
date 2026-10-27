@@ -196,7 +196,7 @@ export async function newCapture(app, prefill = null) {
 
 /**
  * The sheet's second step for a change from the code host captured on this machine: it names the
- * change and its author, Capture here [Enter] and Back [Esc] (to the sheet as it was).
+ * change and its author, Capture here [Enter] and Cancel [Esc] (to the sheet as it was).
  * @param {any} app the page
  * @param {{ change: any }} req the sheet's request
  */

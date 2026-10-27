@@ -501,6 +501,16 @@ async function serve(args) {
     await new Promise((done) => server.listen({ port: Number(PORT), host: HOST }, () => done(null)));
     console.log(`proofroom: open ${origin}/#token=${token}`);
     console.log(`proofroom: server ${app.serverId}: the page's session cookie is vr_session_${app.serverId}`);
+    // A capture started from the page stops with the server, its browsers too.
+    for (const [signal, code] of /** @type {const} */ ([
+        ["SIGINT", 130],
+        ["SIGTERM", 143],
+    ])) {
+        process.once(signal, () => {
+            app.stopCaptures();
+            process.exit(code);
+        });
+    }
     // Keep running until the process is stopped.
     await new Promise(() => {});
     return 0;

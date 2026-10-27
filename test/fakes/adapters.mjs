@@ -29,6 +29,7 @@ import { copyFixture, FIXTURE, job } from "../helpers.mjs";
  * @param {Record<string, string[]>} [data.artifacts] each run's capture sets, by name
  * @param {Record<string, object>} [data.results] results.json fields each fetched set gets, by set name
  * @param {object[]} [data.posted] receives what the code host posted (code-host.mjs `posted`)
+ * @param {string} [data.login] who the reviewer is signed in as ("owner" unless given)
  * @returns {{ codeHost: ReturnType<typeof fakeCodeHost>, captureStore: ReturnType<typeof fakeCaptureStore> }}
  *     the adapters, for createApp, each with every call by name in `calls`
  */
@@ -50,7 +51,7 @@ export function fakeAdapters(data = {}) {
         }
         return out;
     };
-    const codeHost = live("codeHost", () => fakeCodeHost({ changes: changesOf(data), posted }));
+    const codeHost = live("codeHost", () => fakeCodeHost({ changes: changesOf(data), posted, login: data.login }));
     const captureStore = live("captureStore", () => storeOf(data));
     // The default branch's newest complete set of a project, newest commit first.
     captureStore.newestDefault = async (project, dir) => {

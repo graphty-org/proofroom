@@ -427,7 +427,7 @@ export const ACTIONS = {
     // for a change from the code host, the Captures screen and the capture rows of the changes pane.
     capstart: { label: "Start capture", key: "Enter", writes: true, run: (app) => app.startCapture(false) },
     capconfirm: { label: "Capture here", key: "Enter", writes: true, run: (app) => app.startCapture(true) },
-    capback: { label: "Back", key: "Esc", title: "Back to New capture", run: (app) => app.captureSheetBack() },
+    capback: { label: "Cancel", key: "Esc", title: "Back to New capture", run: (app) => app.captureSheetBack() },
     capagain: {
         label: (app, ctx) => ctx.label ?? "Capture again...",
         title: "New capture of the same thing",

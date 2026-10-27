@@ -88,6 +88,7 @@ const $ = (id) => document.getElementById(id);
 const POLL_MS = 15000;
 // While a capture on this machine waits or runs, or the Captures screen is shown: as Finish is followed.
 const CAPTURE_POLL_MS = 1000;
+const CHOOSE_HINT = "Choose a change on the left: Up / Down move, Open [Enter] opens it.";
 // How long a capture that failed or was cancelled stays a row of the changes pane.
 const FAILED_ROW_MS = 24 * 3600000;
 const DISMISSED_KEY = "proofroom:dismissed";
@@ -1186,6 +1187,10 @@ app.showCaptures = (id = null) => {
     if (id !== null) {
         app.capCur = id;
     }
+    // The Review screen's hint does not apply here.
+    if ($("msg-t").textContent === CHOOSE_HINT) {
+        $("msg-t").textContent = "";
+    }
     draw();
     $("cap-rows").focus({ preventScroll: true });
     pollCaptures();
@@ -1248,6 +1253,11 @@ app.startCapture = async (confirmed) => {
     try {
         answer = await api("/api/captures", { ...req.body, confirmed });
     } catch (err) {
+        // A local branch that is someone else's open change: asked once more, naming its author.
+        if (err.status === 428 && err.body?.change && !confirmed) {
+            confirmChange(app, { ...req, change: err.body.change });
+            return;
+        }
         say(`The capture of ${req.label} did not start: ${err.message}`, "err");
         return;
     }
@@ -1316,9 +1326,15 @@ function pollCaptures() {
 }
 
 async function askCaptures() {
-    const before = new Map(allCaptures(app.captures).map((c) => [c.id, c]));
+    const had = app.captures;
+    const before = new Map(allCaptures(had).map((c) => [c.id, c]));
     try {
-        app.captures = await api("/api/captures");
+        // Once the page has the list, only what changes: the captures waiting or running, and how
+        // the ones it saw waiting or running ended.
+        const watch = allCaptures(had).filter(busy).map((c) => c.id);
+        const got = await api(had ? `/api/captures?watch=${watch.join(",")}` : "/api/captures");
+        const kept = (had?.finished ?? []).filter((c) => !got.finished.some((x) => x.id === c.id));
+        app.captures = had ? { ...got, finished: [...got.finished, ...kept] } : got;
         app.capturesAt = Date.now();
         if (app.screen === "captures" && app.capCur !== null) {
             await loadCapture(app.capCur);
@@ -1667,7 +1683,7 @@ async function loadFirst() {
         say(
             app.changes.length === 0
                 ? "Ready. The server checks the code host every 2 minutes."
-                : "Choose a change on the left: Up / Down move, Open [Enter] opens it.",
+                : CHOOSE_HINT,
         );
     }
 }
