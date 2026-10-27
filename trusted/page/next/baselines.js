@@ -28,6 +28,7 @@ const GROUPS = { component: "Component", project: "Project", none: "None" };
 const VIEW_NAME = { side: "Side by side", flash: "Flash", highlight: "Highlight", spotlight: "Spotlight" };
 // A version's name in the history and on the frames: the current one, the one before, the first.
 const versionName = (i, n) => (i === 0 ? "current" : i === n - 1 ? "first" : i === 1 ? "previous" : "earlier");
+const BATCH_CHARS = 50_000; // the paths in one download request
 const changeName = (c) => (c ? (/^pr:\d+$/.test(c) ? `#${c.slice(3)}` : c.replace(/^[a-z]+:/, "")) : null);
 
 /**
@@ -133,7 +134,7 @@ export function installBaselines(app) {
         if (st.hist.has(key)) {
             return;
         }
-        const q = new URLSearchParams({ path: b.path, ...(st.ref && { ref: st.ref }) });
+        const q = new URLSearchParams({ file: b.path, ...(st.ref && { ref: st.ref }) });
         const asked = api(`/api/baselines/history?${q}`).then(
             (answer) => {
                 st.hist.set(key, answer);
@@ -304,9 +305,7 @@ export function installBaselines(app) {
                     el(
                         "div",
                         { class: "l small muted" },
-                        b.at
-                            ? `Last changed ${b.at.slice(0, 10)}${b.change ? ` in ${changeName(b.change)}` : ""}`
-                            : "No approval record found",
+                        b.at ? `Last changed ${b.at.slice(0, 10)}${b.change ? ` in ${changeName(b.change)}` : ""}` : "",
                     ),
                 ),
             ],
@@ -382,17 +381,18 @@ export function installBaselines(app) {
 
     function labels(s, view, vs) {
         if (!s.names) {
-            return { rightLabel: "Current baseline" };
+            return { rightLabel: "Current baseline", wait: ["baseline", "the current baseline"] };
         }
         const [a, c] = s.names;
+        const wait = [`the ${a} version`, `the ${c} version`];
         const note = vs.space ? "flashing while Space is held" : "alternating, about 1.5 times a second";
         if (view === "flash") {
-            return { rightLabel: a, flash: [a, c], note };
+            return { rightLabel: a, flash: [a, c], note, wait };
         }
         if (view === "spotlight" && (vs.spotFlash || vs.space)) {
-            return { rightLabel: `Spotlit ${a}`, flash: [`Spotlit ${a}`, `Spotlit ${c}`], note };
+            return { rightLabel: `Spotlit ${a}`, flash: [`Spotlit ${a}`, `Spotlit ${c}`], note, wait };
         }
-        return { leftLabel: a, rightLabel: view === "spotlight" ? `Spotlit ${c}` : c };
+        return { leftLabel: a, rightLabel: view === "spotlight" ? `Spotlit ${c}` : c, wait };
     }
 
     function fillLine(line, s) {
@@ -628,7 +628,21 @@ export function installBaselines(app) {
         app.say(`Downloading ${fmt(n)} image${n === 1 ? "" : "s"}...`);
         draw();
         try {
-            await api("/api/baselines-download", { ref: st.ref || null, paths, ...(commit && { commit }) });
+            // In requests of at most BATCH_CHARS of paths: the server reads a body of 64 KB at most,
+            // and a whole repository's baselines are more.
+            for (let i = 0; i < paths.length;) {
+                let end = i + 1;
+                for (
+                    let size = paths[i].length;
+                    end < paths.length && size + paths[end].length + 1 <= BATCH_CHARS;
+                    end++
+                ) {
+                    size += paths[end].length + 1;
+                }
+                const part = paths.slice(i, end);
+                await api("/api/baselines-download", { ref: st.ref || null, paths: part, ...(commit && { commit }) });
+                i = end;
+            }
             app.say(`Downloaded ${fmt(n)} image${n === 1 ? "" : "s"}.`);
         } catch (err) {
             app.say(`The images could not be downloaded: ${err.message}`, "err");

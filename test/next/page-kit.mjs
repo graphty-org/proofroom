@@ -300,10 +300,11 @@ export const BL_THREE = "visual-baselines/compact-mantine/button--primary.dark.p
  * a tree statement and no approval), the images by hash and the downloads, which make exactly the
  * paths asked for downloaded.
  * @param {import("playwright").Page} page the tab
+ * @param {{ more?: number }} [options] `more`: that many more images of the change not downloaded
  * @returns {Promise<{ downloads: object[], asked: string[] }>} each download's body, and each
  *     list and history request
  */
-export async function routeBaselines(page) {
+export async function routeBaselines(page, { more = 0 } = {}) {
     const local = new Set();
     const downloads = [];
     const asked = [];
@@ -335,6 +336,9 @@ export async function routeBaselines(page) {
         ...master,
         item("graphty-element", "graph--fresh.png", BL_HASH.fresh, { local: false, bytes: 3_000_000 }),
         item("graphty-element", "graph--wide.png", BL_HASH.fresh, { local: false, bytes: 4_000_000 }),
+        ...Array.from({ length: more }, (_, i) =>
+            item("graphty-element", `${"long-story-name-".repeat(15)}${i}.png`, BL_HASH.fresh, { local: false }),
+        ),
     ];
     const path = (i) => `visual-baselines/${i.project}/${i.file}`;
     const at = (path) => (url) => url.pathname === path;
@@ -353,7 +357,7 @@ export async function routeBaselines(page) {
         signer: "MacBook Touch ID",
     });
     await page.route(at("/api/baselines/history"), (route) => {
-        const p = new URL(route.request().url()).searchParams.get("path");
+        const p = new URL(route.request().url()).searchParams.get("file");
         asked.push(`history ${p}`);
         const one = [...change].find((i) => path(i) === p);
         const versions =

@@ -87,7 +87,7 @@
  * `<tmp>/state/groups.jsonl`, to count approvals per group.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
     appendFileSync,
@@ -103,6 +103,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { gzipSync } from "node:zlib";
 
@@ -312,7 +313,9 @@ async function earlierAccepts(repo, head, pr, { baselines, approvals }) {
         }
     }
     const change = `pr:${pr}`;
-    const files = await git(["ls-tree", "-r", "--name-only", head, `${approvals}/${changeFolder(change)}/`]).catch(() => "");
+    const files = await git(["ls-tree", "-r", "--name-only", head, `${approvals}/${changeFolder(change)}/`]).catch(
+        () => "",
+    );
     const chain = [];
     for (const file of files.split("\n").filter((n) => n.endsWith(".json"))) {
         const st = await git(["show", `${head}:${file}`]).then(JSON.parse, () => null);
@@ -1869,10 +1872,13 @@ export function createApp({
             info.title = `${defaultBranch} candidate ${commit.slice(0, 10)} (${pick.queued.length} queued)`;
             info.candidate = { commit, runId, queued: pick.queued.map((c) => ({ commit: c.commit, runId: c.runId })) };
         }
-        return store.run(runId)
-            // When CI last touched the run, as a pull request's "4 min ago".
-            .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
-            .catch((err) => keptOr(info, err));
+        return (
+            store
+                .run(runId)
+                // When CI last touched the run, as a pull request's "4 min ago".
+                .then((run) => build({ ...info, readyAt: run.updatedAt }, run))
+                .catch((err) => keptOr(info, err))
+        );
     }
 
     async function load() {
@@ -1880,7 +1886,9 @@ export function createApp({
         if (results) {
             const list = await Promise.all(
                 names.map((n) =>
-                    resultsStore.has(null, n) ? project(n, resultsStore.dir(null, n), null) : project(n, null, "no capture"),
+                    resultsStore.has(null, n)
+                        ? project(n, resultsStore.dir(null, n), null)
+                        : project(n, null, "no capture"),
                 ),
             );
             const r = list.find((p) => p.results)?.results;
@@ -2919,7 +2927,12 @@ export function createApp({
             // Each of them, so the sheet lists them and opens any one: none is included unseen.
             approvedBeforeItems: list
                 .filter((x) => x.approvedBefore)
-                .map((x) => ({ project: x.project, file: x.file, pr: x.approvedBefore.pr, change: x.approvedBefore.change })),
+                .map((x) => ({
+                    project: x.project,
+                    file: x.file,
+                    pr: x.approvedBefore.pr,
+                    change: x.approvedBefore.change,
+                })),
             notOpened: s.projects.reduce((n, p) => n + p.notOpened, 0),
             undecided: s.projects
                 .filter((p) => p.undecided > 0)
@@ -3654,6 +3667,8 @@ export function createApp({
     /** Each baseline image the Baselines screen named, by its hash: a blob that holds it. */
     const baselineImages = new Map();
     let lfsObjects = null;
+    /** When each baseline last changed at one commit (`at`): path -> commit date. */
+    let lastChanged = { at: null, dates: new Map() };
     const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
     // A baseline's path as the page may send it: no option-like start, no glob or list characters
     // (git lfs fetch --include reads them as patterns), no parent directory.
@@ -3711,8 +3726,53 @@ export function createApp({
         if (!info.lfs) {
             return true;
         }
-        lfsObjects ??= join(repo, await gitIn(["rev-parse", "--git-common-dir"]), "lfs", "objects");
+        lfsObjects ??= join(await gitIn(["rev-parse", "--path-format=absolute", "--git-common-dir"]), "lfs", "objects");
         return existsSync(join(lfsObjects, info.hash.slice(0, 2), info.hash.slice(2, 4), info.hash));
+    }
+
+    // When each of `paths` last changed in the history of `sha`: one `git log` over the baselines
+    // directory, newest first, read until every path is seen (a large backlog's whole history
+    // need not be read).
+    async function lastChangeDates(sha, paths) {
+        if (lastChanged.at === sha) {
+            return lastChanged.dates;
+        }
+        const left = new Set(paths);
+        const dates = new Map();
+        const child = spawn(
+            "git",
+            [
+                "-c",
+                "core.quotePath=off",
+                "log",
+                "--format=%x01%cI",
+                "--name-only",
+                "--no-renames",
+                sha,
+                "--",
+                `${config.baselines}/`,
+            ],
+            { cwd: repo, stdio: ["ignore", "pipe", "ignore"] },
+        );
+        const done = new Promise((resolve) => {
+            child.on("close", resolve);
+            child.on("error", resolve);
+        });
+        let date = null;
+        for await (const line of createInterface({ input: child.stdout })) {
+            if (line.startsWith("\x01")) {
+                date = line.slice(1);
+            } else if (left.delete(line)) {
+                dates.set(line, date);
+                if (left.size === 0) {
+                    child.kill();
+                    break;
+                }
+            }
+        }
+        await done;
+        lastChanged = { at: sha, dates };
+        return dates;
     }
 
     // What approved an image at a path: the default branch's change statement or review record
@@ -3740,6 +3800,10 @@ export function createApp({
         }
         const files = await pngBlobs(repo, at.sha, `${config.baselines}/`);
         await readBaselineBlobs([...files.values()]);
+        const dates = await lastChangeDates(
+            at.sha,
+            [...files.keys()].map((rest) => `${config.baselines}/${rest}`),
+        );
         const items = [];
         for (const [rest, blob] of files) {
             const cut = rest.indexOf("/");
@@ -3757,7 +3821,7 @@ export function createApp({
                 bytes: info.bytes,
                 local: await baselineLocal(info),
                 change: w?.change ?? null,
-                at: w?.at ?? null,
+                at: w?.at ?? dates.get(path) ?? null,
             });
         }
         return [200, { ref: at.id, sha: at.sha, baselines: config.baselines, items }];
@@ -3794,15 +3858,15 @@ export function createApp({
     }
 
     /**
-     * GET /api/baselines/history?path=&ref=: one baseline's versions, newest first, from one
+     * GET /api/baselines/history?file=&ref=: one baseline's versions, newest first, from one
      * `git log` on its file, each with who accepted it and its approval: the change statement or
      * review record that wrote that image, or for a version approved before them, the tree
      * statement of the baselines tree at its commit (one `git rev-parse` for them all).
-     * @param {URLSearchParams} query `path` (under the baselines directory) and `ref`
+     * @param {URLSearchParams} query `file` (a path under the baselines directory) and `ref`
      * @returns {Promise<Array<unknown>>} the answer
      */
     async function baselineHistory(query) {
-        const path = query?.get("path") ?? "";
+        const path = query?.get("file") ?? "";
         if (!baselinePathOk(path)) {
             return [400, { error: "path must be a baseline image under the baselines directory" }];
         }

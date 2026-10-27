@@ -159,6 +159,16 @@ describe("the baselines at a ref", () => {
             at: "2026-10-15T08:00:00Z",
         });
         expect(body.items.map((i) => i.file)).not.toContain("badge--fresh.light.png");
+        // A baseline no approval record wrote still has the date of the commit that last changed it.
+        const others = body.items.filter((i) => i.file !== "button--primary.dark.png");
+        expect(others.length).toBeGreaterThan(0);
+        for (const i of others) {
+            const path = `${B}/${i.project}/${i.file}`;
+            expect(i).toMatchObject({
+                change: null,
+                at: git(r.repo, "log", "-1", "--format=%cI", "master", "--", path),
+            });
+        }
         // Asked again, the blobs are known: one ls-tree, and nothing read.
         calls.git.length = 0;
         await api("GET", "/api/baselines");
@@ -194,6 +204,19 @@ describe("the baselines at a ref", () => {
         expect(pic.body.subarray(1, 4).toString()).toBe("PNG");
     });
 
+    it("reads a downloaded Git LFS object when the server runs from a linked git worktree", async () => {
+        const r = threeVersions();
+        const wt = join(r.dir, "linked");
+        git(r.repo, "worktree", "add", "-q", "--detach", wt, "master");
+        const api = await start({ ...r, repo: wt });
+        const fetched = await api("POST", "/api/baselines-download", { ref: "123", paths: [NEW_PATH] });
+        expect(fetched.status).toBe(200);
+        const listed = await api("GET", "/api/baselines?ref=123");
+        const fresh = listed.body.items.find((i) => i.file === "badge--fresh.light.png");
+        expect(fresh.local).toBe(true);
+        expect((await api("GET", `/api/baselines/image/${fresh.hash}`)).status).toBe(200);
+    });
+
     it("refuses a download of a path outside the baselines, or of a commit outside the ref's history", async () => {
         const r = threeVersions();
         const api = await start(r);
@@ -212,7 +235,7 @@ describe("one baseline's history", () => {
         const api = await start(r);
         await api("GET", "/api/baselines");
         calls.git.length = 0;
-        const { status, body } = await api("GET", `/api/baselines/history?path=${encodeURIComponent(PATH)}`);
+        const { status, body } = await api("GET", `/api/baselines/history?file=${encodeURIComponent(PATH)}`);
         expect(status).toBe(200);
         expect(gitRuns("log")).toHaveLength(1);
         expect(body.versions.map((v) => v.commit)).toEqual([r.third, r.second, r.first]);
@@ -247,7 +270,7 @@ describe("one baseline's history", () => {
 
     it("refuses a path outside the baselines", async () => {
         const api = await start(threeVersions());
-        expect((await api("GET", "/api/baselines/history?path=README.md")).status).toBe(400);
+        expect((await api("GET", "/api/baselines/history?file=README.md")).status).toBe(400);
         expect((await api("GET", "/api/baselines/image/nothing")).status).toBe(404);
         expect((await api("GET", "/api/baselines/pic/nothing")).status).toBe(404);
     });

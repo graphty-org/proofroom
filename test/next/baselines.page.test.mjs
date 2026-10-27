@@ -37,9 +37,9 @@ const labels = (page) => page.locator("#bl-stage figure .label").allInnerTexts()
 
 // The page on the Baselines tab, with the first baseline's history in.
 // 1600 px wide: both side panes beside the 800 px viewer.
-async function open(viewport = { width: 1600, height: 900 }) {
+async function open(viewport = { width: 1600, height: 900 }, more = 0) {
     t = await openNext(browser, { targets: [target(3486), target(3471)], viewport });
-    const routes = await routeBaselines(t.page);
+    const routes = await routeBaselines(t.page, { more });
     const page = t.page;
     await page.locator(".chg").first().waitFor();
     await page.locator('#tabs [data-act="screen-baselines"]').click();
@@ -251,6 +251,22 @@ describe("the Baselines screen", () => {
         await expect.poll(() => labels(page)).toEqual(["Current baseline"]);
         await page.locator("#bl-ref").selectOption("");
         await expect.poll(() => page.locator("#bl-list .blrow").count()).toBe(6);
+    });
+});
+
+describe("downloading many images", () => {
+    it("sends a whole change's missing images in requests the server can read", async () => {
+        const { page, routes } = await open(undefined, 300);
+        await page.locator("#bl-ref").selectOption("3486");
+        const dl = page.locator('#bl-ctrl [data-act="bldl"]');
+        await expect.poll(() => dl.innerText()).toMatch(/^Download 302 images/);
+        await dl.click();
+        await expect.poll(() => page.locator('#bl-ctrl [data-act="bldl"]').count()).toBe(0);
+        expect(routes.downloads.length).toBeGreaterThan(1);
+        for (const body of routes.downloads) {
+            expect(JSON.stringify(body).length).toBeLessThan(65536);
+        }
+        expect(routes.downloads.flatMap((b) => b.paths)).toHaveLength(302);
     });
 });
 
