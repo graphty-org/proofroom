@@ -273,12 +273,16 @@ export async function provenance() {
     const event = process.env.GITHUB_EVENT_PATH
         ? JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, "utf8"))
         : {};
+    // A capture the review page asked for (a workflow_dispatch with the pull request and the head it
+    // showed) is that pull request's, as its own run's is.
+    const asked = Number(event.inputs?.pr) || null;
+    const askedHead = asked !== null && /^[0-9a-f]{40}$/.test(event.inputs?.ref ?? "") ? event.inputs.ref : null;
     return {
         // The commit checked out and captured: in a called workflow given another ref (a full run of
         // an older default-branch commit), GITHUB_SHA is the caller's commit, not this one.
         commit: git("rev-parse", "HEAD"),
-        headSha: event.pull_request?.head?.sha ?? null,
-        pr: event.pull_request?.number ?? null,
+        headSha: event.pull_request?.head?.sha ?? askedHead,
+        pr: event.pull_request?.number ?? (askedHead ? asked : null),
         runId: Number(process.env.GITHUB_RUN_ID),
         runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
         local: null,

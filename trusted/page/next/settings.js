@@ -300,9 +300,10 @@ function hidden(fn, words) {
  * The Adapters row: the code host, capture store, story source and renderer in use, and for each
  * the functions it lacks with the buttons hidden because of them. Read only: the config names them.
  * @param {any} adapters the list's `adapters`
+ * @param {{ available: boolean, why: string } | null} [ci] whether CI captures can be asked for, and why not
  * @returns {HTMLElement} the row
  */
-export function adaptersRow(adapters) {
+export function adaptersRow(adapters, ci = null) {
     const head = [
         el("b", {}, "Adapters"),
         el(
@@ -320,6 +321,10 @@ export function adaptersRow(adapters) {
         words.ciName === null
             ? [["request", 'No CI: every capture runs on this machine, and "CI" in New capture is unavailable']]
             : adapters.captureStore.lacks.map((fn) => [fn, hidden(fn, words)]);
+    // The store can request, but the capturing workflow takes no requests: why CI is unavailable.
+    if (ci && !ci.available && ci.why && !storeLacks.some(([fn]) => fn === "request")) {
+        storeLacks.push(["request", ci.why]);
+    }
     const row = (role, name, lacks) =>
         el(
             "tr",
@@ -389,7 +394,7 @@ export function settingsSheet(app) {
             ),
         ),
         el("div", { class: "q", id: "set-disk" }, el("b", {}, "Disk budget"), diskText(app.list?.disk)),
-        adaptersRow(app.list?.adapters),
+        adaptersRow(app.list?.adapters, app.captures?.ci),
     );
     readPasskeys(app, row);
 }

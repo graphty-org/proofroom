@@ -234,7 +234,8 @@ branch instead of commenting. How to set it up, capture, review and finish:
   already approved on its pull requests.
 
 It can also be started by hand or by the review page (**New capture...**, Where: CI), with the
-inputs `ref` (the commit to capture), `projects`, `stories` and `request`; see [Asking CI for a
+inputs `ref` (the commit to capture), `pr` (a pull request to capture at that head), `projects`,
+`stories` (story id prefixes, separated by commas) and `request`; see [Asking CI for a
 capture](docs/capturing-from-the-page.md#asking-ci-for-a-capture). A workflow written by an older
 `init` lacks them: `npx proofroom init --force` writes the new one.
 

@@ -15,24 +15,35 @@ import { sha256 } from "../compare.mjs";
 import { downloadCaptures, getRun, hurry, newestCiRun, newestMasterCapture, visualJobs } from "../github.mjs";
 
 /**
- * A capture job's state as the Captures screen says it, from GitHub's job: queued, running,
- * passed, failed, cancelled or skipped. A job GitHub has not made yet is queued; one that uploaded
- * its capture passed, whatever differences it found (those are for review).
- * @param {{ status?: string, conclusion: string | null, uploaded?: boolean } | undefined} job the job (visualJobs)
+ * A capture job's state as the Captures screen says it, from GitHub's job and, once it ended, the
+ * capture it uploaded: queued, running, passed, failed, cancelled or skipped. A job GitHub has not
+ * made yet is queued. One that ended passed when its capture is complete with no story that failed
+ * to render, whatever differences it found (those are for review), and failed when the capture is
+ * incomplete, has such a story, or is missing (the tool crashed before writing it). Without its
+ * capture (`results` undefined: not read), only GitHub's conclusion says.
+ * @param {{ status?: string, conclusion: string | null } | undefined} job the job (visualJobs)
+ * @param {{ complete: boolean, items: { status: string }[] } | null} [results] its capture's
+ *     results.json; null when it uploaded none
  * @returns {"queued" | "running" | "passed" | "failed" | "cancelled" | "skipped"} its state
  */
-export function jobState(job) {
+export function jobState(job, results) {
     if (!job || (job.status && !["in_progress", "completed"].includes(job.status))) {
         return "queued";
     }
     if (job.status === "in_progress") {
         return "running";
     }
-    if (job.uploaded) {
-        return "passed";
+    if (job.conclusion === "cancelled" || job.conclusion === "skipped") {
+        return job.conclusion;
     }
-    return { success: "passed", cancelled: "cancelled", skipped: "skipped" }[job.conclusion] ?? "failed";
+    if (results !== undefined) {
+        return results?.complete === true && !results.items.some((i) => i.status === "failed") ? "passed" : "failed";
+    }
+    return job.conclusion === "success" ? "passed" : "failed";
 }
+
+// The most failed stories one job's answer lists; `failures` counts them all.
+const FAILED_SENT = 50;
 
 /**
  * A requested capture's state from its run: queued until GitHub has made the run, running while
@@ -126,9 +137,11 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
         newestDefault: (project, dir, config) => newestMasterCapture(gh, project, dir, config),
         hurry,
         /**
-         * Asks CI for a capture of a change: a dispatch of the capturing workflow on its branch,
-         * which checks out exactly the head the page showed.
-         * @param {{ branch: string, head: string }} change the change
+         * Asks CI for a capture of a pull request of this repository (never a fork's, whose branch
+         * name is not a branch here): a dispatch of the capturing workflow on its branch, which
+         * captures the pull request's merge at exactly the head the page showed, as its own run
+         * does, and records the pull request in the capture.
+         * @param {{ pr: number, branch: string, head: string }} change the change
          * @param {{ projects: string[], stories: string[] }} what the projects and story prefixes
          *     (none: every one)
          * @param {{ workflow: string }} config the workflow file that captures
@@ -148,7 +161,13 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
                 ],
                 JSON.stringify({
                     ref: change.branch,
-                    inputs: { ref: change.head, projects: projects.join(","), stories: stories.join(","), request },
+                    inputs: {
+                        ref: change.head,
+                        pr: String(change.pr),
+                        projects: projects.join(","),
+                        stories: stories.join(","),
+                        request,
+                    },
                 }),
             );
             return { request, workflow, branch: change.branch, run: null };
@@ -159,8 +178,10 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
          * @param {{ request: string, workflow: string, branch: string, run: number | null }} req the request
          * @param {string[]} projects the projects it captures
          * @returns {Promise<{ state: string, run: { id: number, url: string } | null,
-         *     jobs: { project: string, state: string, url: string | null, startedAt: string | null, endedAt: string | null }[] }>}
-         *     its state (runState), its run, and each job's (jobState)
+         *     jobs: { project: string, state: string, url: string | null, startedAt: string | null, endedAt: string | null,
+         *     failures: number, failed: { story: string, reason: string }[] }[] }>}
+         *     its state (runState), its run, and each job's (jobState) with the stories that failed
+         *     to render in its capture
          */
         async status(req, projects) {
             const run = req.run === null ? await requestedRun(req) : await getRun(gh, req.run);
@@ -168,13 +189,26 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
             return {
                 state: runState(run),
                 run: run && { id: run.id, url: run.url },
-                jobs: projects.map((project) => ({
-                    project,
-                    state: jobState(jobs[project]),
-                    url: jobs[project]?.url ?? null,
-                    startedAt: jobs[project]?.startedAt ?? null,
-                    endedAt: jobs[project]?.endedAt ?? null,
-                })),
+                jobs: await Promise.all(
+                    projects.map(async (project) => {
+                        const job = jobs[project];
+                        // An ended job's capture, downloaded where the review reads it.
+                        const results =
+                            job?.status === "completed" && keep ? await capturedBy(run, project) : undefined;
+                        const failed = (results?.items ?? []).filter((i) => i.status === "failed");
+                        return {
+                            project,
+                            state: jobState(job, results),
+                            url: job?.url ?? null,
+                            startedAt: job?.startedAt ?? null,
+                            endedAt: job?.endedAt ?? null,
+                            failures: failed.length,
+                            failed: failed
+                                .slice(0, FAILED_SENT)
+                                .map((i) => ({ story: i.id, reason: String(i.reason ?? "failed") })),
+                        };
+                    }),
+                ),
             };
         },
         /**
@@ -192,6 +226,20 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
             return true;
         },
     };
+
+    // A project's capture of a run, once its job uploaded it: results.json, or null when there is
+    // none (the job crashed before writing it, or uploaded nothing).
+    async function capturedBy(run, project) {
+        const got = (await downloadCaptures(forRun(run), run, [project], keep))[project];
+        if (got?.error) {
+            throw new Error(got.error);
+        }
+        try {
+            return got?.dir ? JSON.parse(await readFile(join(got.dir, "results.json"), "utf8")) : null;
+        } catch {
+            return null;
+        }
+    }
 
     // The run a request started: its id is in the run's name. ponytail: only the branch's 20 newest
     // dispatched runs are searched, which a run started a moment ago is among.

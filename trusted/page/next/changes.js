@@ -247,10 +247,12 @@ const CAPTURE_KINDS = { tree: "working tree", branch: "branch", change: "PR" };
  * was cancelled (design 3.5): Capturing or downloading, then Not ready. A capture that finished is
  * the row of what it made instead.
  * @param {any} c the capture, as GET /api/captures lists it
- * @param {{ now: number, words?: ReturnType<typeof import("./messages.js").wordsOf> }} at the server's clock, and the code host's words
+ * @param {{ now: number, words?: ReturnType<typeof import("./messages.js").wordsOf>, status?: boolean }} at the
+ *     server's clock, the code host's words, and whether the capture store reports CI job states
+ *     (without them a capture on CI has no count)
  * @returns {any} the row's model
  */
-export function captureRowOf(c, { now, words = GITHUB_WORDS }) {
+export function captureRowOf(c, { now, words = GITHUB_WORDS, status = true }) {
     const kind = CAPTURE_KINDS[c.what.kind];
     const failed = c.state === "failed" || c.state === "cancelled";
     const id = `capture-${c.id}`;
@@ -294,7 +296,7 @@ export function captureRowOf(c, { now, words = GITHUB_WORDS }) {
                 : failed
                   ? `Capture failed: ${c.error}`
                   : onCi
-                    ? `Capturing on ${words.ciName ?? "CI"}, ${fmt(c.done)} of ${plural(c.projects.length, "project")}`
+                    ? `Capturing on ${words.ciName ?? "CI"}${status ? `, ${fmt(c.done)} of ${plural(c.projects.length, "project")}` : ""}`
                     : c.state === "queued"
                       ? "On this machine, queued: local captures run one at a time"
                       : `On this machine, ${fmt(c.done)} of ${fmt(c.total)} stories`,

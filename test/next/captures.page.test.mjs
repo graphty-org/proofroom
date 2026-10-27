@@ -111,8 +111,20 @@ async function openScripted({ captures = [], sources, post, ci = CI, ...options 
         list: listAnswer(options.targets ?? [], {
             captures: captureList(list, ci),
             adapters: {
-                codeHost: { name: "github", vocabulary: null, lacks: [] },
+                codeHost: {
+                    name: "github",
+                    vocabulary: {
+                        hostName: "GitHub",
+                        changeNoun: "pull request",
+                        changeTag: "PR",
+                        numberPrefix: "#",
+                        ciName: "CI",
+                    },
+                    lacks: [],
+                },
                 captureStore: { name: "github-actions", lacks: [] },
+                stories: { name: "storybook" },
+                renderer: { name: "playwright-chromium" },
             },
         }),
     });
@@ -637,6 +649,79 @@ describe("a capture on CI on the Captures screen", () => {
         await page.locator('.caprow[data-cap="6"]').click();
         await expect.poll(() => detail.getByRole("button", { name: /^Review results/ }).innerText()).toContain("Enter");
         expect(await detail.innerText()).toContain("CI, finished");
+    });
+
+    it("a capture on CI that ended with failures lists the failed stories from the finished job", async () => {
+        const failed = [
+            { story: "graphty--toolbar--menu-open", reason: "Page crashed" },
+            { story: "graphty--toolbar--hover", reason: "Page crashed" },
+            { story: "graphty--toolbar--dense", reason: "Page crashed" },
+        ];
+        const { page } = await openScripted({
+            targets: [target(3486)],
+            ci: CI_ON,
+            captures: [
+                onCi(5, {
+                    state: "done",
+                    done: 1,
+                    total: 1,
+                    failures: 1,
+                    error: null,
+                    startedAt: NOW - 5 * 60000,
+                    endedAt: NOW - 60000,
+                    projects: ["graphty"],
+                    jobs: [
+                        {
+                            project: "graphty",
+                            state: "failed",
+                            url: "https://ci/job/2",
+                            startedAt: at(5 * 60000),
+                            endedAt: at(60000),
+                            failures: 3,
+                            failed,
+                        },
+                    ],
+                }),
+                onCi(6, { state: "queued", done: 0, startedAt: null, jobs: [] }),
+            ],
+        });
+        await page.getByRole("button", { name: "Captures", exact: true }).click();
+        await page.locator('.caprow[data-cap="5"]').click();
+        const detail = page.locator("#cap-detail");
+        await expect.poll(() => detail.innerText()).toContain("Failed stories (3), from the finished job");
+        const text = await detail.innerText();
+        expect(text).toMatch(/CI, finished with failures, \d\d:\d\d, 4 min\. Against the baselines of master\./);
+        expect(await detail.locator("ul li").evaluateAll((ls) => ls.map((l) => l.innerText.trim()))).toEqual(
+            failed.map((f) => `${f.story}: ${f.reason}`),
+        );
+        expect(text).not.toContain("the CI run failed");
+        await page.locator('.caprow[data-cap="6"]').click();
+        await expect.poll(() => detail.innerText()).toContain("CI, queued. Against the baselines of master.");
+        expect(await detail.innerText()).not.toContain("Failed stories");
+    });
+
+    it("without job states in the capture store, a capture on CI's row has no count", async () => {
+        const { page } = await openScripted({
+            targets: [target(3486)],
+            ci: { ...CI_ON, status: false },
+            captures: [onCi(5)],
+        });
+        const row = page.locator('.chg[data-chg="capture-5"]');
+        // The line says only where it captures; the line under it still counts the projects ready.
+        await expect.poll(async () => (await row.innerText()).split("\n")).toContain("Capturing on CI");
+    });
+
+    it("a workflow that takes no requests: Settings, Adapters gives the capture store's reason", async () => {
+        const why =
+            ".github/workflows/visual-review.yml on master takes no capture requests: update it with proofroom init --force";
+        const { page } = await openScripted({
+            targets: [target(3486)],
+            ci: { ...CI_ON, available: false, why },
+        });
+        await page.getByRole("button", { name: "Settings" }).click();
+        const adapters = page.locator("#set-adapters");
+        await adapters.waitFor();
+        expect(await adapters.innerText()).toContain(`Capture store\tGitHub Actions artifacts\t\nrequest: ${why}`);
     });
 
     it("without Cancel in the capture store, a capture on CI shows none", async () => {

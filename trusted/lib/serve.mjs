@@ -801,6 +801,7 @@ export function createApp({
                           branch: t.branch,
                           title: t.title,
                           author: t.author ?? null,
+                          fork: t.fork === true,
                       })),
         whoAmI: () => (reviewer ??= host.whoAmI().catch(() => null)),
         store,
@@ -2093,6 +2094,7 @@ export function createApp({
                         branch: pr.branch,
                         head: pr.headSha,
                         draft: pr.draft,
+                        fork: pr.fork === true,
                         author: pr.author ?? null,
                         visual: pr.visual ?? null,
                         // When CI last touched the run: the changes list's "4 min ago".

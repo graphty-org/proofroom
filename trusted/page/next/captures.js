@@ -313,15 +313,18 @@ function drawCiDetail(app, c, now, box) {
         c.state === "running"
             ? `running for ${timeOf(c, now)}`
             : c.state === "queued"
-              ? `queued: waiting for ${name} to start the run`
-              : c.state === "done"
-                ? `finished ${timeOf(c, now)}`
-                : c.state === "cancelled"
-                  ? `cancelled ${timeOf(c, now)}`
-                  : `failed ${timeOf(c, now)}`;
+              ? "queued"
+              : c.state === "cancelled"
+                ? `cancelled ${timeOf(c, now)}`
+                : troubled(c)
+                  ? `finished with failures, ${timeOf(c, now)}`
+                  : `finished ${timeOf(c, now)}`;
     const link = (text) =>
         c.runUrl ? el("a", { href: c.runUrl, target: "_blank", rel: "noreferrer" }, text) : el("span", {}, text);
     const store = app.list?.adapters?.captureStore?.name;
+    // The stories that did not render, from the capture each ended job uploaded.
+    const failed = (c.jobs ?? []).flatMap((j) => j.failed ?? []);
+    const failures = (c.jobs ?? []).reduce((n, j) => n + (j.failures ?? 0), 0);
     box.replaceChildren(
         ...el(
             "div",
@@ -332,7 +335,6 @@ function drawCiDetail(app, c, now, box) {
                 { class: "muted" },
                 `${name[0].toUpperCase()}${name.slice(1)}, ${state}. Against the baselines of ${c.baselines.label}. Every project, every story.`,
             ),
-            c.error && c.state === "failed" ? el("p", { class: "c-failed" }, c.error) : null,
             ci.status
                 ? [
                       el("h3", {}, `Project jobs (from ${ADAPTER_NAMES[store] ?? store ?? name})`),
@@ -366,16 +368,38 @@ function drawCiDetail(app, c, now, box) {
                                   ),
                           ),
                       ),
-                      el("p", { class: "small" }, "Story progress is shown when the job ends."),
-                      el("p", { class: "small" }, link(`Open the whole ${name} log`)),
+                      el("p", { class: "small cinote" }, "Story progress is shown when the job ends."),
+                      el("p", { class: "small cinote" }, link(`Open the whole ${name} log`)),
                   ]
                 : el(
                       "p",
-                      { class: "small" },
+                      { class: "small cinote" },
                       c.state === "running" ? `Capturing on ${name}. ` : "",
                       "Your capture store reports no job states. ",
                       link(`Open the ${name} log`),
                   ),
+            failures > 0
+                ? [
+                      el("h3", {}, `Failed stories (${fmt(failures)}), from the finished job`),
+                      el(
+                          "ul",
+                          { class: "small" },
+                          failed.map((f) =>
+                              el(
+                                  "li",
+                                  {},
+                                  el("span", { class: "c-failed" }, ic("failed")),
+                                  " ",
+                                  el("code", {}, f.story),
+                                  `: ${f.reason}`,
+                              ),
+                          ),
+                          failures > failed.length
+                              ? el("li", { class: "muted" }, `and ${fmt(failures - failed.length)} more, in the log`)
+                              : null,
+                      ),
+                  ]
+                : null,
             el(
                 "div",
                 { class: "capacts" },

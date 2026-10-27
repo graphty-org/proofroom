@@ -17,7 +17,7 @@ import { copyFixture, FIXTURE, job } from "../helpers.mjs";
  * The code host and capture store over plain data, read again on every call: a test that changes
  * the data between requests (a newer run lands, a change closes) sees the change on the next one.
  * @param {object} [data] what is open and what CI captured
- * @param {{ number: number, head: string, branch: string, draft?: boolean, author?: string | null }[]} [data.prs]
+ * @param {{ number: number, head: string, branch: string, draft?: boolean, fork?: boolean, author?: string | null }[]} [data.prs]
  *     the open changes; `author` is "octocat" unless given (null: a deleted account)
  * @param {Record<string, { id: number, attempt?: number, status?: string, conclusion?: string | null }>} [data.runs]
  *     the newest CI run by head sha
@@ -116,6 +116,7 @@ function changesOf(data) {
             headSha: p.head,
             branch: p.branch,
             draft: p.draft === true,
+            fork: p.fork === true,
             author: p.author === undefined ? "octocat" : p.author,
             run: x && {
                 id: x.id,

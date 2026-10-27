@@ -12,8 +12,10 @@
 # Branches or Rulesets).
 #
 # The review page's New capture asks for a capture on CI by dispatching this workflow on a pull
-# request's branch, with the head it showed (`ref`) and a request id (`request`) the run's name
-# carries, so the page finds the run it started. By hand:
+# request's branch, with the pull request (`pr`), the head it showed (`ref`) and a request id
+# (`request`) the run's name carries, so the page finds the run it started. Such a run captures the
+# pull request's merge with its base branch, as its own run does, and stops if the pull request has
+# moved past that head. By hand:
 #   gh workflow run visual-review.yml --ref <branch>
 # and add -f projects="web,charts" or -f stories="button--" to capture only those.
 
@@ -28,6 +30,11 @@ on:
         inputs:
             ref:
                 description: "The commit (or branch) to capture (default: the branch it runs on)"
+                required: false
+                type: string
+                default: ""
+            pr:
+                description: "The pull request to capture, by number: its merge at the head `ref` names (default: none)"
                 required: false
                 type: string
                 default: ""
@@ -100,7 +107,20 @@ jobs:
         steps:
             - uses: actions/checkout@v7
               with:
-                  ref: ${{ inputs.ref }}
+                  ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || inputs.ref }}
+
+            # A pull request is captured at the head that was asked for: its merge's second parent.
+            - name: Check the pull request is at the head asked for
+              if: inputs.pr
+              env:
+                  PR: ${{ inputs.pr }}
+                  WANT: ${{ inputs.ref }}
+              run: |
+                  head=$(git cat-file -p HEAD | sed -n 's/^parent //p' | sed -n 2p)
+                  if [[ "$head" != "$WANT" ]]; then
+                      echo "::error::pull request $PR is at ${head:-no merge}, not $WANT: ask for a capture of its new head"
+                      exit 1
+                  fi
 
             # Baseline PNGs are Git LFS objects. They are cached by the pointer files' hash, so a run
             # downloads from LFS only the images accepted since the cache was saved.
