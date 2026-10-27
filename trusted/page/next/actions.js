@@ -52,6 +52,12 @@ export const OFFLINE_WHY = "Offline: decisions cannot be saved";
 export const ACTIONS = {
     // The top bar.
     "screen-review": { label: "Review", run: (app) => app.showReview() },
+    "screen-captures": { label: "Captures", run: (app) => app.showCaptures() },
+    newcap: {
+        label: "New capture...",
+        title: "Capture the working tree, a local branch or a pull request",
+        run: (app) => app.newCapture(),
+    },
     refresh: { label: (app) => app.statusText(), title: "Refresh now", run: (app) => app.refresh() },
     keys: { label: "Keys", key: "?", title: "Every key, and the last 20 messages", run: (app) => app.keysSheet() },
     settings: { label: "Settings", run: (app) => app.settingsSheet() },
@@ -415,6 +421,30 @@ export const ACTIONS = {
         key: "Right / K",
         title: "Next snapshot",
         run: (app) => app.viewer.step(1),
+    },
+
+    // Captures on this machine (captures.js, new-capture.js): the New capture sheet, its second step
+    // for a change from the code host, the Captures screen and the capture rows of the changes pane.
+    capstart: { label: "Start capture", key: "Enter", writes: true, run: (app) => app.startCapture(false) },
+    capconfirm: { label: "Capture here", key: "Enter", writes: true, run: (app) => app.startCapture(true) },
+    capback: { label: "Back", key: "Esc", title: "Back to New capture", run: (app) => app.captureSheetBack() },
+    capagain: {
+        label: (app, ctx) => ctx.label ?? "Capture again...",
+        title: "New capture of the same thing",
+        run: (app, ctx) => app.captureAgain(ctx),
+    },
+    pickcap: { label: "", run: (app, ctx) => app.pickCapture(ctx.cap) },
+    capcancel: {
+        label: "Cancel",
+        title: "Stops the capture and every browser it started",
+        writes: true,
+        run: (app, ctx) => app.cancelCapture(ctx.cap),
+    },
+    capreview: {
+        label: "Review results",
+        key: "Enter",
+        title: "Opens Review on what this capture made",
+        run: (app, ctx) => app.reviewCapture(ctx.cap),
     },
 
     // Boxes and the message line.

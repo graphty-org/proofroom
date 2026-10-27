@@ -7,7 +7,8 @@
  * Opening a change shows its snapshot list (list.js) and the current snapshot in the viewer
  * (viewer.js); the decisions, the selection and Undo are decide.js, select.js and undo.js. Around
  * them: Settings (settings.js), the Keys sheet (keys-sheet.js), the messages, the offline state and
- * the tab title.
+ * the tab title. The Captures screen (captures.js) and the New capture sheet (new-capture.js) start
+ * and follow captures on this machine.
  */
 
 import { ACTIONS, control, runAction, syncAvailability } from "./actions.js";
@@ -23,8 +24,19 @@ import {
     whenConnection,
     whenRefused,
 } from "./api.js";
+import { allCaptures, busy, drawCaptures } from "./captures.js";
 import { installDecide } from "./decide.js";
-import { SORTS, changeOf, drawChanges, nextNeeding, sectionsOf, SECTIONS, sharesOf, walkOrder } from "./changes.js";
+import {
+    SORTS,
+    captureRowOf,
+    changeOf,
+    drawChanges,
+    nextNeeding,
+    sectionsOf,
+    SECTIONS,
+    sharesOf,
+    walkOrder,
+} from "./changes.js";
 import { keysSheet } from "./keys-sheet.js";
 import { startKeys, syncHints } from "./keys.js";
 import {
@@ -69,10 +81,15 @@ import {
 import { el, fmt, ic, kb, megabytes } from "./ui.js";
 import { installSelect } from "./select.js";
 import { installUndo } from "./undo.js";
+import { confirmChange, newCapture, sheetBack } from "./new-capture.js";
 import { createViewer } from "./viewer.js";
 
 const $ = (id) => document.getElementById(id);
 const POLL_MS = 15000;
+// While a capture on this machine waits or runs, or the Captures screen is shown: as Finish is followed.
+const CAPTURE_POLL_MS = 1000;
+// How long a capture that failed or was cancelled stays a row of the changes pane.
+const FAILED_ROW_MS = 24 * 3600000;
 const DISMISSED_KEY = "proofroom:dismissed";
 
 const REVIEWABLE = ORDER;
@@ -127,6 +144,12 @@ const app = {
     menu: null,
     opened: new Set(), // the snapshots the viewer showed: a bulk accept says how many were never opened
     endCard: false, // the end card shows in place of the image
+    screen: "review", // the screen shown: "review" or "captures"
+    captures: null, // the last GET /api/captures answer (or the list's copy of it)
+    capturesAt: 0, // when it came, on this browser's clock
+    capCur: null, // the capture the Captures screen shows
+    capOpen: null, // its progress and log: { id, progress, lines, next }
+    capSheet: null, // the New capture sheet while it is open
 
     logUsage,
     say,
@@ -146,7 +169,10 @@ const app = {
 
 function drawTop() {
     $("repo").textContent = app.list?.repository ?? "";
-    $("tabs").replaceChildren(control(app, "screen-review", { zone: "top", attrs: { "aria-current": "page" } }));
+    const tab = (id, name) =>
+        control(app, id, { zone: "top", attrs: { "aria-current": app.screen === name ? "page" : null } });
+    $("tabs").replaceChildren(tab("screen-review", "review"), tab("screen-captures", "captures"));
+    $("newcap-slot").replaceChildren(control(app, "newcap", { zone: "top" }));
     const trouble = app.failed !== null || Boolean(app.list?.error) || app.offline();
     $("status-slot").replaceChildren(
         control(app, "refresh", {
@@ -300,7 +326,12 @@ function drawSnaps() {
                       el(
                           "p",
                           { class: "small" },
-                          "Captures made by CI appear here on their own once a pull request runs its visual job.",
+                          "Captures made by CI appear here on their own once a pull request runs its visual job. Or capture the working tree on this machine now.",
+                      ),
+                      el(
+                          "div",
+                          { id: "summary-newcap" },
+                          control(app, "newcap", { zone: "snaps-head", attrs: { class: "primary" } }),
                       ),
                   )
                 : cur
@@ -382,10 +413,17 @@ function drawMsgButton() {
 function draw() {
     const focus = focusedControl();
     drawTop();
-    if (!drawWaiting()) {
-        drawChangesPane();
-        drawSnaps();
-        drawViewer();
+    const waiting = drawWaiting();
+    $("scr-captures").hidden = waiting || app.screen !== "captures";
+    if (!waiting) {
+        $("screens").hidden = app.screen !== "review";
+        if (app.screen === "captures") {
+            drawCaptures(app);
+        } else {
+            drawChangesPane();
+            drawSnaps();
+            drawViewer();
+        }
         drawMsgButton();
     }
     refocus(focus);
@@ -721,7 +759,12 @@ app.dismiss = (id) => {
 };
 
 app.jobLog = (id) => {
-    window.open(app.change(id).logUrl, "_blank", "noopener");
+    const c = app.change(id);
+    if (c.capId !== null) {
+        app.showCaptures(c.capId);
+        return;
+    }
+    window.open(c.logUrl, "_blank", "noopener");
 };
 
 app.openOnHost = (id) => {
@@ -740,6 +783,15 @@ app.copyLink = async (id) => {
 
 // Up and Down: in the changes, the current row; in the snapshot rows, the current snapshot.
 app.arrow = (d) => {
+    if (app.screen === "captures") {
+        const all = allCaptures(app.captures);
+        const at = all.findIndex((c) => c.id === app.capCur);
+        const next = all[Math.max(0, Math.min(all.length - 1, at + d))];
+        if (next) {
+            app.pickCapture(next.id);
+        }
+        return next !== undefined;
+    }
     if (app.focusPane === "changes" || app.level === 0) {
         const order = walkOrder(app);
         if (order.length === 0) {
@@ -1012,6 +1064,7 @@ app.rowMenu = (id, anchor) => {
     showMenu(anchor, [
         ...(c.url ? [{ id: "onhost", label: "Open on GitHub", ctx: { id } }] : []),
         { id: "about", label: "About this change", ctx: { id } },
+        { id: "capagain", label: "Capture again...", ctx: { id } },
         // On every change: anything but a pull request shows it unavailable, saying why.
         { id: "updatefrom", label: `Update from ${app.list?.defaultBranch ?? "master"}...`, ctx: { id } },
         { id: "copylink", label: "Copy link", ctx: { id } },
@@ -1051,7 +1104,7 @@ app.aboutChange = async (id) => {
         { class: "small muted" },
         [c.branch, c.author && `by ${c.author}`].filter(Boolean).join(", "),
     );
-    if (c.kind !== "PR") {
+    if (c.kind !== "PR" || c.capId !== null) {
         openBox(head, facts);
         return;
     }
@@ -1119,8 +1172,187 @@ whenConnection(() => {
 });
 
 app.showReview = () => {
+    app.screen = "review";
     draw();
+    restoreFocus();
 };
+
+// ---------------------------------------------------------------- captures on this machine
+
+app.capNow = () => (app.captures?.now ?? Date.now()) + (Date.now() - (app.capturesAt || Date.now()));
+
+app.showCaptures = (id = null) => {
+    app.screen = "captures";
+    if (id !== null) {
+        app.capCur = id;
+    }
+    draw();
+    $("cap-rows").focus({ preventScroll: true });
+    pollCaptures();
+};
+
+app.pickCapture = (id) => {
+    app.capCur = id;
+    draw();
+    document.querySelector(".caprow.cur")?.scrollIntoView({ block: "nearest" });
+    pollCaptures();
+};
+
+app.newCapture = (prefill = null) => newCapture(app, prefill);
+app.captureSheetBack = () => sheetBack(app);
+
+app.captureAgain = (ctx) => {
+    if (ctx.id !== undefined) {
+        app.newCapture(app.change(ctx.id));
+        return;
+    }
+    const c = allCaptures(app.captures).find((x) => x.id === ctx.cap);
+    app.newCapture(c ? captureRowOf(c, { now: app.capNow() }) : null);
+};
+
+// A box holding a form of its own (the New capture sheet and its second step); Esc runs `onEsc`
+// when given, and closes the box otherwise.
+app.openForm = (form, onEsc = null) => {
+    const d = /** @type {HTMLDialogElement} */ ($("dlg"));
+    d.className = "newcap";
+    d.replaceChildren(form);
+    d.oncancel = onEsc
+        ? (e) => {
+              e.preventDefault();
+              onEsc();
+          }
+        : null;
+    if (!d.open) {
+        d.showModal();
+        d.addEventListener("close", () => (d.oncancel = null), { once: true });
+    }
+    syncHints();
+};
+
+app.startCapture = async (confirmed) => {
+    const sheet = app.capSheet;
+    if (!sheet) {
+        return;
+    }
+    const req = sheet.request();
+    const { what, where } = req.body;
+    if (what.kind === "change" && !req.change) {
+        say("New capture: choose a pull request first.", "err");
+        return;
+    }
+    if (what.kind === "change" && where === "here" && !confirmed) {
+        confirmChange(app, req);
+        return;
+    }
+    let answer;
+    try {
+        answer = await api("/api/captures", { ...req.body, confirmed });
+    } catch (err) {
+        say(`The capture of ${req.label} did not start: ${err.message}`, "err");
+        return;
+    }
+    app.capSheet = null;
+    /** @type {HTMLDialogElement} */ ($("dlg")).close();
+    if (app.screen === "captures") {
+        app.capCur = answer.id;
+    }
+    await pollCaptures();
+    say(`Capture of ${req.label} started on this machine. Its row is in Changes, under Capturing.`);
+};
+
+app.cancelCapture = async (id) => {
+    const c = allCaptures(app.captures).find((x) => x.id === id);
+    try {
+        await api(`/api/captures/${id}/cancel`, {});
+    } catch (err) {
+        say(`The capture could not be cancelled: ${err.message}`, "err");
+        return;
+    }
+    say(`Capture of ${c?.what.label ?? id} cancelled.`);
+    await pollCaptures();
+};
+
+app.reviewCapture = async (id) => {
+    const c = allCaptures(app.captures).find((x) => x.id === id);
+    if (!c) {
+        return;
+    }
+    if (!app.change(c.target)) {
+        await reloadAfterCaptures();
+    }
+    app.screen = "review";
+    if (!app.change(c.target)) {
+        draw();
+        say(`${c.what.label}: its capture is not listed: it was replaced by a newer one, or removed.`, "err");
+        return;
+    }
+    await app.openChange(c.target);
+};
+
+// The open capture's progress and the log lines since the last ones the page has.
+async function loadCapture(id) {
+    const had = app.capOpen?.id === id ? app.capOpen : null;
+    const d = await api(`/api/captures/${id}?since=${had?.next ?? 0}`);
+    const lines = [...(had?.lines ?? []), ...d.log.lines].slice(-500);
+    app.capOpen = { id, progress: d.progress, lines, next: d.log.from + d.log.lines.length };
+}
+
+// The captures, asked again: once a second while one waits or runs, or the Captures screen is shown.
+let capTimer = null;
+let capAsking = null;
+function scheduleCaptures() {
+    clearTimeout(capTimer);
+    if (allCaptures(app.captures).some(busy) || app.screen === "captures") {
+        capTimer = setTimeout(pollCaptures, CAPTURE_POLL_MS);
+    }
+}
+
+function pollCaptures() {
+    capAsking ??= askCaptures().finally(() => {
+        capAsking = null;
+        scheduleCaptures();
+    });
+    return capAsking;
+}
+
+async function askCaptures() {
+    const before = new Map(allCaptures(app.captures).map((c) => [c.id, c]));
+    try {
+        app.captures = await api("/api/captures");
+        app.capturesAt = Date.now();
+        if (app.screen === "captures" && app.capCur !== null) {
+            await loadCapture(app.capCur);
+        }
+    } catch {
+        return; // the list's own poll says the server is unreachable
+    }
+    const ended = allCaptures(app.captures).filter((c) => before.has(c.id) && busy(before.get(c.id)) && !busy(c));
+    if (app.list) {
+        rebuild();
+    }
+    if (ended.length > 0) {
+        await reloadAfterCaptures();
+        for (const c of ended) {
+            const where = c.state === "done" ? `finished: ${c.look ? "look only" : "ready to review"}` : c.state;
+            say(`Capture of ${c.what.label} ${where}.`, c.state === "failed" ? "err" : "");
+        }
+        // The open change was the capture's row: open what it made.
+        const opened = ended.find((c) => app.openId === `capture-${c.id}` && c.target !== app.openId);
+        if (opened && app.change(opened.target)) {
+            await app.openChange(opened.target, { quiet: true });
+        }
+    }
+    draw();
+}
+
+// After a capture ended: the list as the server has it once its refresh that lists the capture ends.
+async function reloadAfterCaptures() {
+    await loadList("?refresh=1");
+    while (app.failed === null && app.list?.refreshing) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await loadList();
+    }
+}
 
 // ---------------------------------------------------------------- the token box
 
@@ -1184,6 +1416,13 @@ function rebuild() {
             dismissed: app.dismissed ?? new Set(),
         }),
     );
+    // The page's captures that wait, run, or failed in the last day: rows of their own.
+    const now = app.capNow();
+    for (const c of allCaptures(app.captures)) {
+        if (busy(c) || (["failed", "cancelled"].includes(c.state) && now - (c.endedAt ?? 0) < FAILED_ROW_MS)) {
+            app.changes.push(captureRowOf(c, { now }));
+        }
+    }
     if (app.dismissed === null) {
         // A first visit: the changes finished before it are not news, so only later finishes offer
         // Dismiss.
@@ -1205,6 +1444,11 @@ async function loadList(query = "?cached=1", asked = false) {
         app.list = await api(`/api/prs${query}${open}`);
         app.listAt = Date.now();
         app.failed = null;
+        // The list's copy of the captures, unless the captures' own poll is newer.
+        if (app.list.captures && app.listAt >= app.capturesAt) {
+            app.captures = app.list.captures;
+            app.capturesAt = app.listAt;
+        }
     } catch (err) {
         app.failed = err.message;
         const retry = [
@@ -1224,6 +1468,7 @@ async function loadList(query = "?cached=1", asked = false) {
     }
     rebuild();
     reopen();
+    scheduleCaptures();
     return true;
 }
 
