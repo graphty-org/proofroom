@@ -305,6 +305,7 @@ describe("finish: a candidate of master", () => {
         expect(JSON.parse(create.input).body).toContain(
             "It changes only visual-baselines/ and visual-review-approvals/.",
         );
+        expect(JSON.parse(create.input).body).toMatch(/^No issue$/m);
         expect(out.pullRequest).toBe("https://github.com/o/r/pull/9");
     });
 

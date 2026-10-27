@@ -63,9 +63,9 @@ window.__STORYBOOK_PREVIEW__ = {
 };
 </script></body></html>`;
 
-function storybook() {
+function storybook(ids = Object.keys(PARAMS)) {
     const dir = tempDir("vr-sb-");
-    const entries = Object.fromEntries(Object.keys(PARAMS).map((id) => [id, { id, type: "story" }]));
+    const entries = Object.fromEntries(ids.map((id) => [id, { id, type: "story" }]));
     entries["demo--docs"] = { id: "demo--docs", type: "docs" };
     writeFileSync(join(dir, "index.json"), JSON.stringify({ entries }));
     writeFileSync(join(dir, "iframe.html"), IFRAME);
@@ -82,7 +82,10 @@ afterAll(() => vi.unstubAllEnvs());
 
 describe("capture", () => {
     it("classifies new, unchanged, excluded, failed, and a story newly excluded by its parameters", async () => {
-        const sb = storybook();
+        // Only the stories this test checks: the tall, late-font and small fixtures are other
+        // tests', and capturing them too doubled this test's work, which on a loaded 4-core runner
+        // took it past the suite's 60 s limit (#3768).
+        const sb = storybook(["demo--plain", "demo--excluded-here", "demo--always-excluded", "demo--broken"]);
         const baselines = tempDir("vr-bl-");
         const run = (out) =>
             capture({ project: "demo", storybook: sb, baselines, out, workers: 2, waitFor: null, log: () => {} });
@@ -169,7 +172,18 @@ describe("capture", () => {
         const seedOut = tempDir("vr-out-");
         const run = (out, baselines) =>
             capture({ project: "demo", storybook: sb, baselines, out, workers: 2, waitFor: null, log: () => {} });
-        await run(seedOut, tempDir("vr-bl-"));
+        // The seed needs only the two pictures copied below: capturing every story here doubled
+        // this test's time on a loaded runner (#3768).
+        await capture({
+            project: "demo",
+            storybook: sb,
+            baselines: tempDir("vr-bl-"),
+            out: seedOut,
+            workers: 2,
+            waitFor: null,
+            log: () => {},
+            stories: ["demo--plain", "demo--tall"],
+        });
 
         // Baselines under old ids: one that looks the same as its new story, one that does not,
         // one whose rename names no story, and one renamed from an id that is still a story (which
