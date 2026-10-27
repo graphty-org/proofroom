@@ -481,14 +481,14 @@ describe("one test per toolbar control", () => {
         await expect.poll(near).toBe(true);
         await tool(page, "options").click();
         await menuItem(page, "Open centered on the area").click();
-        await expect.poll(() => message(page)).toBe("Open centered on the area off.");
+        await expect.poll(() => message(page)).toBe("Open centered on the area: off.");
         await page.keyboard.press("ArrowRight");
         await drawn(page, 2);
         await page.keyboard.press("ArrowLeft");
         await drawn(page, 1);
         expect(await near()).toBe(false);
         await page.keyboard.press("KeyO");
-        await expect.poll(() => message(page)).toBe("Open centered on the area on.");
+        await expect.poll(() => message(page)).toBe("Open centered on the area: on.");
         await page.keyboard.press("ArrowRight");
         await drawn(page, 2);
         await page.keyboard.press("ArrowLeft");
@@ -632,8 +632,9 @@ describe("one test per toolbar control", () => {
         await page.keyboard.press("KeyV");
         await page.keyboard.press("KeyB");
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
+        // Y opens More while Layout is in it, where the Layout items print [Y].
         await page.keyboard.press("KeyY");
-        await menuItem(page, "Over and under").waitFor();
+        await menuItem(page, "Layout: Over and under").waitFor();
         await page.keyboard.press("Escape");
     });
 

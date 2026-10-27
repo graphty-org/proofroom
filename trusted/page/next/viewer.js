@@ -145,6 +145,8 @@ export function createViewer(app) {
     const walk = () => layoutOf(app.lv, app.snaps).groups.flatMap((g) => g.rows);
 
     const stage = createStage({
+        flashMs: 667, // one image each two thirds of a second: about 1.5 swaps a second
+        blinkMs: 500, // the overlays on, then off, each half a second
         settings: () => {
             const s = current();
             return {
@@ -431,7 +433,7 @@ export function createViewer(app) {
                     id: "morebtn",
                     "data-menukeys": JSON.stringify({
                         "Shift+3": "imageonly",
-                        Y: "layoutmenu",
+                        Y: "more",
                         B: "outline",
                         O: "centerarea",
                     }),
@@ -461,6 +463,7 @@ export function createViewer(app) {
                 : null,
         );
 
+    const COMP_MIN_PX = 48; // about four letters and the ellipsis
     function fillLine(s) {
         // One count for the size text, Next area and "n of N": the diff's areas once drawn.
         const count = areas.key === s.key ? areas.count : (s.areas?.count ?? 0);
@@ -483,20 +486,20 @@ export function createViewer(app) {
             el("span", { class: "grow" }),
             lineEnd(s),
         );
-        // No room: the Accept sentence goes first, whole and never cut, then the component, then the
-        // story's name is cut in the middle.
+        // No room: the Accept sentence goes first, whole and never cut, before the component is cut.
+        // The component then shrinks with an ellipsis, and goes only when it would be narrower than a
+        // few letters. Last, the story's name is cut in the middle.
         const line = parts.line;
         const cut = (n) => n !== null && n.scrollWidth > n.clientWidth + 1;
-        const tight = () =>
-            line.scrollWidth > line.clientWidth + 1 ||
-            cut(line.querySelector(".name")) ||
-            cut(line.querySelector(".comp"));
-        for (const sel of [".asay", ".comp"]) {
-            if (tight()) {
-                line.querySelector(sel)?.remove();
-            }
-        }
+        const comp = line.querySelector(".comp");
         const name = line.querySelector(".name");
+        const over = () => line.scrollWidth > line.clientWidth + 1 || cut(name);
+        if (over() || cut(comp)) {
+            line.querySelector(".asay")?.remove();
+        }
+        if (over() || (cut(comp) && comp.clientWidth < COMP_MIN_PX)) {
+            comp.remove();
+        }
         for (let keep = s.name.length - 2; cut(name) && keep > 4; keep -= 2) {
             name.textContent = `${s.name.slice(0, Math.ceil(keep / 2))}...${s.name.slice(s.name.length - Math.floor(keep / 2))}`;
         }
@@ -669,7 +672,7 @@ export function createViewer(app) {
             save();
             const said = {
                 outline: `Outline ${vs.outline ? "on" : "off"}.`,
-                center: `Open centered on the area ${vs.center ? "on" : "off"}.`,
+                center: `Open centered on the area: ${vs.center ? "on" : "off"}.`,
                 showBase: `Baseline ${vs.showBase ? "shown" : "hidden"}.`,
             }[name];
             if (said) {

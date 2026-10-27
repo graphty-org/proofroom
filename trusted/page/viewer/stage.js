@@ -10,8 +10,7 @@
 import { diffable, keptDiffs, targetsOf } from "./prefetch.js";
 import { dimmed } from "/spot.js";
 
-const FLASH_MS = 667; // one image each two thirds of a second: about 1.5 swaps a second
-const BLINK_MS = 500; // the overlays on, then off, each half a second
+const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
 const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
 // A press this soon after its item's images were drawn is the tail of a press meant for the item
 // before, not a decision on an image the reader saw. Measured from the press's own time
@@ -172,6 +171,8 @@ export async function diffImages(a, b, { threshold, includeAA }) {
  * @param {(item: object, view: string) => { leftLabel?: string, rightLabel?: string, flash?: [string, string], note?: string | null }} [host.labels]
  *   the frames' labels in place of the stage's own: each frame's, the two a flashing frame takes
  *   turns with, and a note beside them
+ * @param {number} [host.flashMs] how long Flash and Spotlight's flash show each image (FLASH_MS)
+ * @param {number} [host.blinkMs] how long Blink shows, then hides, the overlays (FLASH_MS)
  * @returns {object} the stage's controls
  */
 export function createStage(host) {
@@ -479,7 +480,7 @@ export function createStage(host) {
             base.style.visibility = showingNew ? "hidden" : "visible";
             next.style.visibility = showingNew ? "visible" : "hidden";
             tag.textContent = showingNew ? onNew : onBase;
-        }, FLASH_MS);
+        }, host.flashMs ?? FLASH_MS);
     }
 
     // Both panes' overlays on and off together.
@@ -491,7 +492,7 @@ export function createStage(host) {
             for (const m of marks) {
                 m.style.visibility = on ? "visible" : "hidden";
             }
-        }, BLINK_MS);
+        }, host.blinkMs ?? FLASH_MS);
     }
 
     // An image or the diff failed to load: the compared views show the error in both panes; side
