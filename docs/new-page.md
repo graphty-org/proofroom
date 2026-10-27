@@ -32,7 +32,10 @@ PORT=4800 proofroom serve --ui next
   the panes the review does not need, and the viewer is never narrower than 800 px. **Back [Esc]**
   says where it goes: back to the list, or back to the changes. The page remembers your pane
   choices in this browser, separately for small changes (10 snapshots or fewer) and large ones.
-- **The snapshots of a change**, as a plain list for now.
+- **The snapshots of a change**, as a plain list for now. A snapshot whose attempts in the run did
+  not agree (with `run --retries`, or a test runner's retries) carries the badge **attempts
+  disagree**; its status is its last attempt's. The list's **...** menu has **Download the
+  comparison report (JUnit)**: the open capture's results as a JUnit file.
 - **The viewer.** The current snapshot in four views: **Side by side [V]**, **Flash [F]** (or hold
   Space), **Highlight [H]** (with **Blink [L]**) and **Spotlight [S]**; pressing a view's key again
   goes back to Side by side. **Zoom [Z]** and Fit [0], 1x [1], 2x [2], 4x [4] and 8x [8] zoom both
@@ -56,3 +59,16 @@ PORT=4800 proofroom serve --ui next
   those in pull request comments, open the same change and snapshot here.
 
 Every key is printed on the control it presses, and a key does only what a visible key box says.
+
+## The renderer banner
+
+When the captures were drawn by another browser version than the baselines (the capture's
+`renderer` and its `baselineRenderer` differ, see [Capture and compare](capture-and-compare.md)),
+every image may differ for that reason alone. The snapshot list then shows, in place of the rows:
+"These captures used Chromium 131; the baselines used Chromium 128. Every image may differ." with
+two buttons:
+
+- **Show the changes anyway** shows the rows, to decide them as usual.
+- **Capture the baselines again...** opens New capture, to capture with the same browser.
+
+The banner never shows when either capture does not say which browser drew it.
