@@ -43,6 +43,9 @@ PORT=4800 proofroom serve --ui next
   area [O], Details and Copy link. **Next area [N]** steps through the changed areas, and
   **Previous [Left / J]** and **Next [Right / K]** move between snapshots. Decisions come next;
   until then, decide on today's page.
+- **Finish.** **Finish** in the top bar, Finish... on each decided change and Finish all, with a
+  summary sheet that says what each Finish will commit, post and set first. See
+  [Finish on the new page](finish.md).
 - **Addresses.** Every change and snapshot you open is in the address, so a copied link opens it
   again and the browser's Back and Forward move between them. Links today's page wrote, such as
   those in pull request comments, open the same change and snapshot here.
