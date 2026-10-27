@@ -6,7 +6,7 @@
  * capture reviewed and finished onto the branch.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -228,6 +228,23 @@ describe("a capture from the page", () => {
             reason: null,
         });
         expect(res.status).toBe(403);
+    });
+
+    it("leaves the server pruning the downloads of CI runs nothing lists", async () => {
+        const r = captureRepo(counter.url);
+        const s = await serve(r);
+        const started = await s.api("POST", "/api/captures", { what: { kind: "branch", branch: "main" } });
+        expect((await ended(s, started.body.id)).state).toBe("done");
+        await listed(s, "branch-main");
+        // A CI run's download no change lists: the next refresh removes it, beside a capture made here.
+        const old = join(r.repo, "tmp/visual-review/555-1");
+        mkdirSync(old, { recursive: true });
+        writeFileSync(join(old, "results.json"), "{}");
+        await until(async () => {
+            await s.api("GET", "/api/prs");
+            return !existsSync(old);
+        });
+        expect((await s.api("GET", "/api/prs?cached=1")).body.targets.map((x) => x.id)).toEqual(["branch-main"]);
     });
 
     it("captures a story prefix to look at only", async () => {

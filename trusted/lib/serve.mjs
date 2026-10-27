@@ -2451,7 +2451,10 @@ export function createApp({
     // Deletes the downloads of runs no target shows any more and no page has open (never state/).
     // Not while a Finish reads its captures, nor after a refresh that could not load some target.
     function prune() {
-        const runs = new Set([...targets.values(), ...held.values()].map((t) => t.runId));
+        // A capture made from the page has no CI run, and keeps none of these folders.
+        const runs = new Set(
+            [...targets.values(), ...held.values()].filter((t) => !t.capture).map((t) => t.runId),
+        );
         if (results || finishing || runs.has(null) || !existsSync(tmp)) {
             return;
         }
