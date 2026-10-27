@@ -1,8 +1,8 @@
 /*
  * Settings (design 2.2): the passkeys registered for Finish and Register passkey..., letter keys
- * on or off, the Highlight color, the theme and the server's disk budget. The reader's choices are kept in this browser; the
- * passkeys are the server's (GET /api/passkeys), and registering one goes through today's flow in
- * passkey.js: the challenge is fetched first, so the button that creates the passkey can start
+ * on or off, the Highlight color, the theme and the server's disk budget. The reader's choices are
+ * kept in this browser; the passkeys are the server's (GET /api/passkeys), and registering one goes
+ * through passkey.js: the challenge is fetched first, so the button that creates the passkey can start
  * Face ID inside its own press, as iPad Safari requires.
  */
 

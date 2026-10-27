@@ -1,8 +1,8 @@
 /*
  * The snapshot list's groupings (design 4.4): Component, Same change, Project, Status and None, and
  * the Approved before group at the top of every grouping. An identical change is a fact (the same
- * baseline and new image hashes); a look-alike group is the server's guess (clusters(), today's
- * Group similar), so the two are labeled differently. Pure functions over the list's snapshots.
+ * baseline and new image hashes); a look-alike group is the server's guess (filters.mjs clusters()),
+ * so the two are labeled differently. Pure functions over the list's snapshots.
  */
 
 import { ORDER, STATUS } from "./marks.js";
