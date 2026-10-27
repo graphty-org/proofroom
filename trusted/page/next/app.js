@@ -354,9 +354,7 @@ function drawSnaps() {
     const h1 = el(
         "div",
         { class: "h1" },
-        c.url && hostCan(app.list, "openChange")
-            ? titleLink(c, title)
-            : el("span", { class: "grow ell", title }, title),
+        c.url && hostCan(app.list, "openChange") ? titleLink(c, title) : el("span", { class: "grow ell", title }, title),
         changesShown ? null : control(app, "nextchange", { zone: "snaps-head", attrs: { id: "snap-next-btn" } }),
         hide,
     );
@@ -1381,9 +1379,7 @@ async function askCaptures() {
     try {
         // Once the page has the list, only what changes: the captures waiting or running, and how
         // the ones it saw waiting or running ended.
-        const watch = allCaptures(had)
-            .filter(busy)
-            .map((c) => c.id);
+        const watch = allCaptures(had).filter(busy).map((c) => c.id);
         const got = await api(had ? `/api/captures?watch=${watch.join(",")}` : "/api/captures");
         const kept = (had?.finished ?? []).filter((c) => !got.finished.some((x) => x.id === c.id));
         app.captures = had ? { ...got, finished: [...got.finished, ...kept] } : got;
@@ -1749,7 +1745,11 @@ async function loadFirst() {
         const first = sectionsOf(app.changes, app.sort).get("needs")[0] ?? walkOrder(app)[0];
         app.curId = first?.id ?? null;
         draw();
-        say(app.changes.length === 0 ? "Ready. The server checks the code host every 2 minutes." : CHOOSE_HINT);
+        say(
+            app.changes.length === 0
+                ? "Ready. The server checks the code host every 2 minutes."
+                : CHOOSE_HINT,
+        );
     }
 }
 

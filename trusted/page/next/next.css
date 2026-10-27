@@ -2010,10 +2010,7 @@ dialog.finish pre {
 .log {
     background: #11151b;
     color: #cfd6e0;
-    font:
-        11px/1.5 ui-monospace,
-        Menlo,
-        monospace;
+    font: 11px/1.5 ui-monospace, Menlo, monospace;
     padding: 8px 10px;
     border-radius: 6px;
     height: 200px;
