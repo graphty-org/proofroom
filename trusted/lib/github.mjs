@@ -10,10 +10,20 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { SKIPPED_FILE, validateResults } from "./results.mjs";
+import { artifactReader, zipEntries, zipEntry } from "./zip-range.mjs";
 
 /**
  * Runs a program and resolves with its trimmed stdout. A program that runs longer than
@@ -439,9 +449,19 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
  * @param {string} project the project id
  * @param {string} tmp the download root
  * @param {{ workflow: string, defaultBranch: string }} config the capturing workflow and the branch
+ * @param {{ reader?: ((artifact: object) => Promise<{ read: (start: number, end: number) => Promise<Buffer>, size: number } | null>) | null }} [options]
+ *     `reader` opens an artifact for range reads (by default with GH_TOKEN, in CI), so only results.json and
+ *     the images the capture compares with (`new` and `unseeded` items) are downloaded; without one, or when
+ *     a range read fails, the whole artifact is downloaded
  * @returns {Promise<string | null>} the capture's directory, or null when no run has one
  */
-export async function newestMasterCapture(gh, project, tmp, { workflow, defaultBranch }) {
+export async function newestMasterCapture(
+    gh,
+    project,
+    tmp,
+    { workflow, defaultBranch },
+    { reader = tokenReader() } = {},
+) {
     // The branch's newest commits, then each one's run: GitHub's list of a workflow's runs filtered
     // by branch now and then answers with a stale page (runs from weeks ago), which made a pull
     // request compare with an old capture or none. Commits and a run by head sha answer consistently.
@@ -463,6 +483,10 @@ export async function newestMasterCapture(gh, project, tmp, { workflow, defaultB
         if (!run) {
             continue;
         }
+        const subset = reader ? await referenceSubset(gh, run, project, tmp, reader).catch(() => null) : null;
+        if (subset) {
+            return subset;
+        }
         const got = (await downloadCaptures(gh, run, [project], tmp))[project];
         if (got?.error) {
             // Not skipped: an older capture would be compared instead of this one.
@@ -480,6 +504,68 @@ export async function newestMasterCapture(gh, project, tmp, { workflow, defaultB
         }
     }
     return null;
+}
+
+function tokenReader() {
+    const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+    return token ? (a) => artifactReader(a.archive_download_url, token) : null;
+}
+
+/**
+ * Downloads from a run's capture of one project only results.json and the images loadReference() in
+ * capture.mjs reads (`new` and `unseeded` items): a large project's capture is hundreds of megabytes,
+ * and a Stories bin compares a few stories.
+ * @param {Function} gh the gh runner
+ * @param {{ id: number }} run the run
+ * @param {string} project the project id
+ * @param {string} tmp the download root
+ * @param {(artifact: object) => Promise<{ read: (start: number, end: number) => Promise<Buffer>, size: number } | null>} reader opens an artifact
+ * @returns {Promise<string | null>} the directory, or null when this run's capture cannot be read this way
+ */
+export async function referenceSubset(gh, run, project, tmp, reader) {
+    const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
+    const pick = (re) =>
+        artifacts
+            .filter((x) => re.test(x.name) && !x.expired)
+            .sort((x, y) => Number(re.exec(y.name)[1]) - Number(re.exec(x.name)[1]))[0];
+    const a =
+        pick(new RegExp(String.raw`^visual-final-${project}-(\d+)$`)) ??
+        pick(new RegExp(String.raw`^visual-${project}-(\d+)$`));
+    const zip = a ? await reader(a) : null;
+    const entries = zip ? await zipEntries(zip.read, zip.size) : null;
+    const file = async (name) => {
+        const e = entries.get(name);
+        return e ? zipEntry(zip.read, e) : null;
+    };
+    const json = entries ? await file("results.json") : null;
+    if (!json) {
+        return null;
+    }
+    const results = JSON.parse(json.toString("utf8"));
+    if (validateResults(results).length > 0 || !results.complete || results.project !== project) {
+        return null;
+    }
+    const dir = join(tmp, `${run.id}-${a.name.replace(/^visual-/u, "")}-subset`, project);
+    rmSync(dir, { recursive: true, force: true });
+    const part = `${dir}.part`;
+    rmSync(part, { recursive: true, force: true });
+    mkdirSync(part, { recursive: true });
+    const wanted = results.items.filter((i) => i.status === "new" || i.status === "unseeded").map((i) => i.file);
+    // ponytail: 8 range reads at a time, one per image; batch neighbours into one range if a capture has thousands
+    for (let i = 0; i < wanted.length; i += 8) {
+        await Promise.all(
+            wanted.slice(i, i + 8).map(async (name) => {
+                const bytes = await file(name);
+                if (bytes) {
+                    mkdirSync(dirname(join(part, name)), { recursive: true });
+                    writeFileSync(join(part, name), bytes);
+                }
+            }),
+        );
+    }
+    writeFileSync(join(part, "results.json"), json);
+    renameSync(part, dir);
+    return dir;
 }
 
 /**
