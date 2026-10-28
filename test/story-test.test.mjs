@@ -220,7 +220,12 @@ describe("story tests' visual step", () => {
         const first = visualStoryTest({ project: "graphty-element", out, root });
         expect(await shoot(first, "a--same", [png(10)])).toEqual({ status: "unchanged" });
         expect(await shoot(first, "b--wobbles", [png(200), png(100)])).toEqual({ status: "unstable" });
-        await report(first, root, { files, ran: { "a.stories.ts": ["a--same"], "b.stories.ts": ["b--wobbles"] } });
+        const shard = { index: 2, count: 4 };
+        await report(first, root, {
+            shard,
+            files,
+            ran: { "a.stories.ts": ["a--same"], "b.stories.ts": ["b--wobbles"] },
+        });
         expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(true);
 
         // The retry (tools/test-quarantine.mjs) runs only b.stories.ts, and this time it settles.
@@ -230,7 +235,8 @@ describe("story tests' visual step", () => {
 
         const r = read(out);
         expect(r.retried).toBe(1);
-        expect(r.partial).toMatchObject({ reported: true, missing: [], ran: files });
+        // The retry runs without --shard; the partial still names the first run's leg (#4006).
+        expect(r.partial).toMatchObject({ shard, reported: true, missing: [], ran: files });
         expect(Object.fromEntries(r.items.map((i) => [i.id, i.status]))).toEqual({
             "a--same": "unchanged",
             "b--wobbles": "unchanged",

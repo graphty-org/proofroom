@@ -416,7 +416,13 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
                 files.ran = [...new Set([...kept.ran, ...files.ran])].sort((a, b) => a.localeCompare(b));
                 missing.unshift(...kept.missing.filter((id) => !planned.has(id)));
             }
-            results.partial = { shard, reported: reported && (!kept || kept.reported), missing, ...files };
+            // The retry is not run with --shard, so its own shard reads 1 of 1: the leg is the first run's.
+            results.partial = {
+                shard: kept?.shard ?? shard,
+                reported: reported && (!kept || kept.reported),
+                missing,
+                ...files,
+            };
             results.items.sort((a, b) => (a.file < b.file ? -1 : 1));
             save();
         },
