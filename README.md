@@ -38,7 +38,7 @@ proofroom was `@graphty/visual-review`; see [Coming from
 - **A git repository on GitHub, with GitHub Actions.** The review page talks to GitHub through
   the [`gh` CLI](https://cli.github.com), logged in (`gh auth login`) as someone who can push to
   the repository's branches.
-- **Node.js 20 or newer**, locally and in CI.
+- **Node.js 22 or newer**, locally and in CI.
 - **Storybook 7 or newer**, built as a static site (`storybook build`), which writes the
   `index.json` the capture reads.
 - **Playwright**, a peer dependency: install it next to this package. `proofroom

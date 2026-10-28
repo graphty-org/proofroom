@@ -1,6 +1,6 @@
 # Developing proofroom
 
-Node 20 or later, git and git-lfs:
+Node 22 or later, git and git-lfs:
 
 ```sh
 npm ci
