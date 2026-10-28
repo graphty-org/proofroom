@@ -391,8 +391,10 @@ export async function startApp(r, options) {
             body: type.includes("json") ? await res.json() : Buffer.from(await res.arrayBuffer()),
         };
     };
-    // Waits for the tiles made in advance too: they would run on into the next test.
+    // Waits for the tiles being made too: they would run on into the next test. Those queued in
+    // advance and not started are dropped, or a list of thousands keeps the test waiting for all.
     const close = async () => {
+        box.app?.stopAdvance();
         server.closeAllConnections();
         await new Promise((resolve) => server.close(() => resolve()));
         await box.app?.idle();

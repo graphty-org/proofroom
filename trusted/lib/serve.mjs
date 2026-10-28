@@ -736,9 +736,9 @@ async function loadResults(dir, name) {
  *     kept in the work directory (serverIdOf)
  * @param {number} [options.ciEvery] the least time, in milliseconds, between two asks of a CI
  *     capture's state (captures.mjs)
- * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, serverId: string, stopCaptures: () => void }}
+ * @returns {((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>) & { idle: () => Promise<void>, stopAdvance: () => void, serverId: string, stopCaptures: () => void }}
  *     the handler, for node:https in the CLI and node:http in the tests; `idle()` settles once no
- *     tile is being made in the background, and `serverId`
+ *     tile is being made in the background, `stopAdvance()` drops the pictures queued in advance, and `serverId`
  */
 export function createApp({
     repo,
@@ -3243,6 +3243,8 @@ export function createApp({
 
     /** Tiles being made, by the first file they are kept in, and whether a tile is waiting for them. */
     const making = new Map();
+    // Set by `stopAdvance()`: a queued job made in advance is dropped when its turn comes.
+    let advanceStopped = false;
 
     /**
      * Grid tiles made in a child process (`pictures`) unless on disk already, and kept there, one
@@ -3281,6 +3283,9 @@ export function createApp({
             const begin = async () => {
                 if (entry.overtaken) {
                     throw Object.assign(new Error("overtaken"), { overtaken: entry.overtaken.done });
+                }
+                if (advanceStopped && !urgent) {
+                    throw Object.assign(new Error("stopped"), { answer: [503, { error: "the server is stopping" }] });
                 }
                 entry.started = true;
                 return load();
@@ -5047,6 +5052,13 @@ export function createApp({
             await Promise.allSettled([...making.values()].map((m) => m.done));
             await budgeting;
         }
+    };
+    /**
+     * Drops the pictures still queued to be made in advance, so `idle()` waits only for those
+     * already being made: a stopping server has no list left to show them in.
+     */
+    handler.stopAdvance = () => {
+        advanceStopped = true;
     };
     handler.serverId = serverId;
     handler.work = work;
