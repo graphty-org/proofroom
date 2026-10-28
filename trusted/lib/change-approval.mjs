@@ -223,9 +223,10 @@ const succeeds = (git, args) => {
  * The blobs of a list of object ids, read with one `git cat-file --batch`.
  * @param {(args: string[], input?: string) => Buffer} git the runner
  * @param {string[]} ids blob ids
+ * @param {Set<string>} [missing] filled with the ids git reports missing (no such file at that commit)
  * @returns {Map<string, Buffer>} the contents by id
  */
-function readBlobs(git, ids) {
+function readBlobs(git, ids, missing = new Set()) {
     const out = new Map();
     const wanted = [...new Set(ids)];
     if (wanted.length === 0) {
@@ -237,8 +238,13 @@ function readBlobs(git, ids) {
         const nl = buf.indexOf(10, at);
         const [, type, size] = buf.subarray(at, nl).toString("utf8").split(" ");
         at = nl + 1;
-        if (type === "blob") {
-            out.set(id, buf.subarray(at, at + Number(size)));
+        if (type === "missing") {
+            missing.add(id);
+        } else if (size !== undefined) {
+            // Every found object is followed by its content, a blob's or not.
+            if (type === "blob") {
+                out.set(id, buf.subarray(at, at + Number(size)));
+            }
             at += Number(size) + 1;
         }
     }
@@ -589,8 +595,9 @@ const hasControl = (text) => [...text].some((ch) => ch.charCodeAt(0) < 0x20 || c
 /**
  * The commits of a change, each with its parents and its author and committer e-mails, and
  * whether it counts as a contribution. Two kinds do not: the tool's own commit (Finish's),
- * recognized by what it changes, never by who made it -- it adds one statement and changes nothing
- * but the baseline files that statement's entries name -- and a merge that adds nothing of its own
+ * recognized by what it changes, never by who made it -- it adds one statement of this change that
+ * the base's keys verify, and changes nothing but the baseline files that statement's entries name,
+ * each to exactly what its entry says -- and a merge that adds nothing of its own
  * (every file is one parent's, as in a clean merge of the default branch or a merge result CI
  * builds).
  *
@@ -604,10 +611,12 @@ const hasControl = (text) => [...text].some((ch) => ch.charCodeAt(0) < 0x20 || c
  * @param {string} at.head the head
  * @param {string} at.baselines the baselines directory
  * @param {string} at.approvals the approvals directory
+ * @param {object[] | null} at.keys the base's keys; null: no commit is the tool's own
+ * @param {string[]} at.changes the changes being gated (`pr:7`)
  * @returns {Map<string, { counts: boolean, parents: string[], emails: string[] }>} by commit
  * @throws {Error} when git's output does not match the commit list, or an e-mail holds a control character
  */
-export function changeCommits(git, { base, head, baselines, approvals }) {
+export function changeCommits(git, { base, head, baselines, approvals, keys, changes }) {
     const range = `${base}..${head}`;
     const parentsOf = new Map();
     for (const line of git(["rev-list", "--parents", range]).toString("utf8").split("\n").filter(Boolean)) {
@@ -626,13 +635,26 @@ export function changeCommits(git, { base, head, baselines, approvals }) {
             stated.set(sha, { file: added[0], files });
         }
     }
+    // The statements and every baseline file their commits change, in one batch.
+    const missing = new Set();
     const blobs = readBlobs(
         git,
-        [...stated].map(([sha, { file }]) => `${sha}:${file}`),
+        [...stated].flatMap(([sha, { file, files }]) =>
+            [file, ...files.filter((f) => f.startsWith(`${baselines}/`))].map((f) => `${sha}:${f}`),
+        ),
+        missing,
     );
     for (const [sha, { file, files }] of stated) {
-        const bytes = blobs.get(`${sha}:${file}`);
-        if (bytes && toolsOwn(bytes, files, file, baselines)) {
+        // What the commit holds at a path: its content's hash, null when it deleted it, undefined when unknown.
+        const hashAt = (f) => {
+            const at = `${sha}:${f}`;
+            if (missing.has(at)) {
+                return null;
+            }
+            return blobs.has(at) ? contentHash(blobs.get(at)) : undefined;
+        };
+        const at = { files, file, baselines, keys, changes, hashAt };
+        if (blobs.has(`${sha}:${file}`) && toolsOwn(blobs.get(`${sha}:${file}`), at)) {
             commits.get(sha).counts = false;
         }
     }
@@ -720,25 +742,39 @@ function commitEmails(git, range, parentsOf) {
 }
 
 /**
- * Whether a commit's files are exactly one statement and the baseline files its entries name.
+ * Whether a commit is Finish's: it adds one statement of these changes that the base's keys
+ * verify, and every other file it changes is a baseline an entry names, holding exactly what the
+ * entry says -- an accepted or excluded file the entry's `to` (absent when null), a rejected one
+ * untouched (Finish writes nothing for a reject). Anything it cannot tell makes it a contribution.
  * @param {Buffer} bytes the statement the commit adds
- * @param {string[]} files every file the commit changes
- * @param {string} file the statement's path
- * @param {string} baselines the baselines directory
+ * @param {object} at what to check against
+ * @param {string[]} at.files every file the commit changes
+ * @param {string} at.file the statement's path
+ * @param {string} at.baselines the baselines directory
+ * @param {object[] | null} at.keys the base's keys
+ * @param {string[]} at.changes the changes being gated
+ * @param {(path: string) => string | null | undefined} at.hashAt a file's hash in the commit
+ *     (null: absent; undefined: not known)
  * @returns {boolean} whether it is the tool's own commit
  */
-function toolsOwn(bytes, files, file, baselines) {
+function toolsOwn(bytes, { files, file, baselines, keys, changes, hashAt }) {
     let s;
     try {
         s = JSON.parse(bytes.toString("utf8"));
     } catch {
         return false;
     }
-    if (statementProblem(s) !== null) {
+    if (statementProblem(s) !== null || !keys || !changes?.includes(s.change) || verifyApproval(s, keys) !== null) {
         return false;
     }
-    const named = new Set(s.entries.map((e) => `${baselines}/${e.path}`));
-    return files.every((f) => f === file || named.has(f));
+    const named = new Map(s.entries.map((e) => [`${baselines}/${e.path}`, e]));
+    return files.every((f) => {
+        if (f === file) {
+            return true;
+        }
+        const e = named.get(f);
+        return e !== undefined && e.decision !== "reject" && hashAt(f) === e.to;
+    });
 }
 
 /**
