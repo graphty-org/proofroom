@@ -703,9 +703,9 @@ const hasControl = (text) => [...text].some((ch) => ch.charCodeAt(0) < 0x20 || c
  * whether it counts as a contribution. Two kinds do not: the tool's own commit (Finish's),
  * recognized by what it changes, never by who made it -- it adds one statement that a base key's
  * passkey signed and that names one of these changes, and changes nothing but the baseline files
- * that statement's entries name -- and a merge that adds nothing of its own
- * (every file is one parent's, as in a clean merge of the default branch or a merge result CI
- * builds).
+ * that statement's entries name -- and a merge that adds nothing of its own: its tree is git's
+ * clean automatic merge of its two parents, as in a clean merge of the default branch or a merge
+ * result CI builds.
  *
  * The commits and their parents come from `git rev-list --parents`, which prints nothing a
  * contributor chooses; the files and the e-mails each from their own `git log`, whose output is
@@ -737,7 +737,8 @@ export function changeCommits(git, { base, head, baselines, approvals, keys, cha
     for (const [sha, parents] of parentsOf) {
         const files = filesOf.get(sha);
         const added = files.filter((f) => f.startsWith(`${approvals}/`) && f.slice(approvals.length + 1).includes("/"));
-        commits.set(sha, { counts: !(parents.length > 1 && files.length === 0), parents, emails: emailsOf.get(sha) });
+        const adds = !(parents.length > 1 && files.length === 0 && cleanMerge(git, sha, parents));
+        commits.set(sha, { counts: adds, parents, emails: emailsOf.get(sha) });
         if (added.length === 1 && parents.length === 1) {
             stated.set(sha, { file: added[0], files, parent: parents[0] });
         }
@@ -765,6 +766,35 @@ export function changeCommits(git, { base, head, baselines, approvals, keys, cha
         }
     }
     return commits;
+}
+
+/**
+ * Whether a merge's tree is exactly git's own clean merge of its two parents. An empty combined
+ * diff alone is not enough: it lists only files that differ from every parent, so a merge that
+ * takes each file from whichever parent its author picks (reverting the default branch's code)
+ * shows none. A conflict, more than two parents or any other tree adds something of its own.
+ * @param {(args: string[]) => Buffer} git the runner
+ * @param {string} sha the merge
+ * @param {string[]} parents its parents
+ * @returns {boolean} whether it is
+ */
+function cleanMerge(git, sha, parents) {
+    if (parents.length !== 2) {
+        return false;
+    }
+    try {
+        const merged = git(["merge-tree", "--write-tree", ...parents])
+            .toString("utf8")
+            .split("\n")[0];
+        return (
+            merged ===
+            git(["rev-parse", `${sha}^{tree}`])
+                .toString("utf8")
+                .trim()
+        );
+    } catch {
+        return false;
+    }
 }
 
 /**

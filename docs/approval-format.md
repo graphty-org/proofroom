@@ -236,12 +236,15 @@ Two kinds of commit do not count: Finish's own commit, recognized by what it cha
 statement, and only the baseline files that statement's entries name, where a story settings file
 may change only as Finish's exclusion changes it: `disableSnapshot: true` and a reason set, nothing
 else), never by who made it; and a
-merge that adds nothing of its own, such as a clean merge of the default branch.
+merge that adds nothing of its own: its tree is exactly git's clean automatic merge of its two
+parents, such as a clean merge of the default branch. A merge whose author resolved it, even by
+taking one side of every file, counts.
 
-A change none of whose commits counts has no contributors, its opener included. A seed pull request
-(see "Seed statements") is such a change: Finish opens it as the reviewer, but it brings no code,
-since its images are drawn by code already on the default branch. Any commit of its own, pushed by
-anyone, makes the opener and that commit's people contributors again.
+A seed pull request (see "Seed statements") whose commits are only Finish's own seed commits, and
+that changes nothing outside the baselines and approvals directories, has no contributors, its
+opener included: Finish opens it as the reviewer, but it brings no code, since its images are drawn
+by code already on the default branch. Any commit of its own, pushed by anyone, or any other file it
+changes, makes the opener and that commit's people contributors again.
 
 `"forbid"` assumes your required checks are strict (a pull request must be up to date with the
 default branch before it merges). Without strict checks, two pull requests that each passed against

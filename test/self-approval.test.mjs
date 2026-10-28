@@ -301,6 +301,32 @@ describe("the self-approval rule, plain git", () => {
         expect((await check(r)).self).toEqual([]);
     });
 
+    it("counts a merge that resolves to one side instead of git's clean merge, though its combined diff is empty", async () => {
+        const r = repoWith();
+        git(r.repo, "checkout", "-q", "master");
+        commitAs(r, { "src.txt": "landed elsewhere" }, { as: people.bob, signed: false });
+        git(r.repo, "checkout", "-q", "pr");
+        // Keeps the pull request's side of every file: the default branch's code is reverted.
+        git(
+            r.repo,
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@example.com",
+            "merge",
+            "-q",
+            "-s",
+            "ours",
+            "--no-edit",
+            "master",
+        );
+        const merge = git(r.repo, "rev-parse", "HEAD");
+        finishAs(r, people.rita);
+        expect((await check(r)).self).toEqual([
+            `commit ${merge.slice(0, 12)} carries no signature by a signing key an identity in visual-review/passkeys.json names`,
+        ]);
+    });
+
     it("asks git a fixed number of times, however many commits the change has", async () => {
         const counted = async (n) => {
             const r = repoWith();
@@ -396,6 +422,30 @@ describe("the self-approval rule on GitHub", () => {
         commitAs(r, { "src.txt": "code" }, { as: people.rita, signed: false });
         const withCode = github(r, { opener: "rita", commit: () => ({ author: { login: "rita" } }) });
         expect((await check(r, { env: GITHUB, fetchJson: withCode.fetchJson })).self).toEqual([refused(seed, "rita")]);
+    });
+
+    it("keeps the opener of a seed pull request whose merge reverts the default branch's code", async () => {
+        const r = repoWith();
+        const seed = finishAs(r, people.rita, { seed: true });
+        git(r.repo, "checkout", "-q", "master");
+        commitAs(r, { "src.txt": "landed after the capture" }, { as: people.bob, signed: false });
+        git(r.repo, "checkout", "-q", "pr");
+        // A merge that takes the seed side of every file: its combined diff is empty.
+        git(
+            r.repo,
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@example.com",
+            "merge",
+            "-q",
+            "-s",
+            "ours",
+            "--no-edit",
+            "master",
+        );
+        const opened = github(r, { opener: "rita" });
+        expect((await check(r, { env: GITHUB, fetchJson: opened.fetchJson })).self).toEqual([refused(seed, "rita")]);
     });
 
     it("refuses a reviewer who opens a copy of another pull request's seed with swapped images, then Finishes it", async () => {

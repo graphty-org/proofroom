@@ -692,13 +692,55 @@ describe("Finish of a seed in change mode", () => {
             return change(n);
         };
         await expect(seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], { projects })).rejects.toThrow(
-            "another seed of this run, was pushed while this Finish was being made: press Finish again to retire it",
+            "another seed of this capture, was pushed while this Finish was being made. Its pull request https://fake/changes/901 was closed: press Finish again to retire it",
         );
-        expect(other.state).toBe("open");
+        // This Finish's own seed is closed, so the two never stay open together.
+        expect(host.opened.map((o) => o.state)).toEqual(["open", "closed"]);
         await seedFinish(r, host, [[BUTTON]], { projects });
-        expect(host.opened).toHaveLength(2);
+        expect(host.opened).toHaveLength(3);
         expect(other.state).toBe("closed");
-        expect(gateOn(r, host.opened[1].branch, "pr:901")).toEqual([]);
+        expect(gateOn(r, host.opened[2].branch, "pr:902")).toEqual([]);
+    });
+
+    it("refuses after pushing a seed that rejects an image another run's seed accepted meanwhile, and the next rejects it there", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r, 502) });
+        const [other] = host.opened;
+        let hidden = true;
+        const list = host.listChanges;
+        host.listChanges = async (o) => (await list(o)).filter((c) => !hidden || c.branch !== other.branch);
+        const change = host.change;
+        host.change = async (n) => {
+            if (n !== other.number) {
+                hidden = false;
+            }
+            return change(n);
+        };
+        const projects = capture(r, 501);
+        await expect(seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], { projects })).rejects.toThrow(
+            "another seed of this capture, was pushed while this Finish was being made. Its pull request https://fake/changes/901 was closed",
+        );
+        expect(host.opened.map((o) => o.state)).toEqual(["open", "closed"]);
+        await seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], { projects });
+        // The newer reject wins in run 502's seed, which stays open without the image.
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(other.state).toBe("open");
+        expect(git(r.remote, "ls-tree", "--name-only", other.branch, "--", badge)).toBe("");
+    });
+
+    it("refuses a seed Finish while an open seed of the capture sits on a renamed branch", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r, 501) });
+        const [old] = host.opened;
+        // The code host's branch rename moves the open pull request onto the new name.
+        git(r.remote, "branch", "-m", old.branch, "keep-me");
+        old.branch = "keep-me";
+        await expect(seedFinish(r, host, [[BUTTON]], { projects: capture(r, 502) })).rejects.toThrow(
+            "https://fake/changes/900 holds a seed of this capture on a branch Finish did not name: close it, then press Finish again",
+        );
+        expect(old.state).toBe("open");
     });
 
     it("never lets a candidate Finish of a commit retire a seed run's seed of it, or the other way round", async () => {

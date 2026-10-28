@@ -608,8 +608,9 @@ export function approvalProblems({ base, head, cwd, baselines, approvals, keys, 
  * verified signer, author and committer. The tool's own commits and merges that add nothing are
  * left out (change-approval.mjs changeCommits); every other commit must be signed, or the change
  * fails closed. A change with no commit of its own left whose every Finish commit is a seed
- * statement of this very change, captured on the base (a seed pull request), has no contributors,
- * its opener included; any other change keeps its opener.
+ * statement of this very change, captured on the base, and that touches nothing outside the
+ * baselines and approvals directories (a seed pull request), has no contributors, its opener
+ * included; any other change keeps its opener.
  *
  * On GitHub Actions the commits and the opener come from GitHub (the event payload, and the
  * pull request's commits through the API with GITHUB_TOKEN), and a commit's signer is its
@@ -683,7 +684,7 @@ export async function contributorsOf({
         }
         try {
             const pr = await githubPullRequest(change, env, fetchJson ?? githubApi(env));
-            if (!seedOnly(git, commits, change, base)) {
+            if (!seedOnly(git, commits, { change, base, head, baselines, approvals })) {
                 add(who.logins, pr.opener);
             }
             for (const c of pr.commits) {
@@ -726,18 +727,29 @@ export async function contributorsOf({
 /**
  * Whether a change is a seed pull request and nothing more: no commit counts, and every one of
  * Finish's commits adds a seed statement of this very change whose capturedHead is on the base.
- * Such a change brings no code, so its opener contributed nothing. Anything else (a Finish commit
- * of a change statement, or of a seed of another change) keeps the opener: fail closed.
+ * and the base and head trees differ only under the baselines and approvals directories (a tree
+ * diff, so code a merge reverted shows up however the merge hides it). Such a change brings no
+ * code, so its opener contributed nothing. Anything else (a Finish commit of a change statement,
+ * a seed of another change, any other file) keeps the opener: fail closed.
  * @param {(args: string[]) => Buffer} git the runner
  * @param {Map<string, { counts: boolean, statement?: any }>} commits changeCommits' result
- * @param {string} change the change (`pr:7`)
- * @param {string} base the base
+ * @param {{ change: string, base: string, head: string, baselines: string, approvals: string }} at
+ *     the change (`pr:7`), the base, the head and the two directories
  * @returns {boolean} whether it is
  */
-function seedOnly(git, commits, change, base) {
+function seedOnly(git, commits, { change, base, head, baselines, approvals }) {
     const all = [...commits.values()];
     const own = all.filter((c) => c.statement);
     if (own.length === 0 || all.some((c) => c.counts)) {
+        return false;
+    }
+    let changed;
+    try {
+        changed = git(["diff", "--name-only", "-z", "--no-renames", base, head]).toString("utf8").split("\0");
+    } catch {
+        return false;
+    }
+    if (!changed.filter(Boolean).every((f) => f.startsWith(`${baselines}/`) || f.startsWith(`${approvals}/`))) {
         return false;
     }
     return own.every(({ statement: s }) => {
