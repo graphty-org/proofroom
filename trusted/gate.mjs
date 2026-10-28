@@ -627,7 +627,7 @@ export async function contributorsOf({
     const out = new Map();
     let commits;
     try {
-        commits = changeCommits(git, { base, head, baselines, approvals });
+        commits = changeCommits(git, { base, head, baselines, approvals, keys, changes });
     } catch (err) {
         for (const change of changes) {
             out.set(change, {

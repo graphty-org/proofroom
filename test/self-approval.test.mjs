@@ -13,13 +13,20 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { approvalProblems, contributorsOf, treeAt } from "../trusted/gate.mjs";
 import { parsePasskeys } from "../trusted/lib/approval.mjs";
-import { contentHash, gitIn, selfApprovalProblems, statementPath } from "../trusted/lib/change-approval.mjs";
+import {
+    contentHash,
+    gitIn,
+    selfApprovalProblems,
+    statementId,
+    statementPath,
+} from "../trusted/lib/change-approval.mjs";
 import { CONFIG_FILE, normalizeConfig } from "../trusted/lib/config.mjs";
 import { CONFIG, FIXTURE, git, tempDir } from "./helpers.mjs";
 import {
     APPROVALS,
     BASELINES,
     CARD,
+    TOOLTIP,
     REPO_ID,
     changeRepo,
     checkInput,
@@ -260,6 +267,88 @@ describe("the self-approval rule, plain git", () => {
         commitAs(t, { "src.txt": "code" }, { as: people.alice });
         const mine = finishAs(t, people.alice);
         expect((await check(t)).self).toEqual([refused(mine, "alice")]);
+    });
+
+    it("counts a rewrite of a Finish commit that keeps its statement but holds other bytes", async () => {
+        // rita finishes pr:7; bob rewrites her commit with his own image under her statement, then
+        // finishes his own bytes with his key. The rewrite is bob's contribution, so his key is refused.
+        const rewritten = (signed) => {
+            const r = repoWith([people.alice.passkey, people.rita.passkey, people.bob.passkey]);
+            commitAs(r, { "src.txt": "code" }, { as: people.alice });
+            const ritas = finishAs(r, people.rita);
+            writeFileSync(join(r.repo, CARD_FILE), "bob's image");
+            git(r.repo, "add", "-A");
+            const signing = signed ? ["-c", "gpg.format=ssh", "-c", `user.signingkey=${people.bob.ssh.file}`] : [];
+            git(
+                r.repo,
+                "-c",
+                "user.name=bob",
+                "-c",
+                `user.email=${people.bob.email}`,
+                ...signing,
+                "commit",
+                "-q",
+                "--amend",
+                "--reset-author",
+                "--no-edit",
+                ...(signed ? ["-S"] : []),
+            );
+            const rewrite = git(r.repo, "rev-parse", "HEAD");
+            const ritaStatement = JSON.parse(readFileSync(join(r.repo, ritas), "utf8"));
+            const e = { path: CARD, from: hashAt(r, "master", CARD), to: hashAt(r, "HEAD", CARD), decision: "accept" };
+            const more = { previous: statementId(ritaStatement), approvedAt: "2026-10-25T15:00:00Z" };
+            const statement = sign(statementOf(r, [e], more), people.bob.passkey);
+            const bobs = statementPath(APPROVALS, statement);
+            commitAs(r, { [bobs]: statement }, { as: people.bob, signed: false });
+            return { r, rewrite, bobs };
+        };
+        const signed = rewritten(true);
+        expect(await check(signed.r)).toEqual({ problems: [], self: [refused(signed.bobs, "bob")] });
+        // Unsigned, the rewrite fails closed too.
+        const plain = rewritten(false);
+        expect((await check(plain.r)).self).toEqual([
+            `commit ${plain.rewrite.slice(0, 12)} carries no signature by a signing key an identity in visual-review/passkeys.json names`,
+            refused(plain.bobs, "bob"),
+        ]);
+    });
+
+    it("does not count a Finish commit with a reject, but counts one that changes the rejected file", async () => {
+        const finishWithReject = (tooltip) => {
+            const r = repoWith();
+            commitAs(r, { "src.txt": "code" }, { as: people.alice });
+            const image = "new image";
+            const entries = [
+                {
+                    path: CARD,
+                    from: hashAt(r, "master", CARD),
+                    to: contentHash(Buffer.from(image)),
+                    decision: "accept",
+                },
+                {
+                    path: TOOLTIP,
+                    from: hashAt(r, "master", TOOLTIP),
+                    to: contentHash(Buffer.from("captured tooltip")),
+                    decision: "reject",
+                    reason: "wrong color",
+                },
+            ].sort((a, b) => a.path.localeCompare(b.path));
+            const statement = sign(statementOf(r, entries), people.rita.passkey);
+            const extra = tooltip === undefined ? {} : { [`${BASELINES}/${TOOLTIP}`]: tooltip };
+            commitAs(
+                r,
+                { [CARD_FILE]: image, [statementPath(APPROVALS, statement)]: statement, ...extra },
+                {
+                    as: people.rita,
+                    signed: false,
+                },
+            );
+            return r;
+        };
+        expect((await check(finishWithReject())).self).toEqual([]);
+        const touched = finishWithReject("captured tooltip");
+        expect((await check(touched)).self).toContain(
+            `commit ${git(touched.repo, "rev-parse", "pr").slice(0, 12)} carries no signature by a signing key an identity in visual-review/passkeys.json names`,
+        );
     });
 
     it("needs no signature on a clean merge of the default branch", async () => {
