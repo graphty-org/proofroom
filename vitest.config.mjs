@@ -1,21 +1,17 @@
 import { defineConfig } from "vitest/config";
-import { ciReporters } from "../vitest.ci-junit.mjs";
-import { workerShare } from "../tools/test-slots.mjs";
+import { baseTest } from "../vitest.base.mjs";
 import { withTestGuards } from "../tools/test-wait-guard.mjs";
 
 const config = defineConfig({
     test: {
-        reporters: ["default", ...ciReporters()],
+        // test/repo-template.setup.mjs makes the repository every test's makeRepo copies.
+        ...baseTest({ globalSetup: ["test/repo-template.setup.mjs"] }),
         environment: "node",
         include: ["test/**/*.test.mjs"],
         // No test runs git with the developer's own config (signing, hooks) or a hook's GIT_DIR,
         // none reaches the network, and the temporary directories a test file made (tempDir,
         // helpers.mjs) go when it finishes.
         setupFiles: ["test/isolate-git.setup.mjs", "test/no-network.setup.mjs"],
-        // The repository every test's makeRepo copies.
-        globalSetup: ["test/repo-template.setup.mjs", "../tools/test-slots.mjs"],
-        // At most this run's share of the cores (tools/test-slots.mjs).
-        maxWorkers: workerShare(),
         coverage: {
             provider: "v8",
             reporter: ["text", "json-summary", "json", "lcov", "html"],

@@ -9,8 +9,8 @@
  * beyond Node's standard library and runs from a checkout without an install.
  */
 
-import { readFile, readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const HELP = {
@@ -54,7 +54,7 @@ prints its directory, or prints nothing when there is none. CI runs it before \`
 Compares every PNG in the two directories by name and prints one JSON line per file that is not
 unchanged, then a summary. Exits 1 when anything differs. For local use.`,
 
-    serve: `usage: PORT=<n> visual-review serve [--master-run <id>] [--results <dir>] [--previews <dir>]
+    serve: `usage: PORT=<n> visual-review serve [--candidate next|<id>] [--results <dir>] [--previews <dir>]
 
 Serves the review page on $PORT, bound to $HOST (default localhost). With $HTTPS_CERT_PATH and
 $HTTPS_KEY_PATH set it serves HTTPS; without them, plain HTTP, and then only on a loopback HOST.
@@ -62,7 +62,14 @@ Lists the open pull requests that have a run of the config's workflow and downlo
 captures with gh. Refuses to start without git-lfs, because an accept would commit raw PNGs.
 The URL to open, with its session token, is printed at every start.
 
-  --master-run <id>  also list the default branch at that workflow run, for seeding baselines
+  --candidate next   also list the default branch's oldest full run waiting for its screenshots'
+                     approval, as the config's \`candidates\` command lists them; it stays offered
+                     until it stops waiting, its accept commit reaches the default branch, or a
+                     Finish rejects something in it, and newer ones queue behind it.
+                     Finish opens a pull request of visual/approve-<sha> touching only the
+                     baselines and approvals directories
+  --candidate <id>   also list the default branch at that workflow run, for seeding baselines
+  --master-run <id>  the same as --candidate <id>
   --results <dir>    serve a local directory of <project>/results.json instead, offline, as a
                      preview to look at: gh is never run, nothing can be decided, no Finish
   --previews <dir>   where local previews of pull requests are (<dir>/<pr>/<project>), as a
@@ -70,6 +77,32 @@ The URL to open, with its session token, is printed at every start.
                      checkout of this repository, so every worktree's server finds them. A complete
                      preview of a pull request's head is reviewed and finished like CI's capture
                      until CI's lands; the gate still checks CI's capture against what you accept`,
+
+    parity: `usage: visual-review parity --project <id> <first> <second>
+
+Compares two captures of one project made from the same commit (each a results.json, or the
+directory that holds it), story by story and mode by mode, by the SHA-256 of each capture and,
+when the bytes differ, by the decoded pixels (two encoders may write the same picture differently):
+the built Storybook's capture against the story tests', or one machine's against another's. Prints
+one JSON line per difference (a different size, different pixels with their count, bytes whose
+images are not both in the directories, a story only one side captured, a story one side failed to
+capture), then a summary. Exits 1 on any difference: different pixels from the same commit are a
+bug in one environment, so no threshold applies.`,
+
+    "merge-results": `usage: visual-review merge-results --project <id> --out <dir> [--baselines <dir>] [--quarantine <file>] <partial>...
+
+Combines one project's partial captures from its story tests (one directory per shard, written by
+@graphty/visual-review/vitest) into one capture directory that serve and gate read. It is complete
+only when every shard is there once, between them they ran every story file of the project, and
+each reported every story test it ran; then every baseline no story drew is reported removed. Exits 1, writing it incomplete, otherwise.
+
+Prints [UNSTABLE] for every story whose two shots disagreed (before or after its retry), [FLAKY]
+for one that settled on its retry, and [BROKEN] for every story that failed. With
+VISUAL_REVIEW_BLOCKING=1 it also exits 1 for a broken story or one still unstable after its retry
+that is not on the --quarantine list (a JSON file holding { quarantine: [{ file, name, expires? }] }:
+the story test's file and full name, and an optional ISO date after which the entry no longer
+counts), and sets promotion.blocked in results.json when any picture is not unchanged or excluded.
+Without it, those lines only report.`,
 
     gate: null, // gate.mjs's own usage
 
@@ -118,6 +151,8 @@ const COMMANDS = {
     capture,
     reference,
     compare,
+    parity,
+    "merge-results": mergeResultsCommand,
     serve,
     gate,
     notify,
@@ -140,6 +175,8 @@ Commands:
   notify           one quiet message when pull requests become ready for review
   update           merge the default branch into a pull request, taking its baselines
   compare          compare two directories of PNGs (local use)
+  parity           compare two captures of the same commit pixel for pixel
+  merge-results    combine the story tests' partial captures of one project
   usage            sum up the review page's usage events (when the config turns them on)
   install-browser  install the Chromium capture uses
 
@@ -235,6 +272,18 @@ async function createServer(app, tls) {
     return createHttps({ cert: readFileSync(tls.cert), key: readFileSync(tls.key) }, app);
 }
 
+/**
+ * serve's run option: `--candidate next` (the candidate mode), or a run id from `--candidate <id>` or
+ * its old name `--master-run <id>`.
+ * @param {{ candidate?: string, "master-run"?: string }} values the parsed options
+ * @returns {{ next: boolean, masterRun: number | undefined }} the mode and the run id, NaN when not one
+ */
+function runOption(values) {
+    const next = values.candidate === "next";
+    const run = next ? values["master-run"] : (values.candidate ?? values["master-run"]);
+    return { next, masterRun: run === undefined ? undefined : Number(run) };
+}
+
 async function serve(args) {
     if (args.includes("--branch")) {
         console.error("visual-review serve: --branch is gone: a --results preview is look only and has no Finish");
@@ -244,12 +293,13 @@ async function serve(args) {
         args,
         options: {
             "master-run": { type: "string" },
+            candidate: { type: "string" },
             results: { type: "string" },
             previews: { type: "string" },
         },
     });
     const { PORT, HOST = "localhost", HTTPS_CERT_PATH, HTTPS_KEY_PATH } = process.env;
-    const masterRun = values["master-run"] === undefined ? undefined : Number(values["master-run"]);
+    const { next, masterRun } = runOption(values);
     const https = Boolean(HTTPS_CERT_PATH && HTTPS_KEY_PATH);
     if (!PORT || (masterRun !== undefined && !Number.isInteger(masterRun))) {
         console.error(HELP.serve);
@@ -263,8 +313,12 @@ async function serve(args) {
         return 2;
     }
     const { root, config } = await settings();
+    if (next && !config.candidates) {
+        console.error("visual-review serve: --candidate next needs the config's `candidates` command");
+        return 2;
+    }
     const { lfsProblem } = await import("./lib/accept.mjs");
-    const { ghRunner } = await import("./lib/github.mjs");
+    const { exec, ghRunner } = await import("./lib/github.mjs");
     const { createApp, sessionToken } = await import("./lib/serve.mjs");
     const lfs = await lfsProblem(root);
     if (lfs) {
@@ -295,6 +349,7 @@ async function serve(args) {
         token,
         origin,
         masterRun,
+        candidates: next ? async () => JSON.parse(await exec("sh", ["-c", config.candidates], { cwd: root })) : null,
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,
@@ -456,6 +511,98 @@ async function compare(args) {
     }
     console.log(JSON.stringify({ summary: counts }));
     return Object.keys(counts).some((status) => status !== "unchanged") ? 1 : 0;
+}
+
+async function parity(args) {
+    const { values, positionals } = parseArgs({
+        args,
+        options: { project: { type: "string" } },
+        allowPositionals: true,
+    });
+    if (!values.project || positionals.length !== 2) {
+        console.error(HELP.parity);
+        return 2;
+    }
+    const { parity: diff, readResults, samePixels } = await import("./lib/parity.mjs");
+    const [first, second] = await Promise.all(positionals.map((p) => readResults(p)));
+    for (const [path, r] of [
+        [positionals[0], first],
+        [positionals[1], second],
+    ]) {
+        if (r.project !== values.project) {
+            console.error(`visual-review parity: ${path} is a capture of ${r.project}, not ${values.project}`);
+            return 2;
+        }
+    }
+    const dirs = await Promise.all(positionals.map(async (p) => ((await stat(p)).isDirectory() ? p : dirname(p))));
+    const { compared, same, differences } = await samePixels(diff(first, second), dirs);
+    for (const difference of differences) {
+        console.log(JSON.stringify(difference));
+    }
+    console.log(
+        JSON.stringify({ summary: { project: values.project, compared, same, different: differences.length } }),
+    );
+    return differences.length > 0 ? 1 : 0;
+}
+
+async function mergeResultsCommand(args) {
+    const { values, positionals } = parseArgs({
+        args,
+        options: {
+            project: { type: "string" },
+            out: { type: "string" },
+            baselines: { type: "string" },
+            quarantine: { type: "string" },
+        },
+        allowPositionals: true,
+    });
+    if (!values.project || !values.out || positionals.length === 0) {
+        console.error(HELP["merge-results"]);
+        return 2;
+    }
+    const { root, config } = await settings();
+    const { mergeResults } = await import("../capture/merge-results.mjs");
+    const { blockingOn, quarantineEntries, storyVerdict } = await import("../capture/story-outcomes.mjs");
+    const blocking = blockingOn();
+    // Read before anything is written: a bad list stops the command with its reason.
+    let quarantine = [];
+    if (values.quarantine) {
+        try {
+            // a list the run step never wrote (it stopped first) is an empty one; a malformed one is refused
+            const text = await readFile(resolve(values.quarantine), "utf8").catch((e) => {
+                if (e.code === "ENOENT") return '{ "quarantine": [] }';
+                throw e;
+            });
+            quarantine = quarantineEntries(JSON.parse(text));
+        } catch (e) {
+            console.error(`visual-review merge-results: --quarantine ${values.quarantine}: ${e.message}`);
+            return 1;
+        }
+    }
+    const { results, problems } = await mergeResults({
+        project: values.project,
+        baselines: resolve(values.baselines ?? join(root, config.baselines, values.project)),
+        out: resolve(values.out),
+        dirs: positionals.map((p) => resolve(p)),
+        blocking,
+    });
+    for (const problem of problems) {
+        console.error(`visual-review merge-results: ${problem}`);
+    }
+    const verdict = storyVerdict(results, { blocking, quarantine, gh: process.env.GITHUB_ACTIONS === "true" });
+    for (const line of verdict.lines) {
+        console.log(line);
+    }
+    console.log(
+        JSON.stringify({
+            project: values.project,
+            items: results.items.length,
+            complete: results.complete,
+            blocking,
+            promotionBlocked: verdict.promotion.blocked,
+        }),
+    );
+    return problems.length > 0 || verdict.code !== 0 ? 1 : 0;
 }
 
 async function gate(args) {

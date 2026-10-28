@@ -29,6 +29,10 @@ on:
 permissions:
     contents: read
 
+env:
+    # Chromium 143 can crash at launch (SIGSEGV in getenv) unless this is preset; see chromiumEnv in capture.mjs.
+    FC_FONTATIONS: "1"
+
 jobs:
     plan:
         name: Plan
@@ -36,7 +40,7 @@ jobs:
         outputs:
             projects: ${{ steps.plan.outputs.projects }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   sparse-checkout: visual-review.config.json
                   sparse-checkout-cone-mode: false
@@ -71,7 +75,7 @@ jobs:
             matrix:
                 include: ${{ fromJSON(needs.plan.outputs.projects) }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   ref: ${{ inputs.ref }}
 
@@ -84,7 +88,7 @@ jobs:
             - name: Build Storybook
               run: ${{ matrix.build }}
 
-            - uses: actions/upload-artifact@v4
+            - uses: actions/upload-artifact@v7
               with:
                   name: storybook-${{ matrix.project }}
                   path: ${{ matrix.storybook }}/
@@ -103,10 +107,10 @@ jobs:
                 include: ${{ fromJSON(needs.plan.outputs.projects) }}
         steps:
             # The default branch's checkout: the capture tool, the config and the baselines come from here.
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - name: Download Storybook build
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: storybook-${{ matrix.project }}
                   path: ${{ matrix.storybook }}/
@@ -148,7 +152,7 @@ jobs:
 
             - name: Upload captures
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: visual-${{ matrix.project }}-${{ github.run_attempt }}
                   path: ${{ runner.temp }}/visual/

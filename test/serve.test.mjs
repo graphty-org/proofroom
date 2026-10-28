@@ -642,6 +642,282 @@ describe("serve: master", () => {
     });
 });
 
+describe("serve: candidates", () => {
+    // Two full runs of master: 2000 captured C (master), 2001 captured C2 (the feature commit), both
+    // of the same fixture, so their images hash the same.
+    const fullRuns = (r) => {
+        const gh = fakeGh({
+            runsById: { 2000: { id: 2000, head: r.master, attempt: 1 }, 2001: { id: 2001, head: r.head, attempt: 2 } },
+            // A full run calls ci.yml from its job "CI", so its jobs are "CI / visual (<project>)".
+            jobs: {
+                2000: [{ ...job("compact-mantine"), name: "CI / visual (compact-mantine)" }],
+                2001: [{ ...job("compact-mantine"), name: "CI / visual (compact-mantine)" }],
+            },
+            artifacts: { 2000: ["visual-compact-mantine-1"], 2001: ["visual-compact-mantine-2"] },
+            results: {
+                "visual-compact-mantine-1": { commit: r.master, headSha: null, pr: null, runId: 2000 },
+                "visual-compact-mantine-2": { commit: r.head, headSha: null, pr: null, runId: 2001, runAttempt: 2 },
+            },
+        });
+        // Master's rejects open an issue.
+        return async (args, input) => {
+            if (args[1]?.startsWith("repos/{owner}/{repo}/pulls?state=open")) {
+                if (r.box.open === null) {
+                    throw new Error("HTTP 403: rate limit");
+                }
+                return JSON.stringify(r.box.open);
+            }
+            if (args[2] === "PATCH") {
+                r.box.closed.push(args[3]);
+                return "{}";
+            }
+            if (args[1] !== "repos/{owner}/{repo}/issues") {
+                return gh(args, input);
+            }
+            if (r.failIssues) {
+                throw new Error("HTTP 502");
+            }
+            return JSON.stringify({ html_url: "https://gh/issues/7" });
+        };
+    };
+    const record = (commit, runId, waiting, at) => ({ commit, runId, waiting, at });
+    const offered = async (s) => (await s.api("GET", "/api/prs")).body.targets.find((t) => t.id === "master");
+    const decisions = async (s) => (await s.api("GET", "/api/pr/master/compact-mantine")).body.decisions;
+    const decide = (s, file, decision, reason = null) =>
+        s.api("POST", "/api/decide", { id: "master", project: "compact-mantine", file, decision, reason });
+
+    /**
+     * A server whose candidate list is `box.list`, read again at every refresh.
+     * @param {(r: object) => object[]} make the first list, from the repository
+     * @param {object} [extra] more createApp options
+     * @returns {Promise<object>} the started app, with `list` to change
+     */
+    async function startWith(make, extra = {}) {
+        const box = { list: [], open: [], closed: [] };
+        const r = makeRepo();
+        r.box = box;
+        box.list = make(r);
+        const s = await start({
+            ...r,
+            gh: fullRuns,
+            candidates: async () => box.list ?? Promise.reject(new Error("store down")),
+            ...extra,
+        });
+        return Object.assign(s, { box });
+    }
+
+    it("offers the oldest waiting run and queues the newer ones behind it", async () => {
+        const s = await startWith((r) => [
+            record(r.head, 2001, true, 3000),
+            record("9".repeat(40), 1999, false, 2500),
+            record(r.master, 2000, true, 2000),
+            record("8".repeat(40), 1998, false, 1000),
+            record("7".repeat(40), 1997, false, 500),
+        ]);
+        const t = await offered(s);
+        expect(t).toMatchObject({ runId: 2000, commit: s.master });
+        expect(t.candidate).toEqual({ commit: s.master, runId: 2000, queued: [{ commit: s.head, runId: 2001 }] });
+        expect(t.title).toBe(`master candidate ${s.master.slice(0, 10)} (1 queued)`);
+        expect(t.projects.find((p) => p.project === "compact-mantine").logUrl).toBe("https://gh/job/compact-mantine");
+    });
+
+    it("keeps a candidate with a changed image waiting, through a newer run and an accept-only Finish", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
+        await offered(s);
+        s.box.list = [...s.box.list, record(s.head, 2001, true, 3000)];
+        expect((await offered(s)).candidate.commit).toBe(s.master);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.error).toBeNull();
+        expect(ended.result.branch).toBe(`visual/approve-${s.master.slice(0, 12)}`);
+        const changed = git(s.remote, "diff", "--name-only", s.master, ended.result.branch).split("\n");
+        expect(changed.every((f) => /^(visual-baselines|visual-review-approvals)\//.test(f))).toBe(true);
+        expect(ended.result.pullRequest).toBe("https://gh/pull/650");
+        // Still offered while its pull request is open, and the list still says it waits.
+        expect((await offered(s)).candidate.commit).toBe(s.master);
+        // The accept pull request merges: A reaches master, so the next candidate is offered.
+        git(s.remote, "update-ref", "refs/heads/master", ended.result.commit);
+        expect((await offered(s)).candidate).toEqual({ commit: s.head, runId: 2001, queued: [] });
+        // Its pull request reverted: the record leaves master, and the candidate waits again.
+        const path = /^Record: (.+)$/m.exec(
+            git(s.remote, "log", "--format=%B", `${s.master}..${ended.result.commit}`),
+        )[1];
+        git(s.repo, "fetch", "-q", "origin", "master");
+        git(s.repo, "checkout", "-q", "--detach", "FETCH_HEAD");
+        git(s.repo, "rm", "-q", path);
+        git(
+            s.repo,
+            "commit",
+            "-q",
+            "-m",
+            `Revert "test(workspace): approve visual baselines at ${s.master.slice(0, 12)}"`,
+        );
+        git(s.repo, "push", "-q", "origin", "HEAD:refs/heads/master");
+        expect((await offered(s)).candidate.commit).toBe(s.master);
+    });
+
+    it("carries a decision over to the next candidate by image hash", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
+        await offered(s);
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        s.box.list = [record(s.master, 2000, false, 2000), record(s.head, 2001, true, 3000)];
+        expect((await offered(s)).runId).toBe(2001);
+        expect(await decisions(s)).toMatchObject({ "button--primary.dark.png": { decision: "accept" } });
+    });
+
+    it("drops a candidate a Finish rejected something in and offers the next, the reject still standing", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
+        await offered(s);
+        expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.error).toBeNull();
+        // Only the rejects: no accept commit, no accept pull request for a candidate that cannot promote.
+        expect(ended.result).toMatchObject({
+            rejects: 1,
+            commit: null,
+            pullRequest: null,
+            issue: "https://gh/issues/7",
+        });
+        expect(git(s.remote, "branch", "--list", "visual/approve-*")).toBe("");
+        const t = await offered(s);
+        expect(t.candidate.commit).toBe(s.head);
+        expect(await decisions(s)).toMatchObject({
+            "slider--sizes.png": { decision: "reject", reason: "clipped" },
+            "button--primary.dark.png": { decision: "accept" },
+        });
+    });
+
+    it("sends a reject again on the next candidate, so it is dropped too and opens no accept pull request", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
+        await offered(s);
+        expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
+        await finishJob(s, "master");
+        expect((await offered(s)).candidate.commit).toBe(s.head);
+        expect((await decide(s, "button--primary.dark.png", "accept")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.result).toMatchObject({ rejects: 1, commit: null, pullRequest: null });
+        expect(git(s.remote, "branch", "--list", "visual/approve-*")).toBe("");
+        expect(await offered(s)).toBeUndefined();
+    });
+
+    it("commits every decision on a second Finish of the same candidate", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
+        await offered(s);
+        await decide(s, "badge--default.light.png", "accept");
+        await finishJob(s, "master");
+        await decide(s, "button--primary.dark.png", "accept");
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.error).toBeNull();
+        const changed = git(s.remote, "diff", "--name-only", s.master, ended.result.branch);
+        expect(changed).toContain("visual-baselines/compact-mantine/badge--default.light.png");
+        expect(changed).toContain("visual-baselines/compact-mantine/button--primary.dark.png");
+        // Built again on the candidate: one accept commit (and its statement), not the first Finish's plus another.
+        const parents = git(s.remote, "log", "--reverse", "--format=%P %s", `${s.master}..${ended.result.branch}`);
+        expect(parents.split("\n")[0]).toBe(
+            `${s.master} test(workspace): approve visual baselines at ${s.master.slice(0, 12)}`,
+        );
+        expect(parents.split("\n").filter((l) => l.includes("approve visual baselines at"))).toHaveLength(1);
+    });
+
+    it("closes the accept pull request of an earlier Finish when a later Finish rejects an image", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
+        await offered(s);
+        await decide(s, "badge--default.light.png", "accept");
+        const first = (await finishJob(s, "master")).job;
+        expect(first.result.pullRequest).toBe("https://gh/pull/650");
+        s.box.open = [{ number: 650, html_url: "https://gh/pull/650", head: { ref: first.result.branch } }];
+        await decide(s, "slider--sizes.png", "reject", "clipped");
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.result).toMatchObject({ rejects: 1, closedPullRequest: "https://gh/pull/650" });
+        expect(s.box.closed).toEqual(["repos/{owner}/{repo}/pulls/650"]);
+        expect(await offered(s)).toBeUndefined();
+    });
+
+    it("closes a rejected candidate's accept pull request on a later refresh when the Finish could not", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)]);
+        await offered(s);
+        s.box.open = null; // the listing fails
+        await decide(s, "slider--sizes.png", "reject", "clipped");
+        const { job: ended } = await finishJob(s, "master");
+        expect(ended.result.closeError).toMatch(/could not close the pull request of visual\/approve-/);
+        expect(ended.warnings.join("\n")).toMatch(/still open/);
+        // Dropped all the same, with its rejects filed once.
+        expect((await offered(s)).candidate.commit).toBe(s.head);
+        const branch = `visual/approve-${s.master.slice(0, 12)}`;
+        s.box.open = [{ number: 651, html_url: "https://gh/pull/651", head: { ref: branch } }];
+        await offered(s);
+        expect(s.box.closed).toEqual(["repos/{owner}/{repo}/pulls/651"]);
+        await offered(s);
+        expect(s.box.closed).toHaveLength(1);
+    });
+
+    it("accepts on a candidate a project that is not seeded from the default branch", async () => {
+        const p = FIXTURE_CONFIG.projects;
+        const config = {
+            ...FIXTURE_CONFIG,
+            projects: { ...p, "compact-mantine": { ...p["compact-mantine"], seedFromDefaultBranch: false } },
+        };
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)], { config });
+        await offered(s);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+    });
+
+    it("keeps a candidate whose rejects could not be filed, so Finish can send them again", async () => {
+        const s = await startWith((r) => {
+            r.failIssues = true;
+            return [record(r.master, 2000, true, 2000), record(r.head, 2001, true, 3000)];
+        });
+        await offered(s);
+        await decide(s, "slider--sizes.png", "reject", "clipped");
+        await finishJob(s, "master");
+        expect((await offered(s)).candidate.commit).toBe(s.master);
+    });
+
+    it("leaves out a malformed row and offers the rest", async () => {
+        const s = await startWith((r) => [
+            { commit: "ABC", runId: 1, waiting: true, at: 1 },
+            record(r.master, 2000, true, 2000),
+        ]);
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets.find((t) => t.id === "master").candidate.commit).toBe(s.master);
+        expect(body.warning).toMatch(/1 malformed row, left out/);
+    });
+
+    it("keeps the last good list when the command prints something else", async () => {
+        const s = await startWith((r) => [record(r.master, 2000, true, 2000)]);
+        await offered(s);
+        s.box.list = { not: "a list" };
+        const { body } = await s.api("GET", "/api/prs");
+        expect(body.targets.find((t) => t.id === "master").candidate.commit).toBe(s.master);
+        expect(body.warning).toMatch(/could not list the candidates: the candidates command must print/);
+    });
+
+    it("never shows a dropped candidate again when the next one's run cannot be read", async () => {
+        const s = await startWith((r) => [
+            record(r.master, 2000, true, 2000),
+            record("6".repeat(40), 2098, true, 3000),
+        ]);
+        await offered(s);
+        expect((await decide(s, "slider--sizes.png", "reject", "clipped")).status).toBe(200);
+        await finishJob(s, "master");
+        const t = await offered(s);
+        expect(t.candidate.commit).toBe("6".repeat(40));
+        expect(t.runId ?? null).toBeNull();
+        s.box.list = null; // the list fails too: the last one read is used, still without the dropped one
+        expect((await offered(s)).candidate.commit).toBe("6".repeat(40));
+    });
+
+    it("offers nothing while no candidate waits, and --master-run still wins", async () => {
+        const s = await startWith(() => [record("8".repeat(40), 1998, false, 1000)]);
+        expect(await offered(s)).toBeUndefined();
+        server.close();
+        await app.idle();
+        const pinned = await startWith((r) => [record(r.master, 2000, true, 2000)], { masterRun: 2001 });
+        expect(await offered(pinned)).toMatchObject({ runId: 2001, candidate: null });
+    });
+});
+
 describe("serve: images", () => {
     it("serves a capture and a baseline whose hashes match results.json", async () => {
         const s = await start({ gh: onePr() });
@@ -2381,6 +2657,35 @@ describe("newestMasterCapture", () => {
         expect(await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG)).toBe(
             join(tmp, "2000-1", "compact-mantine"),
         );
+    });
+
+    it("uses a merged head's run, never an earlier commit of the merged branch", async () => {
+        const r = makeRepo();
+        const [m2, b2, b1] = ["4", "3", "2"].map((c) => c.repeat(40));
+        const reference = (headArtifacts) =>
+            newestMasterCapture(
+                fakeGh({
+                    masterRuns: [
+                        { id: null, head: m2, parents: [r.master, b2] },
+                        { id: 3000, head: b2, parents: [b1] },
+                        { id: 2000, head: b1, parents: [r.master] },
+                        { id: 1000, head: r.master },
+                    ],
+                    artifacts: {
+                        3000: headArtifacts,
+                        2000: ["visual-compact-mantine-1"],
+                        1000: ["visual-compact-mantine-1"],
+                    },
+                    results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null } },
+                }),
+                "compact-mantine",
+                join(r.dir, "reference"),
+                FIXTURE_CONFIG,
+            );
+        expect(await reference(["visual-compact-mantine-1"])).toBe(
+            join(r.dir, "reference", "3000-1", "compact-mantine"),
+        );
+        expect(await reference([])).toBe(join(r.dir, "reference", "1000-1", "compact-mantine"));
     });
 
     it("finds nothing when no master run has a complete capture", async () => {

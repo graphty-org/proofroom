@@ -4,6 +4,9 @@
     "projectType": "library",
     "sourceRoot": "visual-review/trusted",
     "tags": [],
+    "namedInputs": {
+        "buildSources": ["{projectRoot}/**/*.d.mts", "{projectRoot}/**/*.d.ts"]
+    },
     "targets": {
         "test": {
             "executor": "nx:run-commands",

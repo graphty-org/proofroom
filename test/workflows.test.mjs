@@ -1,6 +1,6 @@
 /*
  * The monorepo runs the package's own workflow templates: visual-seed.yml is exactly what
- * `visual-review init` writes, and ci.yml's visual job and gate step run the template's commands.
+ * `visual-review init` writes, and ci.yml's story tests and gate step use the template's artifact and commands.
  */
 
 import { spawnSync } from "node:child_process";
@@ -12,6 +12,9 @@ import { renderTemplate } from "../trusted/lib/init.mjs";
 import { CONFIG, tempDir } from "./helpers.mjs";
 
 const workflow = (name) => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), "utf8");
+// A Dependabot bump of an action's version is not drift: compare workflows with every
+// `uses: owner/action@ref` reduced to `uses: owner/action`.
+const unpinned = (text) => text.replace(/^(\s*(?:- )?uses: [^@\s]+)@\S+/gm, "$1");
 const values = { branch: CONFIG.defaultBranch, manager: "pnpm", version: "0.0.0" };
 const job = (text, name, next) => {
     const start = text.indexOf(`\n    ${name}:\n`);
@@ -21,25 +24,41 @@ const job = (text, name, next) => {
 
 describe("the monorepo's workflows", () => {
     it("visual-seed.yml is the template as init writes it", () => {
-        expect(workflow("visual-seed.yml")).toBe(renderTemplate("visual-seed.yml", values));
+        expect(unpinned(workflow("visual-seed.yml"))).toBe(unpinned(renderTemplate("visual-seed.yml", values)));
     });
 
-    it("ci.yml's visual job runs the template's commands and uploads the same artifact", () => {
-        const template = job(renderTemplate("visual-review.yml", values), "visual", "visual-gate");
-        const ci = job(workflow("ci.yml"), "visual", "all-checks");
-        const lines = template
-            .split("\n")
-            .filter((l) => /visual-review (install-browser|reference|capture)|name: visual-\$/.test(l))
-            .map((l) => l.trim());
-        expect(lines).toHaveLength(4);
-        for (const line of lines) {
-            // install-browser's apt step comes from the monorepo's cached playwright-system-deps action.
-            if (line.includes("install-browser")) continue;
-            expect(ci).toContain(line);
+    it("ignores an action version bump but not any other difference", () => {
+        const a = "steps:\n  - uses: actions/setup-node@v4\n    with:\n      x: 1\n";
+        expect(unpinned(a)).toBe(unpinned(a.replace("@v4", "@v7")));
+        expect(unpinned(a)).not.toBe(unpinned(a.replace("x: 1", "x: 2")));
+        expect(unpinned(a)).not.toBe(unpinned(a.replace("actions/setup-node", "actions/cache")));
+    });
+
+    it("ci.yml's story tests upload their capture under the template's artifact name", () => {
+        // The review page and the gate find a project's capture by this name, whichever job wrote it.
+        const name = /name: visual-\$.*$/m.exec(renderTemplate("visual-review.yml", values))[0];
+        expect(job(workflow("ci.yml"), "story-tests", "story-tests-merge")).toContain(name);
+        expect(job(workflow("ci.yml"), "story-tests-merge", "all-checks")).toContain(name);
+    });
+
+    it("ci.yml's story tests take a pull request's pictures with the base branch's capture code", () => {
+        const ci = job(workflow("ci.yml"), "story-tests", "story-tests-merge");
+        const step = ci.slice(ci.indexOf("- name: Use the base branch's capture code"));
+        expect(step).toMatch(/^[^\n]*\n\s+if: [^\n]*github\.event_name == 'pull_request'/);
+        expect(step).toContain("CAPTURE_CODE: visual-review/capture visual-review/trusted");
+        expect(step).toContain("git archive HEAD^1 $CAPTURE_CODE | tar -x");
+        // every package export (the vitest integration the stories import) lives in the swapped directories
+        const exports = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).exports;
+        for (const [key, target] of Object.entries(exports)) {
+            if (key === "./package.json") continue;
+            expect(target.default).toMatch(/^\.\/(capture|trusted)\//);
         }
-        expect(ci).toContain("uses: ./.github/actions/playwright-system-deps");
-        expect(ci).toContain("run: pnpm exec playwright install chromium\n");
-        expect(ci).toContain("name: visual (${{ matrix.project }})");
+        // the swap comes after the checkout (which fetches HEAD^1) and before anything installs or runs
+        const swap = ci.indexOf("- name: Use the base branch's capture code");
+        expect(ci.indexOf("fetch-depth: 0")).toBeGreaterThan(0);
+        expect(ci.indexOf("fetch-depth: 0")).toBeLessThan(swap);
+        expect(ci.indexOf("pnpm install")).toBeGreaterThan(swap);
+        expect(ci.indexOf("VISUAL_REVIEW_STORY_OUT")).toBeGreaterThan(swap);
     });
 
     it("ci.yml's gate step runs the base branch's gate with the template's arguments", () => {
@@ -52,14 +71,6 @@ describe("the monorepo's workflows", () => {
         // The step passes --pr when the base's gate says it takes it, which this one does.
         const grep = /grep -q -- "(.+?)" "\$gate\/visual-review\/trusted\/gate.mjs"/.exec(ci)[1];
         expect(readFileSync(new URL("../trusted/gate.mjs", import.meta.url), "utf8")).toContain(grep);
-    });
-
-    it("ci.yml's visual job runs the base branch's capture code before any of the tool's commands", () => {
-        const ci = job(workflow("ci.yml"), "visual", "all-checks");
-        const swap = ci.indexOf("git archive HEAD^1 visual-review/capture visual-review/trusted | tar -x");
-        expect(swap).toBeGreaterThan(0);
-        expect(ci.indexOf("playwright-system-deps")).toBeGreaterThan(swap);
-        expect(ci).toContain("fetch-depth: 2");
     });
 });
 
@@ -110,7 +121,9 @@ describe("visual-seed.yml", () => {
         const visual = job(seed, "visual");
         expect(visual).toContain("if: ${{ !cancelled() && needs.plan.result == 'success' }}");
         // The download comes first, so a project whose own build failed stops before installing.
-        const steps = [...visual.matchAll(/^ {12}- (?:name: (.+)|uses: (.+))$/gm)].map((m) => m[1] ?? m[2]);
-        expect(steps.slice(0, 2)).toEqual(["actions/checkout@v4", "Download Storybook build"]);
+        const steps = [...visual.matchAll(/^ {12}- (?:name: (.+)|uses: (.+))$/gm)].map(
+            (m) => m[1] ?? m[2]?.replace(/@\S+$/, ""),
+        );
+        expect(steps.slice(0, 2)).toEqual(["actions/checkout", "Download Storybook build"]);
     });
 });

@@ -88,7 +88,7 @@ describe("init", () => {
         init(dir);
         expect(existsSync(join(dir, ".github/workflows/visual-review.yml"))).toBe(false);
         const wf = read(dir, ".github/workflows/shots.yml");
-        expect(wf).toContain("            - uses: pnpm/action-setup@v4\n");
+        expect(wf).toMatch(/^ {12}- uses: pnpm\/action-setup@\S+\n/m);
         expect(wf).toContain("              run: pnpm install --frozen-lockfile\n");
         expect(wf).toContain("run: pnpm exec visual-review install-browser");
     });

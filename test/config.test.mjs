@@ -10,17 +10,11 @@ beforeAll(isolateGit);
 
 const CI = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
 
-// The `visual` job's matrix: "- project: <name>" followed by "artifact: <name>" and, for a Storybook that is not
-// at <name>/storybook-static, "storybook: <directory>".
-function visualMatrix() {
-    const job = CI.slice(CI.indexOf("\n    visual:\n"));
+// The `story-tests` job's matrix: the projects whose story tests take the captures ("- project: <name>").
+function storyTestProjects() {
+    const job = CI.slice(CI.indexOf("\n    story-tests:\n"));
     const include = job.slice(job.indexOf("include:"), job.indexOf("steps:"));
-    return Object.fromEntries(
-        [...include.matchAll(/- project: (\S+)\s+artifact: (\S+)(?:\s+storybook: (\S+))?/g)].map((m) => [
-            m[1],
-            { artifact: m[2], storybook: m[3] ?? `${m[1]}/storybook-static` },
-        ]),
-    );
+    return [...new Set([...include.matchAll(/- project: (\S+)/g)].map((m) => m[1]))];
 }
 
 // The `build` job alone, so a matching download step in a later job cannot stand in for its upload.
@@ -30,20 +24,14 @@ function buildJob() {
 }
 
 describe("the monorepo's visual-review.config.json", () => {
-    it("lists exactly the projects the CI visual job captures", () => {
-        expect(Object.keys(visualMatrix()).sort()).toEqual(Object.keys(CONFIG.projects).sort());
+    it("lists exactly the projects the CI story tests capture", () => {
+        expect(storyTestProjects().sort()).toEqual(Object.keys(CONFIG.projects).sort());
     });
 
-    it("points each project at the Storybook the build job uploads, where the visual job puts it", () => {
-        // The download step puts the artifact at the row's storybook, else at <name>/storybook-static.
-        expect(CI.slice(CI.indexOf("\n    visual:\n"))).toContain(
-            "path: ${{ matrix.storybook || format('{0}/storybook-static', matrix.project) }}/",
-        );
-        for (const [name, { artifact, storybook }] of Object.entries(visualMatrix())) {
-            const dir = CONFIG.projects[name].storybook;
-            expect(dir).toBe(storybook);
+    it("points each project at a Storybook the build job uploads", () => {
+        for (const dir of Object.values(CONFIG.projects).map((p) => p.storybook)) {
             expect(buildJob()).toMatch(
-                new RegExp(`uses: actions/upload-artifact@v4\\s+with:\\s+name: ${artifact}\\s+path: ${dir}/`),
+                new RegExp(`uses: actions/upload-artifact@v7\\s+with:\\s+name: \\S+\\s+path: ${dir}/`),
             );
         }
     });
@@ -67,6 +55,7 @@ describe("normalizeConfig", () => {
             issueLabels: ["bug"],
             fontconfig: null,
             updateCheck: null,
+            candidates: null,
             usage: false,
             ignoreBranches: [],
             projects: {
@@ -98,6 +87,7 @@ describe("normalizeConfig", () => {
         [{ fontconfig: "../fonts.conf", projects: { a: { storybook: "s" } } }, /fontconfig must be/],
         [{ fontconfig: 1, projects: { a: { storybook: "s" } } }, /fontconfig must be/],
         [{ updateCheck: " ", projects: { a: { storybook: "s" } } }, /updateCheck must be/],
+        [{ candidates: " ", projects: { a: { storybook: "s" } } }, /candidates must be a shell command/],
         [{}, /projects must name/],
         [{ projects: {} }, /projects must name/],
         [{ projects: { "a b": { storybook: "s" } } }, /project id/],

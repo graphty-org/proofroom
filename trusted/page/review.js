@@ -4899,8 +4899,10 @@ function commitAndPostLines(t, f) {
         lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
     } else if (seed) {
         const day = new Date().toISOString().slice(0, 10);
+        // A candidate's branch is replaced by each Finish, which keeps its open pull request.
+        const branch = t.candidate ? `visual/approve-${t.candidate.commit.slice(0, 12)}` : `visual/seed-${day}`;
         lines.push(
-            `Push visual/seed-${day} with ${kinds.join(" and ")} and open its pull request` +
+            `Push ${branch} with ${kinds.join(" and ")} and open its pull request` +
                 `${f.acceptNotes > 0 ? `, with ${plural(f.acceptNotes, "accept note")} in its description` : ""}.`,
         );
     } else {
@@ -5438,7 +5440,7 @@ function track(job) {
             interrupted: true,
             error:
                 `the server restarted while this Finish was at "${last.step}" and kept no record of it: check ` +
-                `whether ${last.branch ?? "the visual/seed-* branch"} on origin has its commit before pressing Finish again`,
+                `whether ${last.branch ?? "the visual/seed-* or visual/approve-* branch"} on origin has its commit before pressing Finish again`,
         };
     }
     state.job = !job && last?.interrupted ? last : job;

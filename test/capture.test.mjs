@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+    chromiumEnv,
     fileName,
     hasBaselines,
     hasEmojiFont,
@@ -15,6 +16,22 @@ import {
     storySettings,
     storyUrl,
 } from "../capture/capture.mjs";
+
+describe("chromiumEnv", () => {
+    it("always presets FC_FONTATIONS, so Chromium's own setenv never reallocates the environment (#3787)", () => {
+        const saved = process.env.FC_FONTATIONS;
+        delete process.env.FC_FONTATIONS;
+        try {
+            expect(chromiumEnv()).toMatchObject({ FC_FONTATIONS: "1", TZ: "UTC" });
+            expect(chromiumEnv({ FONTCONFIG_FILE: "f", FC_FONTATIONS: "0" })).toMatchObject({
+                FONTCONFIG_FILE: "f",
+                FC_FONTATIONS: "1",
+            });
+        } finally {
+            if (saved !== undefined) process.env.FC_FONTATIONS = saved;
+        }
+    });
+});
 
 describe("storyUrl", () => {
     it("opens the story alone with the chromatic flag", () => {
@@ -28,6 +45,13 @@ describe("storyUrl", () => {
         expect(storyUrl("a--b", { theme: "light", direction: "rtl" })).toBe(
             "iframe.html?id=a--b&viewMode=story&chromatic=true&globals=theme:light;direction:rtl",
         );
+    });
+
+    it("appends an extra query (VISUAL_REVIEW_STORY_QUERY), and nothing without one", () => {
+        expect(storyUrl("a--b", { theme: "dark" }, "features=all")).toBe(
+            "iframe.html?id=a--b&viewMode=story&chromatic=true&features=all&globals=theme:dark",
+        );
+        expect(storyUrl("a--b", null, "")).toBe("iframe.html?id=a--b&viewMode=story&chromatic=true");
     });
 });
 
