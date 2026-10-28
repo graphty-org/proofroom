@@ -483,27 +483,45 @@ export async function newestMasterCapture(
         if (!run) {
             continue;
         }
-        const subset = reader ? await referenceSubset(gh, run, project, tmp, reader).catch(() => null) : null;
-        if (subset) {
-            return subset;
-        }
-        const got = (await downloadCaptures(gh, run, [project], tmp))[project];
-        if (got?.error) {
-            // Not skipped: an older capture would be compared instead of this one.
-            throw new Error(got.error);
-        }
-        const dir = got?.dir;
-        let results = null;
-        try {
-            results = dir ? JSON.parse(readFileSync(join(dir, "results.json"), "utf8")) : null;
-        } catch {
-            // An unreadable capture is skipped like a missing one.
-        }
-        if (results && validateResults(results).length === 0 && results.complete && results.project === project) {
+        const dir = await runCapture(gh, run, project, tmp, reader);
+        if (dir) {
             return dir;
         }
     }
     return null;
+}
+
+/**
+ * One run's complete capture of a project for newestMasterCapture(): the subset when `reader` can read it,
+ * else the whole artifact.
+ * @param {Function} gh the gh runner
+ * @param {{ id: number }} run the run
+ * @param {string} project the project id
+ * @param {string} tmp the download root
+ * @param {((artifact: object) => Promise<{ read: (start: number, end: number) => Promise<Buffer>, size: number } | null>) | null} reader
+ *     opens an artifact for range reads
+ * @returns {Promise<string | null>} the directory, or null when the run has no complete capture
+ */
+async function runCapture(gh, run, project, tmp, reader) {
+    const subset = reader ? await referenceSubset(gh, run, project, tmp, reader).catch(() => null) : null;
+    if (subset) {
+        return subset;
+    }
+    const got = (await downloadCaptures(gh, run, [project], tmp))[project];
+    if (got?.error) {
+        // Not skipped: an older capture would be compared instead of this one.
+        throw new Error(got.error);
+    }
+    const dir = got?.dir;
+    let results = null;
+    try {
+        results = dir ? JSON.parse(readFileSync(join(dir, "results.json"), "utf8")) : null;
+    } catch {
+        // An unreadable capture is skipped like a missing one.
+    }
+    return results && validateResults(results).length === 0 && results.complete && results.project === project
+        ? dir
+        : null;
 }
 
 function tokenReader() {
