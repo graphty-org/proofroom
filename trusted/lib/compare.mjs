@@ -160,15 +160,29 @@ function crop(img, w, h) {
  * `moved` says the baseline is another story id's, named in the project's renames.json: a story
  * that only moved (same image, new id) is `moved` rather than `unchanged`, so it still needs an
  * accept, which writes its baseline under the new name.
+ *
+ * Decoding and comparing a capture costs seconds of CPU for a tall story, so nothing is compared
+ * twice: `firstResult`, the result of the caller's earlier classify of the same baseline and first
+ * capture, stands for that comparison, and a second capture with the first one's bytes takes the
+ * first one's comparison (the same bytes compare the same).
  * @param {{ baseline: Buffer | null, first: Buffer | null, second?: Buffer | null,
- *     reference?: Buffer | null, threshold: number, includeAA: boolean, moved?: boolean }} input
- *     `first` is null when the story is gone
+ *     reference?: Buffer | null, threshold: number, includeAA: boolean, moved?: boolean,
+ *     firstResult?: object | null }} input `first` is null when the story is gone
  * @returns {{ status: "unchanged" | "moved" | "changed" | "new" | "unseeded" | "removed" | "unstable", flaky: boolean,
  *     baseline: string | null, capture: string | null, size: number[] | null,
  *     baselineSize: number[] | null, changedPixels: number | null, bbox: number[] | null }}
  *     `capture` is the hash of the capture the status describes: the second one when flaky
  */
-export function classify({ baseline, first, second = null, reference = null, threshold, includeAA, moved = false }) {
+export function classify({
+    baseline,
+    first,
+    second = null,
+    reference = null,
+    threshold,
+    includeAA,
+    moved = false,
+    firstResult = null,
+}) {
     const options = { threshold, includeAA };
     const matched = (r, flaky) => ({ ...r, status: moved ? "moved" : "unchanged", flaky });
     const none = { flaky: false, size: null, baselineSize: null, changedPixels: null, bbox: null };
@@ -185,14 +199,14 @@ export function classify({ baseline, first, second = null, reference = null, thr
         }
         return { status, ...none, baseline: null, capture: sha256(first), size: pngSize(first) };
     }
-    const vsFirst = compareImages(baseline, first, options);
+    const vsFirst = firstResult ?? compareImages(baseline, first, options);
     if (vsFirst.status === "unchanged") {
         return matched(vsFirst, false);
     }
     if (second === null) {
         return { ...vsFirst, flaky: false };
     }
-    const vsSecond = compareImages(baseline, second, options);
+    const vsSecond = Buffer.compare(second, first) === 0 ? vsFirst : compareImages(baseline, second, options);
     if (vsSecond.status === "unchanged") {
         return matched(vsSecond, true);
     }

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PNG } from "pngjs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { classify, compareImages, isLfsPointer, readBaseline, sha256 } from "../trusted/lib/compare.mjs";
 
@@ -155,6 +155,42 @@ describe("classify", () => {
             flaky: false,
         });
         expect(classify({ baseline: null, first: a, second: b, ...OPTS })).toMatchObject({ status: "unstable" });
+    });
+
+    // Decoding a tall story's capture costs seconds of CPU, and the story tests' confirming shot ran
+    // out of its hook's 30 s on a slow machine when every comparison was made again (#4126).
+    it("decodes nothing twice: a second capture equal to the first takes the first's comparison", () => {
+        const read = vi.spyOn(PNG.sync, "read");
+        try {
+            const r = classify({ baseline: base, first: a, second: Buffer.from(a), ...OPTS });
+            expect(r).toMatchObject({ status: "changed", changedPixels: 1, bbox: [1, 1, 1, 1] });
+            // The baseline and the first capture, once each.
+            expect(read).toHaveBeenCalledTimes(2);
+        } finally {
+            read.mockRestore();
+        }
+    });
+
+    it("an earlier result for the same baseline and first capture is not compared again", () => {
+        const earlier = classify({ baseline: base, first: a, ...OPTS });
+        const read = vi.spyOn(PNG.sync, "read");
+        try {
+            // The second capture, and how many images comparing it decodes: none for the first's
+            // bytes or the baseline's; for another picture, it and the baseline, then it and the first.
+            for (const [second, decodes] of [
+                [Buffer.from(a), 0],
+                [Buffer.from(base), 0],
+                [b, 4],
+            ]) {
+                const plain = classify({ baseline: base, first: a, second, ...OPTS });
+                read.mockClear();
+                const reused = classify({ baseline: base, first: a, second, firstResult: earlier, ...OPTS });
+                expect(reused).toEqual(plain);
+                expect(read).toHaveBeenCalledTimes(decodes);
+            }
+        } finally {
+            read.mockRestore();
+        }
     });
 
     it("a baseline with no story is removed", () => {

@@ -224,9 +224,17 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         return theirs ? { baseline: theirs, from: old } : { baseline: own, from: null };
     };
 
-    const finish = async (job, first, second, logged) => {
+    const finish = async (job, first, second, logged, firstResult = null) => {
         const { id, mode, file, baseline, from, s } = job;
-        const r = classify({ baseline, first, second, threshold: s.threshold, includeAA: s.includeAA, moved: !!from });
+        const r = classify({
+            baseline,
+            first,
+            second,
+            threshold: s.threshold,
+            includeAA: s.includeAA,
+            moved: !!from,
+            firstResult,
+        });
         if (["changed", "moved", "new", "unstable"].includes(r.status)) {
             writeFileSync(join(out, file), r.flaky ? second : first);
         }
@@ -340,7 +348,9 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
             const held = pending.get(file);
             if (held) {
                 pending.delete(file);
-                return { status: await finish(held.job, held.first, png, [...held.console, ...console]) };
+                return {
+                    status: await finish(held.job, held.first, png, [...held.console, ...console], held.result),
+                };
             }
             const job = { id, mode, file, ...(await baselineOf(id, mode)), s: await settings(id, chromatic) };
             const r = classify({
@@ -350,7 +360,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
                 includeAA: job.s.includeAA,
             });
             if (r.status === "changed" || r.status === "new") {
-                pending.set(file, { job, first: png, console });
+                pending.set(file, { job, first: png, console, result: r });
                 return { again: true };
             }
             return { status: await finish(job, png, null, console) };
