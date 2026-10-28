@@ -121,6 +121,7 @@ import {
     signRecord,
     earlierApprovalsAt,
     treeStatement,
+    jsonOrNull,
     unsignedRecordAt,
     updateFromMaster,
     updateReportLines,
@@ -294,7 +295,7 @@ async function earlierAccepts(repo, head, pr, { baselines, approvals }) {
     );
     const chain = [];
     for (const file of files.split("\n").filter((n) => n.endsWith(".json"))) {
-        const st = await git(["show", `${head}:${file}`]).then(JSON.parse, () => null);
+        const st = await git(["show", `${head}:${file}`]).then(jsonOrNull, () => null);
         if (statementProblem(st) === null && st.change === change) {
             chain.push({ ...st, file, id: statementId(st) });
         }
@@ -1375,7 +1376,7 @@ export function createApp({
         for (const file of files) {
             const { blob } = file;
             if (!recordBlobs.has(blob)) {
-                recordBlobs.set(blob, await gitIn(["cat-file", "blob", blob]).then(JSON.parse, () => null));
+                recordBlobs.set(blob, await gitIn(["cat-file", "blob", blob]).then(jsonOrNull, () => null));
             }
             const commit = await addingCommit(sha, main, file);
             out.push({ ref: sha, commit, path: file.path, blob, record: recordBlobs.get(blob), main });

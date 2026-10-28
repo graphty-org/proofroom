@@ -409,8 +409,8 @@ Every seed Finish retires the earlier OPEN seeds of the same capture and kind: a
 those of the same run (`run<run id>` in the branch name), a candidate's Finish the candidate's other
 accept pull requests. Another run's seed, and a seed run's seed against a candidate's of the same
 commit, decided images this Finish never saw, so it is not retired; but each image this Finish
-rejects is rejected in every other open seed run of the commit that decided it, as a Finish of
-rejects alone does (below), before the seed is pushed. An open pull request is a seed
+rejects is rejected in every other open seed that still accepts it, as a Finish of rejects alone
+does (below), before the seed is pushed. An open pull request is a seed
 of the capture only when its own `visual/` branch adds a statement, verified by the default
 branch's keys, that carries the same captured commit and names that very pull request (`pr:N` with
 its own number N). A branch started from a seed branch, or one that merged it, carries the seed's
@@ -433,19 +433,25 @@ same way, before it posts the rejects, whichever server opened them, finding the
 A candidate's accept pull request that holds no statement yet (its touch was cancelled) is not a
 seed: it fails the gate as not reviewed and is left as it is; close it by hand. You sign each retiring statement with one touch (unsigned without a
 registered key). A seed Finish that only rejects images (it accepts nothing, so it opens no seed of
-its own) does not retire whole seeds: each earlier open seed of its capture that decided one of the
-images rejected now gets a signed statement rejecting only those images, before the issue for the
-rejects is opened, and stays open with its other accepts: the same commit puts those images back as
-the captured commit has them, so the seed can still merge. This covers the seeds of every run of the
-commit (it rejects nothing else in them), never a candidate's. A later Finish of a run that rejects
+its own) does not retire whole seeds. Every Finish that rejects images, of either kind, rejects them
+in the other open seeds: each one that still decides a rejected image gets a signed statement
+rejecting only those images, before the issue for the rejects is opened, and stays open with its
+other accepts: the same commit puts those images back as that seed's captured commit has them, so
+the seed can still merge. That is every open seed of the same commit (every run, and a candidate's
+reject reaches a seed run's seed too) whose newest decision for the image is not a reject, and
+every open seed of an earlier capture, or of the other kind, whose newest decision accepts the
+very image rejected (the same content hash): an older capture's accept of what the code still
+draws is still the image you rejected. It rejects nothing else in them. A later Finish of a run that rejects
 an image its own seed branch carries puts that image back the same way. A seed that decided none of them is left
 as it is. So a later reject of an image an earlier Finish accepted always wins, and nothing else
 that Finish accepted is lost.
 
 The earlier seeds are read again after your touch: if one appeared, gained a statement or moved
 since the Finish was prepared, Finish refuses and changes nothing (press Finish again). After the
-seed is pushed they are read once more: if another Finish of the same run, on another server,
-pushed a signed seed in the meantime, Finish says so, and the next Finish retires it.
+seed is pushed they are read once more, and a Finish of rejects alone reads them once more after
+its rejects are pushed: if another Finish, on another server, pushed in the meantime a seed of the
+same run, or one that accepts an image rejected now, Finish says so, and the next Finish retires it
+or rejects the image in it.
 
 Finding seeds reads the code host (the open pull requests, and each one whose branch names it) and
 git (their branches). On plain git, which has no list of open changes, the `visual/` branches are
@@ -469,12 +475,11 @@ What it does not cover:
 - On a code host that cannot close pull requests, Finish refuses, naming the old branch, until you
   close or delete it.
 - A seed pull request whose branch was renamed away from `visual/` (GitHub's "Rename branch" moves
-  the open pull request with it): Finish looks only at `visual/` branches, so it never sees or
-  retires that pull request, which stays open with your earlier signed accept. Close it by hand.
-- A seed of an earlier capture: retiring is per captured commit. A Finish of a newer commit of the
-  default branch that rejects an image leaves the open seeds of older captures as they are, and one
-  whose accepted image is still what the code draws can still merge it. Close those pull requests by
-  hand when a newer review rejects what they accept.
+  the open pull request with it): Finish cannot retire it, so it refuses, naming the pull request,
+  until you close it by hand.
+- A seed of an earlier capture is never retired whole: retiring is per captured commit. Only an
+  image a newer Finish rejects is rejected in it, and only when it accepts that exact image; its
+  other accepts stand.
 
 The seed's pull request can also be reviewed like any pull request once CI captures it: that
 Finish writes a change statement for `pr:N`, chained after the seed statement, and the newest

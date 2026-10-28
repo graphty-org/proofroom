@@ -692,7 +692,7 @@ describe("Finish of a seed in change mode", () => {
             return change(n);
         };
         await expect(seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], { projects })).rejects.toThrow(
-            "another seed of this capture, was pushed while this Finish was being made. Its pull request https://fake/changes/901 was closed: press Finish again to retire it",
+            "another seed, was pushed while this Finish was being made. Its pull request https://fake/changes/901 was closed: press Finish again to retire it or reject in it",
         );
         // This Finish's own seed is closed, so the two never stay open together.
         expect(host.opened.map((o) => o.state)).toEqual(["open", "closed"]);
@@ -719,7 +719,7 @@ describe("Finish of a seed in change mode", () => {
         };
         const projects = capture(r, 501);
         await expect(seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], { projects })).rejects.toThrow(
-            "another seed of this capture, was pushed while this Finish was being made. Its pull request https://fake/changes/901 was closed",
+            "another seed, was pushed while this Finish was being made. Its pull request https://fake/changes/901 was closed",
         );
         expect(host.opened.map((o) => o.state)).toEqual(["open", "closed"]);
         await seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], { projects });
@@ -738,9 +738,119 @@ describe("Finish of a seed in change mode", () => {
         git(r.remote, "branch", "-m", old.branch, "keep-me");
         old.branch = "keep-me";
         await expect(seedFinish(r, host, [[BUTTON]], { projects: capture(r, 502) })).rejects.toThrow(
-            "https://fake/changes/900 holds a seed of this capture on a branch Finish did not name: close it, then press Finish again",
+            "https://fake/changes/900 holds a seed on a branch Finish did not name: close it, then press Finish again",
         );
         expect(old.state).toBe("open");
+    });
+
+    it("never lets an open pull request with a broken statement file or unrelated history stop a Finish", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        const other = (name, setup) => {
+            const dev = join(r.dir, name);
+            git(r.dir, "clone", "-q", "-b", "master", r.remote, dev);
+            setup(dev);
+            git(dev, "push", "-q", "origin", `HEAD:refs/heads/${name}`);
+            host.opened.push({
+                number: 970 + host.opened.length,
+                html_url: null,
+                branch: name,
+                state: "open",
+                body: "",
+            });
+        };
+        const commit = (dev, ...args) => git(dev, "-c", "user.name=D", "-c", "user.email=d@example.com", ...args);
+        for (const name of ["visual/broken", "renamed-broken"]) {
+            other(name, (dev) => {
+                mkdirSync(join(dev, `${APPROVALS}/pr-970`), { recursive: true });
+                writeFileSync(join(dev, `${APPROVALS}/README.md`), "not JSON\n");
+                writeFileSync(join(dev, `${APPROVALS}/pr-970/x.json`), "<<<<<<< ours\n");
+                git(dev, "add", "-A");
+                commit(dev, "commit", "-q", "-m", "broken");
+            });
+        }
+        other("orphan", (dev) => {
+            git(dev, "checkout", "-q", "--orphan", "orphan");
+            git(dev, "rm", "-rqf", ".");
+            writeFileSync(join(dev, "a.txt"), "a\n");
+            git(dev, "add", "-A");
+            commit(dev, "commit", "-q", "-m", "unrelated");
+        });
+        await seedFinish(r, host, [[BADGE], [BUTTON]], { projects: capture(r, 501) });
+        const { result } = await seedFinish(r, host, [[BADGE, "reject", "clipped"], [BUTTON]], {
+            projects: capture(r, 502),
+        });
+        expect(result.branch).toMatch(/run502/);
+        const { result: rejected } = await seedFinish(r, host, [[BUTTON, "reject", "cut"]], {
+            projects: capture(r, 503),
+        });
+        expect(rejected).toMatchObject({ rejects: 1 });
+    });
+
+    it("rejects an image in an open seed of an earlier capture that accepts the very image rejected now", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        await seedFinish(r, host, [[BADGE], [BUTTON]], { projects: capture(r, 501) });
+        const [old] = host.opened;
+        // Master moves on with a change that does not touch the image.
+        commitAndPush(r.repo, { "notes.txt": "unrelated\n" }, "an unrelated change");
+        const moved = { ...r, master: git(r.repo, "rev-parse", "HEAD") };
+        const { touches } = await seedFinish(moved, host, [[BADGE, "reject", "clipped"]], {
+            projects: capture(moved, 502),
+        });
+        expect(touches).toBe(1);
+        expect(old.state).toBe("open");
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(git(r.remote, "ls-tree", "--name-only", old.branch, "--", badge)).toBe("");
+        expect(seedStatements(r, old.branch).find((st) => st.entries[0].decision === "reject")).toMatchObject({
+            capturedHead: r.master,
+            entries: [{ path: `compact-mantine/${BADGE}`, decision: "reject" }],
+        });
+        expect(gateOn(r, old.branch, "pr:900")).toEqual([]);
+    });
+
+    it("rejects an image a candidate's Finish rejects in a seed run's open seed of the commit that accepts it", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        await seedFinish(r, host, [[BADGE], [BUTTON]], { projects: capture(r) });
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r), candidate: r.master });
+        const [seed] = host.opened;
+        await seedFinish(r, host, [[BADGE, "reject", "cut"]], { projects: capture(r), candidate: r.master });
+        // The candidate's accept pull request is retired; the seed run's stays open without BADGE.
+        expect(host.opened.map((o) => o.state)).toEqual(["open", "closed"]);
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(git(r.remote, "ls-tree", "--name-only", seed.branch, "--", badge)).toBe("");
+        expect(gateOn(r, seed.branch, "pr:900")).toEqual([]);
+    });
+
+    it("refuses a Finish of rejects alone when a seed accepting a rejected image was pushed meanwhile", async () => {
+        const r = changeRepo();
+        const host = seedHost(r);
+        await seedFinish(r, host, [[BADGE]], { projects: capture(r, 502) });
+        const [other] = host.opened;
+        // The seed is pushed after this Finish read the seeds: only the race check sees it.
+        let reads = 0;
+        const list = host.listChanges;
+        host.listChanges = async (o) => (await list(o)).filter((c) => reads++ > 0 || c.branch !== other.branch);
+        const input = {
+            repo: r.repo,
+            codeHost: host,
+            target: { pr: null, branch: null },
+            projects: capture(r, 501),
+            decisions: [{ project: "compact-mantine", file: BADGE, decision: "reject", reason: "clipped" }],
+            config: FIXTURE_CONFIG,
+            repository: REPO_ID,
+            retryDelays: [],
+            now: new Date(),
+        };
+        await expect(finish(input)).rejects.toThrow(
+            "https://fake/changes/900, another seed, was pushed while this Finish was being made",
+        );
+        host.listChanges = list;
+        await seedFinish(r, host, [[BADGE, "reject", "clipped"]], { projects: capture(r, 501) });
+        const badge = `${BASELINES}/compact-mantine/${BADGE}`;
+        expect(other.state).toBe("open");
+        expect(git(r.remote, "ls-tree", "--name-only", other.branch, "--", badge)).toBe("");
     });
 
     it("never lets a candidate Finish of a commit retire a seed run's seed of it, or the other way round", async () => {
