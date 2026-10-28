@@ -237,6 +237,36 @@ describe("story tests' visual step", () => {
         });
         expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(false);
     });
+
+    it("keeps a split leg's shard when its failed files are run again unsliced", async () => {
+        const root = repo({ "b--wobbles.png": png(10) });
+        const out = tempDir("story-test-out-");
+        const shoot = async (v, shots) => {
+            const ctx = context(shots);
+            await v.commands.visualPlan(ctx, { id: "b--wobbles", chromatic: {} });
+            const first = await v.commands.visualShot(ctx, {
+                id: "b--wobbles",
+                mode: null,
+                chromatic: {},
+                console: [],
+            });
+            return first.again
+                ? v.commands.visualShot(ctx, { id: "b--wobbles", mode: null, chromatic: {}, console: [] })
+                : first;
+        };
+        const files = ["a.stories.ts", "b.stories.ts"];
+        const ran = { "b.stories.ts": ["b--wobbles"] };
+        const first = visualStoryTest({ project: "graphty-element", out, root });
+        await shoot(first, [png(200), png(100)]);
+        await report(first, root, { shard: { index: 2, count: 2 }, files, ran });
+        // the retry's vitest has no --shard (tools/test-select.mjs drops it from a selection)
+        const retry = visualStoryTest({ project: "graphty-element", out, root });
+        await shoot(retry, [png(10)]);
+        await report(retry, root, { files, ran });
+        const r = read(out);
+        expect(r.retried).toBe(1);
+        expect(r.partial.shard).toEqual({ index: 2, count: 2 });
+    });
 });
 
 describe("pinFixedInPage", () => {
