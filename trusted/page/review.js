@@ -1345,15 +1345,17 @@ async function followTargets(seq, ask) {
         const before = JSON.stringify([state.list?.targets ?? null, state.list?.inbox ?? null]);
         state.list = list;
         showCount(list.inbox);
-        const stale = list.targets && list.updatedAt !== null && list.now - list.updatedAt > 60000;
-        if (ask === "cached" && stale && !list.refreshing) {
-            ask = "refresh";
-            continue;
-        }
+        // Drawn before a stale list asks for a refresh: that answer is the same list, so it would
+        // never be drawn and the screen would stay an empty box until the list changed (#4111).
         if (JSON.stringify([list.targets ?? null, list.inbox ?? null]) === before) {
             drawListLine();
         } else {
             drawTargets();
+        }
+        const stale = list.targets && list.updatedAt !== null && list.now - list.updatedAt > 60000;
+        if (ask === "cached" && stale && !list.refreshing) {
+            ask = "refresh";
+            continue;
         }
         const net = networkLine(list.network, list.now);
         if (!list.targets) {

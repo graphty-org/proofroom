@@ -416,8 +416,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
                 files.ran = [...new Set([...kept.ran, ...files.ran])].sort((a, b) => a.localeCompare(b));
                 missing.unshift(...kept.missing.filter((id) => !planned.has(id)));
             }
-            // and the retry is not sliced (test-select drops --shard from a selection): the leg is still the first
-            // run's shard, or merge-results finds the legs' shard counts disagree (#4109)
+            // The retry is not run with --shard, so its own shard reads 1 of 1: the leg is the first run's.
             results.partial = {
                 shard: kept?.shard ?? shard,
                 reported: reported && (!kept || kept.reported),

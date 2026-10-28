@@ -220,7 +220,12 @@ describe("story tests' visual step", () => {
         const first = visualStoryTest({ project: "graphty-element", out, root });
         expect(await shoot(first, "a--same", [png(10)])).toEqual({ status: "unchanged" });
         expect(await shoot(first, "b--wobbles", [png(200), png(100)])).toEqual({ status: "unstable" });
-        await report(first, root, { files, ran: { "a.stories.ts": ["a--same"], "b.stories.ts": ["b--wobbles"] } });
+        const shard = { index: 2, count: 4 };
+        await report(first, root, {
+            shard,
+            files,
+            ran: { "a.stories.ts": ["a--same"], "b.stories.ts": ["b--wobbles"] },
+        });
         expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(true);
 
         // The retry (tools/test-quarantine.mjs) runs only b.stories.ts, and this time it settles.
@@ -230,42 +235,13 @@ describe("story tests' visual step", () => {
 
         const r = read(out);
         expect(r.retried).toBe(1);
-        expect(r.partial).toMatchObject({ reported: true, missing: [], ran: files });
+        // The retry runs without --shard; the partial still names the first run's leg (#4006).
+        expect(r.partial).toMatchObject({ shard, reported: true, missing: [], ran: files });
         expect(Object.fromEntries(r.items.map((i) => [i.id, i.status]))).toEqual({
             "a--same": "unchanged",
             "b--wobbles": "unchanged",
         });
         expect(existsSync(join(out, "second/b--wobbles.png"))).toBe(false);
-    });
-
-    it("keeps a split leg's shard when its failed files are run again unsliced", async () => {
-        const root = repo({ "b--wobbles.png": png(10) });
-        const out = tempDir("story-test-out-");
-        const shoot = async (v, shots) => {
-            const ctx = context(shots);
-            await v.commands.visualPlan(ctx, { id: "b--wobbles", chromatic: {} });
-            const first = await v.commands.visualShot(ctx, {
-                id: "b--wobbles",
-                mode: null,
-                chromatic: {},
-                console: [],
-            });
-            return first.again
-                ? v.commands.visualShot(ctx, { id: "b--wobbles", mode: null, chromatic: {}, console: [] })
-                : first;
-        };
-        const files = ["a.stories.ts", "b.stories.ts"];
-        const ran = { "b.stories.ts": ["b--wobbles"] };
-        const first = visualStoryTest({ project: "graphty-element", out, root });
-        await shoot(first, [png(200), png(100)]);
-        await report(first, root, { shard: { index: 2, count: 2 }, files, ran });
-        // the retry's vitest has no --shard (tools/test-select.mjs drops it from a selection)
-        const retry = visualStoryTest({ project: "graphty-element", out, root });
-        await shoot(retry, [png(10)]);
-        await report(retry, root, { files, ran });
-        const r = read(out);
-        expect(r.retried).toBe(1);
-        expect(r.partial.shard).toEqual({ index: 2, count: 2 });
     });
 });
 
