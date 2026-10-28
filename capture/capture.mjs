@@ -15,7 +15,8 @@
  * no Chromium switch hides it, and whether an adapter request fails differs by host, so without
  * this a component with a CPU and a GPU path would draw whichever the machine offers.
  * Anything that differs from its baseline, or has none, is captured once more in a new context,
- * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs).
+ * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs), unless it is
+ * byte for byte the reference's capture of a story the reference found changed too (needsSecondShot).
  *
  * The output directory gets results.json (rewritten after every item; `complete: true` only at
  * the end), the first capture of every changed, new and unstable item, `second/<file>` for the
@@ -913,10 +914,13 @@ async function cpuModel() {
  * Only complete, valid results are used, and only `new` items (captured twice and stable) whose
  * file hashes to the capture results.json names.
  * @param {string | null} dir the earlier capture's directory, or null
- * @returns {Promise<{ images: Map<string, Buffer>, runId: number | null }>} images by file name
+ * @returns {Promise<{ images: Map<string, Buffer>, changed: Map<string, string>, runId: number | null }>} images by
+ *     file name, and the capture hash of each story it found changed
  */
 async function loadReference(dir) {
     const images = new Map();
+    // file -> capture hash of every story the reference found changed on both of its captures
+    const changed = new Map();
     let results = null;
     try {
         results = dir ? JSON.parse(await readFile(join(dir, "results.json"), "utf8")) : null;
@@ -924,7 +928,7 @@ async function loadReference(dir) {
         // No reference downloaded: every story without a baseline is new.
     }
     if (!results || validateResults(results).length > 0 || !results.complete) {
-        return { images, runId: null };
+        return { images, changed, runId: null };
     }
     // Both statuses mean "captured with no baseline, hash recorded". Reading only `new` made a story
     // alternate: a run that matched its reference says `unseeded`, so the next run found no image
@@ -935,7 +939,25 @@ async function loadReference(dir) {
             images.set(item.file, bytes);
         }
     }
-    return { images, runId: results.runId };
+    for (const item of results.items.filter((i) => i.status === "changed")) {
+        changed.set(item.file, item.capture);
+    }
+    return { images, changed, runId: results.runId };
+}
+
+/**
+ * Whether a capture is shot once more, to tell a real change from a one-off flake and an unstable story: a
+ * `new` one always, a `changed` one unless it is byte for byte the reference's capture of a story the reference
+ * also found changed. That story was then drawn the same way on two runs already (the default branch's and this
+ * one), so it is neither a flake nor unstable; on a pull request it is every story the default branch changed
+ * since its baselines were last approved, which would otherwise be shot twice in every pull request.
+ * @param {string} status the first capture's status
+ * @param {string} hash the first capture's sha256
+ * @param {string | undefined} referenceHash the reference's capture hash of a story it found changed
+ * @returns {boolean} whether to shoot again
+ */
+export function needsSecondShot(status, hash, referenceHash) {
+    return status === "new" || (status === "changed" && hash !== referenceHash);
 }
 
 /**
@@ -1125,7 +1147,7 @@ export async function capture({
             }
             let result = classify({ baseline, first: first.png, ...opts });
             let second = null;
-            if (result.status === "changed" || result.status === "new") {
+            if (needsSecondShot(result.status, sha256(first.png), refs.changed.get(job.file))) {
                 second = await shoot(browser, url, { delay, waitFor });
                 if (!second.png) {
                     return failed(second, "second capture: ");
