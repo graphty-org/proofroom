@@ -1130,7 +1130,7 @@ export async function capture({
                 if (!second.png) {
                     return failed(second, "second capture: ");
                 }
-                result = classify({ baseline, first: first.png, second: second.png, ...opts });
+                result = classify({ baseline, first: first.png, second: second.png, firstResult: result, ...opts });
             }
             const { status } = result;
             // A moved capture is also its baseline when the bytes are the same: the page reads it.

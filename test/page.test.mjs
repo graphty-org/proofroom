@@ -2169,6 +2169,25 @@ describe("review page: the wait box", () => {
     });
 });
 
+describe("review page: a list over a minute old", () => {
+    it("draws the cached targets while the refresh it asks for runs (issue 4111)", async () => {
+        await open((r) => ({ gh: onePr()(r) }), { review: false });
+        // Every list is over a minute old, and the refresh it starts is still running when it answers.
+        await page.route(/\/api\/prs\?/, async (route) => {
+            const res = await route.fetch();
+            const body = await res.json();
+            body.updatedAt = body.now - 120000;
+            body.refreshing = route.request().url().includes("refresh=1")
+                ? { step: "listing pull requests", done: null, total: null, startedAt: body.now }
+                : null;
+            await route.fulfill({ response: res, json: body });
+        });
+        await page.reload();
+        await page.locator('.card[data-target="123"]').waitFor();
+        expect(await page.locator(".card.placeholder").count()).toBe(0);
+    });
+});
+
 describe("review page: moving on", () => {
     it("offers the next project at the end of a pass, opening its first undecided item", async () => {
         await open((r) => ({ gh: onePr()(r) }));
