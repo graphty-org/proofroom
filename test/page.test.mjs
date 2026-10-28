@@ -2184,6 +2184,7 @@ describe("review page: a list over a minute old", () => {
         });
         await page.reload();
         await page.locator('.card[data-target="123"]').waitFor();
+        expect(await page.locator(".card.placeholder").count()).toBe(0);
     });
 });
 
