@@ -6,7 +6,7 @@
  * the `x-review-token` header, and any request naming another origin is refused.
  */
 
-import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 
@@ -137,6 +137,65 @@ describe("serve: images and pictures by their content", () => {
         const res = await s.get(`/api/blob/${BUTTON.capture}`, { "x-review-token": TOKEN });
         expect(res.status).toBe(409);
         expect(res.headers.get("cache-control")).toBe("no-store");
+        // Damaged: results.json is dropped, so the next reload downloads the capture again.
+        expect(existsSync(join(s.tmp, "1000-1/compact-mantine/results.json"))).toBe(false);
+    });
+
+    it("answers a missing image 404 and never drops results.json for it", async () => {
+        const s = await start();
+        const dir = join(s.tmp, "1000-1/compact-mantine");
+        rmSync(join(dir, BUTTON.file));
+        const res = await s.get(`/api/blob/${BUTTON.capture}`, { "x-review-token": TOKEN });
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toBe(`${BUTTON.file}: not in the downloaded capture`);
+        expect(existsSync(join(dir, "results.json"))).toBe(true);
+    });
+
+    it("shows an unchanged item's baseline from git, which the capture does not keep", async () => {
+        // Within tolerance, not byte for byte: the capture's own hash names the baseline too.
+        const fixture = JSON.parse(readFileSync(join(FIXTURE, "compact-mantine/results.json"), "utf8"));
+        const close = { ...item("input--default.png"), capture: "c".repeat(64) };
+        const items = fixture.items.map((i) => (i.file === close.file ? close : i));
+        const s = await start({
+            fakes: (r) =>
+                onePrFakes({
+                    results: {
+                        "visual-compact-mantine-1": { commit: r.head, headSha: r.head, items },
+                        "visual-graphty-element-1": { commit: r.head, headSha: r.head },
+                    },
+                })(r),
+        });
+        const dir = join(s.tmp, "1000-1/compact-mantine");
+        expect(existsSync(join(dir, close.file))).toBe(false);
+        expect(existsSync(join(dir, "baselines", close.file))).toBe(false);
+        for (const hash of [close.baseline, close.capture]) {
+            const res = await s.get(`/api/blob/${hash}`, { "x-review-token": TOKEN });
+            expect(res.status).toBe(200);
+            expect(sha256(Buffer.from(await res.arrayBuffer()))).toBe(close.baseline);
+        }
+        const pic = await s.get(`/api/pic/${picName(close, "plain")}`, { "x-review-token": TOKEN });
+        expect(pic.status).toBe(200);
+        expect(existsSync(join(dir, "results.json"))).toBe(true);
+    });
+
+    it("answers 404, not damaged, when an unchanged item's baseline is not in the repository", async () => {
+        // Captured at a commit this repository does not have; graphty-element, whose capture
+        // holds the same image, is left out.
+        const unchanged = item("input--default.png");
+        const at = { commit: "3".repeat(40), headSha: "3".repeat(40) };
+        const s = await start({
+            fakes: onePrFakes({
+                jobs: { 1000: [job("compact-mantine")] },
+                artifacts: { 1000: ["visual-compact-mantine-1"] },
+                results: { "visual-compact-mantine-1": at },
+            }),
+        });
+        const res = await s.get(`/api/blob/${unchanged.baseline}`, { "x-review-token": TOKEN });
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toBe(
+            `${unchanged.file}: the capture does not keep it and its committed baseline is not in this repository`,
+        );
+        expect(existsSync(join(s.tmp, "1000-1/compact-mantine/results.json"))).toBe(true);
     });
 
     it("serves every kind of a changed pair's picture by its name, immutable", async () => {

@@ -3602,11 +3602,20 @@ export function createApp({
     /**
      * Where an item's image is in its capture's directory.
      * @param {string} dir the capture's directory
-     * @param {{ file: string, baseline?: string | null, capture?: string | null }} item the item
+     * @param {{ file: string, status?: string, baseline?: string | null, capture?: string | null }} item the item
      * @param {string} kind which image: "baseline" or "capture"
-     * @returns {{ path: string, hash: string, file: string, dir: string }} where it is
+     * @param {{ project: string, commit: string, headSha?: string | null }} r its results.json
+     * @returns {{ path: string, hash: string, file: string, dir: string, git?: string[] }} where it
+     *     is; `git` names the committed baseline to read when the directory does not hold it
      */
-    function whereOf(dir, item, kind) {
+    function whereOf(dir, item, kind, r) {
+        // The artifact keeps no image of an unchanged item: both sides show its baseline as committed
+        // at the captured commit (the capture only matched it within tolerance).
+        if (item.status === "unchanged") {
+            const path = `${config.baselines}/${r.project}/${item.file}`;
+            const git = [r.commit, r.headSha].filter((c) => SHA.test(String(c))).map((c) => `${c}:${path}`);
+            return { path: join(dir, "baselines", item.file), hash: item.baseline, file: item.file, dir, git };
+        }
         // A moved item's baseline is its capture's bytes, so the artifact holds only the capture.
         const own = kind === "capture" || item.baseline === item.capture;
         const path = own ? join(dir, item.file) : join(dir, "baselines", item.file);
@@ -3659,11 +3668,13 @@ export function createApp({
             if (item.status === "failed") {
                 continue;
             }
-            const [a, b] = ["baseline", "capture"].map((k) => (item[k] ? whereOf(dir, item, k) : null));
-            for (const w of [a, b]) {
-                if (w) {
-                    remember(blobs, w.hash, dir, w);
-                }
+            const [a, b] = ["baseline", "capture"].map((k) => (item[k] ? whereOf(dir, item, k, r) : null));
+            // By the hash the page asks for: an unchanged item's capture is served as its baseline.
+            if (a) {
+                remember(blobs, item.baseline, dir, a);
+            }
+            if (b) {
+                remember(blobs, item.capture, dir, b);
             }
             remember(pictured, pairKey(item.baseline ?? "none", item.capture ?? "none", item), dir, { a, b, item });
         }
@@ -3691,12 +3702,29 @@ export function createApp({
         return (item.pictures && (await madeByRun(item, (b ?? a).dir, kind))) ?? thumbOf(b ?? a, true);
     }
 
-    async function readImage({ path, hash, file, dir }) {
+    async function readImage({ path, hash, file, dir, git }) {
         if (evictedAt(dir)) {
             return [410, { error: `${file}: ${EVICTED_TEXT}` }];
         }
         const bytes = await readFile(path).catch(() => null);
-        if (!bytes || sha256(bytes) !== hash) {
+        // A missing file is not damage: the artifact does not keep every image (an unchanged item's).
+        if (!bytes) {
+            for (const name of git ?? []) {
+                const answer = await committedImage(name, name.slice(name.indexOf(":") + 1), hash);
+                if (answer[0] === 200 || /** @type {{ code?: string }} */ (answer[1]).code === "not-downloaded") {
+                    return answer;
+                }
+            }
+            return [
+                404,
+                {
+                    error: git?.length
+                        ? `${file}: the capture does not keep it and its committed baseline is not in this repository`
+                        : `${file}: not in the downloaded capture`,
+                },
+            ];
+        }
+        if (sha256(bytes) !== hash) {
             // The directory was written again since it was loaded (a new preview, moved
             // baselines) and its results.json no longer names this image: it is gone, not damaged. A
             // results.json already dropped (or unreadable) leaves the copy damaged.
@@ -4002,18 +4030,35 @@ export function createApp({
      */
     async function baselineImage(hash) {
         const where = baselineImages.get(String(hash));
-        const info = where && baselineBlobs.get(where.blob);
-        if (!info) {
+        if (!where) {
             return [404, { error: "no such baseline" }];
         }
-        if (!(await baselineLocal(info))) {
-            return [404, { error: `${where.path}: not downloaded`, code: "not-downloaded" }];
+        const answer = await committedImage(where.blob, where.path, String(hash));
+        return answer[0] === 200 ? [...answer, IMMUTABLE] : answer;
+    }
+
+    /**
+     * An image committed to the repository, verified by its hash (a Git LFS pointer from its fetched
+     * object only: nothing is downloaded unasked).
+     * @param {string} blob the blob: an id, or `<commit>:<path>` (a full sha, so it never changes)
+     * @param {string} path the file, for the answer
+     * @param {string} hash the image's hash
+     * @returns {Promise<Array<unknown>>} the answer: the PNG, or why not
+     */
+    async function committedImage(blob, path, hash) {
+        await readBaselineBlobs([blob]);
+        const info = baselineBlobs.get(blob);
+        if (!info || info.hash !== hash) {
+            return [404, { error: `${path}: no such image in this repository` }];
         }
-        const blob = (await blobsOf(repo, [where.blob])).get(where.blob);
-        const bytes = info.lfs ? await gitBytes(repo, ["lfs", "smudge"], blob) : blob;
+        if (!(await baselineLocal(info))) {
+            return [404, { error: `${path}: not downloaded`, code: "not-downloaded" }];
+        }
+        const stored = (await blobsOf(repo, [blob])).get(blob);
+        const bytes = info.lfs ? await gitBytes(repo, ["lfs", "smudge"], stored) : stored;
         return sha256(bytes) === hash
-            ? [200, bytes, "image/png", IMMUTABLE]
-            : [409, { error: `${where.path}: the image does not match its hash` }];
+            ? [200, bytes, "image/png"]
+            : [409, { error: `${path}: the image does not match its hash` }];
     }
 
     /**
