@@ -1038,7 +1038,8 @@ npm run build-storybook                  # your project's build command
 npx visual-review capture --project web --out .visual-review/preview/web --stories button--,badge--
 ```
 
-`--stories` captures only the story ids that start with one of the given prefixes, in seconds
+`--stories` captures only the story ids that start with one of the given prefixes (an entry that is a
+whole story id captures that story alone), in seconds
 rather than minutes, and then reports no baseline as removed. Start the server with
 `--results .visual-review/preview` to see the capture beside its baseline. Capture and look again
 after each change. Such an ad hoc capture is look only. To approve before CI has captured, push,

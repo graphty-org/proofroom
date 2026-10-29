@@ -121,6 +121,22 @@ export const storyIds = (index) =>
         .sort();
 
 /**
+ * The story ids `--stories` selects: an entry that is a whole story id selects that story alone, any other
+ * entry every id starting with it. CI passes whole ids, and as prefixes `labels-p-1` also captured
+ * `labels-p-10` to `labels-p-19`, which ran one graph-io-fidelity bin at 1.6 times its plan (#3448).
+ * @param {string[]} ids every story id
+ * @param {string[] | undefined} stories the entries, or none for every story
+ * @returns {string[]} the selected ids
+ */
+export const selectStoryIds = (ids, stories) => {
+    if (!stories) {
+        return ids;
+    }
+    const whole = new Set(stories.filter((p) => ids.includes(p)));
+    return ids.filter((id) => whole.has(id) || stories.some((p) => !whole.has(p) && id.startsWith(p)));
+};
+
+/**
  * The PNG name of a story and mode.
  * @param {string} id the story id
  * @param {string | null} mode the mode name
@@ -968,7 +984,7 @@ export function needsSecondShot(status, hash, referenceHash) {
  *     absolute path of the fonts.conf every browser draws with (the config's `fontconfig`), null for
  *     the host's fonts; `waitFor` is the project's config entry (see
  *     shootOnce); `reference` is the default branch's capture (see above); `stories` keeps only
- *     the story ids starting with one of these prefixes, for a quick local preview, and then no
+ *     the stories selectStoryIds() picks (a whole id, or every id starting with a prefix), and then no
  *     baseline is reported removed
  * @returns {Promise<object>} the final results.json contents
  */
@@ -994,7 +1010,7 @@ export async function capture({
     await mkdir(join(out, "baselines"), { recursive: true });
     await mkdir(join(out, "second"), { recursive: true });
     const allIds = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
-    const ids = allIds.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+    const ids = selectStoryIds(allIds, stories);
     const renames = await loadRenames(baselines);
     const refs = await loadReference(reference);
     const [server, base] = await serve(storybook);

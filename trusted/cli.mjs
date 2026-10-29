@@ -42,7 +42,7 @@ that is an LFS pointer (run \`git lfs pull\`).
   --workers <n>           browsers in parallel (default: the project's "workers")
   --reference <dir>       the default branch's capture (from \`reference\`): a story with no
                           baseline that looks as it does there is "unseeded", not "new"
-  --stories <prefix,...>  only the story ids starting with a prefix, for a quick local preview`,
+  --stories <prefix,...>  only the story ids starting with a prefix (a whole id: that story alone)`,
 
     reference: `usage: visual-review reference --project <id> --out <dir>
 
