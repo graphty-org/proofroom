@@ -272,9 +272,11 @@ export function notifyStep(state, inbox, now, gap) {
  * @returns {{ title: string, message: string }} the message
  */
 export function message(fresh, url) {
-    const lines = fresh.map(
-        (r) => `${r.pr === null ? "" : `#${r.pr} `}${r.title}: ${r.undecided} image${r.undecided === 1 ? "" : "s"}`,
-    );
+    // The held candidate has no number: its title names it.
+    const lines = fresh.map((r) => {
+        const name = r.pr === null ? r.title : `#${r.pr} ${r.title}`;
+        return `${name}: ${r.undecided} image${r.undecided === 1 ? "" : "s"}`;
+    });
     return { title: `Visual review: ${fresh.length} ready`, message: [...lines, url].join("\n") };
 }
 
