@@ -666,7 +666,8 @@ export function createApp({
     /**
      * The newest Finish (or update from the default branch, `kind: "update"`), kept after it ends
      * so a reload still shows its result.
-     * @type {{ id: number, kind?: "update", target: string, pr: number | null, branch: string | null,
+     * @type {{ id: number, kind?: "update", target: string, pr: number | null, candidate?: string | null,
+     *     branch: string | null,
      *     running: boolean, step: string | null, result: object | null, error: string | null,
      *     warnings: string[], interrupted?: true } | null}
      */
@@ -3311,6 +3312,8 @@ export function createApp({
                 id: (job?.id ?? 0) + 1,
                 target: t.id,
                 pr: t.pr,
+                // The candidate this Finish approves, so its outcome is never shown as another's.
+                candidate: t.candidate?.commit ?? null,
                 branch: t.branch,
                 running: true,
                 step: "starting",

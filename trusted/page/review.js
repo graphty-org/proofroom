@@ -938,11 +938,14 @@ const isLocal = () => state.target?.local === true;
 const scale = () => state.data?.results.scale ?? 1;
 // The default branch's name, as the server reports it.
 const branchName = (t = state.target) => t?.defaultBranch ?? state.list?.defaultBranch ?? "master";
+// The default branch's target: the held candidate (`serve --candidate next`) by its commit, else a seed.
+const masterLabel = (commit, t) =>
+    commit ? `${branchName(t)} candidate ${commit.slice(0, 10)}` : `${branchName(t)} seed`;
 const labelOf = (t) => {
     if (t.local) {
         return "Local preview";
     }
-    return t.pr === null ? `${branchName(t)} seed` : `#${t.pr}`;
+    return t.pr === null ? masterLabel(t.candidate?.commit, t) : `#${t.pr}`;
 };
 const undecidedOf = (t) => t.projects.reduce((n, p) => n + p.undecided, 0);
 const finishedOf = (t) => t.projects.reduce((n, p) => n + (p.finished ?? 0), 0);
@@ -1506,7 +1509,7 @@ function inboxView(inbox) {
                         openTarget(r.id, true);
                     },
                 },
-                el("strong", {}, `#${r.pr} `),
+                el("strong", {}, r.pr === null ? "" : `#${r.pr} `),
                 el("span", { class: "inbox-title" }, r.title),
                 el(
                     "span",
@@ -1522,7 +1525,7 @@ function inboxView(inbox) {
         el(
             "li",
             { class: "inbox-bad", "data-inbox": r.id },
-            el("strong", {}, `#${r.pr} `),
+            el("strong", {}, r.pr === null ? "" : `#${r.pr} `),
             el("span", { class: "inbox-title" }, r.title),
             el("span", { class: "meta" }, `${r.project}: ${r.reason}`),
             r.logUrl ? link(r.logUrl, "Job log") : null,
@@ -1836,7 +1839,7 @@ function targetHeading(t) {
     if (t.local) {
         return "Local preview ";
     }
-    return t.pr === null ? `${branchName(t)} seed` : `#${t.pr} `;
+    return t.pr === null ? `${masterLabel(t.candidate?.commit, t)} ` : `#${t.pr} `;
 }
 
 // A target card's title: a link to the pull request when there is one.
@@ -4866,7 +4869,7 @@ async function updateTarget(t) {
 }
 
 const isUpdate = (job) => job?.kind === "update";
-const jobLabel = (job) => (job.pr === null ? `${branchName()} seed` : `#${job.pr}`);
+const jobLabel = (job) => (job.pr === null ? masterLabel(job.candidate) : `#${job.pr}`);
 
 // ---------------------------------------------------------------- Finish
 
@@ -5388,7 +5391,7 @@ function drawFinishPanel() {
     const step = state.job.step ?? "";
     const now = steps.findIndex(([, , match]) => match.test(step));
     const count = /\((\d+) of (\d+) done\)/.exec(step);
-    const label = state.job.pr === null ? `${branchName()} seed` : `#${state.job.pr}`;
+    const label = jobLabel(state.job);
     const panel = el(
         "section",
         { class: "finish-panel", id: "finish-panel" },
@@ -5491,8 +5494,11 @@ function finishOutcome() {
     if (!job || job.running || state.dismissed === job.id) {
         return null;
     }
-    const label = job.pr === null ? `${branchName()} seed` : `#${job.pr}`;
-    const t = state.list?.targets?.find((x) => x.id === job.target);
+    const label = jobLabel(job);
+    // A Finish of an earlier candidate is not about the one offered now: no "Back to" it.
+    const t = state.list?.targets?.find(
+        (x) => x.id === job.target && (x.candidate?.commit ?? null) === (job.candidate ?? null),
+    );
     const dismiss = el(
         "button",
         {
