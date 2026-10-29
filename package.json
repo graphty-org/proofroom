@@ -6,7 +6,7 @@
     "license": "MIT",
     "type": "module",
     "bin": {
-        "proofroom": "./trusted/cli.mjs"
+        "proofroom": "trusted/cli.mjs"
     },
     "exports": {
         "./package.json": "./package.json",
