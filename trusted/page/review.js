@@ -1533,7 +1533,9 @@ function inboxView(inbox) {
         );
     const groups = inbox.groups ?? [];
     const grouped = new Set(groups.flatMap((g) => g.ids));
-    const ready = inbox.ready.filter((r) => !grouped.has(r.id)).map(readyRow);
+    // The held candidate above everything: nightly waits on it.
+    const held = inbox.ready.filter((r) => r.pr === null).map(readyRow);
+    const ready = inbox.ready.filter((r) => r.pr !== null && !grouped.has(r.id)).map(readyRow);
     const notReady = inbox.notReady.filter((r) => !grouped.has(r.id)).map(badRow);
     const groupRows = groups.map((g) => {
         const rows = g.ids.map((id, n) => {
@@ -1603,6 +1605,7 @@ function inboxView(inbox) {
         "section",
         { class: "inbox", "aria-label": "Waiting for you" },
         el("h2", {}, readyCount > 0 ? `Ready for you (${readyCount})` : "Nothing waiting for you"),
+        held.length > 0 ? el("ul", { class: "inbox-list" }, held) : null,
         groupRows.length > 0 ? el("ul", { class: "inbox-list" }, groupRows) : null,
         ready.length > 0 ? el("ul", { class: "inbox-list" }, ready) : null,
         notReady.length > 0 ? [el("h3", {}, "Not ready"), el("ul", { class: "inbox-list" }, notReady)] : null,
