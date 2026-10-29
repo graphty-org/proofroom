@@ -5489,16 +5489,19 @@ function finishStatusLine(out) {
     ];
 }
 
+// The target a job was about. A Finish of an earlier candidate is not about the one offered now.
+function jobTarget(job) {
+    const candidate = job.candidate ?? null;
+    return state.list?.targets?.find((x) => x.id === job.target && (x.candidate?.commit ?? null) === candidate);
+}
+
 function finishOutcome() {
     const job = state.job;
     if (!job || job.running || state.dismissed === job.id) {
         return null;
     }
     const label = jobLabel(job);
-    // A Finish of an earlier candidate is not about the one offered now: no "Back to" it.
-    const t = state.list?.targets?.find(
-        (x) => x.id === job.target && (x.candidate?.commit ?? null) === (job.candidate ?? null),
-    );
+    const t = jobTarget(job);
     const dismiss = el(
         "button",
         {
