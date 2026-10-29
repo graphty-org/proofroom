@@ -1784,6 +1784,32 @@ export function createApp({
         return dir;
     }
 
+    /**
+     * Keeps the open approval pull requests (`visual/approve-*`) of a list that was read; a failed read keeps the last.
+     * @param {object[]} prs the open pull requests
+     * @param {boolean} listed whether the list was read
+     */
+    const rememberApprovals = (prs, listed) => {
+        if (listed) {
+            approvalPullRequests = prs.filter((p) => p.branch.startsWith("visual/approve-"));
+        }
+    };
+
+    /**
+     * Adds the default branch's targets: the seed or candidate ("master") and the rolling renders ("rolling").
+     * @param {Map<string, object>} next the targets being listed
+     */
+    async function addDefaultBranchTargets(next) {
+        const master = await masterTarget();
+        if (master) {
+            next.set("master", master);
+        }
+        const roll = await rollingTarget();
+        if (roll) {
+            next.set("rolling", roll);
+        }
+    }
+
     async function load() {
         const next = new Map();
         if (results) {
@@ -1899,18 +1925,9 @@ export function createApp({
                     ? passkeyOpened.number
                     : null;
             passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? opened;
-            if (listed) {
-                approvalPullRequests = prs.filter((p) => p.branch.startsWith("visual/approve-"));
-            }
+            rememberApprovals(prs, listed);
             for (const t of built) next.set(t.id, t);
-            const master = await masterTarget();
-            if (master) {
-                next.set("master", master);
-            }
-            const roll = await rollingTarget();
-            if (roll) {
-                next.set("rolling", roll);
-            }
+            await addDefaultBranchTargets(next);
         }
         let seen = pushes;
         await readTips();

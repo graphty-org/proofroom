@@ -302,6 +302,18 @@ function runOption(values) {
 const lister = (command, root, exec) =>
     command ? async () => JSON.parse(await exec("sh", ["-c", command], { cwd: root })) : null;
 
+/**
+ * Why plain HTTP may not serve on this host: a host other machines reach needs HTTPS.
+ * @param {boolean} https whether a certificate is set
+ * @param {string} host the HOST to bind
+ * @returns {string} the refusal, or "" when it may
+ */
+const plainHttpProblem = (https, host) =>
+    https || LOOPBACK.has(host)
+        ? ""
+        : `visual-review serve: HOST=${host} is reachable from other machines, so the page needs HTTPS: ` +
+          "set HTTPS_CERT_PATH and HTTPS_KEY_PATH, or serve on localhost";
+
 async function serve(args) {
     if (args.includes("--branch")) {
         console.error("visual-review serve: --branch is gone: a --results preview is look only and has no Finish");
@@ -323,11 +335,9 @@ async function serve(args) {
         console.error(HELP.serve);
         return 2;
     }
-    if (!https && !LOOPBACK.has(HOST)) {
-        console.error(
-            `visual-review serve: HOST=${HOST} is reachable from other machines, so the page needs HTTPS: ` +
-                "set HTTPS_CERT_PATH and HTTPS_KEY_PATH, or serve on localhost",
-        );
+    const exposed = plainHttpProblem(https, HOST);
+    if (exposed) {
+        console.error(exposed);
         return 2;
     }
     const { root, config } = await settings();
