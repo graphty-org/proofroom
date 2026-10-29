@@ -17,7 +17,14 @@ import { contentHash } from "../trusted/gate.mjs";
 import { parsePasskeys, recordHash, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { approvalIndex } from "../trusted/lib/filters.mjs";
-import { downloadCaptures, hurry, newestMasterCapture, openPullRequests, withRetries } from "../trusted/lib/github.mjs";
+import {
+    downloadCaptures,
+    hurry,
+    newestMasterCapture,
+    onceOnDisk,
+    openPullRequests,
+    withRetries,
+} from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import { thumbnail } from "../trusted/lib/thumbs.mjs";
 import { PNG } from "pngjs";
@@ -2686,6 +2693,60 @@ describe("newestMasterCapture", () => {
             join(r.dir, "reference", "3000-1", "compact-mantine"),
         );
         expect(await reference([])).toBe(join(r.dir, "reference", "1000-1", "compact-mantine"));
+    });
+
+    it("reads each run's artifact list once, though the range read and the download both look at it", async () => {
+        const r = makeRepo();
+        const inner = fakeGh({
+            masterRuns: [
+                { id: 3000, head: "3".repeat(40) },
+                { id: 2000, head: r.master },
+            ],
+            artifacts: { 3000: ["build-x"], 2000: ["visual-compact-mantine-1"] },
+            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, runId: 2000 } },
+        });
+        const lists = [];
+        const gh = (args, input) => {
+            if (/\/artifacts\?/.test(args[1] ?? "")) {
+                lists.push(args[1]);
+            }
+            return inner(args, input);
+        };
+        // a reader that cannot range-read, so every run falls through to the whole download
+        const dir = await newestMasterCapture(gh, "compact-mantine", join(r.dir, "reference"), FIXTURE_CONFIG, {
+            reader: async () => null,
+        });
+        expect(dir).toBe(join(r.dir, "reference", "2000-1", "compact-mantine"));
+        expect(lists).toEqual([
+            "repos/{owner}/{repo}/actions/runs/3000/artifacts?per_page=100",
+            "repos/{owner}/{repo}/actions/runs/2000/artifacts?per_page=100",
+        ]);
+    });
+
+    it("walks the default branch once for several projects given the same API cache (#4318)", async () => {
+        const r = makeRepo();
+        const calls = [];
+        const inner = fakeGh({
+            masterRuns: [
+                { id: 3000, head: "3".repeat(40) },
+                { id: 2000, head: r.master },
+            ],
+            artifacts: { 3000: [], 2000: ["visual-compact-mantine-1"] },
+            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, runId: 2000 } },
+        });
+        const gh = (args, input) => {
+            calls.push(args.join(" "));
+            return inner(args, input);
+        };
+        const cache = join(r.dir, "api-cache");
+        const find = (project) =>
+            newestMasterCapture(onceOnDisk(gh, cache), project, join(r.dir, "reference"), FIXTURE_CONFIG, {
+                reader: null,
+            });
+        expect(await find("compact-mantine")).toBe(join(r.dir, "reference", "2000-1", "compact-mantine"));
+        const first = calls.length;
+        expect(await find("graphty-element")).toBeNull();
+        expect(calls.slice(first)).toEqual([]);
     });
 
     it("finds nothing when no master run has a complete capture", async () => {

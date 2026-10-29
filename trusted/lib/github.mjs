@@ -10,6 +10,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
     existsSync,
     mkdirSync,
@@ -143,6 +144,54 @@ export const withRetries =
         });
 
 const api = async (gh, path) => JSON.parse(await gh(["api", path]));
+
+/**
+ * A gh runner that answers a `gh api <path>` read from a file in `dir` when an earlier call (of any process given the
+ * same directory) wrote one there: CI finds several projects' references one after another, and their walks over
+ * the default branch read the same runs.
+ * @param {(args: string[], input?: string) => Promise<string>} gh the gh runner
+ * @param {string} dir where the answers are kept
+ * @returns {(args: string[], input?: string) => Promise<string>} the runner
+ */
+export function onceOnDisk(gh, dir) {
+    return async (args, input) => {
+        if (args.length !== 2 || args[0] !== "api" || input !== undefined) {
+            return gh(args, input);
+        }
+        const file = join(dir, `${createHash("sha256").update(args[1]).digest("hex")}.json`);
+        if (existsSync(file)) {
+            return readFileSync(file, "utf8");
+        }
+        const out = await gh(args, input);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(file, out);
+        return out;
+    };
+}
+
+/**
+ * A gh runner that answers a repeated `gh api <path>` read from the first answer.
+ * @param {(args: string[], input?: string) => Promise<string>} gh the gh runner
+ * @returns {(args: string[], input?: string) => Promise<string>} the runner
+ */
+export function onceEach(gh) {
+    const seen = new Map();
+    return (args, input) => {
+        if (args.length !== 2 || args[0] !== "api" || input !== undefined) {
+            return gh(args, input);
+        }
+        if (!seen.has(args[1])) {
+            seen.set(
+                args[1],
+                gh(args, input).catch((err) => {
+                    seen.delete(args[1]);
+                    throw err;
+                }),
+            );
+        }
+        return seen.get(args[1]);
+    };
+}
 
 // Every open pull request with its head commit's check suites, one page of 100 at a time. A check
 // suite of GitHub Actions carries its workflow run; GraphQL has no run attempt, so the caller asks
@@ -445,7 +494,7 @@ export async function downloadCaptures(gh, run, projects, tmp, others = [], land
  * request's capture compares stories without a baseline against.
  * ponytail: the newest default-branch run with a complete capture, not the run of the pull
  * request's exact base; a story changed there since then shows as `new` (it blocks, never passes).
- * @param {Function} gh the gh runner
+ * @param {(args: string[], input?: string) => Promise<string>} gh the gh runner
  * @param {string} project the project id
  * @param {string} tmp the download root
  * @param {{ workflow: string, defaultBranch: string }} config the capturing workflow and the branch
@@ -462,6 +511,10 @@ export async function newestMasterCapture(
     { workflow, defaultBranch },
     { reader = tokenReader() } = {},
 ) {
+    // Every Stories job of a pull request ran this walk, so its calls count against the repository's Actions token
+    // (1,000 an hour, #4318): a run's artifact list is read once here, though both the range read and the whole
+    // download below look at it.
+    gh = onceEach(gh);
     // The branch's newest commits, then each one's run: GitHub's list of a workflow's runs filtered
     // by branch now and then answers with a stale page (runs from weeks ago), which made a pull
     // request compare with an old capture or none. Commits and a run by head sha answer consistently.
@@ -504,8 +557,9 @@ export async function newestMasterCapture(
  */
 async function runCapture(gh, run, project, tmp, reader) {
     const subset = reader ? await referenceSubset(gh, run, project, tmp, reader).catch(() => null) : null;
-    if (subset) {
-        return subset;
+    if (subset !== null) {
+        // false: the run has no complete capture, which a whole download would only confirm at more calls
+        return subset || null;
     }
     const got = (await downloadCaptures(gh, run, [project], tmp))[project];
     if (got?.error) {
@@ -538,7 +592,8 @@ function tokenReader() {
  * @param {string} project the project id
  * @param {string} tmp the download root
  * @param {(artifact: object) => Promise<{ read: (start: number, end: number) => Promise<Buffer>, size: number } | null>} reader opens an artifact
- * @returns {Promise<string | null>} the directory, or null when this run's capture cannot be read this way
+ * @returns {Promise<string | false | null>} the directory; false when the run has no complete capture of the
+ *     project (no artifact, or one without a valid, complete results.json); null when it cannot be read this way
  */
 export async function referenceSubset(gh, run, project, tmp, reader) {
     const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
@@ -549,19 +604,26 @@ export async function referenceSubset(gh, run, project, tmp, reader) {
     const a =
         pick(new RegExp(String.raw`^visual-final-${project}-(\d+)$`)) ??
         pick(new RegExp(String.raw`^visual-${project}-(\d+)$`));
-    const zip = a ? await reader(a) : null;
+    if (!a) {
+        return false;
+    }
+    const zip = await reader(a);
     const entries = zip ? await zipEntries(zip.read, zip.size) : null;
     const file = async (name) => {
         const e = entries.get(name);
         return e ? zipEntry(zip.read, e) : null;
     };
-    const json = entries ? await file("results.json") : null;
-    if (!json) {
+    if (!entries) {
         return null;
+    }
+    // the not-affected marker (skipped.json) has no results.json
+    const json = await file("results.json");
+    if (!json) {
+        return false;
     }
     const results = JSON.parse(json.toString("utf8"));
     if (validateResults(results).length > 0 || !results.complete || results.project !== project) {
-        return null;
+        return false;
     }
     const dir = join(tmp, `${run.id}-${a.name.replace(/^visual-/u, "")}-subset`, project);
     rmSync(dir, { recursive: true, force: true });
