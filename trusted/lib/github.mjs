@@ -174,7 +174,7 @@ export function onceOnDisk(gh, dir) {
  * @param {(args: string[], input?: string) => Promise<string>} gh the gh runner
  * @returns {(args: string[], input?: string) => Promise<string>} the runner
  */
-export function onceEach(gh) {
+function onceEach(gh) {
     const seen = new Map();
     return (args, input) => {
         if (args.length !== 2 || args[0] !== "api" || input !== undefined) {
