@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { crc32, deflateRawSync } from "node:zlib";
 
@@ -91,9 +91,19 @@ describe("referenceSubset", () => {
         ).toBe(true);
     });
 
-    it("answers null when the run has no capture of the project or the reader cannot open it", async () => {
+    it("answers false when the run has no capture of the project, and null when the reader cannot open it", async () => {
         const gh = fakeGh({ artifacts: { 7: ["visual-compact-mantine-1"] } });
-        expect(await referenceSubset(gh, { id: 7 }, "graphty-element", tempDir("ref-"), async () => null)).toBeNull();
+        expect(await referenceSubset(gh, { id: 7 }, "graphty-element", tempDir("ref-"), async () => null)).toBe(false);
         expect(await referenceSubset(gh, { id: 7 }, "compact-mantine", tempDir("ref-"), async () => null)).toBeNull();
+    });
+
+    it("answers false for the not-affected marker, so the walk does not download it whole (#4318)", async () => {
+        const dir = tempDir("marker-");
+        writeFileSync(join(dir, "skipped.json"), "{}");
+        const gh = fakeGh({ artifacts: { 7: ["visual-compact-mantine-1"] } });
+        const zip = zipOf(dir);
+        expect(
+            await referenceSubset(gh, { id: 7 }, "compact-mantine", tempDir("ref-"), async () => readerOf(zip)),
+        ).toBe(false);
     });
 });
