@@ -47,7 +47,9 @@ that is an LFS pointer (run \`git lfs pull\`).
     reference: `usage: visual-review reference --project <id> --out <dir>
 
 Downloads the default branch's newest complete capture of the project with gh into <dir> and
-prints its directory, or prints nothing when there is none. CI runs it before \`capture\`.`,
+prints its directory, or prints nothing when there is none. CI runs it before \`capture\`.
+With VISUAL_REVIEW_API_CACHE=<dir>, its GitHub API reads are kept in <dir> and read from there by
+the next call given the same directory, so finding several projects' references costs one walk.`,
 
     compare: `usage: visual-review compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa]
 
@@ -236,8 +238,10 @@ async function reference(args) {
         return 2;
     }
     const { root, config } = await settings();
-    const { ghRunner, newestMasterCapture } = await import("./lib/github.mjs");
-    console.log((await newestMasterCapture(ghRunner(root), values.project, resolve(values.out), config)) ?? "");
+    const { ghRunner, newestMasterCapture, onceOnDisk } = await import("./lib/github.mjs");
+    const cache = process.env.VISUAL_REVIEW_API_CACHE;
+    const gh = cache ? onceOnDisk(ghRunner(root), resolve(cache)) : ghRunner(root);
+    console.log((await newestMasterCapture(gh, values.project, resolve(values.out), config)) ?? "");
     return 0;
 }
 
