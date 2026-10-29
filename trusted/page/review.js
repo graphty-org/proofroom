@@ -938,9 +938,14 @@ const isLocal = () => state.target?.local === true;
 const scale = () => state.data?.results.scale ?? 1;
 // The default branch's name, as the server reports it.
 const branchName = (t = state.target) => t?.defaultBranch ?? state.list?.defaultBranch ?? "master";
-// The default branch's target: the held candidate (`serve --candidate next`) by its commit, else a seed.
-const masterLabel = (commit, t) =>
-    commit ? `${branchName(t)} candidate ${commit.slice(0, 10)}` : `${branchName(t)} seed`;
+// The default branch's target: the held candidate (`serve --candidate next`) by its commit, the rolling renders
+// of one commit, else a seed.
+const masterLabel = (commit, t, rolling = Boolean(t?.rolling)) => {
+    if (!commit) {
+        return `${branchName(t)} seed`;
+    }
+    return `${branchName(t)} ${rolling ? "rolling" : "candidate"} ${commit.slice(0, 10)}`;
+};
 const labelOf = (t) => {
     if (t.local) {
         return "Local preview";
@@ -4872,7 +4877,7 @@ async function updateTarget(t) {
 }
 
 const isUpdate = (job) => job?.kind === "update";
-const jobLabel = (job) => (job.pr === null ? masterLabel(job.candidate) : `#${job.pr}`);
+const jobLabel = (job) => (job.pr === null ? masterLabel(job.candidate, undefined, job.rolling) : `#${job.pr}`);
 
 // ---------------------------------------------------------------- Finish
 
@@ -4908,7 +4913,8 @@ function commitAndPostLines(t, f) {
     } else if (seed) {
         const day = new Date().toISOString().slice(0, 10);
         // A candidate's branch is replaced by each Finish, which keeps its open pull request.
-        const branch = t.candidate ? `visual/approve-${t.candidate.commit.slice(0, 12)}` : `visual/seed-${day}`;
+        const approve = `visual/approve-${t.rolling ? "rolling-" : ""}`;
+        const branch = t.candidate ? `${approve}${t.candidate.commit.slice(0, 12)}` : `visual/seed-${day}`;
         lines.push(
             `Push ${branch} with ${kinds.join(" and ")} and open its pull request` +
                 `${f.acceptNotes > 0 ? `, with ${plural(f.acceptNotes, "accept note")} in its description` : ""}.`,

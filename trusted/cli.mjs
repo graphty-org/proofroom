@@ -69,7 +69,11 @@ The URL to open, with its session token, is printed at every start.
                      until it stops waiting, its accept commit reaches the default branch, or a
                      Finish rejects something in it, and newer ones queue behind it.
                      Finish opens a pull request of visual/approve-<sha> touching only the
-                     baselines and approvals directories
+                     baselines and approvals directories. With the config's \`rolling\` command,
+                     also lists the newest render commit of the default branch's rolling renders
+                     as the target "rolling": decisions bound to one render, its Finish on
+                     visual/approve-rolling-<sha>, refused while a candidate is offered or another
+                     approval pull request is open
   --candidate <id>   also list the default branch at that workflow run, for seeding baselines
   --master-run <id>  the same as --candidate <id>
   --results <dir>    serve a local directory of <project>/results.json instead, offline, as a
@@ -354,6 +358,10 @@ async function serve(args) {
         origin,
         masterRun,
         candidates: next ? async () => JSON.parse(await exec("sh", ["-c", config.candidates], { cwd: root })) : null,
+        rolling:
+            next && config.rolling
+                ? async () => JSON.parse(await exec("sh", ["-c", config.rolling], { cwd: root }))
+                : null,
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,

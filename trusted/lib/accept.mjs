@@ -139,12 +139,23 @@ export async function lfsProblem(repo) {
  * The generated commit message.
  * @param {{ pr: number | null, counts: { accept: number, exclude: number, remove: number },
  *     runId: number | null, runAttempt: number | null, record: string, prefix: string,
- *     local?: object[], candidate?: string | null }} input what the commit holds, the conventional-commit type and scope it
+ *     local?: object[], candidate?: string | null, rolling?: boolean }} input what the commit holds, the conventional-commit type and scope it
  *     starts with (`commitPrefix`), and the projects captured by a local preview
  * @returns {string} a conventional commit message
  */
-export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, local = [], candidate = null }) {
-    const subject = pr === null ? masterSubject(prefix, candidate) : `${prefix}: accept visual baselines for #${pr}`;
+export function commitMessage({
+    pr,
+    counts,
+    runId,
+    runAttempt,
+    record,
+    prefix,
+    local = [],
+    candidate = null,
+    rolling = false,
+}) {
+    const subject =
+        pr === null ? masterSubject(prefix, candidate, rolling) : `${prefix}: accept visual baselines for #${pr}`;
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
     return [
         subject,
@@ -164,20 +175,33 @@ export function commitMessage({ pr, counts, runId, runAttempt, record, prefix, l
 
 /**
  * The subject of a commit or pull request that accepts on the default branch: a seed, or the
- * approval of a candidate (a full run the promotion waits on; serve's `candidates`).
+ * approval of a candidate (a full run the promotion waits on; serve's `candidates`), or of a rolling render (serve's
+ * `rolling`), whose subject never reads as a candidate's: nothing that promotes a candidate acts on it.
  * @param {string} prefix the config's commitPrefix
- * @param {string | null} candidate the candidate's commit, or null for a seed
+ * @param {string | null} candidate the candidate's or the rolling render's commit, or null for a seed
+ * @param {boolean} [rolling] a rolling render's approval
  * @returns {string} the subject
  */
-export const masterSubject = (prefix, candidate) =>
-    candidate ? `${prefix}: approve visual baselines at ${candidate.slice(0, 12)}` : `${prefix}: seed visual baselines`;
+export const masterSubject = (prefix, candidate, rolling = false) => {
+    if (!candidate) {
+        return `${prefix}: seed visual baselines`;
+    }
+    return rolling
+        ? `${prefix}: rolling approval of visual baselines rendered at ${candidate.slice(0, 12)}`
+        : `${prefix}: approve visual baselines at ${candidate.slice(0, 12)}`;
+};
 
 /**
- * The branch a candidate's accept commit goes to.
+ * The branch a candidate's (or a rolling render's) accept commit goes to.
  * @param {string} candidate the candidate's commit
- * @returns {string} `visual/approve-<short sha>`
+ * @param {boolean} [rolling] a rolling render's
+ * @returns {string} `visual/approve-<short sha>`, or `visual/approve-rolling-<short sha>`
  */
-const candidateBranch = (candidate) => `visual/approve-${candidate.slice(0, 12)}`;
+const candidateBranch = (candidate, rolling = false) =>
+    `visual/approve-${rolling ? "rolling-" : ""}${candidate.slice(0, 12)}`;
+
+/** The branches rolling approvals go to. */
+export const ROLLING_BRANCH_PREFIX = "visual/approve-rolling-";
 
 /**
  * Refuses an accept commit for a candidate that changes anything outside the baselines and
@@ -292,10 +316,13 @@ function check(projects, decisions, pr) {
  * @param {object} input the work
  * @param {string} input.repo the repository (its `.worktrees/` holds the accept worktree)
  * @param {Function} input.gh the gh runner
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} input.target a pull request and its
- *     branch, or `{ pr: null }` for master; on master, `candidate` is the commit of the full run
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, rolling?: boolean }} input.target a pull
+ *     request and its branch, or `{ pr: null }` for master; on master, `candidate` is the commit of the full run
  *     offered (serve's `candidates`): the accept commit goes on `visual/approve-<short sha>` and
- *     may change only the baselines and approvals directories
+ *     may change only the baselines and approvals directories. With `rolling`, `candidate` is a rolling
+ *     render's commit (serve's `rolling`): the same, on `visual/approve-rolling-<short sha>` with a subject no
+ *     candidate promotion reads. A candidate's Finish that pushes closes every open rolling approval
+ *     (`closedRolling`, or `closeRollingError`)
  * @param {Record<string, { dir: string, results: object }>} input.projects the downloaded captures
  * @param {{ project: string, file: string, decision: string, reason: string | null }[]} input.decisions
  *     what the owner decided: accept, reject or exclude (checked here)
@@ -388,8 +415,12 @@ export async function finish({
     // of it opened is closed, so its baselines never reach the default branch.
     const closed =
         isMaster && target.candidate && rejects.length > 0 ? await closeCandidatePullRequest(gh, target) : {};
+    // One approval in flight: a candidate's approval supersedes every rolling one, whose renders it re-reviewed.
+    const superseded =
+        isMaster && target.candidate && !target.rolling && made.pushed ? await closeRollingPullRequests(gh) : {};
     return {
         ...closed,
+        ...superseded,
         commit,
         branch,
         pullRequest,
@@ -492,10 +523,10 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
             "opening the pull request",
             () =>
                 createPullRequest(gh, {
-                    title: masterSubject(config.commitPrefix, decided.target.candidate ?? null),
+                    title: masterSubject(config.commitPrefix, decided.target.candidate ?? null, decided.target.rolling),
                     head: branch,
                     base: config.defaultBranch,
-                    body: seedBody(first, accepts, rejects, notes, config, decided.target.candidate ?? null),
+                    body: seedBody(first, accepts, rejects, notes, config, decided.target),
                 }),
             true,
         );
@@ -505,7 +536,7 @@ async function openSeedPullRequest(gh, decided, { commit, branch }) {
         if (open) {
             // Its description is the only place a candidate's accept notes are published, so it is
             // rewritten with this Finish's (every decision of the candidate, notes included).
-            const body = seedBody(first, accepts, rejects, notes, config, decided.target.candidate);
+            const body = seedBody(first, accepts, rejects, notes, config, decided.target);
             try {
                 await net("updating the pull request", () =>
                     gh(
@@ -547,12 +578,12 @@ async function openPullRequestOf(gh, branch) {
 /**
  * Closes the open accept pull request of a candidate, if there is one.
  * @param {Function} gh the gh runner
- * @param {{ candidate?: string }} target the candidate
+ * @param {{ candidate?: string, rolling?: boolean }} target the candidate
  * @returns {Promise<{ closedPullRequest?: string, closeError?: string }>} the pull request closed,
  *     or why closing it failed
  */
 export async function closeCandidatePullRequest(gh, target) {
-    const branch = candidateBranch(target.candidate);
+    const branch = candidateBranch(target.candidate, target.rolling);
     let open = null;
     try {
         open = await openPullRequestOf(gh, branch);
@@ -564,6 +595,27 @@ export async function closeCandidatePullRequest(gh, target) {
         const what = open?.html_url ?? `the pull request of ${branch}`;
         console.error(`visual-review: could not close ${what}: ${err.message}`);
         return { closeError: `could not close ${what}: ${err.message}` };
+    }
+}
+
+/**
+ * Closes every open rolling approval pull request (a candidate's Finish supersedes them).
+ * @param {Function} gh the gh runner
+ * @returns {Promise<{ closedRolling?: string[], closeRollingError?: string }>} the pull requests closed, or why not
+ */
+export async function closeRollingPullRequests(gh) {
+    const closed = [];
+    try {
+        const list = JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls?state=open&per_page=100"]));
+        for (const p of list.filter((x) => x.head?.ref?.startsWith(ROLLING_BRANCH_PREFIX))) {
+            await gh(["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${p.number}`, "-f", "state=closed"]);
+            closed.push(p.html_url);
+        }
+        return closed.length ? { closedRolling: closed } : {};
+    } catch (err) {
+        const why = `could not close the open rolling approval pull requests: ${err.message}`;
+        console.error(`visual-review: ${why}`);
+        return { ...(closed.length && { closedRolling: closed }), closeRollingError: why };
     }
 }
 
@@ -707,7 +759,7 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * Every check Finish makes runs here, so a refusal comes before the owner is asked.
  * @param {object} input the work
  * @param {string} input.repo the repository, with the captured head fetched
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, rolling?: boolean }} input.target as in finish
  * @param {Record<string, { dir: string, results: object }>} input.projects as in finish
  * @param {object[]} input.decisions as in finish
  * @param {Date} input.now the review time, which becomes the record's `reviewedAt` and the
@@ -793,7 +845,7 @@ export async function treeStatement({ repo, commit, config, pr, now }) {
  * The approval is checked first, with the gate's own code.
  * @param {object} input the work
  * @param {string} input.repo the repository
- * @param {{ pr: number | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, candidate?: string, rolling?: boolean }} input.target as in finish
  * @param {{ commit: string, record: string, recordBody: object, pushed: boolean }} input.prepared
  *     as prepareApproval returns
  * @param {object} input.approval the owner's approval of `recordBody`
@@ -904,7 +956,7 @@ export async function unsignedRecordAt(repo, tip, pr, config) {
  * push is the staleness check: a branch that moved since step 1 refuses it.
  * @param {object} input the work
  * @param {string} input.repo the repository
- * @param {{ pr: number | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, candidate?: string, rolling?: boolean }} input.target as in finish
  * @param {{ statement?: object, commit: string, branch: string, record: string, pendingKeys?: object[],
  *     origin: string }} input.approval as in finish, the statement with its `approval`
  * @param {(step: string) => void} input.progress as in finish
@@ -1033,7 +1085,7 @@ async function keysAt(repo, ref) {
  * Writes, commits and pushes the accepts. Every check runs before the worktree is created.
  * @param {object} input the work
  * @param {string} input.repo the repository
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} input.target as in finish
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, rolling?: boolean }} input.target as in finish
  * @param {object[]} input.accepts the checked accepts and exclusions
  * @param {object[]} input.rejects the checked rejects, for a version 2 record
  * @param {object} input.first the results.json of the first decided project
@@ -1150,7 +1202,7 @@ async function commitAccepts({
 /**
  * The branch an accept commit goes to: the pull request's, a candidate's `visual/approve-<sha>`, or a
  * dated seed branch. Refuses a candidate whose capture is of another commit.
- * @param {{ pr: number | null, branch: string | null, candidate?: string }} target as in finish
+ * @param {{ pr: number | null, branch: string | null, candidate?: string, rolling?: boolean }} target as in finish
  * @param {string} base the captured commit
  * @param {Date} now the review time
  * @returns {string | null} the branch
@@ -1167,7 +1219,7 @@ function acceptBranch(target, base, now) {
             `the capture is of ${base.slice(0, 10)}, not of the candidate ${target.candidate.slice(0, 10)}`,
         );
     }
-    return candidateBranch(target.candidate);
+    return candidateBranch(target.candidate, target.rolling);
 }
 
 /**
@@ -1375,6 +1427,7 @@ async function writeAcceptCommit(input, { tree, plan, writes, body, local }) {
         prefix: config.commitPrefix,
         local,
         candidate: target.candidate ?? null,
+        rolling: Boolean(target.rolling),
     });
     await git(tree, ["commit", "-q", "--no-verify", "-F", "-"], message);
     await requireLfsPointers(tree, plan.items);
@@ -1998,15 +2051,16 @@ const noteLines = (notes) =>
 const noteList = (notes) =>
     notes.map((a) => `${a.project}/${a.item.file}: ${JSON.stringify(oneLine(a.reason))}`).join("; ");
 
-function seedBody(results, accepts, rejects, notes, config, candidate) {
+function seedBody(results, accepts, rejects, notes, config, target) {
     const branch = config.defaultBranch;
-    const lines = [
-        candidate
-            ? `Approves the visual baselines of ${branch}'s run ${results.runId} at ${results.commit}. ` +
-              `It changes only ${config.baselines}/ and ${config.approvals}/.`
-            : `Seeds visual baselines from ${branch}'s CI run ${results.runId} at ${results.commit}.`,
-        `${accepts.length} decisions accepted in the review page.`,
-    ];
+    const only = `It changes only ${config.baselines}/ and ${config.approvals}/.`;
+    let what = `Seeds visual baselines from ${branch}'s CI run ${results.runId} at ${results.commit}.`;
+    if (target.rolling) {
+        what = `Approves the visual baselines rendered at ${results.commit} by ${branch}'s rolling slices. ${only}`;
+    } else if (target.candidate) {
+        what = `Approves the visual baselines of ${branch}'s run ${results.runId} at ${results.commit}. ${only}`;
+    }
+    const lines = [what, `${accepts.length} decisions accepted in the review page.`];
     if (notes.length > 0) {
         lines.push("", "Accepted, with a note (quoted as data):", ...noteLines(notes));
     }

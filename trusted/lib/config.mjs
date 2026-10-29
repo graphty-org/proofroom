@@ -23,6 +23,7 @@ const DEFAULTS = {
     fontconfig: null,
     updateCheck: null,
     candidates: null,
+    rolling: null,
     usage: false,
     ignoreBranches: [],
 };
@@ -37,7 +38,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, rolling: string | null, usage: boolean, ignoreBranches: string[], projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -137,6 +138,15 @@ function commandSettings(raw, out, fail) {
             fail("candidates must be a shell command");
         }
         out.candidates = raw.candidates;
+    }
+    // The shell command `serve --candidate next` also runs to list the default branch's rolling renders,
+    // newest render commit first: JSON on stdout, `[{ commit, at, items: [{ project, id, mode, runId, attempt,
+    // artifact }], pending: [{ project, id, mode, why }] }]`. Null: no rolling target.
+    if (raw.rolling !== undefined && raw.rolling !== null) {
+        if (typeof raw.rolling !== "string" || raw.rolling.trim() === "") {
+            fail("rolling must be a shell command");
+        }
+        out.rolling = raw.rolling;
     }
 }
 
