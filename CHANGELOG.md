@@ -1,3 +1,16 @@
+## 0.2.37 (2026-10-29)
+
+### 🩹 Fixes
+
+- **visual-review:** compare each capture once, so a confirming shot fits its hook ([#4126](https://github.com/graphty-org/graphty-monorepo/issues/4126))
+- **visual-review:** keep a split leg's shard in its retried partial capture ([#4109](https://github.com/graphty-org/graphty-monorepo/issues/4109))
+- **visual-review:** draw the cached list before a stale one asks for a refresh ([#4111](https://github.com/graphty-org/graphty-monorepo/issues/4111))
+- **visual-review:** keep a split capture leg's shard when its failed stories are retried ([#4006](https://github.com/graphty-org/graphty-monorepo/issues/4006))
+
+### ❤️ Thank You
+
+- graphty-agent @graphty-agent
+
 ## 0.2.36 (2026-10-28)
 
 ### 🚀 Features
