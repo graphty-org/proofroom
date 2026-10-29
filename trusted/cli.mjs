@@ -303,6 +303,26 @@ const lister = (command, root, exec) =>
     command ? async () => JSON.parse(await exec("sh", ["-c", command], { cwd: root })) : null;
 
 /**
+ * Where local previews of pull requests are: `--previews`, else the main checkout's (not this worktree's), where a
+ * preview script run from any worktree writes them.
+ * @param {string | undefined} given the --previews option
+ * @param {string} root the repository
+ * @param {string} workDir the config's workDir
+ * @returns {Promise<string>} the directory
+ */
+async function previewsDir(given, root, workDir) {
+    if (given) {
+        return resolve(given);
+    }
+    const { execFileSync } = await import("node:child_process");
+    const { dirname } = await import("node:path");
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root })
+        .toString("utf8")
+        .trim();
+    return join(dirname(common), workDir, "local");
+}
+
+/**
  * Why plain HTTP may not serve on this host: a host other machines reach needs HTTPS.
  * @param {boolean} https whether a certificate is set
  * @param {string} host the HOST to bind
@@ -354,13 +374,7 @@ async function serve(args) {
         return 1;
     }
     const tmp = join(root, config.workDir);
-    // The main checkout, not this worktree: a preview script run from any worktree writes there.
-    const { execFileSync } = await import("node:child_process");
-    const { dirname } = await import("node:path");
-    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root })
-        .toString("utf8")
-        .trim();
-    const previews = values.previews ? resolve(values.previews) : join(dirname(common), config.workDir, "local");
+    const previews = await previewsDir(values.previews, root, config.workDir);
     const token = sessionToken(join(tmp, "state"));
     const origin = serveOrigin(https, HOST, PORT);
     // Offline: a local results directory is a preview, so nothing is posted to GitHub.
