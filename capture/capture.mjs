@@ -15,7 +15,8 @@
  * no Chromium switch hides it, and whether an adapter request fails differs by host, so without
  * this a component with a CPU and a GPU path would draw whichever the machine offers.
  * Anything that differs from its baseline, or has none, is captured once more in a new context,
- * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs).
+ * so a real change, an unstable story and a one-off flake are told apart (see compare.mjs), unless it is
+ * byte for byte the reference's capture of a story the reference found changed too (needsSecondShot).
  *
  * The output directory gets results.json (rewritten after every item; `complete: true` only at
  * the end), the first capture of every changed, new and unstable item, `second/<file>` for the
@@ -118,6 +119,22 @@ export const storyIds = (index) =>
         .filter((e) => e.type === "story")
         .map((e) => e.id)
         .sort();
+
+/**
+ * The story ids `--stories` selects: an entry that is a whole story id selects that story alone, any other
+ * entry every id starting with it. CI passes whole ids, and as prefixes `labels-p-1` also captured
+ * `labels-p-10` to `labels-p-19`, which ran one graph-io-fidelity bin at 1.6 times its plan (#3448).
+ * @param {string[]} ids every story id
+ * @param {string[] | undefined} stories the entries, or none for every story
+ * @returns {string[]} the selected ids
+ */
+export const selectStoryIds = (ids, stories) => {
+    if (!stories) {
+        return ids;
+    }
+    const whole = new Set(stories.filter((p) => ids.includes(p)));
+    return ids.filter((id) => whole.has(id) || stories.some((p) => !whole.has(p) && id.startsWith(p)));
+};
 
 /**
  * The PNG name of a story and mode.
@@ -913,10 +930,13 @@ async function cpuModel() {
  * Only complete, valid results are used, and only `new` items (captured twice and stable) whose
  * file hashes to the capture results.json names.
  * @param {string | null} dir the earlier capture's directory, or null
- * @returns {Promise<{ images: Map<string, Buffer>, runId: number | null }>} images by file name
+ * @returns {Promise<{ images: Map<string, Buffer>, changed: Map<string, string>, runId: number | null }>} images by
+ *     file name, and the capture hash of each story it found changed
  */
 async function loadReference(dir) {
     const images = new Map();
+    // file -> capture hash of every story the reference found changed on both of its captures
+    const changed = new Map();
     let results = null;
     try {
         results = dir ? JSON.parse(await readFile(join(dir, "results.json"), "utf8")) : null;
@@ -924,7 +944,7 @@ async function loadReference(dir) {
         // No reference downloaded: every story without a baseline is new.
     }
     if (!results || validateResults(results).length > 0 || !results.complete) {
-        return { images, runId: null };
+        return { images, changed, runId: null };
     }
     // Both statuses mean "captured with no baseline, hash recorded". Reading only `new` made a story
     // alternate: a run that matched its reference says `unseeded`, so the next run found no image
@@ -935,7 +955,25 @@ async function loadReference(dir) {
             images.set(item.file, bytes);
         }
     }
-    return { images, runId: results.runId };
+    for (const item of results.items.filter((i) => i.status === "changed")) {
+        changed.set(item.file, item.capture);
+    }
+    return { images, changed, runId: results.runId };
+}
+
+/**
+ * Whether a capture is shot once more, to tell a real change from a one-off flake and an unstable story: a
+ * `new` one always, a `changed` one unless it is byte for byte the reference's capture of a story the reference
+ * also found changed. That story was then drawn the same way on two runs already (the default branch's and this
+ * one), so it is neither a flake nor unstable; on a pull request it is every story the default branch changed
+ * since its baselines were last approved, which would otherwise be shot twice in every pull request.
+ * @param {string} status the first capture's status
+ * @param {string} hash the first capture's sha256
+ * @param {string | undefined} referenceHash the reference's capture hash of a story it found changed
+ * @returns {boolean} whether to shoot again
+ */
+export function needsSecondShot(status, hash, referenceHash) {
+    return status === "new" || (status === "changed" && hash !== referenceHash);
 }
 
 /**
@@ -946,7 +984,7 @@ async function loadReference(dir) {
  *     absolute path of the fonts.conf every browser draws with (the config's `fontconfig`), null for
  *     the host's fonts; `waitFor` is the project's config entry (see
  *     shootOnce); `reference` is the default branch's capture (see above); `stories` keeps only
- *     the story ids starting with one of these prefixes, for a quick local preview, and then no
+ *     the stories selectStoryIds() picks (a whole id, or every id starting with a prefix), and then no
  *     baseline is reported removed
  * @returns {Promise<object>} the final results.json contents
  */
@@ -972,7 +1010,7 @@ export async function capture({
     await mkdir(join(out, "baselines"), { recursive: true });
     await mkdir(join(out, "second"), { recursive: true });
     const allIds = storyIds(JSON.parse(await readFile(join(storybook, "index.json"), "utf8")));
-    const ids = allIds.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+    const ids = selectStoryIds(allIds, stories);
     const renames = await loadRenames(baselines);
     const refs = await loadReference(reference);
     const [server, base] = await serve(storybook);
@@ -1125,7 +1163,7 @@ export async function capture({
             }
             let result = classify({ baseline, first: first.png, ...opts });
             let second = null;
-            if (result.status === "changed" || result.status === "new") {
+            if (needsSecondShot(result.status, sha256(first.png), refs.changed.get(job.file))) {
                 second = await shoot(browser, url, { delay, waitFor });
                 if (!second.png) {
                     return failed(second, "second capture: ");

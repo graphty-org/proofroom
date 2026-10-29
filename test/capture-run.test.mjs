@@ -13,7 +13,14 @@ import { chromium } from "playwright";
 
 /* global document, requestAnimationFrame -- read only inside the page */
 
-import { capture, CHROMIUM_ARGS, hasEmojiFont, MAX_SHOT_HEIGHT, screenshotWholePage } from "../capture/capture.mjs";
+import {
+    capture,
+    CHROMIUM_ARGS,
+    hasEmojiFont,
+    MAX_SHOT_HEIGHT,
+    needsSecondShot,
+    screenshotWholePage,
+} from "../capture/capture.mjs";
 
 import { tempDir } from "./helpers.mjs";
 
@@ -178,6 +185,41 @@ describe("capture", () => {
             stories: ["demo--plain"],
         });
         expect(tampered.items[0].status).toBe("new");
+    });
+
+    it("shoots a changed story once when it is byte for byte master's capture of a changed story", async () => {
+        expect(needsSecondShot("new", "a", "a")).toBe(true);
+        expect(needsSecondShot("changed", "a", undefined)).toBe(true);
+        expect(needsSecondShot("changed", "a", "b")).toBe(true);
+        expect(needsSecondShot("changed", "a", "a")).toBe(false);
+        expect(needsSecondShot("unchanged", "a", undefined)).toBe(false);
+
+        const sb = storybook();
+        const baselines = tempDir("vr-bl-");
+        const run = (out, extra) =>
+            capture({
+                project: "demo",
+                storybook: sb,
+                baselines,
+                out,
+                workers: 1,
+                waitFor: null,
+                log: () => {},
+                ...extra,
+            });
+        // demo--plain's baseline is demo--small's picture, so it is changed here and on master.
+        const small = tempDir("vr-out-");
+        await run(small, { stories: ["demo--small"] });
+        copyFileSync(join(small, "demo--small.png"), join(baselines, "demo--plain.png"));
+        const master = tempDir("vr-master-");
+        const masterResults = await run(master, { stories: ["demo--plain"] });
+        expect(masterResults.items[0].status).toBe("changed");
+        writeFileSync(join(master, "results.json"), JSON.stringify({ ...masterResults, runId: 77 }));
+
+        const pr = await run(tempDir("vr-out-"), { reference: master, stories: ["demo--plain"] });
+        expect(pr.items.map((i) => [i.file, i.status, i.capture])).toEqual([
+            ["demo--plain.png", "changed", masterResults.items[0].capture],
+        ]);
     });
 
     it("compares a renamed story with its old id's baseline and reports a broken rename", async () => {
