@@ -109,7 +109,7 @@ function pathSettings(out, fail) {
 }
 
 /**
- * The optional fontconfig file and update check command.
+ * The optional fontconfig file and shell commands.
  * @param {any} raw the parsed config
  * @param {any} out the settings being filled in
  * @param {(msg: string) => never} fail throws the config error
@@ -123,30 +123,22 @@ function commandSettings(raw, out, fail) {
         }
         out.fontconfig = raw.fontconfig;
     }
-    // The shell command `update` runs in the merged checkout before it pushes, when the merge
-    // changed anything outside the baselines. Null: no check.
-    if (raw.updateCheck !== undefined && raw.updateCheck !== null) {
-        if (typeof raw.updateCheck !== "string" || raw.updateCheck.trim() === "") {
-            fail("updateCheck must be a shell command");
+    // The shell commands, each null when absent:
+    // - updateCheck: `update` runs it in the merged checkout before it pushes, when the merge changed anything
+    //   outside the baselines.
+    // - candidates: `serve --candidate next` runs it in the repository to list the default branch's full runs:
+    //   JSON on stdout, `[{ commit, runId, waiting, at }]`.
+    // - rolling: `serve --candidate next` also runs it to list the default branch's rolling renders, newest render
+    //   commit first: JSON on stdout, `[{ commit, at, items: [{ project, id, mode, runId, attempt, artifact }],
+    //   pending: [{ project, id, mode, why }] }]`.
+    for (const key of ["updateCheck", "candidates", "rolling"]) {
+        const v = raw[key];
+        if (v !== undefined && v !== null) {
+            if (typeof v !== "string" || v.trim() === "") {
+                fail(`${key} must be a shell command`);
+            }
+            out[key] = v;
         }
-        out.updateCheck = raw.updateCheck;
-    }
-    // The shell command `serve --candidate next` runs in the repository to list the default
-    // branch's full runs: JSON on stdout, `[{ commit, runId, waiting, at }]`. Null: none.
-    if (raw.candidates !== undefined && raw.candidates !== null) {
-        if (typeof raw.candidates !== "string" || raw.candidates.trim() === "") {
-            fail("candidates must be a shell command");
-        }
-        out.candidates = raw.candidates;
-    }
-    // The shell command `serve --candidate next` also runs to list the default branch's rolling renders,
-    // newest render commit first: JSON on stdout, `[{ commit, at, items: [{ project, id, mode, runId, attempt,
-    // artifact }], pending: [{ project, id, mode, why }] }]`. Null: no rolling target.
-    if (raw.rolling !== undefined && raw.rolling !== null) {
-        if (typeof raw.rolling !== "string" || raw.rolling.trim() === "") {
-            fail("rolling must be a shell command");
-        }
-        out.rolling = raw.rolling;
     }
 }
 

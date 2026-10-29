@@ -292,6 +292,16 @@ function runOption(values) {
     return { next, masterRun: run === undefined ? undefined : Number(run) };
 }
 
+/**
+ * A config command's JSON list, run in the repository at every refresh; null when the config has none.
+ * @param {string | null} command the shell command
+ * @param {string} root the repository
+ * @param {Function} exec github.mjs exec
+ * @returns {(() => Promise<any>) | null} the lister
+ */
+const lister = (command, root, exec) =>
+    command ? async () => JSON.parse(await exec("sh", ["-c", command], { cwd: root })) : null;
+
 async function serve(args) {
     if (args.includes("--branch")) {
         console.error("visual-review serve: --branch is gone: a --results preview is look only and has no Finish");
@@ -357,11 +367,8 @@ async function serve(args) {
         token,
         origin,
         masterRun,
-        candidates: next ? async () => JSON.parse(await exec("sh", ["-c", config.candidates], { cwd: root })) : null,
-        rolling:
-            next && config.rolling
-                ? async () => JSON.parse(await exec("sh", ["-c", config.rolling], { cwd: root }))
-                : null,
+        candidates: next ? lister(config.candidates, root, exec) : null,
+        rolling: next ? lister(config.rolling, root, exec) : null,
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,

@@ -4900,6 +4900,15 @@ function statusWhy(f) {
     return ` (${parts.filter(Boolean).join("; ")})`;
 }
 
+// The branch a default-branch Finish pushes: a candidate's or a rolling render's is replaced by each Finish, which
+// keeps its open pull request; a seed's is dated.
+function seedBranch(t) {
+    if (!t.candidate) {
+        return `visual/seed-${new Date().toISOString().slice(0, 10)}`;
+    }
+    return `visual/approve-${t.rolling ? "rolling-" : ""}${t.candidate.commit.slice(0, 12)}`;
+}
+
 // What a Finish commits and posts, as the sheet's first lines.
 function commitAndPostLines(t, f) {
     const seed = t.pr === null;
@@ -4911,10 +4920,7 @@ function commitAndPostLines(t, f) {
     if (kinds.length === 0) {
         lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
     } else if (seed) {
-        const day = new Date().toISOString().slice(0, 10);
-        // A candidate's branch is replaced by each Finish, which keeps its open pull request.
-        const approve = `visual/approve-${t.rolling ? "rolling-" : ""}`;
-        const branch = t.candidate ? `${approve}${t.candidate.commit.slice(0, 12)}` : `visual/seed-${day}`;
+        const branch = seedBranch(t);
         lines.push(
             `Push ${branch} with ${kinds.join(" and ")} and open its pull request` +
                 `${f.acceptNotes > 0 ? `, with ${plural(f.acceptNotes, "accept note")} in its description` : ""}.`,

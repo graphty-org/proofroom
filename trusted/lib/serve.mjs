@@ -1450,25 +1450,24 @@ export function createApp({
         if (t.pendingPush) {
             return [409, { error: pendingPushText(t) }];
         }
-        return t.rolling ? rollingRefused(t) : null;
+        const busy = t.rolling ? rollingRefused(t) : "";
+        return busy ? [409, { error: busy }] : null;
     };
     /**
      * One approval in flight (design/visual-testing/early-capture.md, 4d): a rolling Finish waits while a candidate
      * is offered (its own Finish re-reviews these pictures) or another approval pull request is open, so the
      * default branch never ends up with a baselines tree nobody signed.
      * @param {object} t the rolling target
-     * @returns {[number, object] | null} the refusal, or null
+     * @returns {string} why its Finish waits, or "" when it may run
      */
     const rollingRefused = (t) => {
         const held = targets.get("master")?.candidate?.commit;
         if (held) {
-            return [409, { error: `a candidate is held (${held.slice(0, 10)}): review it instead` }];
+            return `a candidate is held (${held.slice(0, 10)}): review it instead`;
         }
         const own = `visual/approve-rolling-${t.rolling.commit.slice(0, 12)}`;
         const other = approvalPullRequests.find((p) => p.branch !== own);
-        return other
-            ? [409, { error: `approval pull request #${other.number} is open: one approval at a time` }]
-            : null;
+        return other ? `approval pull request #${other.number} is open: one approval at a time` : "";
     };
     const pendingPushText = (t) =>
         `pending push: these screenshots are of ${t.pendingPush.slice(0, 10)}, which the gate is still checking; ` +
@@ -1635,25 +1634,39 @@ export function createApp({
         if (!pick) {
             return null;
         }
-        const waiting = lastRolling.reduce((n, o) => n + o.pending.length, 0);
-        const info = {
-            id: "rolling",
-            pr: null,
-            title:
-                `${defaultBranch} rolling: rendered from ${pick.commit.slice(0, 10)} at ${new Date(pick.at).toISOString()}` +
-                (offers.length > 1 ? ` (${offers.length - 1} older render commits)` : ""),
-            url: null,
-            branch: null,
-            stateId: `rolling-${pick.commit}`,
-            // the commit its Finish approves at (accept.mjs treats it as a candidate's, on its own branch)
-            candidate: { commit: pick.commit, queued: [] },
-            rolling: { commit: pick.commit, at: pick.at, older: offers.length - 1, waiting },
-        };
+        const info = rollingInfo(
+            pick,
+            offers.length - 1,
+            lastRolling.reduce((n, o) => n + o.pending.length, 0),
+        );
         try {
             return await buildRolling(info, pick);
         } catch (err) {
             return keptOr(info, err);
         }
+    }
+
+    /**
+     * The rolling target's description, before its captures are loaded.
+     * @param {{ commit: string, at: number }} pick the render commit offered
+     * @param {number} older how many older render commits also have an item to decide
+     * @param {number} waiting how many renders wait for a re-render
+     * @returns {object} the target so far
+     */
+    function rollingInfo(pick, older, waiting) {
+        return {
+            id: "rolling",
+            pr: null,
+            title:
+                `${defaultBranch} rolling: rendered from ${pick.commit.slice(0, 10)} at ${new Date(pick.at).toISOString()}` +
+                (older > 0 ? ` (${older} older render commits)` : ""),
+            url: null,
+            branch: null,
+            stateId: `rolling-${pick.commit}`,
+            // the commit its Finish approves at (accept.mjs treats it as a candidate's, on its own branch)
+            candidate: { commit: pick.commit, queued: [] },
+            rolling: { commit: pick.commit, at: pick.at, older, waiting },
+        };
     }
 
     /**
@@ -1679,36 +1692,12 @@ export function createApp({
                 );
             }
         }
-        let newest = { runId: 0, attempt: 0 };
         const list = [];
         for (const name of names) {
-            const mine = offer.items.filter((i) => i.project === name);
-            if (mine.length === 0) {
-                list.push({ project: name, dir: null, results: null, problem: NOT_AFFECTED, logUrl: null });
-                continue;
-            }
-            const items = [];
-            let template = null;
-            let problem = null;
-            for (const i of mine) {
-                const src = await sources.get(`${i.runId}-${i.attempt}/${i.artifact}`);
-                const found = src.results?.items.find((x) => x.id === i.id && (x.mode ?? null) === i.mode);
-                if (!found || src.results.commit !== offer.commit) {
-                    problem ??=
-                        src.problem ?? `the render of ${i.id} is not in ${i.artifact} at ${offer.commit.slice(0, 10)}`;
-                    continue;
-                }
-                items.push({ ...found, render: `${i.runId}-${i.attempt}`, src: src.dir });
-                if (i.runId > newest.runId || (i.runId === newest.runId && i.attempt > newest.attempt)) {
-                    newest = { runId: i.runId, attempt: i.attempt };
-                }
-                template ??= src.results;
-            }
-            const p = template
-                ? await project(name, rollingCapture(offer.commit, name, template, items), problem)
-                : { project: name, dir: null, results: null, problem, logUrl: null };
-            list.push(p);
+            list.push(await rollingProject(name, offer, sources));
         }
+        const renders = offer.items.map((i) => [i.runId, i.attempt]).sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+        const newest = { runId: renders[0][0], attempt: renders[0][1] };
         return {
             ...info,
             runId: newest.runId,
@@ -1724,6 +1713,37 @@ export function createApp({
                       ]
                     : [],
         };
+    }
+
+    /**
+     * One project of the rolling target: its listed renders, put together from their artifacts.
+     * @param {string} name the project
+     * @param {{ commit: string, items: object[] }} offer the render commit and its items
+     * @param {Map<string, Promise<object>>} sources each artifact's loaded results, by `<run>-<attempt>/<artifact>`
+     * @returns {Promise<object>} the project's row
+     */
+    async function rollingProject(name, offer, sources) {
+        const mine = offer.items.filter((i) => i.project === name);
+        if (mine.length === 0) {
+            return { project: name, dir: null, results: null, problem: NOT_AFFECTED, logUrl: null };
+        }
+        const items = [];
+        let template = null;
+        let problem = null;
+        for (const i of mine) {
+            const src = await sources.get(`${i.runId}-${i.attempt}/${i.artifact}`);
+            const found = src.results?.items.find((x) => x.id === i.id && (x.mode ?? null) === i.mode);
+            if (found && src.results.commit === offer.commit) {
+                items.push({ ...found, render: `${i.runId}-${i.attempt}`, src: src.dir });
+                template ??= src.results;
+            } else {
+                problem ??=
+                    src.problem ?? `the render of ${i.id} is not in ${i.artifact} at ${offer.commit.slice(0, 10)}`;
+            }
+        }
+        return template
+            ? project(name, rollingCapture(offer.commit, name, template, items), problem)
+            : { project: name, dir: null, results: null, problem, logUrl: null };
     }
 
     /**
