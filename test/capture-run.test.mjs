@@ -371,6 +371,25 @@ describe("capture", () => {
         }
     });
 
+    it("renders the whole page at the capture scale, not only while a screenshot is taken", async () => {
+        expect(CHROMIUM_ARGS).toContain("--force-device-scale-factor=2");
+        // No deviceScaleFactor on the context: the browser itself must render at 2x, so its layers
+        // are never rasterized at 1x between shots (#4374).
+        const browser = await chromium.launch({ args: CHROMIUM_ARGS });
+        try {
+            // viewport: null, so Playwright emulates no scale: what is measured is the browser's own.
+            const page = await browser.newPage({ viewport: null });
+            await page.setContent('<body style="margin:0"><div style="height:100px"></div></body>');
+            // A screenshot before the page's first frame fails in Chromium.
+            await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+            expect(await page.evaluate(() => globalThis.devicePixelRatio)).toBe(2);
+            const shot = PNG.sync.read(await page.screenshot({ clip: { x: 0, y: 0, width: 100, height: 100 } }));
+            expect([shot.width, shot.height]).toEqual([200, 200]);
+        } finally {
+            await browser.close();
+        }
+    });
+
     it("fails with a clear message when a baseline is a Git LFS pointer", async () => {
         const baselines = tempDir("vr-bl-");
         writeFileSync(
@@ -448,7 +467,8 @@ describe("screenshotWholePage", () => {
     it("keeps the page's loaded height within the limit: text is not laid out again", async () => {
         // Chromium's capture beyond the viewport laid text out again: 11px monospace with
         // line-height: normal went from 21 CSS px a row to 20 (#1982). Tiles never capture beyond
-        // the viewport, so these 150 rows stay 3,160 CSS px and the image ends on the red block.
+        // the viewport, so these 150 rows keep their loaded 20.5 CSS px (laid out at the forced 2x),
+        // 3,085 CSS px in all, and the image ends on the red block.
         const rows = Array.from(
             { length: 150 },
             (_, i) => `<div style="padding:4px 6px;font:11px monospace">${i}</div>`,
@@ -457,7 +477,7 @@ describe("screenshotWholePage", () => {
         await withPage(html, async (page) => {
             const png = PNG.sync.read(await screenshotWholePage(page));
             const height = await page.evaluate(() => document.documentElement.scrollHeight);
-            expect(height).toBe(150 * 21 + 10);
+            expect(height).toBe(150 * 20.5 + 10);
             expect([png.width, png.height]).toEqual([200, height * 2]);
             expect(redAt(png, png.height - 1)).toBe(200);
             expect(redAt(png, png.height - 20)).toBe(200);
@@ -465,15 +485,19 @@ describe("screenshotWholePage", () => {
         });
     });
 
-    it("keeps the page's loaded height beyond the limit: the label stays 21 px", async () => {
-        // The label is 21 CSS px on load and stays so (#1976, #1982): the page is 4,221 CSS px.
+    it("keeps the page's loaded height beyond the limit: the label stays 20.5 px", async () => {
+        // The label is 20.5 CSS px on load at the forced 2x and stays so (#1976, #1982): the page is
+        // 4,220.5 CSS px, 8,441 device rows, in an image of the measured 4,221 CSS px.
+        // ponytail: the window scrolls only to whole CSS px (scrollHeight 4,220), so the page's last
+        // device row is never on screen and stays transparent, as rows the frame never scrolls to do.
         const label = `<div style="padding:4px 6px;font:600 11px ui-monospace, monospace">ak</div>`;
         await withPage(`<!doctype html>${bands(42).replace('<body style="margin:0">', `$&${label}`)}`, async (page) => {
             const png = PNG.sync.read(await screenshotWholePage(page));
             expect([png.width, png.height]).toEqual([200, 8442]);
-            // The label 21 px tall, the bands below it, and the last band down to the last row.
+            // The label 41 device rows tall, the bands below it, and the last band down to the last
+            // row the window scrolls to.
             expect(redAt(png, 42)).toBe(0);
-            expect(redAt(png, 8441)).toBe(41 * 5);
+            expect(redAt(png, 8439)).toBe(41 * 5);
         });
     });
 

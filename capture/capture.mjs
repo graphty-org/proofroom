@@ -64,6 +64,7 @@ const RENDER_TIMEOUT = 30_000;
  * shapes on the CPU: rasterized through SwiftShader, a glyph that sits on a sub-pixel boundary
  * landed on either side of it from one render to the next, so a story with nothing moving read
  * `unstable` (the README, "Why captures rasterize on the CPU"). WebGL still runs on SwiftShader.
+ * `--force-device-scale-factor` keeps every layer rasterized at SCALE between screenshots.
  */
 export const CHROMIUM_ARGS = [
     "--use-gl=angle",
@@ -73,6 +74,10 @@ export const CHROMIUM_ARGS = [
     "--force-color-profile=srgb",
     "--disable-lcd-text",
     "--font-render-hinting=none",
+    // The page renders at SCALE all the time, not only while a screenshot is taken: with the scale
+    // only emulated, every layer is rasterized at 1x between shots and again at 2x for each shot,
+    // and on a loaded machine a shot could copy the stale 1x tiles (blurred overlays, #4374).
+    `--force-device-scale-factor=${String(SCALE)}`,
 ];
 /**
  * The environment every capture browser launches with: this process's, then `extra`, in UTC, and
@@ -667,7 +672,10 @@ async function stitchAsChromium(page, tiles, size) {
         const out = new PNG({ width: size.width * SCALE, height: size.height * SCALE });
         for (const t of tiles) {
             const tile = PNG.sync.read(t.png);
-            PNG.bitblt(tile, out, 0, 0, t.width * SCALE, t.height * SCALE, t.left * SCALE, t.top * SCALE);
+            // A tile can be a device row short of its CSS size: at a forced 2x a scroll lands on a half
+            // pixel, so its clip starts there and Chromium rounds the copy down.
+            const [w, h] = [Math.min(tile.width, t.width * SCALE), Math.min(tile.height, t.height * SCALE)];
+            PNG.bitblt(tile, out, 0, 0, w, h, t.left * SCALE, t.top * SCALE);
         }
         return PNG.sync.write(out, { filterType: 4 });
     }
