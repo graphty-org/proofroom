@@ -117,19 +117,29 @@ export function layoutFor({ level, count, width, open, holds, remembered = null,
 
 /**
  * Showing or hiding one pane: hiding never moves the other; showing one that would break the
- * floor turns the other into its rail.
+ * floor turns the other into its rail. Pressed again, a press that moved the other pane takes back
+ * exactly what it did: the pane hides and the other comes back out of its rail.
  * @param {[boolean, boolean]} shown the panes now
  * @param {"changes" | "snaps"} id the pane pressed
  * @param {{ width: number, open: boolean, holds: boolean }} at the window and viewer
- * @returns {{ shown: [boolean, boolean], moved: boolean }} the panes after, and whether the other
- *     pane moved to its rail
+ * @param {{ id: string, from: [boolean, boolean], to: [boolean, boolean] } | null} [last] the
+ *     last press that moved the other pane, as this returned it
+ * @returns {{ shown: [boolean, boolean], moved: boolean, restored: boolean,
+ *     last: { id: string, from: [boolean, boolean], to: [boolean, boolean] } | null }} the panes
+ *     after, whether the other pane moved to its rail or came back from it, and what to keep for
+ *     the next press
  */
-export function togglePane(shown, id, at) {
-    const i = (at.ids ?? PANES.review).indexOf(id);
+export function togglePane(shown, id, at, last = null) {
+    const ids = at.ids ?? PANES.review;
+    const i = ids.indexOf(id);
+    if (last?.id === id && shown[0] === last.to[0] && shown[1] === last.to[1]) {
+        return { shown: keepFloor(last.from, { ...at, prefer: ids[1 - i] }), moved: false, restored: true, last: null };
+    }
     const next = /** @type {[boolean, boolean]} */ ([...shown]);
     next[i] = !next[i];
     const after = next[i] ? keepFloor(next, { ...at, prefer: id }) : next;
-    return { shown: after, moved: shown[1 - i] && !after[1 - i] };
+    const moved = shown[1 - i] && !after[1 - i];
+    return { shown: after, moved, restored: false, last: moved ? { id, from: shown, to: after } : null };
 }
 
 /**

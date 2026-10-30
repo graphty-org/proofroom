@@ -171,9 +171,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Shift+Digit1");
             await expect.poll(rails).toEqual([false, true]);
             expect(await message(page)).toBe("Changes shown. Snapshots moved to its rail so the viewer keeps 800 px.");
+            // Pressed again, Shift+1 takes back what it did: Snapshots comes out of its rail.
             await page.keyboard.press("Shift+Digit1");
-            await expect.poll(rails).toEqual([true, true]);
-            expect(await message(page)).toBe("Changes hidden: its rail or Shift+1 brings it back.");
+            await expect.poll(rails).toEqual([true, false]);
+            expect(await message(page)).toBe(
+                "Changes hidden: its rail or Shift+1 brings it back. Snapshots shown again.",
+            );
             await page.keyboard.press("Escape");
             await expect.poll(() => message(page)).toBe("Back to the list.");
             await page.keyboard.press("Escape");
@@ -242,7 +245,14 @@ for (const [name, type] of Object.entries(BROWSERS)) {
 
         it("hides letter key hints and ignores those keys while letter keys are off", async () => {
             const page = await open({ storage: { "proofroom:letter-keys": "off" } });
-            await expect.poll(() => visibleKeys(page)).toEqual([{ act: "openchg", key: "Enter" }]);
+            await expect
+                .poll(() => visibleKeys(page))
+                .toEqual([
+                    // Previous [Up] and Next [Down]: arrows, so their boxes stay.
+                    { act: "rowup", key: "Up" },
+                    { act: "rowdown", key: "Down" },
+                    { act: "openchg", key: "Enter" },
+                ]);
             expect(await page.locator("#chg-find").getAttribute("placeholder")).toBe(
                 "Find a change: number, title, branch, author",
             );

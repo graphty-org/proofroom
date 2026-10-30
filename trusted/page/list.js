@@ -10,7 +10,7 @@
  * The model (`snapsOf`, `layoutOf`, `pictureKind`) is pure; the rest builds the pane from it.
  */
 
-import { control } from "./actions.js";
+import { control, rowButtons } from "./actions.js";
 import { filterOf, jumpOf } from "./find.js";
 import { wordsOf } from "./messages.js";
 import {
@@ -731,7 +731,11 @@ export function drawHead(app, h1) {
     while (h4.childNodes.length > 1) {
         h4.lastChild.remove();
     }
-    h4.append(small && shownN ? el("span", { class: "small muted num" }, shownN) : "", clear);
+    h4.append(
+        small && shownN ? el("span", { class: "small muted num" }, shownN) : "",
+        clear,
+        ...rowButtons(app, "snaps", "snaps-head"),
+    );
     h4.classList.add("findwrap");
     // Line 5: the controls, their labels shortened (never cut) when the line would wrap.
     const show = SHOW_LABEL[lv.show];

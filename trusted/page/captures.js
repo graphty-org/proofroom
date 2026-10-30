@@ -9,7 +9,7 @@
  * only once the job ends, so there is no story progress or log tail for it here.
  */
 
-import { control } from "./actions.js";
+import { control, rowButtons } from "./actions.js";
 import { wordsOf } from "./messages.js";
 import { ADAPTER_NAMES } from "./settings.js";
 import { el, fmt, ic } from "./ui.js";
@@ -132,6 +132,7 @@ export function drawCaptures(app) {
     document
         .getElementById("cap-new")
         .replaceChildren(control(app, "newcap", { zone: "changes-head", attrs: { class: "primary" } }));
+    document.getElementById("cap-rows-nav").replaceChildren(...rowButtons(app, "captures", "changes-head"));
     const rows = [];
     for (const name of SECTIONS) {
         const these = all.filter((c) => sectionOf(c, now) === name);

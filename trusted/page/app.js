@@ -11,7 +11,7 @@
  * (captures.js) and the New capture sheet (new-capture.js) start and follow captures on this machine.
  */
 
-import { ACTIONS, control, runAction, syncAvailability } from "./actions.js";
+import { ACTIONS, control, rowButtons, runAction, syncAvailability } from "./actions.js";
 import { formatAddress, parseAddress, snapParts } from "./address.js";
 import {
     api,
@@ -250,6 +250,7 @@ function drawChangesPane() {
     );
     $("hide-c").replaceChildren(control(app, "pane1", { zone: "changes-head" }));
     $("chg-next").replaceChildren(control(app, "nextchange", { zone: "changes-head", attrs: { id: "chg-next-btn" } }));
+    $("chg-rows").replaceChildren(...rowButtons(app, "changes", "changes-head"));
     $("chg-sort").replaceChildren(control(app, "chgsort", { zone: "changes-head", attrs: { class: "small" } }));
     drawChanges(app);
 }
@@ -463,6 +464,7 @@ function draw() {
         drawMsgButton();
     }
     refocus(focus);
+    document.body.dataset.rows = rowsPane();
     settle();
 }
 
@@ -555,7 +557,11 @@ app.writeAddress = writeAddress;
 
 // ---------------------------------------------------------------- panes and levels
 
+// The last pane press that moved the other pane to its rail, which the same press again takes back.
+let paneLast = null;
+
 function layout(prefer) {
+    paneLast = null;
     const c = app.open();
     const count = app.snaps.length;
     const shown = layoutFor({
@@ -571,7 +577,8 @@ function layout(prefer) {
 app.togglePane = (id) => {
     const count = app.snaps.length;
     const before = shownNow();
-    const { shown, moved } = togglePane(before, id, app.at());
+    const { shown, moved, restored, last } = togglePane(before, id, app.at(), paneLast);
+    paneLast = last;
     applyPanes(shown, app.at());
     remember(app.level, count, shown);
     const name = id === "changes" ? "Changes" : "Snapshots";
@@ -580,7 +587,7 @@ app.togglePane = (id) => {
     say(
         shown[i]
             ? `${name} shown.${moved ? ` ${other} moved to its rail so the viewer keeps 800 px.` : ""}`
-            : `${name} hidden: its rail or ${id === "changes" ? "Shift+1" : "Shift+2"} brings it back.`,
+            : `${name} hidden: its rail or ${id === "changes" ? "Shift+1" : "Shift+2"} brings it back.${restored ? ` ${other} shown again.` : ""}`,
     );
     draw();
 };
@@ -821,8 +828,15 @@ app.copyLink = async (id) => {
     }
 };
 
-// Up and Down: in the changes, the current row; in the snapshot rows, the current snapshot.
-app.arrow = (d) => {
+// The list Up and Down move: the changes at the changes level or while the reader is in them,
+// else the snapshot rows.
+function rowsPane() {
+    return app.focusPane === "changes" || app.level === 0 ? "changes" : "snaps";
+}
+
+// Up and Down, and Previous [Up] and Next [Down]: in the changes, the current row; in the snapshot
+// rows, the current snapshot. A pane's own buttons name it; the keys go to `rowsPane()`.
+app.arrow = (d, pane = rowsPane()) => {
     if (app.screen === "baselines") {
         return app.baselines.arrow(d);
     }
@@ -835,7 +849,7 @@ app.arrow = (d) => {
         }
         return next !== undefined;
     }
-    if (app.focusPane === "changes" || app.level === 0) {
+    if (pane === "changes") {
         const order = walkOrder(app);
         if (order.length === 0) {
             return false;
@@ -1756,6 +1770,7 @@ document.addEventListener("focusin", (e) => {
         app.focusPane = "baselines";
     }
     document.body.dataset.pane = app.focusPane;
+    document.body.dataset.rows = rowsPane();
     syncHints();
 });
 document.addEventListener("focusout", () => queueMicrotask(syncHints));

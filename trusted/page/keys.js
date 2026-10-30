@@ -113,8 +113,10 @@ function menuKeys() {
 const inFocusedPane = (node) =>
     node.dataset.find !== undefined &&
     node.closest(".pane")?.id === (document.body.dataset.pane === "changes" ? "changes" : "snaps");
+// Previous [Up] and Next [Down] are in each list's pane: the keys go to the list the page names in
+// body's data-rows, so its pair outranks the other pane's.
 const rank = (node) => {
-    if (inFocusedPane(node)) {
+    if (inFocusedPane(node) || (node.dataset.rows !== undefined && node.dataset.rows === document.body.dataset.rows)) {
         return -1;
     }
     const i = ZONES.indexOf(node.dataset.zone);
@@ -251,7 +253,7 @@ export function startKeys(app) {
                     e.preventDefault();
                     runAction(app, e.key === "ArrowUp" ? "extendup" : "extenddown", {}, "key");
                 }
-            } else if (app.arrow(e.key === "ArrowUp" ? -1 : 1)) {
+            } else if (runAction(app, e.key === "ArrowUp" ? "rowup" : "rowdown", {}, "key")) {
                 e.preventDefault();
             }
             return;

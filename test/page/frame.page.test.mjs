@@ -169,7 +169,14 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await expect.poll(() => sheetKey("J").isVisible()).toBe(false);
                 expect(await sheetKey("Left").isVisible()).toBe(true);
                 await closeBox(page);
-                await expect.poll(() => visibleKeys(page)).toEqual([{ act: "openchg", key: "Enter" }]);
+                await expect
+                    .poll(() => visibleKeys(page))
+                    .toEqual([
+                        // Previous [Up] and Next [Down]: arrows, so their boxes stay.
+                        { act: "rowup", key: "Up" },
+                        { act: "rowdown", key: "Down" },
+                        { act: "openchg", key: "Enter" },
+                    ]);
                 const from = t.actions.length;
                 await page.locator("#chg-list").focus();
                 for (const k of ["Shift+KeyN", "Slash", "Shift+Slash", "Shift+Digit1"]) {

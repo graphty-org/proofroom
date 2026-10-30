@@ -10,7 +10,7 @@
  * reach this screen's viewer and panes, never Review's.
  */
 
-import { control, runAction } from "./actions.js";
+import { control, rowButtons, runAction } from "./actions.js";
 import { api } from "./api.js";
 import { componentOf, storyOf } from "./groups.js";
 import { syncHints } from "./keys.js";
@@ -155,18 +155,21 @@ export function installBaselines(app) {
     // ------------------------------------------------------------ the panes
 
     const at = () => ({ width: innerWidth, open: true, holds: true, ids: IDS });
+    let paneLast = null; // the last pane press that moved the other pane, which the same press takes back
     function layout() {
+        paneLast = null;
         const want = remembered(0, 1, "baselines") ?? [true, true];
         applyPanes(keepFloor(want, { ...at(), prefer: want[1] ? IDS[1] : IDS[0] }), at());
     }
     function toggle(i) {
-        const { shown, moved } = togglePane(shownNow(IDS), IDS[i], at());
+        const { shown, moved, restored, last } = togglePane(shownNow(IDS), IDS[i], at(), paneLast);
+        paneLast = last;
         applyPanes(shown, at());
         remember(0, 1, shown, "baselines");
         app.say(
             shown[i]
                 ? `${NAMES[i]} shown.${moved ? ` ${NAMES[1 - i]} moved to its rail so the viewer keeps 800 px.` : ""}`
-                : `${NAMES[i]} hidden: its rail or Shift+${i + 1} brings it back.`,
+                : `${NAMES[i]} hidden: its rail or Shift+${i + 1} brings it back.${restored ? ` ${NAMES[1 - i]} shown again.` : ""}`,
         );
         draw();
     }
@@ -250,6 +253,7 @@ export function installBaselines(app) {
         fill(
             $("bl-ctrl"),
             control(host, "blgroupmenu", { zone: "snaps-head" }),
+            ...rowButtons(host, "baselines", "snaps-head"),
             missing.length > 0
                 ? control(host, "bldl", {
                       zone: "snaps-head",

@@ -6,7 +6,7 @@
 export const MAP = [
     ["Left / J", "Previous snapshot", ["prev"]],
     ["Right / K", "Next snapshot", ["next"]],
-    ["Up / Down", "Move the current row (in the list: Previous / Next)", []],
+    ["Up / Down", "Move the current row (in the list: Previous / Next)", ["rowup", "rowdown"]],
     ["Shift+Up / Shift+Down", "Extend the selection", ["extendup", "extenddown"]],
     [
         "Enter",

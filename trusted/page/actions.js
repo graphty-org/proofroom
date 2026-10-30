@@ -50,7 +50,7 @@ export const OFFLINE_WHY = "Offline: decisions cannot be saved";
  * The actions, by id.
  * @type {Record<string, { label: string | ((app: any, ctx: any) => string), key?: string,
  *     title?: string | ((app: any, ctx: any) => string), writes?: boolean,
- *     run: (app: any, ctx: any) => void, available?: (app: any, ctx: any) => true | string }>}
+ *     run: (app: any, ctx: any) => void | boolean, available?: (app: any, ctx: any) => true | string }>}
  */
 export const ACTIONS = {
     // The top bar.
@@ -145,6 +145,20 @@ export const ACTIONS = {
         title: "Opens the next change that needs you",
         run: (app) => app.nextChange(),
         available: (app) => (app.changes.length > 0 ? true : NO_CHANGES),
+    },
+    // Up and Down: the current row of a list (Changes, Snapshots, Baselines, Captures). A button
+    // moves its own pane's list (`ctx.pane`); the key moves the list the reader is in.
+    rowup: {
+        label: "Previous",
+        key: "Up",
+        title: "Previous row (Up)",
+        run: (app, ctx) => app.arrow(-1, ctx.pane),
+    },
+    rowdown: {
+        label: "Next",
+        key: "Down",
+        title: "Next row (Down)",
+        run: (app, ctx) => app.arrow(1, ctx.pane),
     },
     chgsort: {
         label: (app) => `Sort: ${app.sortLabel()}`,
@@ -613,6 +627,7 @@ export function labelOf(app, id, ctx = {}) {
  * @param {string} id the action
  * @param {any} ctx the control's context
  * @param {"pointer" | "key"} via how it was pressed
+ * @returns {void | boolean} what the handler answered (Up and Down: whether a row moved)
  */
 export function runAction(app, id, ctx, via) {
     app.logUsage("action", { a: id, via });
@@ -625,7 +640,7 @@ export function runAction(app, id, ctx, via) {
         app.say(`${labelOf(app, id, ctx)}: ${ok}${String(ok).endsWith(".") ? "" : "."}`);
         return;
     }
-    ACTIONS[id].run(app, ctx);
+    return ACTIONS[id].run(app, ctx);
 }
 
 // Each control's context, for the key handler: the change or snapshot it stands for.
@@ -707,3 +722,25 @@ export function control(
     });
     return node;
 }
+
+/**
+ * Previous [Up] and Next [Down] for a list's pane: the buttons of the keys that move its current row.
+ * Their word is in its own span: the pane headers have no room for it beside their other controls,
+ * so a pair shows only its key boxes while it has them (page.css), and its words while the other
+ * pane's pair has the boxes; the word stays the accessible name.
+ * @param {any} app the page (or the screen standing in for it)
+ * @param {string} pane the list's pane ("changes", "snaps"), which the buttons move whatever the
+ *     reader is in, and whose pair carries the key boxes while the keys move that list
+ * @param {string} zone the zone of the pane's header
+ * @returns {HTMLElement[]} the two buttons
+ */
+export const rowButtons = (app, pane, zone) =>
+    ["rowup", "rowdown"].map((id) => {
+        const word = labelOf(app, id);
+        return control(app, id, {
+            zone,
+            ctx: { pane },
+            attrs: { "data-rows": pane, "aria-label": word },
+            children: [el("span", { class: "rl" }, word), kb(ACTIONS[id].key)],
+        });
+    });
