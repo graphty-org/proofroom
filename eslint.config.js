@@ -42,6 +42,11 @@ export default [
         files: ["trusted/page/**/*.js"],
         languageOptions: { globals: { ...globals.browser } },
     },
+    // The acceptance test runs in Node and hands functions to the page it drives.
+    {
+        files: ["scripts/uat.mjs"],
+        languageOptions: { globals: { ...globals.browser, ...globals.node } },
+    },
     // Tests wait on conditions and assert on counted work, never on the clock
     // (eslint-rules/no-test-timing.mjs has the rule and its reasons).
     // test/fixtures/ holds copies of earlier versions' own code, which waits as the product does.

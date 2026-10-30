@@ -280,6 +280,42 @@ describe("serve: images and pictures by their content", () => {
         }
     });
 
+    it("drops only the damaged copy's capture and serves the image from another change's good copy", async () => {
+        // Two pull requests whose captures hold the same image.
+        const other = "4".repeat(40);
+        const s = await start({
+            ghOf: (r) =>
+                onePr({
+                    prs: [
+                        { number: 123, head: r.head, branch: "feature" },
+                        { number: 124, head: other, branch: "other" },
+                    ],
+                    runs: { [r.head]: { id: 1000, head: r.head }, [other]: { id: 1001, head: other } },
+                    jobs: { 1000: [job("compact-mantine")], 1001: [job("compact-mantine")] },
+                    artifacts: { 1000: ["visual-compact-mantine-1"], 1001: ["visual-compact-mantine-1"] },
+                    results: { "visual-compact-mantine-1": { commit: r.head, headSha: r.head } },
+                })(r),
+        });
+        const token = { "x-review-token": TOKEN };
+        expect((await s.get("/api/pr/124/compact-mantine", token)).status).toBe(200);
+        await s.app.idle();
+        const fileIn = (d) => join(s.tmp, d, "compact-mantine", BUTTON.file);
+        const resultsIn = (d) => join(s.tmp, d, "compact-mantine/results.json");
+        // The copy the server reads first is the one whose missing file it answers 404 for.
+        const good = readFileSync(fileIn("1000-1"));
+        rmSync(fileIn("1000-1"));
+        const first = (await s.get(`/api/blob/${BUTTON.capture}`, token)).status === 404 ? "1000-1" : "1001-1";
+        writeFileSync(fileIn("1000-1"), good);
+        const second = first === "1000-1" ? "1001-1" : "1000-1";
+        writeFileSync(fileIn(first), "tampered");
+        const res = await s.get(`/api/blob/${BUTTON.capture}`, token);
+        expect(res.status).toBe(200);
+        expect(sha256(Buffer.from(await res.arrayBuffer()))).toBe(BUTTON.capture);
+        // Only the damaged copy's capture is dropped, to download again on the next reload.
+        expect(existsSync(resultsIn(first))).toBe(false);
+        expect(existsSync(resultsIn(second))).toBe(true);
+    });
+
     it("forgets the images a local preview named once it is captured again in the same directory", async () => {
         const r = makeRepo();
         const previews = join(r.dir, "previews");

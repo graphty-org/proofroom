@@ -3702,7 +3702,15 @@ export function createApp({
         return (item.pictures && (await madeByRun(item, (b ?? a).dir, kind))) ?? thumbOf(b ?? a, true);
     }
 
-    async function readImage({ path, hash, file, dir, git }) {
+    /**
+     * An image's bytes from one capture directory, checked against its hash.
+     * @param {{ path: string, hash: string, file: string, dir: string, git?: string[] }} where the image
+     * @param {Set<string>} [tried] the directories already read for this hash
+     * @returns {Promise<Array<any>>} the answer: the PNG, or why not
+     */
+    async function readImage(where, tried = new Set()) {
+        const { path, hash, file, dir, git } = where;
+        tried.add(dir);
         if (evictedAt(dir)) {
             return [410, { error: `${file}: ${EVICTED_TEXT}` }];
         }
@@ -3739,6 +3747,16 @@ export function createApp({
             // and the next reload downloads it again.
             console.error(`proofroom: ${path} does not match results.json: downloading it again on the next reload`);
             rmSync(join(dir, "results.json"), { force: true });
+            // Another capture that names the same hash may hold a good copy: serve that one, newest
+            // first, so one damaged download never blanks a different change's view.
+            for (const other of [...(blobs.get(hash)?.values() ?? [])].reverse()) {
+                if (!tried.has(other.dir)) {
+                    const answer = await readImage(other, tried);
+                    if (answer[0] === 200) {
+                        return answer;
+                    }
+                }
+            }
             return [409, { error: `${file}: the downloaded copy is damaged; reload the page to download it again` }];
         }
         return [200, bytes, "image/png"];
