@@ -107,14 +107,37 @@ describe("the 800 px floor", () => {
 
     it("showing a pane that would break it turns the other into its rail", () => {
         const at = { width: 1440, open: true, holds: true };
-        expect(togglePane([false, true], "changes", at)).toEqual({ shown: [true, false], moved: true });
-        expect(togglePane([true, false], "snaps", at)).toEqual({ shown: [false, true], moved: true });
-        expect(togglePane([true, true], "snaps", { width: 1600, open: true, holds: true })).toEqual({
+        expect(togglePane([false, true], "changes", at)).toMatchObject({ shown: [true, false], moved: true });
+        expect(togglePane([true, false], "snaps", at)).toMatchObject({ shown: [false, true], moved: true });
+        expect(togglePane([true, true], "snaps", { width: 1600, open: true, holds: true })).toMatchObject({
             shown: [true, false],
             moved: false,
         });
         // Hiding never moves the other.
-        expect(togglePane([false, true], "snaps", at)).toEqual({ shown: [false, false], moved: false });
+        expect(togglePane([false, true], "snaps", at)).toMatchObject({ shown: [false, false], moved: false });
+    });
+
+    it("takes back a press that moved the other pane when the same pane is pressed again", () => {
+        const at = { width: 1440, open: true, holds: true };
+        for (const [shown, id] of /** @type {[[boolean, boolean], "changes" | "snaps"][]} */ ([
+            [[false, true], "changes"],
+            [[true, false], "snaps"],
+        ])) {
+            const once = togglePane(shown, id, at, null);
+            expect(once.moved).toBe(true);
+            const twice = togglePane(once.shown, id, at, once.last);
+            expect(twice).toMatchObject({ shown, restored: true, last: null });
+            expect(viewerWidth(twice.shown, 1440, true)).toBeGreaterThanOrEqual(800);
+        }
+        // A press that moved nothing keeps nothing: hiding stays a plain hide.
+        const plain = togglePane([false, true], "changes", { width: 1600, open: true, holds: true }, null);
+        expect(plain.last).toBeNull();
+        // Kept from a layout the panes have since left, it takes nothing back.
+        const once = togglePane([false, true], "changes", at, null);
+        expect(togglePane([false, false], "changes", at, once.last)).toMatchObject({
+            shown: [true, false],
+            restored: false,
+        });
     });
 });
 

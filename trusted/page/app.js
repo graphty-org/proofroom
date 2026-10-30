@@ -555,7 +555,11 @@ app.writeAddress = writeAddress;
 
 // ---------------------------------------------------------------- panes and levels
 
+// The last pane press that moved the other pane to its rail, which the same press again takes back.
+let paneLast = null;
+
 function layout(prefer) {
+    paneLast = null;
     const c = app.open();
     const count = app.snaps.length;
     const shown = layoutFor({
@@ -571,7 +575,8 @@ function layout(prefer) {
 app.togglePane = (id) => {
     const count = app.snaps.length;
     const before = shownNow();
-    const { shown, moved } = togglePane(before, id, app.at());
+    const { shown, moved, restored, last } = togglePane(before, id, app.at(), paneLast);
+    paneLast = last;
     applyPanes(shown, app.at());
     remember(app.level, count, shown);
     const name = id === "changes" ? "Changes" : "Snapshots";
@@ -580,7 +585,7 @@ app.togglePane = (id) => {
     say(
         shown[i]
             ? `${name} shown.${moved ? ` ${other} moved to its rail so the viewer keeps 800 px.` : ""}`
-            : `${name} hidden: its rail or ${id === "changes" ? "Shift+1" : "Shift+2"} brings it back.`,
+            : `${name} hidden: its rail or ${id === "changes" ? "Shift+1" : "Shift+2"} brings it back.${restored ? ` ${other} shown again.` : ""}`,
     );
     draw();
 };

@@ -171,9 +171,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Shift+Digit1");
             await expect.poll(rails).toEqual([false, true]);
             expect(await message(page)).toBe("Changes shown. Snapshots moved to its rail so the viewer keeps 800 px.");
+            // Pressed again, Shift+1 takes back what it did: Snapshots comes out of its rail.
             await page.keyboard.press("Shift+Digit1");
-            await expect.poll(rails).toEqual([true, true]);
-            expect(await message(page)).toBe("Changes hidden: its rail or Shift+1 brings it back.");
+            await expect.poll(rails).toEqual([true, false]);
+            expect(await message(page)).toBe(
+                "Changes hidden: its rail or Shift+1 brings it back. Snapshots shown again.",
+            );
             await page.keyboard.press("Escape");
             await expect.poll(() => message(page)).toBe("Back to the list.");
             await page.keyboard.press("Escape");
