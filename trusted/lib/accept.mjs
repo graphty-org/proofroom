@@ -201,7 +201,7 @@ const candidateBranch = (candidate, rolling = false) =>
     `visual/approve-${rolling ? "rolling-" : ""}${candidate.slice(0, 12)}`;
 
 /** The branches rolling approvals go to. */
-export const ROLLING_BRANCH_PREFIX = "visual/approve-rolling-";
+const ROLLING_BRANCH_PREFIX = "visual/approve-rolling-";
 
 /**
  * Refuses an accept commit for a candidate that changes anything outside the baselines and
@@ -603,7 +603,7 @@ export async function closeCandidatePullRequest(gh, target) {
  * @param {Function} gh the gh runner
  * @returns {Promise<{ closedRolling?: string[], closeRollingError?: string }>} the pull requests closed, or why not
  */
-export async function closeRollingPullRequests(gh) {
+async function closeRollingPullRequests(gh) {
     const closed = [];
     try {
         const list = JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls?state=open&per_page=100"]));
