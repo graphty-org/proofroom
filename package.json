@@ -44,7 +44,8 @@
         "test:watch": "vitest",
         "coverage": "vitest run --coverage",
         "lint": "eslint . && npm run typecheck",
-        "typecheck": "tsc -p tsconfig.json"
+        "typecheck": "tsc -p tsconfig.json",
+        "uat": "node scripts/uat.mjs"
     },
     "repository": {
         "type": "git",
