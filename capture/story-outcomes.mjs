@@ -9,6 +9,8 @@
  *   retry, or it was not retried) fails the run unless it is on the quarantine list; one that was
  *   unstable and settled on its retry is `[FLAKY]`: loud, but it passes, as a test that fails and
  *   then passes on its retry does;
+ * - a `flaky` item (its first shot differed from the baseline and its second matched, so it counts
+ *   as unchanged) gets a `[FLAKY]` warning naming it; it never fails the run;
  * - any picture that is not `unchanged` or `excluded` (changed, new, unseeded, moved, removed,
  *   unstable, failed) sets `promotion.blocked`: promotion waits for the owner.
  *
@@ -37,6 +39,19 @@ export const blockingOn = (env = process.env) => env[BLOCKING_ENV] === "1";
  */
 export const unstableLine = (project, item) =>
     `[UNSTABLE] ${project}: ${item.file} drew two different pictures on the same inputs`;
+
+/**
+ * The warning for a flaky shot: the first differed from the baseline and the second matched, so the
+ * item counts as unchanged. Loud so a story that draws two pictures is seen the first time it flips;
+ * it never fails the run. The differing first shot is `flaky/<file>` in the capture.
+ * @param {string} project the project
+ * @param {{ id: string, mode: string | null, file: string, firstChangedPixels?: number | null }} item the item
+ * @returns {string} the line
+ */
+export const flakyLine = (project, item) => {
+    const by = Number.isInteger(item.firstChangedPixels) ? `${item.firstChangedPixels} px` : "an unknown amount";
+    return `[FLAKY] ${project} ${item.id} ${item.mode ?? "(no mode)"}: first shot differed from its baseline by ${by}, the second matched (flaky/${item.file})`;
+};
 
 /**
  * The promotion flag: the pictures that are not exactly the approved baselines.
@@ -108,6 +123,9 @@ export function storyVerdict(results, { blocking, quarantine = [], gh = false })
         } else if (item.unstableFirst && item.status !== "failed") {
             say(unstableLine(project, item), false);
             say(`[FLAKY] ${project}: ${item.file} settled on its retry, so it does not fail the run`, false);
+        }
+        if (item.flaky) {
+            say(flakyLine(project, item), false);
         }
         if (item.status === "failed") {
             const why = String(item.reason ?? "failed").split("\n")[0];

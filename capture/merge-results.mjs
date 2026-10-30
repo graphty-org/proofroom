@@ -136,7 +136,7 @@ async function collectItems(parts, out, problems) {
             }
             seen.set(item.file, p.dir);
             items.push(item);
-            for (const sub of ["", "second", "baselines"]) {
+            for (const sub of ["", "second", "baselines", "flaky"]) {
                 await copyIfThere(join(p.dir, sub, item.file), join(out, sub, item.file));
             }
         }
@@ -190,7 +190,7 @@ export async function mergeResults({ project, baselines, out, dirs, blocking = f
         parts.push({ ...JSON.parse(await readFile(join(dir, "results.json"), "utf8")), dir });
     }
     const problems = completeness(project, parts);
-    for (const sub of ["second", "baselines"]) {
+    for (const sub of ["second", "baselines", "flaky"]) {
         await mkdir(join(out, sub), { recursive: true });
     }
     const items = await collectItems(parts, out, problems);

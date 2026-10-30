@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -75,6 +76,35 @@ describe("story outcomes", () => {
             expect(verdict.code).toBe(0);
             expect(verdict.lines.slice(0, 2)).toEqual(flakyLines);
         }
+    });
+
+    it("keeps a flaky story's differing first shot and names it, without failing or blocking the run", async () => {
+        const root = repo({ "a--flips.png": png(10) });
+        const part = tempDir("story-outcomes-part-");
+        const v = visualStoryTest({ project: "graphty-element", out: part, root });
+        // The first shot differs from the baseline, the second matches it: unchanged, but flaky.
+        expect(await shoot(v, root, "a--flips", [png(200), png(10)])).toEqual({ status: "unchanged" });
+        await report(v, root, { files: ["a.stories.ts"], ran: { "a.stories.ts": ["a--flips"] } });
+        expect(read(part).items[0]).toMatchObject({ status: "unchanged", flaky: true, firstChangedPixels: 16 });
+        expect(readFileSync(join(part, "flaky/a--flips.png"))).toEqual(png(200));
+
+        const out = tempDir("story-outcomes-merged-");
+        const baselines = join(root, loadConfig(root).baselines, "graphty-element");
+        const { results, problems } = await mergeResults({
+            project: "graphty-element",
+            baselines,
+            out,
+            dirs: [part],
+            blocking: true,
+        });
+        expect(problems).toEqual([]);
+        expect(readFileSync(join(out, "flaky/a--flips.png"))).toEqual(png(200));
+        const verdict = storyVerdict(results, { blocking: true, gh: true });
+        expect(verdict.code).toBe(0);
+        expect(verdict.promotion.blocked).toBe(false);
+        expect(verdict.lines).toEqual([
+            "::warning::[FLAKY] graphty-element a--flips (no mode): first shot differed from its baseline by 16 px, the second matched (flaky/a--flips.png)",
+        ]);
     });
 
     it("never lets an incomplete capture promote, even with every recorded picture approved", () => {

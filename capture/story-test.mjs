@@ -154,7 +154,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
     }
     const baselines = join(root, config.baselines, project);
     const fontconfig = config.fontconfig ? join(root, config.fontconfig) : null;
-    for (const dir of ["second", "baselines"]) {
+    for (const dir of ["second", "baselines", "flaky"]) {
         mkdirSync(join(out, dir), { recursive: true });
     }
     const results = {
@@ -238,6 +238,13 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
         if (["changed", "moved", "new", "unstable"].includes(r.status)) {
             writeFileSync(join(out, file), r.flaky ? second : first);
         }
+        // A flaky shot: the first differed from the baseline and the second matched. The differing
+        // first is kept, so a story that draws two pictures can be seen the first time it flips.
+        if (r.flaky) {
+            writeFileSync(join(out, "flaky", file), first);
+        } else {
+            rmSync(join(out, "flaky", file), { force: true });
+        }
         if (r.status === "unstable") {
             console.log(`visual-review: ${unstableLine(project, { file })}`);
             writeFileSync(join(out, "second", file), second);
@@ -255,6 +262,7 @@ export function visualStoryTest({ project, out, root = repoRoot() }) {
             file,
             ...(from && { from }),
             ...r,
+            ...(r.flaky && { firstChangedPixels: firstResult?.changedPixels ?? null }),
             threshold: s.threshold,
             includeAA: s.includeAA,
             reason: null,
