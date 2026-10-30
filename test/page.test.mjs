@@ -2048,7 +2048,7 @@ describe("review page: the wait box", () => {
             }
             await route.fulfill({ response: res, json: body });
         });
-        await geRow().getByRole("button", { name: "Downloading..." }).waitFor({ timeout: 10000 });
+        await geRow().getByRole("button", { name: "Downloading..." }).waitFor();
         await geRow().getByRole("button", { name: "Downloading..." }).click();
         await boxSays("detail", /^1 of 2 artifacts$/);
         expect(await box("detail")).toBe("1 of 2 artifacts");
@@ -2056,7 +2056,7 @@ describe("review page: the wait box", () => {
         await boxSays("detail", /^$/);
         expect(await box("detail")).toBe("");
         release();
-        await page.locator(".component").first().waitFor({ timeout: 10000 });
+        await page.locator(".component").first().waitFor();
     });
 
     it("says in the box which GitHub call waits to retry, then turns a failure into an error with Retry", async () => {
