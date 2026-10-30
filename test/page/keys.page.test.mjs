@@ -245,7 +245,14 @@ for (const [name, type] of Object.entries(BROWSERS)) {
 
         it("hides letter key hints and ignores those keys while letter keys are off", async () => {
             const page = await open({ storage: { "proofroom:letter-keys": "off" } });
-            await expect.poll(() => visibleKeys(page)).toEqual([{ act: "openchg", key: "Enter" }]);
+            await expect
+                .poll(() => visibleKeys(page))
+                .toEqual([
+                    // Previous [Up] and Next [Down]: arrows, so their boxes stay.
+                    { act: "rowup", key: "Up" },
+                    { act: "rowdown", key: "Down" },
+                    { act: "openchg", key: "Enter" },
+                ]);
             expect(await page.locator("#chg-find").getAttribute("placeholder")).toBe(
                 "Find a change: number, title, branch, author",
             );

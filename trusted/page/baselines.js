@@ -10,7 +10,7 @@
  * reach this screen's viewer and panes, never Review's.
  */
 
-import { control, runAction } from "./actions.js";
+import { control, rowButtons, runAction } from "./actions.js";
 import { api } from "./api.js";
 import { componentOf, storyOf } from "./groups.js";
 import { syncHints } from "./keys.js";
@@ -253,6 +253,7 @@ export function installBaselines(app) {
         fill(
             $("bl-ctrl"),
             control(host, "blgroupmenu", { zone: "snaps-head" }),
+            ...rowButtons(host, "baselines", "snaps-head"),
             missing.length > 0
                 ? control(host, "bldl", {
                       zone: "snaps-head",

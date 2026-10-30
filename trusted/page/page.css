@@ -759,6 +759,15 @@ button[aria-pressed="true"] {
 .findwrap button[hidden] {
     display: none;
 }
+/* Previous [Up] and Next [Down] (actions.js rowButtons): the key box alone, which fits the narrow
+   pane headers beside their other controls; the word while the other pane's pair has the boxes. */
+[data-rows]:not(:has(> kbd[hidden])) > .rl {
+    display: none;
+}
+/* Shown, the box stands alone (its word is hidden), so it needs no space before it. */
+[data-rows] > kbd {
+    margin-left: 0;
+}
 .fk {
     display: none;
 }
