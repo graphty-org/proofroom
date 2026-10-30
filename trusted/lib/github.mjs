@@ -366,7 +366,7 @@ const whole = (d) => existsSync(join(d, "results.json")) || existsSync(join(d, S
  * @param {string} dir where it goes
  * @returns {Promise<void>} settles when `dir` is complete, or the artifact had no results.json
  */
-function download(gh, runId, name, dir) {
+export function download(gh, runId, name, dir) {
     if (!downloading.has(dir) && !existsSync(join(dir, "results.json")) && whole(dir)) {
         return Promise.resolve(); // The not-affected marker: nothing to validate.
     }

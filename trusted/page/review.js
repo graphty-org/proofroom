@@ -938,9 +938,14 @@ const isLocal = () => state.target?.local === true;
 const scale = () => state.data?.results.scale ?? 1;
 // The default branch's name, as the server reports it.
 const branchName = (t = state.target) => t?.defaultBranch ?? state.list?.defaultBranch ?? "master";
-// The default branch's target: the held candidate (`serve --candidate next`) by its commit, else a seed.
-const masterLabel = (commit, t) =>
-    commit ? `${branchName(t)} candidate ${commit.slice(0, 10)}` : `${branchName(t)} seed`;
+// The default branch's target: the held candidate (`serve --candidate next`) by its commit, the rolling renders
+// of one commit, else a seed.
+const masterLabel = (commit, t, rolling = Boolean(t?.rolling)) => {
+    if (!commit) {
+        return `${branchName(t)} seed`;
+    }
+    return `${branchName(t)} ${rolling ? "rolling" : "candidate"} ${commit.slice(0, 10)}`;
+};
 const labelOf = (t) => {
     if (t.local) {
         return "Local preview";
@@ -4872,7 +4877,7 @@ async function updateTarget(t) {
 }
 
 const isUpdate = (job) => job?.kind === "update";
-const jobLabel = (job) => (job.pr === null ? masterLabel(job.candidate) : `#${job.pr}`);
+const jobLabel = (job) => (job.pr === null ? masterLabel(job.candidate, undefined, job.rolling) : `#${job.pr}`);
 
 // ---------------------------------------------------------------- Finish
 
@@ -4895,6 +4900,15 @@ function statusWhy(f) {
     return ` (${parts.filter(Boolean).join("; ")})`;
 }
 
+// The branch a default-branch Finish pushes: a candidate's or a rolling render's is replaced by each Finish, which
+// keeps its open pull request; a seed's is dated.
+function seedBranch(t) {
+    if (!t.candidate) {
+        return `visual/seed-${new Date().toISOString().slice(0, 10)}`;
+    }
+    return `visual/approve-${t.rolling ? "rolling-" : ""}${t.candidate.commit.slice(0, 12)}`;
+}
+
 // What a Finish commits and posts, as the sheet's first lines.
 function commitAndPostLines(t, f) {
     const seed = t.pr === null;
@@ -4906,9 +4920,7 @@ function commitAndPostLines(t, f) {
     if (kinds.length === 0) {
         lines.push(f.rejects > 0 ? "Nothing is committed: only rejects." : "Nothing is committed.");
     } else if (seed) {
-        const day = new Date().toISOString().slice(0, 10);
-        // A candidate's branch is replaced by each Finish, which keeps its open pull request.
-        const branch = t.candidate ? `visual/approve-${t.candidate.commit.slice(0, 12)}` : `visual/seed-${day}`;
+        const branch = seedBranch(t);
         lines.push(
             `Push ${branch} with ${kinds.join(" and ")} and open its pull request` +
                 `${f.acceptNotes > 0 ? `, with ${plural(f.acceptNotes, "accept note")} in its description` : ""}.`,

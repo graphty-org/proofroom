@@ -412,6 +412,74 @@ describe("finish: a candidate of master", () => {
     });
 });
 
+describe("finish: a rolling render of master", () => {
+    const rollingSetup = () => {
+        const s = setup();
+        const master = { commit: s.master, headSha: null, pr: null };
+        s.projects["compact-mantine"] = copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master);
+        return s;
+    };
+
+    it("commits on the render commit, pushes visual/approve-rolling-<sha> with its own subject", async () => {
+        const s = rollingSetup();
+        const short = s.master.slice(0, 12);
+        const out = await s.run([accept("badge--default.light.png")], {
+            pr: null,
+            branch: null,
+            candidate: s.master,
+            rolling: true,
+        });
+        const branch = `visual/approve-rolling-${short}`;
+        expect(out.branch).toBe(branch);
+        expect(remoteLog(s, branch)[1]).toBe(s.master);
+        const subject = `test(workspace): rolling approval of visual baselines rendered at ${short}`;
+        expect(git(s.remote, "log", "-1", "--format=%s", branch)).toBe(subject);
+        const create = s.calls.find((c) => c.args.join(" ").includes("/pulls"));
+        expect(JSON.parse(create.input)).toMatchObject({ title: subject, head: branch, base: "master" });
+        // never a candidate approval: release-due and promote-nightly look for this phrase
+        expect(subject).not.toContain("approve visual baselines at");
+        expect(JSON.parse(create.input).body).toMatch(/^No issue$/m);
+    });
+
+    it("closes the open rolling approval pull requests when a candidate's Finish pushes", async () => {
+        const s = rollingSetup();
+        const open = [
+            { number: 41, html_url: "https://github.com/o/r/pull/41", head: { ref: "visual/approve-rolling-abc" } },
+            { number: 42, html_url: "https://github.com/o/r/pull/42", head: { ref: "feat/other" } },
+        ];
+        const gh = async (args, input) => {
+            s.calls.push({ args, input });
+            if (args.some((a) => String(a).includes("pulls?state=open"))) {
+                return JSON.stringify(open);
+            }
+            return JSON.stringify({ html_url: "https://github.com/o/r/pull/9", number: 9 });
+        };
+        const out = await s.run(
+            [accept("badge--default.light.png")],
+            { pr: null, branch: null, candidate: s.master },
+            0,
+            {
+                gh,
+            },
+        );
+        expect(out.closedRolling).toEqual(["https://github.com/o/r/pull/41"]);
+        const closes = s.calls.filter((c) => c.args.includes("state=closed"));
+        expect(closes.map((c) => c.args[3])).toEqual(["repos/{owner}/{repo}/pulls/41"]);
+    });
+
+    it("leaves other approval pull requests open when a rolling Finish pushes", async () => {
+        const s = rollingSetup();
+        const out = await s.run([accept("badge--default.light.png")], {
+            pr: null,
+            branch: null,
+            candidate: s.master,
+            rolling: true,
+        });
+        expect(out.closedRolling).toBeUndefined();
+        expect(s.calls.filter((c) => c.args.includes("state=closed"))).toHaveLength(0);
+    });
+});
+
 describe("finish: rejects on master", () => {
     it("opens one issue holding the rejects, with nothing accepted", async () => {
         const s = setup();

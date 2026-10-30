@@ -144,6 +144,7 @@ Every command has `--help`; `visual-review --help` lists them.
 | `fontconfig`     | none (host fonts)         | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")              |
 | `updateCheck`    | none                      | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                  |
 | `candidates`     | none                      | A shell command `serve --candidate next` runs to list the default branch's full runs (see "Candidates")             |
+| `rolling`        | none                      | A shell command `serve --candidate next` runs to list the default branch's rolling renders (see "Rolling renders")  |
 | `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see "Usage events")                          |
 | `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                        |
 | `projects`       | (required)                | One entry per Storybook; the id names its baselines directory, CI job and artifact                                  |
@@ -260,7 +261,8 @@ token, or the whole URL `serve` printed, and it loads. The field hides what you 
 - `serve` refuses to start without git-lfs: an accept would commit raw PNGs.
 - `--candidate <run id>` (or `--master-run <run id>`) also lists the default branch at that run,
   for seeding.
-- `--candidate next` lists the default branch's next candidate instead (see [Candidates](#candidates)).
+- `--candidate next` lists the default branch's next candidate instead (see [Candidates](#candidates)),
+  and, with the `rolling` command, its newest rolling renders (see [Rolling renders](#rolling-renders)).
 - `--results <dir>` serves local captures offline (a directory of `<project>/results.json`), for
   looking at a story before a pull request exists. It is listed as "Local preview" and is look
   only: no Accept, Reject or Exclude, and no Finish.
@@ -1027,6 +1029,62 @@ the baselines and approvals directories: Finish refuses to push anything else. T
 offered until the command stops reporting it `waiting` or its accept commit reaches the default branch.
 A Finish that rejects anything posts only the rejects (one issue, as for a seed), drops the candidate
 and offers the next one, with the rejected images still rejected and the accepts still saved.
+A candidate's Finish that pushes also closes every open rolling approval pull request (below): the
+candidate's own review covers those pictures again.
+
+## Rolling renders
+
+A repository can render its default branch's stories in small slices many times a day, so a changed
+picture is reviewed long before a candidate holds for it. The `rolling` command (configuration) lists
+those renders as JSON on stdout, newest render commit first:
+
+```json
+[
+    {
+        "commit": "<sha>",
+        "at": 1761782400000,
+        "items": [
+            {
+                "project": "web",
+                "id": "button--primary",
+                "mode": "dark",
+                "runId": 123,
+                "attempt": 1,
+                "artifact": "visual-slice-web-1-1"
+            }
+        ],
+        "pending": [
+            {
+                "project": "web",
+                "id": "card--plain",
+                "mode": null,
+                "why": "re-render pending: 2 merges since reach web"
+            }
+        ]
+    }
+]
+```
+
+`items` are the renders you can decide: each story's newest render, changed, new or with no baseline
+against that commit's own baselines; `artifact` is the CI artifact (in run `runId`) that holds it, a
+capture's `results.json` and its images. `pending` are renders the command holds back until they are
+rendered again (the default branch moved in a way that could change them); the page counts them.
+
+`serve --candidate next` runs it at every refresh and lists the newest commit with an item as
+`<branch> rolling: rendered from <sha> at <time>`. The page shows exactly the listed renders, each
+from its own artifact, and nothing else:
+
+- **A decision is bound to the one render it was taken on.** When the story is rendered again, the
+  decision is dropped, even when the new image is byte for byte the same. Nothing counts as
+  "Approved before" here, and no decision is carried to another commit or to a candidate.
+- **Finish** commits the accepts on the render commit, pushes them to `visual/approve-rolling-<sha>`
+  and opens a pull request to the default branch, changing only the baselines and approvals
+  directories. Its subject is `<prefix>: rolling approval of visual baselines rendered at <sha>`, so
+  nothing that promotes a candidate mistakes it for a candidate's approval. A Finish that rejects
+  anything posts only the rejects, as on a candidate.
+- **One approval at a time.** Finish is refused while a candidate is offered (review it instead) or
+  while another approval pull request (`visual/approve-*`) is open. Otherwise two approvals could
+  merge together and leave the default branch with a baselines tree you never signed.
 
 ## Iterating on a story before a pull request exists
 
