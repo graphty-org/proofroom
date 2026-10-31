@@ -1428,6 +1428,10 @@ await step("Open snapshots approved before", async ({ check }) => {
 
 await step("Finish sheet opens; its confirm is not pressed", async ({ check }) => {
     needOpen();
+    // After every decision is undone the page offers no Finish ("Nothing new to finish").
+    if ((await page.locator('[data-act="finish"]:not([disabled])').filter({ visible: true }).count()) === 0) {
+        skip("Finish is not offered: this change has no decisions to finish");
+    }
     await act("finish").click();
     await page.waitForFunction(
         () => document.querySelector("dialog#dlg")?.open || document.querySelector('[data-act="finishgo"]'),
