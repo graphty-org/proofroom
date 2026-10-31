@@ -13,7 +13,7 @@ import { approve, passkeyWrongHost } from "./passkey.js";
 import { control } from "./actions.js";
 import { api } from "./api.js";
 import { hostCan } from "./messages.js";
-import { el, fmt } from "./ui.js";
+import { el, fmt, ic } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const plural = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
@@ -286,9 +286,9 @@ export function installFinish(app) {
             app.say(`Finish not started: ${err.message}`, "err");
             return;
         }
-        // The sheet opens at once, preparing: the accept commit takes a minute on a large change,
-        // and the sheet's Finish waits for it.
-        items[0].prepared = { preparing: true };
+        // The sheet opens at once, preparing (the server usually prepared it ahead, as the
+        // decisions completed), and the sheet's Finish waits for it.
+        items[0].prepared = { preparing: true, id: ids[0], progress: null };
         const s = { list: ids, items };
         sheet = s;
         const d = /** @type {HTMLDialogElement} */ ($("dlg"));
@@ -311,6 +311,7 @@ export function installFinish(app) {
             app.settle();
         };
         draw();
+        watchPreparing(s, d);
         let prepared;
         try {
             prepared = await prepare(ids[0]);
@@ -328,6 +329,43 @@ export function installFinish(app) {
             draw();
         }
     };
+
+    /**
+     * While the sheet waits for its approval, asks the server what the preparation is doing
+     * (GET /api/finish-status's `preparing`) and redraws only the line that says so.
+     * @param {{ items: any[] }} s the sheet
+     * @param {HTMLDialogElement} d its dialog
+     */
+    async function watchPreparing(s, d) {
+        const first = s.items[0];
+        while (sheet === s && first.prepared.preparing) {
+            const now = await api("/api/finish-status").catch(() => null);
+            if (sheet !== s || !first.prepared.preparing) {
+                return;
+            }
+            first.prepared.progress = now?.preparing ?? null;
+            d.querySelector(".preparing")?.replaceWith(signsLine(first.t, first.prepared));
+            await pause(300);
+        }
+    }
+
+    /**
+     * What a preparation is doing, in words: the server's step with its numbers grouped.
+     * @param {{ id: string, progress: { target: string, step: string } | null }} prepared the sheet's
+     * @returns {string} it
+     */
+    function preparingText({ id, progress }) {
+        if (!progress) {
+            return "starting";
+        }
+        if (progress.target !== id) {
+            return "waiting for another change's preparation to end";
+        }
+        if (progress.step === "checking") {
+            return "checking the branch";
+        }
+        return progress.step.replace(/ done\)$/, ")").replaceAll(/\d+/g, (n) => fmt(Number(n)));
+    }
 
     function oneBody({ id, t, prepared }, notice) {
         const f = t.finish;
@@ -425,7 +463,14 @@ export function installFinish(app) {
         const line = (...text) => el("p", {}, el("b", {}, "Signs with:"), ...text);
         const keys = t.passkey?.keys ?? [];
         if (prepared?.preparing && !many) {
-            return line(" preparing the approval; on a large change this takes a minute.");
+            return el(
+                "p",
+                { class: "preparing", role: "status" },
+                el("b", {}, "Signs with:"),
+                " ",
+                ic("spin", "c-ink2"),
+                ` preparing the approval: ${preparingText(prepared)}.`,
+            );
         }
         if (prepared?.error && !many) {
             return el(

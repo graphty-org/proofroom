@@ -246,7 +246,13 @@ describe("finish: accepts", () => {
         // The steps the page shows while a Finish runs, in order.
         expect(s.steps).toEqual([
             "checking",
-            "writing 1 file",
+            "checking 1 accepted image (0 of 1 done)",
+            "checking 1 accepted image (1 of 1 done)",
+            "checking",
+            "writing the accepted images to Git LFS (0 of 1 done)",
+            "writing the accepted images to Git LFS (1 of 1 done)",
+            "writing 3 files (0 of 3 done)",
+            "writing 3 files (3 of 3 done)",
             "committing",
             "uploading images to LFS (checking the commit has them all)",
             "pushing",

@@ -133,6 +133,8 @@ async function open(options = {}, browser = "chromium") {
 
 // The sheet, its approval prepared (aria-busy while it is prepared).
 const sheet = (page) => page.locator("dialog.finish[open]:not([aria-busy])");
+// A line's words as a reader sees them on one line (innerText breaks around the spinner's svg).
+const lineText = async (loc) => (await loc.textContent()).replaceAll(/\s+/g, " ").trim();
 const rowOf = (page, id) => page.locator(`.chg[data-chg="${id}"]`);
 // A row's count, or null while the row is not shown (its section closed): read as it is, never
 // waited for, so a poll on it ends. WebKit ends the text with a line break after its icon.
@@ -246,9 +248,7 @@ describe("the summary sheet", () => {
         await page.locator('#top [data-act="finish"]').click();
         const s = page.locator('dialog.finish[open][aria-busy="true"]');
         await s.waitFor();
-        expect(await s.innerText()).toContain(
-            "Signs with: preparing the approval; on a large change this takes a minute.",
-        );
+        expect(await lineText(s.locator("p.preparing"))).toBe("Signs with: preparing the approval: starting.");
         await page.keyboard.press("Enter");
         expect(await message(page)).toBe(`Finish #${OPEN}: The approval is being prepared: wait for it.`);
         expect(posts("/api/finish")).toEqual([]);
@@ -260,6 +260,37 @@ describe("the summary sheet", () => {
         await page.keyboard.press("Enter");
         await expect.poll(() => posts("/api/finish").map((p) => p.body.id)).toEqual([OPEN]);
         expect(posts("/api/finish-prepare")).toHaveLength(1);
+    });
+
+    it("shows a spinner and what the preparation is doing, step by step, until it is ready", async () => {
+        let release;
+        const ready = new Promise((resolve) => {
+            release = resolve;
+        });
+        let step = { target: OPEN, step: "checking 1749 accepted images (812 of 1749 done)" };
+        const page = await open({ prepare: () => ready.then(() => ({ required: false })), preparing: () => step });
+        await openChange(page, OPEN);
+        await page.locator('#top [data-act="finish"]').click();
+        const line = page.locator('dialog.finish[open][aria-busy="true"] p.preparing[role="status"]');
+        await expect
+            .poll(() => lineText(line))
+            .toBe("Signs with: preparing the approval: checking 1,749 accepted images (812 of 1,749).");
+        // A real spinner beside it, turning.
+        const spinner = line.locator(".ic.spin svg");
+        expect(await spinner.isVisible()).toBe(true);
+        expect(await spinner.evaluate((e) => globalThis.getComputedStyle(e).animationName)).toBe("spin");
+        step = { target: OPEN, step: "writing the accepted images to Git LFS (1700 of 1749 done)" };
+        await expect
+            .poll(() => lineText(line))
+            .toBe("Signs with: preparing the approval: writing the accepted images to Git LFS (1,700 of 1,749).");
+        step = { target: A, step: "committing" };
+        await expect
+            .poll(() => lineText(line))
+            .toBe("Signs with: preparing the approval: waiting for another change's preparation to end.");
+        release();
+        await sheet(page).waitFor();
+        expect(await sheet(page).locator("p.preparing").count()).toBe(0);
+        expect(await sheet(page).innerText()).toContain("Signs with: Not yet protected");
     });
 
     it("Go to the first undecided closes the sheet on the first undecided snapshot", async () => {

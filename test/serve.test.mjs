@@ -3328,6 +3328,31 @@ describe("serve: passkeys", () => {
         expect((await endedJob(s)).error).toBeNull();
     });
 
+    it("prepares the approval as soon as the decisions are complete, so the sheet gets it without waiting", async () => {
+        quiet();
+        const s = await startWithPulls();
+        await registerKey(s);
+        await decideAll(s);
+        // The last decision started the preparation in the background; it ends on its own.
+        await app.idle();
+        expect((await s.api("GET", "/api/finish-status")).body.preparing).toBeNull();
+        // No preparation could run now (git-lfs is not set up any more): the sheet's is the one made ahead.
+        git(s.repo, "config", "--unset", "filter.lfs.clean");
+        const opened = await s.api("POST", "/api/finish-prepare", { id: "123" });
+        expect(opened.body.error ?? null).toBeNull();
+        expect(opened.status).toBe(200);
+        expect(opened.body).toMatchObject({ required: true, signs: "tree", statement: { pr: 123 } });
+        expect(git(s.repo, "rev-parse", `${opened.body.statement.commit}:visual-baselines`)).toBe(
+            opened.body.statement.tree,
+        );
+        // Decisions changed: the one prepared ahead is dropped, and none is made while one is undecided.
+        expect((await decide(s, "button--primary.dark.png", null)).status).toBe(200);
+        await app.idle();
+        const refused = await s.api("POST", "/api/finish-prepare", { id: "123" });
+        expect(refused.status).toBe(409);
+        expect(refused.body.error).toMatch(/git-lfs/);
+    });
+
     it("finishes with one fresh, valid approval of the statement about the accept commit's tree, and pushes it signed", async () => {
         quiet();
         const s = await startWithPulls();

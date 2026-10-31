@@ -53,7 +53,7 @@ export const BROWSERS = { chromium, webkit };
  *     clock?: boolean, path?: string, failList?: number,
  *     pictures?: (name: string) => boolean, decide?: (body: object) => object,
  *     acceptAll?: (body: object) => object, update?: (body: object) => object,
- *     finishStatus?: () => object | null, host?: string, finishPreview?: (id: string, t: object) => object,
+ *     finishStatus?: () => object | null, preparing?: () => object | null, host?: string, finishPreview?: (id: string, t: object) => object,
  *     prepare?: (body: object) => object, finish?: (body: object) => object }} [options]
  *     the changes, the list answer in their place, each project's rows (by default as many as the
  *     project's reviewable), the window, the address after #, local storage to start with,
@@ -61,7 +61,7 @@ export const BROWSERS = { chromium, webkit };
  *     how many of the first asks for the list answer HTTP 500, which pictures to answer (the rest
  *     fail with HTTP 500), the answer to each POST /api/decide (by default `{ ok: true }`) and
  *     POST /api/accept-all (by default every file listed done), POST /api/update's answer, the
- *     job GET /api/finish-status reports, the host name the page is opened at (localhost for
+ *     job GET /api/finish-status reports (and its `preparing`, the step of a preparation), the host name the page is opened at (localhost for
  *     a passkey), and Finish's answers: GET /api/target/<id>?finish=1 (by default finishPreview of
  *     the listed target), POST /api/finish-prepare (by default no passkey asked) and POST
  *     /api/finish (by default a job that has already ended with a commit), each kept in `posts`
@@ -148,7 +148,12 @@ export async function openNext(browser, options = {}) {
         answerWith(route, options.update, () => ({ status: 404, json: { error: "no update here" } })),
     );
     await page.route("**/api/finish-status", (route) =>
-        route.fulfill({ json: { job: options.finishStatus ? options.finishStatus() : null } }),
+        route.fulfill({
+            json: {
+                job: options.finishStatus ? options.finishStatus() : null,
+                preparing: options.preparing ? options.preparing() : null,
+            },
+        }),
     );
     // Finish: the preview of a listed target, the preparation (no passkey asked by default) and the
     // start, which by default ends at once with a commit.
