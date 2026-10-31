@@ -215,6 +215,26 @@ export const masterSubject = (prefix, candidate, rolling = false) => {
 };
 
 /**
+ * The subject of the commit that holds an approval statement, on top of its accept commit: a pull
+ * request's, a seed's, a candidate's or a rolling render's. A candidate's names it as its accept
+ * commit does, but never reads as an accept commit (masterSubject's), which a promotion looks for.
+ * @param {string} prefix the config's commitPrefix
+ * @param {{ pr: number | null, candidate?: string | null, rolling?: boolean }} target what was approved
+ * @returns {string} the subject
+ */
+export const statementSubject = (prefix, { pr, candidate, rolling }) => {
+    if (pr !== null) {
+        return `${prefix}: approve the visual baselines of #${pr}`;
+    }
+    if (!candidate) {
+        return `${prefix}: approve the visual baselines of the seed`;
+    }
+    return rolling
+        ? `${prefix}: rolling approval of the visual baselines rendered at ${candidate.slice(0, 12)}`
+        : `${prefix}: approve the visual baselines at ${candidate.slice(0, 12)}`;
+};
+
+/**
  * The branch a candidate's (or a rolling render's) accept commit goes to.
  * @param {string} candidate the candidate's commit
  * @param {boolean} [rolling] a rolling render's
@@ -1188,7 +1208,7 @@ async function pushApproval({ repo, target, approval, progress, net, config }) {
     await git(repo, ["worktree", "add", "-q", "--detach", tree, commit]);
     try {
         if (statement) {
-            await writeStatement(tree, statement, config);
+            await writeStatement(tree, statement, target, config);
         }
         const only = target.candidate ? { candidate: target.candidate, config } : null;
         const pushed = await pushAccepts({ repo, target, progress, net }, { tree, writes: [], branch, only });
@@ -1246,15 +1266,15 @@ async function pushSignedChange(input) {
  * accept commit; nothing under the baselines directory changes.
  * @param {string} tree the accept worktree
  * @param {object} statement the statement, with its `approval` when signed
+ * @param {{ candidate?: string | null, rolling?: boolean }} target what was approved: a candidate or a rolling render
  * @param {{ approvals: string, baselines: string, commitPrefix: string }} config the settings
  */
-async function writeStatement(tree, statement, config) {
+async function writeStatement(tree, statement, target, config) {
     const path = `${config.approvals}/${statement.tree}.json`;
     await put(join(tree, path), `${JSON.stringify(statement, null, 2)}\n`);
     await git(tree, ["add", "--", path]);
-    const who = statement.pr === null ? "the seed" : `#${statement.pr}`;
     const message = [
-        `${config.commitPrefix}: approve the visual baselines of ${who}`,
+        statementSubject(config.commitPrefix, { ...target, pr: statement.pr }),
         "",
         `${statement.approval ? "Signed by the owner's passkey" : "Unsigned (no passkey is registered)"}: ` +
             `${config.baselines}/ at ${statement.commit} is tree ${statement.tree}.`,
@@ -1441,7 +1461,12 @@ async function commitAccepts({
     try {
         if (statement) {
             const commit = built.commit;
-            await writeStatement(tree, await treeStatement({ repo, commit, config, pr: target.pr, now }), config);
+            await writeStatement(
+                tree,
+                await treeStatement({ repo, commit, config, pr: target.pr, now }),
+                target,
+                config,
+            );
         }
         const commit = await pushAccepts(input, {
             tree,

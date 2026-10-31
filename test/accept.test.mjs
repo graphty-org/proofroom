@@ -15,6 +15,7 @@ import {
     proposeKey,
     rejectComment,
     signRecord,
+    statementSubject,
     treeSignedRecords,
     treeStatement,
     unsignedRecordAt,
@@ -334,7 +335,7 @@ describe("finish: a candidate of master", () => {
         mkdirSync(join(s.repo, "visual-review-approvals"), { recursive: true });
         writeFileSync(join(s.repo, "visual-review-approvals/t.json"), "{}\n");
         git(s.repo, "add", "-A");
-        git(s.repo, "commit", "-q", "-m", "test(workspace): approve the visual baselines of the seed");
+        git(s.repo, "commit", "-q", "-m", `test(workspace): approve the visual baselines at ${s.master.slice(0, 12)}`);
         git(s.repo, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
         const before = git(s.remote, "rev-parse", branch);
         const open = [{ number: 8, head: { ref: branch }, html_url: "https://github.com/o/r/pull/8" }];
@@ -1162,6 +1163,51 @@ describe("finish with a signed tree approval", () => {
             keys: [KEY.entry],
         });
     };
+
+    it("titles a candidate's statement commit with the candidate, never as the seed's or as an accept commit", async () => {
+        const s = setup();
+        const master = { commit: s.master, headSha: null, pr: null };
+        s.projects = { "compact-mantine": copyFixture("compact-mantine", join(s.dir, "m/compact-mantine"), master) };
+        const target = { pr: null, branch: null, candidate: s.master };
+        const decisions = [accept("badge--default.light.png")];
+        const approval = await approved(s, decisions, target);
+        const out = await finish({
+            repo: s.repo,
+            gh: s.gh,
+            target,
+            projects: s.projects,
+            decisions,
+            now: NOW,
+            config: CONFIG,
+            sign: true,
+            approval,
+        });
+        const short = s.master.slice(0, 12);
+        const subjects = git(s.remote, "log", "--reverse", "--format=%s", `${s.master}..${out.branch}`).split("\n");
+        expect(subjects).toEqual([
+            `test(workspace): approve visual baselines at ${short}`,
+            `test(workspace): approve the visual baselines at ${short}`,
+        ]);
+        // graphty-monorepo's nightly promotion (tools/channel/resume.mjs) finds accept commits by this
+        const ACCEPT_SUBJECT = /^.+: approve visual baselines at ([0-9a-f]{12})$/;
+        expect(subjects.map((x) => ACCEPT_SUBJECT.test(x))).toEqual([true, false]);
+    });
+
+    it("titles the statement commits of a pull request, a seed, a candidate and a rolling render", () => {
+        const p = "test(workspace)";
+        const sha = "0123456789abcdef0123";
+        expect(statementSubject(p, { pr: 7 })).toBe(`${p}: approve the visual baselines of #7`);
+        expect(statementSubject(p, { pr: null })).toBe(`${p}: approve the visual baselines of the seed`);
+        expect(statementSubject(p, { pr: null, candidate: sha })).toBe(
+            `${p}: approve the visual baselines at 0123456789ab`,
+        );
+        expect(statementSubject(p, { pr: null, candidate: sha, rolling: true })).toBe(
+            `${p}: rolling approval of the visual baselines rendered at 0123456789ab`,
+        );
+        expect(statementSubject(p, { pr: null, candidate: sha, rolling: true })).not.toContain(
+            "approve visual baselines at",
+        );
+    });
 
     it("commits the accepts first, signs that commit's baselines tree, then commits the signature outside it", async () => {
         const s = setup();
