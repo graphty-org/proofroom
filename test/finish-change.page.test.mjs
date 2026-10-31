@@ -99,7 +99,7 @@ it("asks for the passkey once, names it on the sheet, and pushes one signed stat
 
     // Finish: the sheet offers to register a passkey, Settings registers it, and the sheet signs.
     await page.locator('#top [data-act="finish"]').click();
-    const sheet = page.locator("dialog.finish[open]");
+    const sheet = page.locator("dialog.finish[open]:not([aria-busy])");
     await sheet.getByRole("button", { name: "Register passkey..." }).click();
     const settings = page.locator("dialog.settings[open]");
     await settings.getByRole("button", { name: "Register passkey..." }).click();

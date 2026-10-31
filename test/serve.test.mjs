@@ -3297,6 +3297,37 @@ describe("serve: passkeys", () => {
         expect(s.opened).toEqual([]);
     });
 
+    it("answers a second preparation of the same decisions with the first one's, never a conflict", async () => {
+        quiet();
+        const s = await startWithPulls();
+        await registerKey(s);
+        await decideAll(s);
+        // The sheet opened twice while the first preparation runs: one accept commit, one challenge.
+        const [first, second] = await Promise.all([
+            s.api("POST", "/api/finish-prepare", { id: "123" }),
+            s.api("POST", "/api/finish-prepare", { id: "123" }),
+        ]);
+        expect(first.status).toBe(200);
+        expect(second).toEqual(first);
+        // Opened again later: the approval prepared is still good, and kept.
+        expect(await s.api("POST", "/api/finish-prepare", { id: "123" })).toEqual(first);
+        // Other decisions: prepared anew.
+        expect((await decide(s, "button--primary.dark.png", null)).status).toBe(200);
+        const other = await s.api("POST", "/api/finish-prepare", { id: "123" });
+        expect(other.status).toBe(200);
+        expect(other.body.challenge).not.toBe(first.body.challenge);
+        // Back to the first decisions: prepared anew again, and that one finishes.
+        await decide(s, "button--primary.dark.png", "accept");
+        const prepared = (await s.api("POST", "/api/finish-prepare", { id: "123" })).body;
+        const begun = await s.api("POST", "/api/finish", {
+            id: "123",
+            challenge: prepared.challenge,
+            approval: approve(prepared.statement, KEY, { origin: s.origin }),
+        });
+        expect(begun.status).toBe(202);
+        expect((await endedJob(s)).error).toBeNull();
+    });
+
     it("finishes with one fresh, valid approval of the statement about the accept commit's tree, and pushes it signed", async () => {
         quiet();
         const s = await startWithPulls();

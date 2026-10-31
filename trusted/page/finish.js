@@ -282,22 +282,51 @@ export function installFinish(app) {
         let items;
         try {
             items = await Promise.all(ids.map((id) => previewOf(id).then((t) => ({ id, t }))));
-            items[0].prepared = await prepare(ids[0]);
         } catch (err) {
             app.say(`Finish not started: ${err.message}`, "err");
             return;
         }
-        sheet = { list: ids, items };
+        // The sheet opens at once, preparing: the accept commit takes a minute on a large change,
+        // and the sheet's Finish waits for it.
+        items[0].prepared = { preparing: true };
+        const s = { list: ids, items };
+        sheet = s;
         const d = /** @type {HTMLDialogElement} */ ($("dlg"));
-        d.className = ids.length > 1 ? "finish many" : "finish";
-        d.replaceChildren(
-            ...[ids.length > 1 ? manyBody(items) : oneBody(items[0], notice), sheetFoot(items)]
-                .flat(Infinity)
-                .filter((k) => k !== null && k !== undefined && k !== false),
-        );
-        d.showModal();
-        /** @type {HTMLElement} */ (d.querySelector('[data-act="finishgo"]')).focus();
-        app.settle();
+        const draw = () => {
+            d.className = ids.length > 1 ? "finish many" : "finish";
+            if (items[0].prepared.preparing) {
+                d.setAttribute("aria-busy", "true");
+            } else {
+                d.removeAttribute("aria-busy");
+            }
+            d.replaceChildren(
+                ...[ids.length > 1 ? manyBody(items) : oneBody(items[0], notice), sheetFoot(items)]
+                    .flat(Infinity)
+                    .filter((k) => k !== null && k !== undefined && k !== false),
+            );
+            if (!d.open) {
+                d.showModal();
+            }
+            /** @type {HTMLElement} */ (d.querySelector('[data-act="finishgo"]')).focus();
+            app.settle();
+        };
+        draw();
+        let prepared;
+        try {
+            prepared = await prepare(ids[0]);
+        } catch (err) {
+            if (sheet === s) {
+                d.close();
+            }
+            app.say(`Finish not started: ${err.message}`, "err");
+            return;
+        }
+        // Closed meanwhile, or another sheet in its place: the server keeps what it prepared, so
+        // the next sheet of the same decisions gets it at once.
+        if (sheet === s) {
+            items[0].prepared = prepared;
+            draw();
+        }
     };
 
     function oneBody({ id, t, prepared }, notice) {
@@ -395,6 +424,9 @@ export function installFinish(app) {
     function signsLine(t, prepared, many = false) {
         const line = (...text) => el("p", {}, el("b", {}, "Signs with:"), ...text);
         const keys = t.passkey?.keys ?? [];
+        if (prepared?.preparing && !many) {
+            return line(" preparing the approval; on a large change this takes a minute.");
+        }
         if (prepared?.error && !many) {
             return el(
                 "p",
@@ -501,10 +533,14 @@ export function installFinish(app) {
         }
         return `${sheet.items[0].prepared?.required ? "Sign and finish" : "Finish"} ${label(sheet.list[0])}`;
     };
-    app.finishGoOK = () =>
-        sheet?.list.length === 1 && sheet.items[0].prepared?.error
+    app.finishGoOK = () => {
+        if (sheet?.items[0].prepared?.preparing) {
+            return "The approval is being prepared: wait for it";
+        }
+        return sheet?.list.length === 1 && sheet.items[0].prepared?.error
             ? "Finish cannot be approved now: see the sheet"
             : true;
+    };
 
     // The sheet's final button: the passkey prompt starts inside this press, then the run.
     app.finishGo = () => {
@@ -550,6 +586,7 @@ export function installFinish(app) {
 
     $("dlg").addEventListener("close", () => {
         sheet = null;
+        $("dlg").removeAttribute("aria-busy");
     });
 
     // ------------------------------------------------------------ the run

@@ -162,7 +162,7 @@ describe("the page on a plain git repository", () => {
         const finish = page.locator('#top [data-act="finish"]');
         await expect.poll(() => finish.innerText()).toContain("Finish feat/x (1)");
         await finish.click();
-        const box = page.locator("dialog.finish[open]");
+        const box = page.locator("dialog.finish[open]:not([aria-busy])");
         await box.waitFor();
         const summary = await box.innerText();
         expect(summary).toContain("Will commit: 0 accepted (0 not opened), 0 excluded, to branch feat/x as ");
