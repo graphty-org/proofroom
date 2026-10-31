@@ -95,6 +95,29 @@ const isQuarantined = (item, list) =>
     !!item.test && list.some((q) => q.file === item.test.file && q.name === item.test.name);
 
 /**
+ * The lines for a story whose two shots disagreed: still unstable, or unstable at first and
+ * settled on its retry.
+ * @param {string} project the project
+ * @param {{ status: string, file: string, unstableFirst?: boolean, test?: object }} item the item
+ * @param {{ blocking: boolean, quarantine: { file: string, name: string }[],
+ *     say: (line: string, fails: boolean) => void }} o the switch, the quarantine and the line sink
+ * @returns {void}
+ */
+function sayUnstable(project, item, { blocking, quarantine, say }) {
+    if (item.status === "unstable") {
+        say(unstableLine(project, item), false);
+        if (isQuarantined(item, quarantine)) {
+            say(`[QUARANTINED] ${project}: ${item.file} is quarantined, so it does not fail the run`, false);
+        } else if (blocking) {
+            say(`[UNSTABLE] ${project}: ${item.file} is still unstable after its retry and not quarantined`, true);
+        }
+    } else if (item.unstableFirst && item.status !== "failed") {
+        say(unstableLine(project, item), false);
+        say(`[FLAKY] ${project}: ${item.file} settled on its retry, so it does not fail the run`, false);
+    }
+}
+
+/**
  * The run's verdict and its loud lines.
  * @param {{ project: string, items: object[], promotion?: object }} results the merged (or partial)
  *     results; their `promotion` when mergeResults() set it
@@ -113,17 +136,7 @@ export function storyVerdict(results, { blocking, quarantine = [], gh = false })
         lines.push(gh ? `::${level}::${line}` : `visual-review: ${line}`);
     };
     for (const item of items) {
-        if (item.status === "unstable") {
-            say(unstableLine(project, item), false);
-            if (isQuarantined(item, quarantine)) {
-                say(`[QUARANTINED] ${project}: ${item.file} is quarantined, so it does not fail the run`, false);
-            } else if (blocking) {
-                say(`[UNSTABLE] ${project}: ${item.file} is still unstable after its retry and not quarantined`, true);
-            }
-        } else if (item.unstableFirst && item.status !== "failed") {
-            say(unstableLine(project, item), false);
-            say(`[FLAKY] ${project}: ${item.file} settled on its retry, so it does not fail the run`, false);
-        }
+        sayUnstable(project, item, { blocking, quarantine, say });
         if (item.flaky) {
             say(flakyLine(project, item), false);
         }
