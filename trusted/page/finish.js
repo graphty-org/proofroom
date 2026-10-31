@@ -354,8 +354,9 @@ export function installFinish(app) {
         }
         const what = `${fmt(f.accepts)} accepted (${fmt(f.notOpened)} not opened), ${fmt(f.excludes)} excluded`;
         if (t.pr === null && !t.localBranch) {
+            // A candidate's or a rolling render's branch is replaced by each Finish; a seed's is dated.
             const branch = t.candidate
-                ? `visual/approve-${t.candidate.commit.slice(0, 12)}`
+                ? `visual/approve-${t.rolling ? "rolling-" : ""}${t.candidate.commit.slice(0, 12)}`
                 : `visual/seed-${new Date().toISOString().slice(0, 10)}`;
             return `${what}, to branch ${branch} as ${committer(t)}, and open its pull request.`;
         }

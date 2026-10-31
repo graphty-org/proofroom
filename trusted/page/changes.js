@@ -46,6 +46,35 @@ export function projectState(p) {
 }
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const atCommit = (commit) => (commit ? ` at ${commit.slice(0, 7)}` : "");
+
+/** The kinds of the default branch's targets: a seed, the held candidate, or the rolling renders of one commit. */
+const DEFAULT_KINDS = ["seed", "candidate", "rolling"];
+
+/**
+ * The kind of a default branch target (`pr` null, not a local capture).
+ * @param {any} t the summary
+ * @returns {"seed" | "candidate" | "rolling"} the kind
+ */
+const defaultKind = (t) => {
+    if (t.rolling) {
+        return "rolling";
+    }
+    return t.candidate ? "candidate" : "seed";
+};
+
+/**
+ * A default branch target's name: `seed`, or the held candidate (`serve --candidate next`) or the rolling
+ * renders by their commit, `<branch> candidate <sha>` and `<branch> rolling <sha>`.
+ * @param {"seed" | "candidate" | "rolling"} kind the kind
+ * @param {any} t the summary
+ * @param {string} defaultBranch the default branch's name
+ * @returns {string} the name
+ */
+const defaultLabel = (kind, t, defaultBranch) => {
+    const commit = t.rolling?.commit ?? t.candidate?.commit;
+    return kind === "seed" || !commit ? "seed" : `${defaultBranch} ${kind} ${commit.slice(0, 10)}`;
+};
 
 /**
  * One changes row, from a target summary.
@@ -83,9 +112,9 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
               : captured.startsWith("branch ")
                 ? "branch"
                 : "preview"
-          : t.pr === null
-            ? "seed"
-            : "PR";
+          : t.pr !== null
+            ? "PR"
+            : defaultKind(t);
     // Plain git's changes are branches: a branch's row is named by the branch, as a number names a
     // pull request's.
     const byBranch = words.numberPrefix === "" && t.localBranch && t.branch;
@@ -97,7 +126,14 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         // "#3486 " before the title of a change the host numbers.
         num: kind === "PR" ? `${words.numberPrefix}${t.pr} ` : "",
         pr: t.pr,
-        label: t.pr !== null && !local ? `${words.numberPrefix}${t.pr}` : byBranch ? t.branch : kind,
+        label:
+            t.pr !== null && !local
+                ? `${words.numberPrefix}${t.pr}`
+                : byBranch
+                  ? t.branch
+                  : DEFAULT_KINDS.includes(kind)
+                    ? defaultLabel(kind, t, defaultBranch)
+                    : kind,
         // A change the code host knows: a pull request, or under plain git a branch.
         hostChange: kind === "PR" || Boolean(byBranch),
         title: kind === "seed" ? `Seed from ${defaultBranch}` : (t.title ?? ""),
@@ -106,7 +142,7 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         capId: null,
         branch:
             t.branch ??
-            (t.pr === null && !local ? `${defaultBranch}${t.commit ? ` at ${t.commit.slice(0, 7)}` : ""}` : null),
+            (t.pr === null && !local ? `${defaultBranch}${atCommit(t.commit ?? t.candidate?.commit)}` : null),
         author: t.author ?? null,
         source:
             local || t.localBranch || (projects.length > 0 && projects.every((p) => p.preview))
@@ -360,8 +396,9 @@ export function matchesFind(row, text) {
 }
 
 /**
- * The rows of each section, in the order they show. Needs you, in "Needs me first": the fewest
- * snapshots first, then the longest waiting, so small changes clear first.
+ * The rows of each section, in the order they show: the held candidate first, then, in Needs you
+ * with "Needs me first", the fewest snapshots first and then the longest waiting, so small changes
+ * clear first.
  * @param {any[]} rows every row
  * @param {string} sort the Sort menu's choice
  * @param {string} [find] the Find text
@@ -375,11 +412,13 @@ export function sectionsOf(rows, sort, find = "") {
         }
     }
     const waiting = (a, b) => (a.readyAt ?? Infinity) - (b.readyAt ?? Infinity);
+    // The held candidate above every other row: the default branch's promotion waits on it.
+    const held = (a, b) => Number(b.kind === "candidate") - Number(a.kind === "candidate");
     for (const [k, list] of out) {
         list.sort(
             k === "needs" && sort === "needs"
-                ? (a, b) => a.total - b.total || waiting(a, b)
-                : (a, b) => SORTERS[sort](a, b) || (k === "needs" ? a.total - b.total : 0),
+                ? (a, b) => held(a, b) || a.total - b.total || waiting(a, b)
+                : (a, b) => held(a, b) || SORTERS[sort](a, b) || (k === "needs" ? a.total - b.total : 0),
         );
     }
     return out;
