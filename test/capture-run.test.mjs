@@ -3,7 +3,7 @@
  * iframe.html whose preview object answers what capture reads from a real one.
  */
 
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
@@ -29,6 +29,7 @@ const PARAMS = {
     "demo--excluded-here": { chromatic: { disableSnapshot: true } },
     "demo--always-excluded": { chromatic: { disableSnapshot: true } },
     "demo--broken": {},
+    "demo--play-threw": {},
     "demo--small": {},
     "demo--late-font": {},
     "demo--tall": {},
@@ -78,7 +79,13 @@ if (id === "demo--broken") {
 }
 window.__STORYBOOK_PREVIEW__ = {
     storyStoreValue: {},
-    currentRender: { phase: "completed" },
+    // A play function that threw: Storybook ends the render "finished" with no error screen, and
+    // its channel keeps the exception event it emitted.
+    currentRender: { phase: id === "demo--play-threw" ? "finished" : "completed" },
+    channel: { last: (type) => id === "demo--play-threw" && type === "playFunctionThrewException"
+        ? [{ name: "AssertionError", message: "expected 1 to be 2",
+            stack: "AssertionError: expected 1 to be 2\\n    at play (demo.stories.ts:9:3)" }]
+        : undefined },
     extract: async () => Object.fromEntries(Object.entries(${JSON.stringify(PARAMS)}).map(([k, v]) => [k, { parameters: v }])),
 };
 </script></body></html>`;
@@ -145,6 +152,28 @@ describe("capture", () => {
         });
         expect(items["demo--always-excluded.png"].status).toBe("excluded");
         expect(second.expected).toBe(second.items.length);
+    });
+
+    it("records a story whose play function threw as failed, without a picture", async () => {
+        const sb = storybook(["demo--play-threw"]);
+        const out = tempDir("vr-out-");
+        const r = await capture({
+            project: "demo",
+            storybook: sb,
+            baselines: tempDir("vr-bl-"),
+            out,
+            workers: 1,
+            waitFor: null,
+            log: () => {},
+        });
+        const item = byFile(r)["demo--play-threw.png"];
+        expect(item).toMatchObject({ status: "failed", reason: "play function failed" });
+        expect(item.console).toEqual([
+            "expected 1 to be 2",
+            "AssertionError: expected 1 to be 2",
+            "    at play (demo.stories.ts:9:3)",
+        ]);
+        expect(existsSync(join(out, "demo--play-threw.png"))).toBe(false);
     });
 
     it("marks a story with no baseline unseeded when it looks as in master's capture", async () => {

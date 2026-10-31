@@ -442,6 +442,19 @@ async function shootOnce(browser, url, { delay, waitFor }) {
                 { timeout: RENDER_TIMEOUT },
             )
             .then((h) => h.jsonValue());
+        // A play function that threw ends the render "finished" without Storybook's error screen.
+        // Storybook's verdict is the exception event it emitted, which the preview's channel keeps
+        // as the last event of its kind (an unhandled error while playing counts too).
+        const played = await frame.evaluate(() => {
+            const channel = /** @type {any} */ (globalThis).__STORYBOOK_PREVIEW__?.channel;
+            const e =
+                channel?.last?.("playFunctionThrewException")?.[0] ??
+                channel?.last?.("unhandledErrorsWhilePlaying")?.[0]?.[0];
+            return e ? [String(e.message ?? ""), String(e.stack ?? "")] : null;
+        });
+        if (played) {
+            return fail(["play function failed", ...played].join("\n"));
+        }
         if (phase === "errored" || phase === "aborted") {
             // Storybook's error screen holds the thrown message and its stack (a play function's
             // failed expect included).
