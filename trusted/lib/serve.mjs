@@ -777,6 +777,7 @@ export function createApp({
         try {
             passkeyState = { ...(await knownKeys()), problem: null };
         } catch (err) {
+            console.error(`visual-review: the passkeys could not be read: ${err.message}`);
             passkeyState = { main: [], pending: [], problem: err.message };
         }
     };
@@ -850,11 +851,13 @@ export function createApp({
      * ponytail: no lock between processes; two writes in the same millisecond can still race.
      * @param {object} t the target
      * @param {(saved: Record<string, object>) => void} change edits the decisions in place
+     * @returns {Record<string, object>} the decisions written, so an answer needs no second read
      */
     const update = (t, change) => {
         const saved = readState(t);
         change(saved);
         writeJson(stateFile(t), saved);
+        return saved;
     };
 
     /**
@@ -888,13 +891,14 @@ export function createApp({
      * undecided. An accept or exclusion an earlier Finish published counts as published (`posted`)
      * only while the branch still holds it: after its commit is reverted, Finish publishes it again.
      * @param {object} t the target
+     * @param {Record<string, object>} [saved] its saved decisions, when just written
      * @returns {Map<string, { decision: string, reason: string | null, bulk?: true, posted?: true,
      *     approvedBefore?: object }>}
      *     by `<project>/<file>`
      */
-    const decisionsOf = (t) => {
+    const decisionsOf = (t, saved = readState(t)) => {
         const mine = new Map();
-        for (const [k, { hash, base, render, ...d }] of Object.entries(readState(t))) {
+        for (const [k, { hash, base, render, ...d }] of Object.entries(saved)) {
             const item = itemOf(t, k);
             const project = k.slice(0, k.indexOf("/"));
             if (
@@ -993,7 +997,16 @@ export function createApp({
         for (const t of list.filter((x) => x.pr !== null && /^[0-9a-f]{40}$/.test(x.head ?? ""))) {
             if (!(await haveCommit(t.head))) {
                 const ref = `+refs/pull/${t.pr}/head:refs/visual-review/pull/${t.pr}`;
-                await gitIn(["fetch", "-q", "origin", ref]).catch(() => {});
+                await gitIn(["fetch", "-q", "origin", ref]).catch((err) => {
+                    // A head GitHub does not have holds no approval to read; any other failure hides some.
+                    if (!/couldn't find remote ref/.test(err.message)) {
+                        const warning = `could not fetch the head of #${t.pr}, so images approved on it before show as undecided: ${err.message}`;
+                        console.error(`visual-review: ${warning}`);
+                        if (!listWarnings.includes(warning)) {
+                            listWarnings.push(warning);
+                        }
+                    }
+                });
             }
             if (await haveCommit(t.head)) {
                 refs.push({ sha: t.head, main: false });
@@ -2448,8 +2461,14 @@ export function createApp({
         let decided = new Map();
         try {
             decided = decisionsOf(t);
-        } catch {
-            // summary() reports an unreadable decisions file; here every image counts as undecided.
+        } catch (err) {
+            // Every image counts as undecided here, so the inbox may offer one already decided: say so,
+            // since summary() reads the file again and may not fail.
+            const warning = `could not read the saved decisions of ${t.id}, so the inbox may list decided images: ${err.message}`;
+            console.error(`visual-review: ${warning}`);
+            if (!listWarnings.includes(warning)) {
+                listWarnings.push(warning);
+            }
         }
         const images = [];
         for (const p of t.projects) {
@@ -2556,14 +2575,15 @@ export function createApp({
      * already posted, in a fixed order, and a digest of them that changes when any of them does.
      * @param {object} t the target
      * @param {boolean} [resign] the decisions an earlier Finish published instead, to sign its record
+     * @param {Record<string, object>} [saved] its saved decisions, when just written
      * @returns {{ list: { project: string, file: string, decision: string, reason: string | null,
      *     approvedBefore?: object }[],
      *     digest: string }} the decisions and their digest
      */
-    const finishList = (t, resign = false) => {
+    const finishList = (t, resign = false, saved = readState(t)) => {
         // A candidate's Finish builds its accept commit again from every decision on it, published or
         // not, and replaces its branch: a second Finish never drops what the first one committed.
-        const list = [...decisionsOf(t)]
+        const list = [...decisionsOf(t, saved)]
             .filter(([, v]) => (t.candidate ? !resign : Boolean(v.posted) === resign))
             .sort(([a], [b]) => (a < b ? -1 : 1))
             .map(([k, v]) => {
@@ -2989,7 +3009,9 @@ export function createApp({
     }
 
     // The unpublished count after a write, so the page's Finish button stays current.
-    const unpublishedOf = (t) => finishList(t).list.length;
+    // From the decisions just written: reading them again could fail after they were saved, and
+    // an error then would tell the page a decision it holds was not taken.
+    const unpublishedOf = (t, saved) => finishList(t, false, saved).list.length;
 
     /**
      * Where a target's image is on this disk, by results.json.
@@ -3208,10 +3230,10 @@ export function createApp({
                 return [403, { error: `${body.project} ${LOCAL}` }];
             }
             if (body.decision === null) {
-                update(t, (saved) => {
-                    delete saved[key];
+                const saved = update(t, (s) => {
+                    delete s[key];
                 });
-                return [200, { ok: true, unpublished: unpublishedOf(t) }];
+                return [200, { ok: true, unpublished: unpublishedOf(t, saved) }];
             }
             if (!sameCapture(t, body, item)) {
                 return [409, { error: `${body.file}: ${CHANGED}` }];
@@ -3252,8 +3274,8 @@ export function createApp({
                 const done = { accept: "accepted", reject: "rejected", exclude: "excluded" }[before.decision];
                 return [409, { error: `${body.file} is already ${done}: Undo it first to change it` }];
             }
-            update(t, (saved) => {
-                saved[key] = {
+            const saved = update(t, (s) => {
+                s[key] = {
                     decision: body.decision,
                     reason,
                     hash: imageHash(item),
@@ -3261,7 +3283,7 @@ export function createApp({
                     ...boundTo(t, item),
                 };
             });
-            return [200, { ok: true, unpublished: unpublishedOf(t) }];
+            return [200, { ok: true, unpublished: unpublishedOf(t, saved) }];
         },
         "POST /api/accept-all": async (_, body) => {
             const { p, t } = await projectOf(String(body.id), body.project);
@@ -3313,14 +3335,14 @@ export function createApp({
             const mine = decisionsOf(t);
             // The files it accepted, so the page updates their tiles in place instead of reloading.
             const files = [];
-            update(t, (saved) => {
+            const saved = update(t, (s) => {
                 for (const item of p.results.items) {
                     const key = `${body.project}/${item.file}`;
                     const was = mine.get(key);
                     // An accept taken as approved before is replaced only by a reject or exclusion.
                     const open = !was || (was.approvedBefore && decision !== "accept");
                     if (inScope(item) && open && !decisionProblem(item, decision, reason)) {
-                        saved[key] = {
+                        s[key] = {
                             decision,
                             reason: decision === "accept" ? null : reason,
                             ...(decision === "accept" && { bulk: true }),
@@ -3332,7 +3354,7 @@ export function createApp({
                     }
                 }
             });
-            return [200, { accepted: files.length, files, unpublished: unpublishedOf(t) }];
+            return [200, { accepted: files.length, files, unpublished: unpublishedOf(t, saved) }];
         },
         // /api/decide, then the same decision on the coupled pull requests showing the same image.
         // An Undo there undoes only the same decision; one decided otherwise is listed in `failed`.

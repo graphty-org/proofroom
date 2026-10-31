@@ -294,10 +294,15 @@ async function walk(run, seed, faults = {}, length = 9) {
                 return res.status;
             }
             // Shown: a project's problem, a target kept from before with why it was not refreshed,
-            // or the pull request list that could not be read.
+            // the passkeys that could not be read, or the pull request list that could not be read.
             const shown =
                 res.body.warning !== null ||
-                res.body.targets.some((t) => t.warnings.length > 0 || t.projects.some((p) => p.problem !== null));
+                res.body.targets.some(
+                    (t) =>
+                        t.warnings.length > 0 ||
+                        (t.passkey?.problem ?? null) !== null ||
+                        t.projects.some((p) => p.problem !== null),
+                );
             assertVisible("GET /api/prs", res, got.lines, got.faults, shown, quiet);
             assertOthersIntact(listed, res.body.targets, faultedIds(got.faults));
             listed = new Map(res.body.targets.map((t) => [t.id, t]));
@@ -514,6 +519,15 @@ describe("random journeys", () => {
         "keeps every decision and every commit whole under random gh, git and state-file failures (seed %i)",
         async (seed) => {
             expect(report(await journey(seed, { rate: 0.12, where: () => true, quiet: true }))).toBeNull();
+        },
+    );
+
+    // Seeds that once broke an invariant at a higher fault rate (#3548): a fault reading the passkey
+    // list or a failed fetch went unshown, and decisions were lost.
+    it.each(only ?? [24, 39, 41, 49, 63, 75])(
+        "keeps every invariant under more frequent gh, git and state-file failures (seed %i)",
+        async (seed) => {
+            expect(report(await journey(seed, { rate: 0.15, where: () => true }))).toBeNull();
         },
     );
 });
