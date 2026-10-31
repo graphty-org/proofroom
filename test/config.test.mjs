@@ -22,6 +22,7 @@ describe("normalizeConfig", () => {
             updateCheck: null,
             candidates: null,
             captureCommand: null,
+            rolling: null,
             usage: false,
             ignoreBranches: [],
             diskBudget: 10,
@@ -52,6 +53,11 @@ describe("normalizeConfig", () => {
         expect(c.projects.g.waitFor).toEqual({ selector: "my-el", method: "ready", failOnConsole: null });
     });
 
+    it("keeps the rolling command the master rolling target is listed with", () => {
+        const c = normalizeConfig({ rolling: "node list.mjs", projects: { a: { storybook: "s" } } });
+        expect(c.rolling).toBe("node list.mjs");
+    });
+
     it("keeps the fontconfig file capture draws with", () => {
         const c = normalizeConfig({ fontconfig: "fonts/fonts.conf", projects: { a: { storybook: "s" } } });
         expect(c.fontconfig).toBe("fonts/fonts.conf");
@@ -64,6 +70,7 @@ describe("normalizeConfig", () => {
         [{ updateCheck: " ", projects: { a: { storybook: "s" } } }, /updateCheck must be/],
         [{ candidates: " ", projects: { a: { storybook: "s" } } }, /candidates must be a shell command/],
         [{ captureCommand: " ", projects: { a: { storybook: "s" } } }, /captureCommand must be a shell command/],
+        [{ rolling: 1, projects: { a: { storybook: "s" } } }, /rolling must be a shell command/],
         [{}, /projects must name/],
         [{ projects: {} }, /projects must name/],
         [{ projects: { "a b": { storybook: "s" } } }, /project id/],

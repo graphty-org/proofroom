@@ -46,6 +46,13 @@ export function githubCodeHost(gh) {
             const open = list.find((p) => p.head?.ref === branch);
             return open ? { number: open.number, html_url: open.html_url } : null;
         },
+        // The open pull requests of this repository whose branch starts with `prefix`; throws when GitHub cannot say.
+        async openChangesOf(prefix) {
+            const list = JSON.parse(await gh(["api", "repos/{owner}/{repo}/pulls?state=open&per_page=100"]));
+            return list
+                .filter((p) => p.head?.ref?.startsWith(prefix))
+                .map((p) => ({ number: p.number, html_url: p.html_url, branch: p.head.ref }));
+        },
         // One pull request as REST answers it: state, head ref and sha.
         change: async (number) => JSON.parse(await gh(["api", `repos/{owner}/{repo}/pulls/${number}`])),
         async updateChange(number, { body }) {

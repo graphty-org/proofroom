@@ -65,6 +65,7 @@ const GH_CALLS = [
     "commentOnPullRequest",
     "createIssue",
     "createPullRequest",
+    "download",
     "downloadCaptures",
     "getRun",
     "hurry",

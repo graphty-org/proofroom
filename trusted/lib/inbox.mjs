@@ -109,7 +109,9 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
     const inbox = { ready: [], notReady: [], capturing: 0, done: 0, rejected: 0, drafts: 0, groups: [] };
     const state = new Map();
     for (const t of targets) {
-        if (t.pr === null || t.local) {
+        // The default branch's target is offered only as the held candidate (`serve --candidate next`),
+        // never as a seed.
+        if ((t.pr === null && !t.candidate) || t.local) {
             continue;
         }
         // A draft is still being worked on: nothing in it is ready for the owner, even a capture
@@ -127,14 +129,14 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
         const undecided = loaded.reduce((n, p) => n + p.undecided, 0);
         // A story whose capture failed: never sent for review until it is fixed, whatever else waits.
         const failedStory = loaded.find((p) => p.failed?.length > 0);
-        const about = { id: t.id, pr: t.pr, title: t.title, url: t.url, headSha: t.headSha };
+        const about = { id: t.id, pr: t.pr, title: t.title, url: t.url, headSha: t.headSha ?? t.candidate?.commit };
         const notReady = notReadyEntry(about, failed, failedStory);
         state.set(t.id, notReady ? "notReady" : "ready");
         if (notReady) {
             inbox.notReady.push(notReady);
         } else if (undecided > 0 || t.unpublished > 0) {
             const previews = loaded.filter((p) => p.preview).length;
-            const key = readyKey({ pr: t.pr, headSha: t.headSha });
+            const key = readyKey(about);
             inbox.ready.push({
                 ...about,
                 undecided,
@@ -157,7 +159,14 @@ export function inboxOf(targets, { now, since = new Map(), coupling = new Map() 
             inbox.done++;
         }
     }
-    inbox.ready.sort((a, b) => b.complete - a.complete || a.undecided - b.undecided || a.since - b.since);
+    // The held candidate first: nightly waits on it.
+    inbox.ready.sort(
+        (a, b) =>
+            Number(b.pr === null) - Number(a.pr === null) ||
+            b.complete - a.complete ||
+            a.undecided - b.undecided ||
+            a.since - b.since,
+    );
     const listed = new Set([...inbox.ready, ...inbox.notReady].map((r) => r.id));
     // Only groups with a member waiting for the owner: the rest have nothing to review together.
     inbox.groups = coupledGroups(
@@ -263,7 +272,11 @@ export function notifyStep(state, inbox, now, gap) {
  * @returns {{ title: string, message: string }} the message
  */
 export function message(fresh, url) {
-    const lines = fresh.map((r) => `#${r.pr} ${r.title}: ${r.undecided} image${r.undecided === 1 ? "" : "s"}`);
+    // The held candidate has no number: its title names it.
+    const lines = fresh.map((r) => {
+        const name = r.pr === null ? r.title : `#${r.pr} ${r.title}`;
+        return `${name}: ${r.undecided} image${r.undecided === 1 ? "" : "s"}`;
+    });
     return { title: `Visual review: ${fresh.length} ready`, message: [...lines, url].join("\n") };
 }
 

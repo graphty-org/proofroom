@@ -17,7 +17,14 @@ import { contentHash } from "../trusted/gate.mjs";
 import { parsePasskeys, recordHash, verifyApproval, verifyRecord } from "../trusted/lib/approval.mjs";
 import { sha256 } from "../trusted/lib/compare.mjs";
 import { approvalIndex } from "../trusted/lib/filters.mjs";
-import { downloadCaptures, hurry, newestMasterCapture, openPullRequests, withRetries } from "../trusted/lib/github.mjs";
+import {
+    downloadCaptures,
+    hurry,
+    newestMasterCapture,
+    onceOnDisk,
+    openPullRequests,
+    withRetries,
+} from "../trusted/lib/github.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
 import { thumbnail } from "../trusted/lib/thumbs.mjs";
 import { PNG } from "pngjs";
@@ -878,6 +885,124 @@ describe("serve: candidates", () => {
         await app.idle();
         const pinned = await startWith((r) => [record(r.master, 2000, true, 2000)], { masterRun: 2001 });
         expect(await offered(pinned)).toMatchObject({ runId: 2001, candidate: null });
+    });
+});
+
+describe("serve: rolling renders", () => {
+    // Two slice runs rendered master's commit: 3000 and 3001, each with one artifact of the fixture.
+    const slices = (r, extra = {}) =>
+        fakeGh({
+            artifacts: { 3000: ["visual-compact-mantine-1"], 3001: ["visual-compact-mantine-2"] },
+            results: {
+                "visual-compact-mantine-1": { commit: r.master, headSha: null, pr: null, runId: 3000 },
+                "visual-compact-mantine-2": { commit: r.master, headSha: null, pr: null, runId: 3001 },
+            },
+            ...extra,
+        });
+    const item = (id, mode, runId) => ({
+        project: "compact-mantine",
+        id,
+        mode,
+        runId,
+        attempt: 1,
+        artifact: `visual-compact-mantine-${runId - 2999}`,
+    });
+    const target = async (s) => (await s.api("GET", "/api/prs")).body.targets.find((t) => t.id === "rolling");
+    const capture = async (s) => (await s.api("GET", "/api/pr/rolling/compact-mantine")).body;
+    const decide = (s, file, decision, reason = null) =>
+        s.api("POST", "/api/decide", { id: "rolling", project: "compact-mantine", file, decision, reason });
+
+    async function startWith(make, { gh = slices, ...extra } = {}) {
+        const box = { list: [], candidates: [] };
+        const r = makeRepo();
+        box.list = make(r);
+        const s = await start({
+            ...r,
+            gh,
+            rolling: async () => box.list,
+            candidates: async () => box.candidates,
+            ...extra,
+        });
+        return Object.assign(s, { box });
+    }
+
+    it("offers exactly the listed renders of the newest render commit, each with its render", async () => {
+        const s = await startWith((r) => [
+            {
+                commit: r.master,
+                at: 5000,
+                items: [item("badge--default", "light", 3000), item("button--primary", "dark", 3001)],
+                pending: [{ project: "compact-mantine", id: "slider--sizes", mode: null, why: "re-render pending" }],
+            },
+            { commit: "9".repeat(40), at: 4000, items: [], pending: [] },
+        ]);
+        const t = await target(s);
+        expect(t.rolling).toMatchObject({ commit: s.master, waiting: 1, older: 0 });
+        expect(t.title).toMatch(new RegExp(`^master rolling: rendered from ${s.master.slice(0, 10)} at `));
+        expect(t.runId).toBe(3001);
+        expect(t.warnings[0]).toMatch(/1 changed renders wait for a re-render/);
+        const body = await capture(s);
+        expect(body.items.map((i) => [i.file, i.render])).toEqual([
+            ["badge--default.light.png", "3000-1"],
+            ["button--primary.dark.png", "3001-1"],
+        ]);
+        expect(body.target.commit).toBe(s.master);
+    });
+
+    it("binds a decision to its render: a newer render of the story drops it, whatever its hash", async () => {
+        const s = await startWith((r) => [
+            { commit: r.master, at: 5000, items: [item("badge--default", "light", 3000)], pending: [] },
+        ]);
+        await target(s);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        expect((await capture(s)).decisions).toMatchObject({ "badge--default.light.png": { decision: "accept" } });
+        // the same picture, rendered again by run 3001
+        s.box.list = [{ commit: s.master, at: 6000, items: [item("badge--default", "light", 3001)], pending: [] }];
+        await s.api("GET", "/api/prs?refresh=1");
+        await until(async () => (await target(s))?.runId === 3001);
+        expect((await capture(s)).decisions).toEqual({});
+    });
+
+    it("refuses its Finish while a candidate is offered", async () => {
+        const held = await startWith((r) => {
+            return [{ commit: r.master, at: 5000, items: [item("badge--default", "light", 3000)], pending: [] }];
+        });
+        held.box.candidates = [{ commit: held.master, runId: 2000, waiting: true, at: 1 }];
+        await target(held);
+        expect((await decide(held, "badge--default.light.png", "accept")).status).toBe(200);
+        const refused = await held.api("POST", "/api/finish", { id: "rolling" });
+        expect(refused.status).toBe(409);
+        expect(refused.body.error).toMatch(/a candidate is held/);
+    });
+
+    it("refuses its Finish while another approval pull request is open", async () => {
+        const s = await startWith(
+            (r) => [{ commit: r.master, at: 5000, items: [item("badge--default", "light", 3000)], pending: [] }],
+            { gh: (r) => slices(r, { prs: [{ number: 77, head: r.head, branch: "visual/approve-0123456789ab" }] }) },
+        );
+        await target(s);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const refused = await s.api("POST", "/api/finish", { id: "rolling" });
+        expect(refused.status).toBe(409);
+        expect(refused.body.error).toMatch(/approval pull request #77 is open/);
+    });
+
+    it("finishes on visual/approve-rolling-<sha>, parented on the render commit", async () => {
+        const s = await startWith((r) => [
+            { commit: r.master, at: 5000, items: [item("badge--default", "light", 3000)], pending: [] },
+        ]);
+        await target(s);
+        expect((await decide(s, "badge--default.light.png", "accept")).status).toBe(200);
+        const { job: ended } = await finishJob(s, "rolling");
+        expect(ended.error).toBeNull();
+        const branch = `visual/approve-rolling-${s.master.slice(0, 12)}`;
+        expect(ended.result.branch).toBe(branch);
+        // the accept commit, under the signed statement commit
+        expect(git(s.remote, "log", "--format=%s", `${s.master}..${branch}`).split("\n")).toContain(
+            `test(workspace): rolling approval of visual baselines rendered at ${s.master.slice(0, 12)}`,
+        );
+        const changed = git(s.remote, "diff", "--name-only", s.master, branch).split("\n");
+        expect(changed.every((f) => /^(visual-baselines|visual-review-approvals)\//.test(f))).toBe(true);
     });
 });
 
@@ -2641,6 +2766,89 @@ describe("newestMasterCapture", () => {
         expect(await newestMasterCapture(gh, "compact-mantine", tmp, FIXTURE_CONFIG)).toBe(
             join(tmp, "2000-1", "compact-mantine"),
         );
+    });
+
+    it("uses a merged head's run, never an earlier commit of the merged branch", async () => {
+        const r = makeRepo();
+        const [m2, b2, b1] = ["4", "3", "2"].map((c) => c.repeat(40));
+        const reference = (headArtifacts) =>
+            newestMasterCapture(
+                fakeGh({
+                    masterRuns: [
+                        { id: null, head: m2, parents: [r.master, b2] },
+                        { id: 3000, head: b2, parents: [b1] },
+                        { id: 2000, head: b1, parents: [r.master] },
+                        { id: 1000, head: r.master },
+                    ],
+                    artifacts: {
+                        3000: headArtifacts,
+                        2000: ["visual-compact-mantine-1"],
+                        1000: ["visual-compact-mantine-1"],
+                    },
+                    results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null } },
+                }),
+                "compact-mantine",
+                join(r.dir, "reference"),
+                FIXTURE_CONFIG,
+            );
+        expect(await reference(["visual-compact-mantine-1"])).toBe(
+            join(r.dir, "reference", "3000-1", "compact-mantine"),
+        );
+        expect(await reference([])).toBe(join(r.dir, "reference", "1000-1", "compact-mantine"));
+    });
+
+    it("reads each run's artifact list once, though the range read and the download both look at it", async () => {
+        const r = makeRepo();
+        const inner = fakeGh({
+            masterRuns: [
+                { id: 3000, head: "3".repeat(40) },
+                { id: 2000, head: r.master },
+            ],
+            artifacts: { 3000: ["build-x"], 2000: ["visual-compact-mantine-1"] },
+            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, runId: 2000 } },
+        });
+        const lists = [];
+        const gh = (args, input) => {
+            if (/\/artifacts\?/.test(args[1] ?? "")) {
+                lists.push(args[1]);
+            }
+            return inner(args, input);
+        };
+        // a reader that cannot range-read, so every run falls through to the whole download
+        const dir = await newestMasterCapture(gh, "compact-mantine", join(r.dir, "reference"), FIXTURE_CONFIG, {
+            reader: async () => null,
+        });
+        expect(dir).toBe(join(r.dir, "reference", "2000-1", "compact-mantine"));
+        expect(lists).toEqual([
+            "repos/{owner}/{repo}/actions/runs/3000/artifacts?per_page=100",
+            "repos/{owner}/{repo}/actions/runs/2000/artifacts?per_page=100",
+        ]);
+    });
+
+    it("walks the default branch once for several projects given the same API cache (#4318)", async () => {
+        const r = makeRepo();
+        const calls = [];
+        const inner = fakeGh({
+            masterRuns: [
+                { id: 3000, head: "3".repeat(40) },
+                { id: 2000, head: r.master },
+            ],
+            artifacts: { 3000: [], 2000: ["visual-compact-mantine-1"] },
+            results: { "visual-compact-mantine-1": { commit: r.master, pr: null, headSha: null, runId: 2000 } },
+        });
+        const gh = (args, input) => {
+            calls.push(args.join(" "));
+            return inner(args, input);
+        };
+        const cache = join(r.dir, "api-cache");
+        const find = (project) =>
+            newestMasterCapture(onceOnDisk(gh, cache), project, join(r.dir, "reference"), FIXTURE_CONFIG, {
+                reader: null,
+            });
+        expect(await find("compact-mantine")).toBe(join(r.dir, "reference", "2000-1", "compact-mantine"));
+        const first = calls.length;
+        expect(await find("graphty-element")).toBeNull();
+        expect(calls.slice(first)).toEqual([]);
     });
 
     it("finds nothing when no master run has a complete capture", async () => {

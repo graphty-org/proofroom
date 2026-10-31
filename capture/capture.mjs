@@ -40,7 +40,7 @@ import {
     shoot,
     webpEncoder,
 } from "./chromium.mjs";
-import { preview, rendered, serve, stories as storiesIn, url as storyUrlAt } from "./storybook.mjs";
+import { preview, rendered, selectStoryIds, serve, stories as storiesIn, url as storyUrlAt } from "./storybook.mjs";
 
 import { pngSize, sha256 } from "../trusted/lib/compare.mjs";
 import {
@@ -85,7 +85,7 @@ export {
     screenshotWholePage,
     VIEWPORT,
 } from "./chromium.mjs";
-export { serve, storyIds, storyUrl } from "./storybook.mjs";
+export { selectStoryIds, serve, storyIds, storyUrl } from "./storybook.mjs";
 
 /**
  * Whether any font draws emoji, asked of fontconfig with one common emoji (U+1F680): the pinned
@@ -223,8 +223,8 @@ let plans = 0;
  * @param {{ project: string, root?: string, storybook?: string, baselines?: string,
  *     stories?: string[] | null, out?: string | null }} options the project of
  *     visual-review.config.json in the git checkout `root` (default the current one); `storybook`
- *     and `baselines` override the config's; `stories` keeps only the story ids starting with one
- *     of these prefixes; `out` is the directory compareSnapshot() writes to (default
+ *     and `baselines` override the config's; `stories` keeps only the stories selectStoryIds() picks
+ *     (a whole id, or every id starting with a prefix); `out` is the directory compareSnapshot() writes to (default
  *     `$PROOFROOM_OUT`)
  * @returns {{ stories: () => Promise<object[]>, shoot: (story: object) => Promise<object>,
  *     close: () => Promise<void> }} each story is a capture line without an image, with its
@@ -265,7 +265,7 @@ export function openCapture({
             const [server, base] = await serve(sb);
             const browser = await openBrowser({ env: chromiumEnv(fontEnv) });
             const all = await storiesIn(sb);
-            const ids = all.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+            const ids = selectStoryIds(all, stories);
             const { value: params } = await probe(browser, preview.url(base), preview);
             return {
                 server,
@@ -329,8 +329,8 @@ export function openCapture({
  *     log?: (line: string) => void }} options `baselines` is where the story settings files are
  *     (no baseline image is read); `fontconfig` is the absolute path of the fonts.conf every
  *     browser draws with (the config's `fontconfig`), null for the host's fonts; `waitFor` is the
- *     project's config entry (see shoot); `stories` keeps only the story ids starting with one of
- *     these prefixes, for a quick local preview, and then compare reports no baseline removed
+ *     project's config entry (see shoot); `stories` keeps only the stories selectStoryIds() picks (a
+ *     whole id, or every id starting with a prefix), and then compare reports no baseline removed
  * @returns {AsyncGenerator<object> & { again: (line: object) => void }} the capture lines
  */
 export function capture({
@@ -358,7 +358,7 @@ export function capture({
         await mkdir(out, { recursive: true });
         await writeFile(join(out, CAPTURE_LINES), "");
         const allIds = await storiesIn(storybook);
-        const ids = allIds.filter((id) => !stories || stories.some((p) => id.startsWith(p)));
+        const ids = selectStoryIds(allIds, stories);
         const [server, base] = await serve(storybook);
         // One browser per worker: every page of a browser shares its one GPU process, so with
         // SwiftShader a busy WebGL page on one worker stalls the others' renders and screenshots.

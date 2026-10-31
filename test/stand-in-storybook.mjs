@@ -81,7 +81,13 @@ if (id === "demo--broken") {
 }
 window.__STORYBOOK_PREVIEW__ = {
     storyStoreValue: {},
-    currentRender: { phase: "completed" },
+    // demo--play-threw (not in PARAMS, so only a test that names it captures it): a play function that
+    // threw, which Storybook ends "finished" with no error screen, its channel keeping the exception event.
+    currentRender: { phase: id === "demo--play-threw" ? "finished" : "completed" },
+    channel: { last: (type) => id === "demo--play-threw" && type === "playFunctionThrewException"
+        ? [{ name: "AssertionError", message: "expected 1 to be 2",
+            stack: "AssertionError: expected 1 to be 2\\n    at play (demo.stories.ts:9:3)" }]
+        : undefined },
     extract: async () => Object.fromEntries(Object.entries(${JSON.stringify(PARAMS)}).map(([k, v]) => [k, { parameters: v }])),
 };
 </script></body></html>`;

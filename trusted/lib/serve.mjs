@@ -85,6 +85,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
     appendFileSync,
+    copyFileSync,
     existsSync,
     mkdirSync,
     readdirSync,
@@ -715,6 +716,13 @@ async function loadResults(dir, name) {
  *     branch, or a Finish rejects something in it; newer ones queue behind it. Decisions are kept by
  *     image hash, so an image decided on one candidate arrives decided on the next. `masterRun`, when
  *     given, wins
+ * @param {() => Promise<{ commit: string, at: number, items: object[], pending: object[] }[]>} [options.rolling]
+ *     lists the default branch's rolling renders (the config's `rolling` command), newest render commit first:
+ *     the page offers the newest commit with an item to decide as the target "rolling". Each decision on it is
+ *     bound to the one render it was taken on (`render`, the run and attempt): a newer render of the story drops
+ *     it, whatever its image hash, nothing counts as "approved before", and its Finish goes on
+ *     `visual/approve-rolling-<sha>`. It is refused while a candidate is offered or another approval pull
+ *     request is open (one approval in flight)
  * @param {string} [options.results] a local directory of `<project>/results.json` instead of CI:
  *     a preview to look at, with no decisions and no Finish
  * @param {string} [options.startCommand] the shell command that starts this server, shown so the
@@ -751,6 +759,7 @@ export function createApp({
     origin,
     masterRun,
     candidates = null,
+    rolling = null,
     results,
     startCommand = null,
     warm,
@@ -856,7 +865,8 @@ export function createApp({
     /**
      * The newest Finish (or update from the default branch, `kind: "update"`), kept after it ends
      * so a reload still shows its result.
-     * @type {{ id: number, kind?: "update", target: string, pr: number | null, branch: string | null,
+     * @type {{ id: number, kind?: "update", target: string, pr: number | null, candidate?: string | null, rolling?: boolean,
+     *     branch: string | null,
      *     running: boolean, step: string | null, result: object | null, error: string | null,
      *     warnings: string[], interrupted?: true } | null}
      */
@@ -960,6 +970,7 @@ export function createApp({
         try {
             passkeyState = { ...(await knownKeys()), problem: null };
         } catch (err) {
+            console.error(`proofroom: the passkeys could not be read: ${err.message}`);
             passkeyState = { main: [], pending: [], problem: err.message };
         }
     };
@@ -986,6 +997,8 @@ export function createApp({
     }
     /** An open pull request that registers a passkey, waiting for the owner to merge it. */
     let passkeyPr = null;
+    /** The open approval pull requests (`visual/approve-*`), as the last list read them: one approval in flight. */
+    let approvalPullRequests = [];
     /** The passkey pull request this server opened: listed until GitHub's list or the file has it. */
     let passkeyOpened = null;
     const busy = (t) => finishing && job?.target === t.id;
@@ -1013,7 +1026,10 @@ export function createApp({
         const p = t.projects.find((x) => x.project === key.slice(0, at));
         return itemIn(p?.results, key.slice(at + 1));
     };
-    const stateFile = (t) => join(stateDir, `${t.id}.json`);
+    // A rolling target's decisions are kept per render commit, so none outlives the render it was taken on.
+    const stateFile = (t) => join(stateDir, `${t.stateId ?? t.id}.json`);
+    // What a rolling decision is bound to besides its image: the render (run and attempt) it was taken on.
+    const boundTo = (t, item) => (t.rolling ? { render: item.render } : {});
     const warned = new Set();
     const warnOnce = (message) => {
         if (!warned.has(message)) {
@@ -1032,7 +1048,7 @@ export function createApp({
      * answer is shared: callers never change it (update changes a copy).
      * @param {object} t the target
      * @returns {Readonly<Record<string, { decision: string, reason: string | null, hash: string | null,
-     *     base?: string | null, bulk?: true, posted?: true, postedAt?: string }>>} the decisions (`postedAt`:
+     *     base?: string | null, bulk?: true, posted?: true, postedAt?: string, render?: string }>>} the decisions (`postedAt`:
      *     the day, YYYY-MM-DD, a reject was posted)
      */
     const readState = (t) => {
@@ -1259,9 +1275,10 @@ export function createApp({
         }
         const project = k.slice(0, k.indexOf("/"));
         if (saved) {
-            const { hash, base, ...d } = saved;
+            const { hash, base, render, ...d } = saved;
             if (
                 imageHash(item) === hash &&
+                (!t.rolling || render === item.render) &&
                 (base === undefined || base === (item.baseline ?? null)) &&
                 !decisionProblem(item, d.decision, d.reason ?? null) &&
                 (d.decision === "reject" || acceptable(t, project))
@@ -1286,8 +1303,13 @@ export function createApp({
      * @param {object} item the results.json item
      * @returns {{ pr: number | null, commit: string, record: string, reviewedAt: string } | null} it
      */
+    // Never on a rolling target: its decisions are bound to one render, never carried by image hash.
     const approvedBefore = (t, project, item) =>
-        ["changed", "new", "unseeded"].includes(item.status) && !item.from && item.capture && acceptable(t, project)
+        !t.rolling &&
+        ["changed", "new", "unseeded"].includes(item.status) &&
+        !item.from &&
+        item.capture &&
+        acceptable(t, project)
             ? (approved.get(`${config.baselines}/${project}/${item.file} ${item.capture}`) ?? null)
             : null;
 
@@ -1357,7 +1379,16 @@ export function createApp({
         for (const t of list.filter((x) => x.pr !== null && /^[0-9a-f]{40}$/.test(x.head ?? ""))) {
             if (!(await haveCommit(t.head))) {
                 const ref = `+refs/pull/${t.pr}/head:refs/visual-review/pull/${t.pr}`;
-                await gitIn(["fetch", "-q", "origin", ref]).catch(() => {});
+                await gitIn(["fetch", "-q", "origin", ref]).catch((err) => {
+                    // A head GitHub does not have holds no approval to read; any other failure hides some.
+                    if (!/couldn't find remote ref/.test(err.message)) {
+                        const warning = `could not fetch the head of #${t.pr}, so images approved on it before show as undecided: ${err.message}`;
+                        console.error(`proofroom: ${warning}`);
+                        if (!listWarnings.includes(warning)) {
+                            listWarnings.push(warning);
+                        }
+                    }
+                });
             }
             if (await haveCommit(t.head)) {
                 refs.push({ sha: t.head, main: false });
@@ -1760,7 +1791,25 @@ export function createApp({
             refetch(t);
             return [409, { error: "Images not on disk: downloading them again; Finish once they are in" }];
         }
-        return null;
+        const busy = t.rolling ? rollingRefused(t) : "";
+        return busy ? [409, { error: busy }] : null;
+    };
+    /**
+     * One approval in flight: a rolling Finish waits while a candidate is offered (its own Finish re-reviews
+     * these pictures) or another approval pull request is open, so the default branch never ends up with a
+     * baselines tree nobody signed.
+     * @param {object} t the rolling target
+     * @returns {string} why its Finish waits, or "" when it may run
+     */
+    const rollingRefused = (t) => {
+        const held = targets.get("master")?.candidate?.commit;
+        if (held) {
+            return `a candidate is held (${held.slice(0, 10)}): review it instead`;
+        }
+        const own = `visual/approve-rolling-${t.rolling.commit.slice(0, 12)}`;
+        const other = approvalPullRequests.find((p) => p.branch !== own);
+        const { changeNoun, numberPrefix } = host.vocabulary;
+        return other ? `approval ${changeNoun} ${numberPrefix}${other.number} is open: one approval at a time` : "";
     };
     const pendingPushText = (t) =>
         `pending push: these screenshots are of ${t.pendingPush.slice(0, 10)}, which the gate is still checking; ` +
@@ -1934,6 +1983,249 @@ export function createApp({
         );
     }
 
+    /** The last rolling list read, kept when the next read fails. */
+    let lastRolling = [];
+    /**
+     * Refuses a rolling list that is not the `rolling` command's shape; malformed entries are left out.
+     * @param {unknown} list what the command printed, parsed
+     * @returns {object[]} the list
+     */
+    const checkedRolling = (list) => {
+        const sha = (v) => typeof v === "string" && /^[0-9a-f]{40}$/.test(v);
+        const item = (i) =>
+            names.includes(i?.project) &&
+            typeof i.id === "string" &&
+            (i.mode === null || typeof i.mode === "string") &&
+            Number.isInteger(i.runId) &&
+            Number.isInteger(i.attempt) &&
+            typeof i.artifact === "string" &&
+            /^[A-Za-z0-9._-]+$/.test(i.artifact);
+        if (!Array.isArray(list)) {
+            throw new TypeError("the rolling command must print [{ commit, at, items, pending }]");
+        }
+        const ok = (o) =>
+            sha(o?.commit) &&
+            typeof o.at === "number" &&
+            Array.isArray(o.items) &&
+            o.items.every(item) &&
+            Array.isArray(o.pending);
+        const bad = list.filter((o) => !ok(o)).length;
+        if (bad > 0) {
+            listWarnings.push(
+                `the rolling command listed ${bad} malformed ${bad === 1 ? "entry" : "entries"}, left out`,
+            );
+        }
+        return list.filter(ok);
+    };
+
+    /**
+     * The default branch's rolling target: the newest render commit with an item to decide (the config's
+     * `rolling` command), or null when there is none or no command. Its pictures are exactly the renders listed,
+     * each from its own slice artifact.
+     * @returns {Promise<object | null>} the target
+     */
+    async function rollingTarget() {
+        if (!rolling) {
+            return null;
+        }
+        // A Finish of it is running: it stays as it is until the Finish ends.
+        if (finishing && targets.get("rolling")) {
+            return targets.get("rolling");
+        }
+        step("listing the rolling renders");
+        try {
+            lastRolling = checkedRolling(await rolling());
+        } catch (err) {
+            console.error(`proofroom: rolling renders not listed: ${err.message}`);
+            listWarnings.push(retryLater("could not list the rolling renders", err.message));
+        }
+        const offers = lastRolling.filter((o) => o.items.length > 0);
+        const pick = offers[0];
+        if (!pick) {
+            return null;
+        }
+        const info = rollingInfo(
+            pick,
+            offers.length - 1,
+            lastRolling.reduce((n, o) => n + o.pending.length, 0),
+        );
+        try {
+            return await buildRolling(info, pick);
+        } catch (err) {
+            return keptOr(info, err);
+        }
+    }
+
+    /**
+     * The rolling target's description, before its captures are loaded.
+     * @param {{ commit: string, at: number }} pick the render commit offered
+     * @param {number} older how many older render commits also have an item to decide
+     * @param {number} waiting how many renders wait for a re-render
+     * @returns {object} the target so far
+     */
+    function rollingInfo(pick, older, waiting) {
+        return {
+            id: "rolling",
+            pr: null,
+            title:
+                `${defaultBranch} rolling: rendered from ${pick.commit.slice(0, 10)} at ${new Date(pick.at).toISOString()}` +
+                (older > 0 ? ` (${older} older render commits)` : ""),
+            url: null,
+            branch: null,
+            stateId: `rolling-${pick.commit}`,
+            // the commit its Finish approves at (accept.mjs treats it as a candidate's, on its own branch)
+            candidate: { commit: pick.commit, queued: [] },
+            rolling: { commit: pick.commit, at: pick.at, older, waiting },
+        };
+    }
+
+    // One rolling render's capture set, by the CI artifact the rolling command names.
+    const rollingArtifact = (i, dir) =>
+        store.artifact
+            ? store.artifact(i.runId, i.artifact, dir)
+            : Promise.reject(new Error(`the ${store.name} capture store cannot fetch a capture set by name`));
+
+    /**
+     * Builds the rolling target from its renders: each listed artifact is downloaded once, and each project's
+     * listed renders are put together in one capture directory of their own (named by the renders it holds), so the
+     * page shows and Finish commits exactly those images. Every item keeps the render it came from (`render`).
+     * @param {object} info the target so far
+     * @param {{ commit: string, items: object[] }} offer the render commit and its items
+     * @returns {Promise<object>} the target
+     */
+    async function buildRolling(info, offer) {
+        const sources = new Map();
+        for (const i of offer.items) {
+            const key = `${i.runId}-${i.attempt}/${i.artifact}`;
+            if (!sources.has(key)) {
+                const dir = join(tmp, `${i.runId}-${i.attempt}`, "slice", i.artifact);
+                sources.set(
+                    key,
+                    rollingArtifact(i, dir).then(
+                        () => loadResults(dir, i.project).then((l) => ({ dir, ...l })),
+                        (err) => ({ dir, results: null, problem: retryLater("download failed", err.message) }),
+                    ),
+                );
+            }
+        }
+        const list = [];
+        for (const name of names) {
+            list.push(await rollingProject(name, offer, sources));
+        }
+        const renders = offer.items.map((i) => [i.runId, i.attempt]).sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+        const newest = { runId: renders[0][0], attempt: renders[0][1] };
+        return {
+            ...info,
+            runId: newest.runId,
+            runAttempt: newest.attempt,
+            runUrl: null,
+            // every run its renders come from, kept on disk (prune)
+            sourceRuns: [...new Set(offer.items.map((i) => i.runId))],
+            projects: list,
+            warnings:
+                info.rolling.waiting > 0
+                    ? [
+                          `${info.rolling.waiting} changed renders wait for a re-render: merges since reach their projects`,
+                      ]
+                    : [],
+        };
+    }
+
+    /**
+     * One project of the rolling target: its listed renders, put together from their artifacts.
+     * @param {string} name the project
+     * @param {{ commit: string, items: object[] }} offer the render commit and its items
+     * @param {Map<string, Promise<object>>} sources each artifact's loaded results, by `<run>-<attempt>/<artifact>`
+     * @returns {Promise<object>} the project's row
+     */
+    async function rollingProject(name, offer, sources) {
+        const mine = offer.items.filter((i) => i.project === name);
+        if (mine.length === 0) {
+            return { project: name, dir: null, results: null, problem: NOT_AFFECTED, logUrl: null };
+        }
+        const items = [];
+        let template = null;
+        let problem = null;
+        for (const i of mine) {
+            const src = await sources.get(`${i.runId}-${i.attempt}/${i.artifact}`);
+            const found = src.results?.items.find((x) => x.id === i.id && (x.mode ?? null) === i.mode);
+            if (found && src.results.commit === offer.commit) {
+                items.push({ ...found, render: `${i.runId}-${i.attempt}`, src: src.dir });
+                template ??= src.results;
+            } else {
+                problem ??=
+                    src.problem ?? `the render of ${i.id} is not in ${i.artifact} at ${offer.commit.slice(0, 10)}`;
+            }
+        }
+        return template
+            ? project(name, rollingCapture(offer.commit, name, template, items), problem)
+            : { project: name, dir: null, results: null, problem, logUrl: null };
+    }
+
+    /**
+     * One project's rolling capture directory, written once (atomically) per set of renders.
+     * @param {string} commit the render commit
+     * @param {string} name the project
+     * @param {object} template a slice's results.json of that commit, for the capture's settings
+     * @param {object[]} items the renders, each with `src` (its artifact's directory)
+     * @returns {string} the directory
+     */
+    function rollingCapture(commit, name, template, items) {
+        const digest = sha256(JSON.stringify(items.map((i) => [i.file, i.render, i.capture ?? null]))).slice(0, 16);
+        const dir = join(tmp, `rolling-${commit.slice(0, 12)}-${digest}`, name);
+        if (existsSync(join(dir, "results.json"))) {
+            return dir;
+        }
+        const part = `${dir}.part-${process.pid}`;
+        rmSync(part, { recursive: true, force: true });
+        mkdirSync(join(part, "baselines"), { recursive: true });
+        for (const i of items) {
+            for (const f of [i.file, join("baselines", i.file)]) {
+                if (existsSync(join(i.src, f))) {
+                    copyFileSync(join(i.src, f), join(part, f));
+                }
+            }
+        }
+        const runs = items.map((i) => i.render.split("-").map(Number)).sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+        writeJson(join(part, "results.json"), {
+            ...template,
+            runId: runs[0][0],
+            runAttempt: runs[0][1],
+            complete: true,
+            expected: items.length,
+            items: items.map((i) => ({ ...i, src: undefined })),
+        });
+        rmSync(dir, { recursive: true, force: true });
+        renameSync(part, dir);
+        return dir;
+    }
+
+    /**
+     * Keeps the open approval pull requests (`visual/approve-*`) of a list that was read; a failed read keeps the last.
+     * @param {object[]} prs the open pull requests
+     * @param {boolean} listed whether the list was read
+     */
+    const rememberApprovals = (prs, listed) => {
+        if (listed) {
+            approvalPullRequests = prs.filter((p) => p.branch.startsWith("visual/approve-"));
+        }
+    };
+
+    /**
+     * Adds the default branch's targets: the seed or candidate ("master") and the rolling renders ("rolling").
+     * @param {Map<string, object>} next the targets being listed
+     */
+    async function addDefaultBranchTargets(next) {
+        const master = await masterTarget();
+        if (master) {
+            next.set("master", master);
+        }
+        const roll = await rollingTarget();
+        if (roll) {
+            next.set("rolling", roll);
+        }
+    }
+
     async function load() {
         const next = new Map();
         if (results) {
@@ -1981,7 +2273,9 @@ export function createApp({
             step("listing pull requests");
             // This refresh's runs (runOf); a failed list keeps what the last one learned.
             let read = new Map();
+            let listed = true;
             const prs = await host.listChanges(config).catch((err) => {
+                listed = false;
                 if (!masterRun && !candidates && kept.length === 0) {
                     throw err;
                 }
@@ -2065,11 +2359,9 @@ export function createApp({
                     ? passkeyOpened.number
                     : null;
             passkeyPr = prs.find((p) => p.branch.startsWith("visual/passkey-"))?.number ?? opened;
+            rememberApprovals(prs, listed);
             for (const t of built) next.set(t.id, t);
-            const master = await masterTarget();
-            if (master) {
-                next.set("master", master);
-            }
+            await addDefaultBranchTargets(next);
         }
         if (!results) {
             for (const t of await localCaptureTargets()) {
@@ -2451,13 +2743,18 @@ export function createApp({
     // Not while a Finish reads its captures, nor after a refresh that could not load some target.
     function prune() {
         // A capture made from the page has no CI run, and keeps none of these folders.
-        const runs = new Set([...targets.values(), ...held.values()].filter((t) => !t.capture).map((t) => t.runId));
+        const all = [...targets.values(), ...held.values()].filter((t) => !t.capture);
+        const runs = new Set(all.flatMap((t) => [t.runId, ...(t.sourceRuns ?? [])]));
         if (results || finishing || runs.has(null) || !existsSync(tmp)) {
             return;
         }
+        // the rolling target's own capture directories
+        const rolled = new Set(
+            all.flatMap((t) => (t.rolling ? t.projects.map((p) => p.dir && basename(dirname(p.dir))) : [])),
+        );
         for (const d of readdirSync(tmp)) {
             const run = /^(\d+)-\d+$/.exec(d)?.[1];
-            if (run && !runs.has(Number(run))) {
+            if ((run && !runs.has(Number(run))) || (d.startsWith("rolling-") && !rolled.has(d))) {
                 rmSync(join(tmp, d), { recursive: true, force: true });
                 forgetImages(join(tmp, d));
             }
@@ -2663,6 +2960,8 @@ export function createApp({
             readyAt: t.readyAt ?? null,
             // On the default branch in candidate mode: the full run offered and the ones queued behind it.
             candidate: t.candidate ?? null,
+            // The rolling target: its render commit, the older ones and how many renders wait for a re-render.
+            rolling: t.rolling ?? null,
             mergeMasterFirst: t.mergeMasterFirst,
             // The changes list's row states: "behind <default branch>", "Changed on <default branch>:
             // N newer baselines", look only.
@@ -2781,8 +3080,14 @@ export function createApp({
         let decided = new Map();
         try {
             decided = decisionsOf(t);
-        } catch {
-            // summary() reports an unreadable decisions file; here every image counts as undecided.
+        } catch (err) {
+            // Every image counts as undecided here, so the inbox may offer one already decided: say so,
+            // since summary() reads the file again and may not fail.
+            const warning = `could not read the saved decisions of ${t.id}, so the inbox may list decided images: ${err.message}`;
+            console.error(`proofroom: ${warning}`);
+            if (!listWarnings.includes(warning)) {
+                listWarnings.push(warning);
+            }
         }
         const images = [];
         for (const p of t.projects) {
@@ -4435,8 +4740,14 @@ export function createApp({
                 const done = { accept: "accepted", reject: "rejected", exclude: "excluded" }[before.decision];
                 return [409, { error: `${body.file} is already ${done}: Undo it first to change it` }];
             }
-            update(t, (saved) => {
-                saved[key] = { decision: body.decision, reason, hash: imageHash(item), base: item.baseline ?? null };
+            update(t, (s) => {
+                s[key] = {
+                    decision: body.decision,
+                    reason,
+                    hash: imageHash(item),
+                    base: item.baseline ?? null,
+                    ...boundTo(t, item),
+                };
             });
             return [200, { ok: true, unpublished: unpublishedOf(t) }];
         },
@@ -4496,14 +4807,14 @@ export function createApp({
             const mine = decisionsOf(t);
             // The files it accepted, so the page updates their tiles in place instead of reloading.
             const files = [];
-            update(t, (saved) => {
+            update(t, (s) => {
                 for (const item of p.results.items) {
                     const key = `${body.project}/${item.file}`;
                     const was = mine.get(key);
                     // An accept taken as approved before is replaced only by a reject or exclusion.
                     const open = !was || (was.approvedBefore && decision !== "accept");
                     if (inScope(item) && open && !decisionProblem(item, decision, reason)) {
-                        saved[key] = {
+                        s[key] = {
                             decision,
                             reason: decision === "accept" ? null : reason,
                             // Not opened, unless the page says these were (`bulk: false`: an Undo
@@ -4511,6 +4822,7 @@ export function createApp({
                             ...(decision === "accept" && body.bulk !== false && { bulk: true }),
                             hash: imageHash(item),
                             base: item.baseline ?? null,
+                            ...boundTo(t, item),
                         };
                         files.push(item.file);
                     }
@@ -4717,6 +5029,9 @@ export function createApp({
                 id: (job?.id ?? 0) + 1,
                 target: t.id,
                 pr: t.pr,
+                // The candidate this Finish approves, so its outcome is never shown as another's.
+                candidate: t.candidate?.commit ?? null,
+                rolling: Boolean(t.rolling),
                 branch: t.branch,
                 running: true,
                 step: "starting",
@@ -4928,7 +5243,13 @@ export function createApp({
      * @param {object} r finish's result
      */
     function candidateFinished(j, t, r) {
-        if (!t.candidate || r.rejects === 0 || !r.issue) {
+        if (r.closedRolling) {
+            j.warnings.push(`closed the rolling approval pull requests it supersedes: ${r.closedRolling.join(", ")}`);
+        }
+        if (r.closeRollingError) {
+            j.warnings.push(r.closeRollingError);
+        }
+        if (!t.candidate || t.rolling || r.rejects === 0 || !r.issue) {
             return;
         }
         if (r.closeError) {
@@ -4940,6 +5261,9 @@ export function createApp({
     }
 
     const finishLabel = (t) => {
+        if (t.rolling) {
+            return `the rolling render ${t.rolling.commit.slice(0, 10)}`;
+        }
         if (t.candidate) {
             return `the candidate ${t.candidate.commit.slice(0, 10)}`;
         }
@@ -4954,6 +5278,7 @@ export function createApp({
         branch: t.branch,
         ...(t.candidate && { candidate: t.candidate.commit }),
         ...(t.localBranch && { localBranch: true }),
+        ...(t.rolling && { rolling: true }),
     });
 
     const tokenOk = (given, expected = token) => {

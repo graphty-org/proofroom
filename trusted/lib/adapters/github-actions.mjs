@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { sha256 } from "../compare.mjs";
-import { downloadCaptures, getRun, hurry, newestCiRun, newestMasterCapture, visualJobs } from "../github.mjs";
+import { download, downloadCaptures, getRun, hurry, newestCiRun, newestMasterCapture, visualJobs } from "../github.mjs";
 
 /**
  * A capture job's state as the Captures screen says it, from GitHub's job and, once it ended, the
@@ -135,6 +135,8 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
             return sets[0]?.expiresAt ?? null;
         },
         newestDefault: (project, dir, config) => newestMasterCapture(gh, project, dir, config),
+        // One capture set by its artifact's name (a rolling render's slice, serve's `rolling`).
+        artifact: (runId, name, dir) => download(gh, runId, name, dir),
         hurry,
         /**
          * Asks CI for a capture of a pull request of this repository (never a fork's, whose branch
