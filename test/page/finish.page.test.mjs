@@ -21,6 +21,7 @@ import {
     BROWSERS,
     TOKEN,
     finishPreview,
+    listAnswer,
     message,
     openNext,
     project,
@@ -344,6 +345,85 @@ describe("the summary sheet", () => {
         await page.keyboard.press("Escape");
         await sheet(page).waitFor();
         expect(await sheet(page).locator("h3").innerText()).toBe(`Finish #${A} Change ${A}`);
+    });
+});
+
+describe("a change whose last snapshot was just decided (issue #1)", () => {
+    it("stays first in the list, needing you, with Finish... [Enter] on its row and Next change reaching it", async () => {
+        // The change being decided, and a smaller one that arrived meanwhile and would sort first.
+        // The server counts each decision, as the real one does.
+        const NEW = "9104";
+        const list = listAnswer([
+            TARGETS()[0],
+            target(Number(NEW), { projects: [project("graphty-element", { reviewable: 3 })] }),
+        ]);
+        const decide = () => {
+            const [p] = list.targets[0].projects;
+            Object.assign(p, { decided: p.decided + 1, undecided: p.undecided - 1 });
+            list.targets[0].unpublished++;
+            return { ok: true };
+        };
+        const page = await open({ list, decide });
+        // The images, so the stage draws and decision keys count.
+        await page.route("**/api/blob/**", (route) =>
+            route.fulfill({
+                status: 200,
+                contentType: "image/png",
+                body: Buffer.from(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/58BAwAI/AL+hc2rNAAAAABJRU5ErkJggg==",
+                    "base64",
+                ),
+            }),
+        );
+        await openChange(page, OPEN);
+        let drawn = null;
+        for (const n of [3, 4]) {
+            // The stage names the snapshot whose images are drawn: a decision key counts from then on.
+            let ready = null;
+            await expect
+                .poll(async () => {
+                    ready = await page.locator("#stage").getAttribute("data-ready");
+                    return ready !== null && ready !== drawn;
+                })
+                .toBe(true);
+            drawn = ready;
+            await page.keyboard.press("KeyA");
+            await expect.poll(() => message(page)).toBe(`Accepted #${n}.`);
+        }
+        await page.locator(".endcard").waitFor();
+        await page.keyboard.press("Escape");
+        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        // The next look at the list (Refresh now, or the 15 s poll) moves the row.
+        await page.locator('[data-act="refresh"]').click();
+        await expect.poll(() => countOf(page, OPEN)).toBe("4 decided, not finished");
+
+        // Decided, not finished is the first section, the decided change its first row and current.
+        const secs = await page.locator(".sec").evaluateAll((ns) => ns.map((n) => n.textContent.trim()));
+        expect(secs.slice(0, 2)).toEqual(["Decided, not finished1", "Needs you1"]);
+        expect(await page.locator(".chg").first().getAttribute("data-chg")).toBe(OPEN);
+        expect(await page.locator(".chg.cur").getAttribute("data-chg")).toBe(OPEN);
+        // It still counts as needing you.
+        expect(await page.title()).toBe("(2) Visual review");
+        // Its Finish... carries Enter, the key the current row's next step takes; Open shows no key.
+        await expect.poll(() => shows(rowOf(page, OPEN).locator('[data-act="finishchg"]'))).toBe("Finish... [Enter]");
+        expect(await shows(rowOf(page, OPEN).locator('[data-act="openchg"]'))).toBe("Open");
+
+        // Next change [Shift+N] from the other change reaches it.
+        await rowOf(page, NEW).click();
+        await expect.poll(() => message(page)).toBe(`Opened #${NEW} Change ${NEW}: 3 undecided.`);
+        await page.keyboard.press("Escape");
+        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await page.keyboard.press("Shift+KeyN");
+        // (The fake's rows keep only their first two decisions: the count after the colon is the fake's.)
+        await expect.poll(() => message(page)).toMatch(new RegExp(`^Opened #${OPEN} Four: `));
+        await page.keyboard.press("Escape");
+        await expect.poll(() => message(page)).toBe("Back to the changes.");
+
+        // Enter on its row opens its summary sheet, without opening the change.
+        await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe(OPEN);
+        await page.keyboard.press("Enter");
+        await sheet(page).waitFor();
+        expect(await sheet(page).locator("h3").innerText()).toBe(`Finish #${OPEN} Four`);
     });
 });
 

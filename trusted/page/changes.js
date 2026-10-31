@@ -8,16 +8,29 @@ import { control } from "./actions.js";
 import { GITHUB_WORDS } from "./messages.js";
 import { ageText, el, fmt, ic, megabytes } from "./ui.js";
 
-/** The sections, in order: key, title, open by default. */
+/**
+ * The sections, in order: key, title, open by default. Decided, not finished sits above Needs you:
+ * Finish is its only step left, so a change whose last snapshot was just decided stays at the top,
+ * where the reviewer is looking (issue #1).
+ */
 export const SECTIONS = [
-    ["needs", "Needs you", true],
     ["decided", "Decided, not finished", true],
+    ["needs", "Needs you", true],
     ["busy", "Capturing or downloading", true],
     ["notready", "Not ready", true],
     ["look", "Look only", true],
     ["nothing", "Nothing to decide", false],
     ["drafts", "Drafts", false],
 ];
+
+/**
+ * Whether a row needs the reviewer: undecided snapshots, or every one decided and only Finish left
+ * (not while it waits in or runs a Finish all).
+ * @param {any} r the row
+ * @returns {boolean} it needs the reviewer
+ */
+export const needsYou = (r) =>
+    r.section === "needs" || (r.section === "decided" && !["queued", "finishing"].includes(r.state));
 
 /** The Sort menu's orders. */
 export const SORTS = { needs: "Needs me first", newest: "Newest", most: "Most undecided", author: "Author" };
@@ -425,15 +438,16 @@ export function sectionsOf(rows, sort, find = "") {
 }
 
 /**
- * The next change that needs you: the first of Needs you, in the order it shows, after the open
- * change (or from the top). Look-only previews are never in Needs you.
+ * The next change that needs you: the first of Decided, not finished or Needs you, in the order
+ * they show, after the open change (or from the top). Look-only previews are never in either.
  * @param {any[]} rows every row
  * @param {string} sort the Sort menu's choice
  * @param {string | null} openId the open change
  * @returns {any | null} the change, or null when no other needs you
  */
 export function nextNeeding(rows, sort, openId) {
-    const needs = sectionsOf(rows, sort).get("needs");
+    const sections = sectionsOf(rows, sort);
+    const needs = [...sections.get("decided"), ...sections.get("needs")].filter(needsYou);
     const at = needs.findIndex((r) => r.id === openId);
     const order = at < 0 ? needs : [...needs.slice(at + 1), ...needs.slice(0, at)];
     return order.find((r) => r.id !== openId) ?? null;
@@ -476,7 +490,9 @@ function rowOf(app, r) {
         acts.push(control(app, "dismiss", { zone: "rows", ctx: { id: r.id } }));
     }
     if (current && app.level === 0) {
-        acts.push(control(app, "openchg", { zone: "rows", ctx: { id: r.id } }));
+        // On a decided change's current row Finish... carries Enter, so Open shows without it.
+        const finishKeyed = acts.some((n) => n.dataset?.act === "finishchg");
+        acts.push(control(app, "openchg", { zone: "rows", ctx: { id: r.id }, keyed: !finishKeyed }));
     }
     return control(app, "pickchg", {
         zone: "rows",
@@ -525,7 +541,7 @@ export function drawChanges(app) {
     performance.mark("changes-start");
     const list = document.getElementById("chg-list");
     const rows = app.changes;
-    const needs = rows.filter((r) => r.section === "needs").length;
+    const needs = rows.filter(needsYou).length;
     document.title = needs > 0 ? `(${needs}) Visual review` : "Visual review";
     const find = app.findText();
     const sections = sectionsOf(rows, app.sort, find);
@@ -537,7 +553,7 @@ export function drawChanges(app) {
         list.replaceChildren(el("p", { class: "muted nochg" }, "No changes yet"));
     } else {
         const out = [];
-        if (rows.every((r) => r.section !== "needs")) {
+        if (!rows.some(needsYou)) {
             const busy = rows.filter((r) => r.section === "busy").length;
             const nothing = rows.filter((r) => r.section === "nothing").length;
             out.push(

@@ -91,8 +91,8 @@ describe("with 50 changes", () => {
         await expect
             .poll(() => sections(page))
             .toEqual([
-                "Needs you8",
                 "Decided, not finished2",
+                "Needs you8",
                 "Capturing or downloading2",
                 "Not ready2",
                 "Look only1",
@@ -100,8 +100,9 @@ describe("with 50 changes", () => {
                 "Drafts1",
             ]);
         expect(await page.locator("#chg-count").innerText()).toBe("50 changes");
-        // The tab's title counts the changes that need the reader.
-        expect(await page.title()).toBe("(8) Visual review");
+        // The tab's title counts the changes that need the reader: Needs you, and Decided, not
+        // finished, whose Finish is still theirs.
+        expect(await page.title()).toBe("(10) Visual review");
         // The top bar measures on the server's clock, as the rows' ages do.
         expect(await page.locator("#srvstatus").innerText()).toBe("Updated 40 s ago");
         // Nothing to decide and Drafts start collapsed.
@@ -150,19 +151,20 @@ describe("with 50 changes", () => {
 
     it("sorts by each order of the Sort menu", async () => {
         const page = await open({ targets: fiftyChanges() });
-        await expect.poll(() => rowIds(page).then((ids) => ids[0])).toBe("3484");
+        // Decided, not finished first, then Needs you.
+        await expect.poll(() => rowIds(page).then((ids) => ids.slice(0, 3))).toEqual(["3480", "3479", "3484"]);
         const sortBy = async (label) => {
             await page.getByRole("button", { name: /^Sort:/ }).click();
             await page.getByRole("menuitemradio", { name: label }).click();
             await expect.poll(() => page.getByRole("button", { name: /^Sort:/ }).innerText()).toBe(`Sort: ${label}`);
         };
         await sortBy("Most undecided");
-        expect((await rowIds(page)).slice(0, 3)).toEqual(["3486", "3482", "3471"]);
+        expect((await rowIds(page)).slice(2, 5)).toEqual(["3486", "3482", "3471"]);
         await sortBy("Author");
-        expect((await rowIds(page))[0]).toBe("3486"); // apowers
+        expect((await rowIds(page))[2]).toBe("3486"); // apowers
         await sortBy("Newest");
         await sortBy("Needs me first");
-        expect((await rowIds(page))[0]).toBe("3484");
+        expect((await rowIds(page))[2]).toBe("3484");
         // The menu closed with focus back on the list, not on Sort.
         await expect.poll(() => page.evaluate(() => globalThis.document.activeElement?.id)).toBe("chg-list");
     });
@@ -196,10 +198,13 @@ describe("with 50 changes", () => {
 
     it("moves the current row with Up and Down and opens it with Enter or its Open button", async () => {
         const page = await open({ targets: fiftyChanges() });
-        await expect.poll(() => currentRow(page)).toBe("3484");
+        // The first change that needs you is current: 3480, decided, not finished.
+        await expect.poll(() => currentRow(page)).toBe("3480");
         await page.locator("#chg-list").focus();
-        await page.keyboard.press("ArrowDown");
-        await expect.poll(() => currentRow(page)).toBe("3481");
+        for (const id of ["3479", "3484", "3481"]) {
+            await page.keyboard.press("ArrowDown");
+            await expect.poll(() => currentRow(page)).toBe(id);
+        }
         // Open [Enter] is printed on the current row only.
         expect(await page.locator('.chg [data-act="openchg"]').count()).toBe(1);
         expect(await page.locator('.chg.cur [data-act="openchg"]').innerText()).toBe("OpenEnter");
@@ -227,11 +232,11 @@ describe("with 50 changes", () => {
         expect(await page.locator('#snaps-head [data-act="nextchange"]').count()).toBe(0);
         await page.locator('#changes [data-act="nextchange"]').click();
         await expect.poll(() => message(page)).toBe("Opened #3483 Change 3483: 18 undecided.");
-        expect(await page.title()).toBe("(8) Visual review");
-        // Walking every change that needs you, by key from the changes, never reaches the
-        // look-only preview, and comes round to the start.
+        expect(await page.title()).toBe("(10) Visual review");
+        // Walking every change that needs you (the two decided, not finished too), by key from the
+        // changes, never reaches the look-only preview, and comes round to the start.
         const seen = new Set();
-        for (let i = 0; i < 9; i++) {
+        for (let i = 0; i < 11; i++) {
             await page.keyboard.press("Escape");
             await expect.poll(() => page.locator('#changes [data-act="nextchange"]').isVisible()).toBe(true);
             await page.keyboard.press("Shift+KeyN");
@@ -240,12 +245,12 @@ describe("with 50 changes", () => {
             seen.add(await page.evaluate(() => new URLSearchParams(globalThis.location.hash.slice(1)).get("change")));
         }
         expect(seen.has("local")).toBe(false);
-        expect(seen.size).toBe(8);
+        expect(seen.size).toBe(10);
     });
 
     it("makes a clicked row current at once, so Enter while its snapshots load opens that change", async () => {
         const page = await open({ targets: fiftyChanges() });
-        await expect.poll(() => currentRow(page)).toBe("3484");
+        await expect.poll(() => currentRow(page)).toBe("3480");
         let release;
         const held = new Promise((resolve) => {
             release = resolve;
@@ -269,6 +274,11 @@ describe("with 50 changes", () => {
 
     it("shows the current change's summary in the Snapshots pane while none is open, with Open", async () => {
         const page = await open({ targets: fiftyChanges() });
+        await expect.poll(() => currentRow(page)).toBe("3480");
+        // Down past the two decided, not finished, to the first change in Needs you.
+        await page.locator("#chg-list").focus();
+        await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("ArrowDown");
         await expect.poll(() => page.locator("#snap-list .summary .title").innerText()).toBe("#3484 Legend overlay");
         const text = await page.locator("#snap-list").innerText();
         expect(text).toContain("by mlin, from CI, 1 of 1 projects ready, 4 min ago");
@@ -353,10 +363,10 @@ describe("the row menu", () => {
             });
         // Tab, as a keyboard reader moves, until the first row's menu button has focus.
         const tabToMenu = async () => {
-            for (let i = 0; i < 20 && (await focused()) !== "3484 rowmenu"; i++) {
+            for (let i = 0; i < 20 && (await focused()) !== "3480 rowmenu"; i++) {
                 await page.keyboard.press("Tab");
             }
-            expect(await focused()).toBe("3484 rowmenu");
+            expect(await focused()).toBe("3480 rowmenu");
         };
         await tabToMenu();
         await page.keyboard.press("Enter");
@@ -674,10 +684,10 @@ describe("a poll while a control has focus", () => {
                 const a = globalThis.document.activeElement;
                 return `${a?.closest(".chg")?.dataset.chg ?? ""} ${a?.dataset.act ?? a?.id}`;
             });
-        for (let i = 0; i < 20 && (await focused()) !== "3484 rowmenu"; i++) {
+        for (let i = 0; i < 20 && (await focused()) !== "3480 rowmenu"; i++) {
             await page.keyboard.press("Tab");
         }
-        expect(await focused()).toBe("3484 rowmenu");
+        expect(await focused()).toBe("3480 rowmenu");
         const lists = () => t.requests.filter((r) => r.startsWith("/api/prs")).length;
         const before = lists();
         t.setList(listAnswer(fiftyChanges(), { updatedAt: NOW - 10000 }));
@@ -685,7 +695,7 @@ describe("a poll while a control has focus", () => {
         await expect.poll(lists).toBe(before + 1);
         // The poll's answer is drawn: the top bar says so.
         await expect.poll(() => page.locator("#srvstatus").innerText()).toBe("Updated 10 s ago");
-        expect(await focused()).toBe("3484 rowmenu");
+        expect(await focused()).toBe("3480 rowmenu");
         await page.keyboard.press("Enter");
         await page.getByRole("menu").waitFor();
         expect(await page.locator(".iline").count()).toBe(0);

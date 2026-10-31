@@ -139,7 +139,7 @@ function owners() {
     const best = new Map();
     for (const node of document.querySelectorAll("[data-key]")) {
         const k = node.dataset.key;
-        if (visible(node) && !(held && ["back", "openrow", "openchg"].includes(node.dataset.act))) {
+        if (visible(node) && !(held && ["back", "openrow", "openchg", "finishchg"].includes(node.dataset.act))) {
             const r = rank(node);
             if (!best.has(k) || r < best.get(k).r) {
                 best.set(k, { node, r });

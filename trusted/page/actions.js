@@ -194,6 +194,8 @@ export const ACTIONS = {
     // Finish from the changes pane (design 7.4): one change, every decided change, and the run.
     finishchg: {
         label: "Finish...",
+        // Printed only on the current row (finish.js), where it takes Enter in Open's place.
+        key: "Enter",
         title: "Opens the summary sheet for this change without opening it",
         writes: true,
         run: (app, ctx) => app.finishSheet([ctx.id]),

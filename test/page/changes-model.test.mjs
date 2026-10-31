@@ -148,9 +148,10 @@ describe("sections", () => {
     const rows = fiftyChanges().map((t) => rowOf(t));
 
     it("come in the design's order, every row in exactly one", () => {
+        // Decided, not finished above Needs you: its only step left is Finish (issue #1).
         expect(SECTIONS.map((s) => s[1])).toEqual([
-            "Needs you",
             "Decided, not finished",
+            "Needs you",
             "Capturing or downloading",
             "Not ready",
             "Look only",
@@ -207,11 +208,12 @@ describe("sections", () => {
 
 describe("Next change", () => {
     const rows = fiftyChanges().map((t) => rowOf(t));
-    const needs = sectionsOf(rows, "needs")
-        .get("needs")
-        .map((r) => r.id);
+    const s = sectionsOf(rows, "needs");
+    // Decided, not finished first (only Finish left), then Needs you, as they show.
+    const needs = [...s.get("decided"), ...s.get("needs")].map((r) => r.id);
 
     it("goes to the next change that needs you, in the order shown, skipping look-only previews", () => {
+        expect(needs.slice(0, 2)).toEqual(s.get("decided").map((r) => r.id));
         expect(nextNeeding(rows, "needs", null).id).toBe(needs[0]);
         expect(nextNeeding(rows, "needs", needs[0]).id).toBe(needs[1]);
         // From the last, round to the first; from one not in Needs you, the first.

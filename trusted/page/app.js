@@ -33,8 +33,8 @@ import {
     captureRowOf,
     changeOf,
     drawChanges,
+    needsYou,
     nextNeeding,
-    sectionsOf,
     SECTIONS,
     sharesOf,
     walkOrder,
@@ -235,7 +235,7 @@ app.statusText = () => {
 };
 
 function drawChangesPane() {
-    const needs = app.changes.filter((c) => c.section === "needs").length;
+    const needs = app.changes.filter(needsYou).length;
     $("rail-c").replaceWith(
         control(app, "pane1", {
             zone: "changes-head",
@@ -1832,7 +1832,7 @@ async function loadFirst() {
         // One change: the page opens straight into it.
         await app.openChange(app.changes[0].id);
     } else {
-        const first = sectionsOf(app.changes, app.sort).get("needs")[0] ?? walkOrder(app)[0];
+        const first = nextNeeding(app.changes, app.sort, null) ?? walkOrder(app)[0];
         app.curId = first?.id ?? null;
         draw();
         say(
