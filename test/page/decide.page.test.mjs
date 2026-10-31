@@ -867,7 +867,7 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         const page = await toEndCard();
         // Enter on the focused Finish: the summary sheet says what Finish will do, before anything.
         await page.keyboard.press("Enter");
-        const sheet = page.locator("dialog.finish[open]");
+        const sheet = page.locator("dialog.finish[open]:not([aria-busy])");
         await sheet.waitFor();
         expect(await sheet.locator("h3").innerText()).toBe(`Finish #${SMALL} Three`);
         expect(await page.evaluate(() => globalThis.document.activeElement.dataset.act)).toBe("finishgo");

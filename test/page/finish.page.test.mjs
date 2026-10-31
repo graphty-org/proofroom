@@ -130,7 +130,8 @@ async function open(options = {}, browser = "chromium") {
     return t.page;
 }
 
-const sheet = (page) => page.locator("dialog.finish[open]");
+// The sheet, its approval prepared (aria-busy while it is prepared).
+const sheet = (page) => page.locator("dialog.finish[open]:not([aria-busy])");
 const rowOf = (page, id) => page.locator(`.chg[data-chg="${id}"]`);
 // A row's count, or null while the row is not shown (its section closed): read as it is, never
 // waited for, so a poll on it ends. WebKit ends the text with a line break after its icon.
@@ -232,6 +233,33 @@ describe("the summary sheet", () => {
             ).toBe(`https://gh/commit/c0ffee1234`);
         });
     }
+
+    it("opens at once while the approval is prepared, and its Finish waits for it", async () => {
+        // The preparation answers only when released: on a large change it takes a minute.
+        let release;
+        const ready = new Promise((resolve) => {
+            release = resolve;
+        });
+        const page = await open({ prepare: () => ready.then(() => ({ required: false })) });
+        await openChange(page, OPEN);
+        await page.locator('#top [data-act="finish"]').click();
+        const s = page.locator('dialog.finish[open][aria-busy="true"]');
+        await s.waitFor();
+        expect(await s.innerText()).toContain(
+            "Signs with: preparing the approval; on a large change this takes a minute.",
+        );
+        await page.keyboard.press("Enter");
+        expect(await message(page)).toBe(`Finish #${OPEN}: The approval is being prepared: wait for it.`);
+        expect(posts("/api/finish")).toEqual([]);
+
+        release();
+        await sheet(page).waitFor();
+        expect(await sheet(page).innerText()).toContain("Signs with: Not yet protected");
+        expect(await focusedAct(page)).toBe("finishgo");
+        await page.keyboard.press("Enter");
+        await expect.poll(() => posts("/api/finish").map((p) => p.body.id)).toEqual([OPEN]);
+        expect(posts("/api/finish-prepare")).toHaveLength(1);
+    });
 
     it("Go to the first undecided closes the sheet on the first undecided snapshot", async () => {
         const page = await open();
@@ -630,7 +658,10 @@ describe("on the review server", () => {
             // The sheet again, now signed with the passkey just registered.
             const sh = sheet(page);
             await sh.waitFor();
-            expect(await sh.innerText()).toMatch(/Signs with: Passkey '(Linux|Mac|Windows) passkey, \d{4}-\d\d-\d\d'/);
+            // Its approval prepared on the review server, the passkey named.
+            await expect
+                .poll(() => sh.innerText())
+                .toMatch(/Signs with: Passkey '(Linux|Mac|Windows) passkey, \d{4}-\d\d-\d\d'/);
             expect(await shows(sh.locator('[data-act="finishgo"]'))).toBe("Sign and finish #123 [Enter]");
             const before = git(r.remote, "rev-parse", "feature");
             await page.keyboard.press("Enter");
