@@ -10,8 +10,8 @@ export const MAP = [
     ["Shift+Up / Shift+Down", "Extend the selection", ["extendup", "extenddown"]],
     [
         "Enter",
-        "Open the current change or snapshot; the default button of a box or the end card; a button you focused with Tab",
-        ["openchg", "openrow"],
+        "Open the current change or snapshot (a decided change: Finish...); the default button of a box or the end card; a button you focused with Tab",
+        ["openchg", "openrow", "finishchg"],
     ],
     ["Esc", "Close a menu, box or selection; else what the Back button says", ["back", "closebox"]],
     ["A", "Accept (or the selection)", ["accept"]],

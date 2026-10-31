@@ -131,6 +131,11 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 const shown = await visibleKeys(page, { unavailable: true });
                 const from = t.actions.length;
                 await page.keyboard.press(press);
+                // Finish... opens its summary sheet once its preview arrives: wait for it, so the
+                // sheet is closed before the Review tab is clicked.
+                if (before.find((k) => k.key === printed)?.act === "finishchg") {
+                    await page.locator("dialog.finish[open]").waitFor();
+                }
                 const acted = await settled(page, from);
                 for (const a of acted) {
                     expect(shown, `${press} ran ${a.a}`).toContainEqual({ act: a.a, key: printed });
@@ -155,8 +160,9 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.locator("#chg-list").focus();
             await page.keyboard.press("ArrowDown");
             await page.keyboard.press("ArrowUp");
-            // 3484 is first in Needs you; walk to 3486 (300 snapshots, two levels at 1280).
-            for (let i = 0; i < 7; i++) {
+            // 3480 is first (Decided, not finished, then Needs you); walk to 3486 (300 snapshots,
+            // two levels at 1280).
+            for (let i = 0; i < 9; i++) {
                 await page.keyboard.press("ArrowDown");
             }
             await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe("3486");
@@ -238,9 +244,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.locator("dialog[open]").waitFor();
             await page.keyboard.press("Escape");
             await expect.poll(() => page.locator("dialog[open]").count()).toBe(0);
-            await expect.poll(() => visibleKeys(page)).toContainEqual({ act: "openchg", key: "Enter" });
+            // The current row is 3480, decided, not finished: its Finish... prints Enter.
+            await expect.poll(() => visibleKeys(page)).toContainEqual({ act: "finishchg", key: "Enter" });
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toBe("Opened #3484 Legend overlay: 3 undecided.");
+            await expect
+                .poll(() => page.locator("dialog.finish[open] h3").innerText())
+                .toBe("Finish #3480 Change 3480");
         });
 
         it("hides letter key hints and ignores those keys while letter keys are off", async () => {
@@ -251,7 +260,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     // Previous [Up] and Next [Down]: arrows, so their boxes stay.
                     { act: "rowup", key: "Up" },
                     { act: "rowdown", key: "Down" },
-                    { act: "openchg", key: "Enter" },
+                    // The current row is decided, not finished: Finish... takes Enter.
+                    { act: "finishchg", key: "Enter" },
                 ]);
             expect(await page.locator("#chg-find").getAttribute("placeholder")).toBe(
                 "Find a change: number, title, branch, author",
@@ -262,8 +272,10 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Shift+KeyN");
             await page.keyboard.press("Slash");
             expect(await settled(page, from)).toEqual([]);
-            // Enter and Esc still act.
+            // Enter and Esc still act: Down past Decided, not finished to the first in Needs you.
             await page.locator("#chg-list").focus();
+            await page.keyboard.press("ArrowDown");
+            await page.keyboard.press("ArrowDown");
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toBe("Opened #3484 Legend overlay: 3 undecided.");
             // The viewer's boxes keep only their arrow and Space halves.

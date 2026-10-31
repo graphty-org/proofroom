@@ -816,7 +816,7 @@ export function installDecide(app) {
             next
                 ? control(app, "nextchange", {
                       zone: "end",
-                      label: `Next change: ${next.label} (${fmt(next.undecided)} undecided)`,
+                      label: `Next change: ${next.label} (${next.undecided > 0 ? `${fmt(next.undecided)} undecided` : "decided, not finished"})`,
                   })
                 : null,
         );

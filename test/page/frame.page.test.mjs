@@ -175,7 +175,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                         // Previous [Up] and Next [Down]: arrows, so their boxes stay.
                         { act: "rowup", key: "Up" },
                         { act: "rowdown", key: "Down" },
-                        { act: "openchg", key: "Enter" },
+                        // The current row is decided, not finished: Finish... takes Enter.
+                        { act: "finishchg", key: "Enter" },
                     ]);
                 const from = t.actions.length;
                 await page.locator("#chg-list").focus();
@@ -190,6 +191,10 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.keyboard.press("ArrowDown");
                 await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).not.toBe(was);
                 await page.keyboard.press("ArrowUp");
+                await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe(was);
+                // Down past Decided, not finished to the first change in Needs you, which Enter opens.
+                await page.keyboard.press("ArrowDown");
+                await page.keyboard.press("ArrowDown");
                 await page.keyboard.press("Enter");
                 await expect.poll(() => message(page)).toMatch(/^Opened #\d+ /);
                 // In the viewer the zoom digits and view letters do nothing either.

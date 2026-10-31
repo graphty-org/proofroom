@@ -831,7 +831,9 @@ export function installFinish(app) {
         } else if (r.state === "finishfailed") {
             out.push(control(app, "retryfinish", { zone: "rows", ctx: { id: r.id } }));
         } else if (r.section === "decided" && r.state !== "finishing") {
-            out.push(control(app, "finishchg", { zone: "rows", ctx: { id: r.id } }));
+            // The current row's Finish... takes Enter in Open's place (issue #1).
+            const keyed = r.id === app.currentChangeId() && app.level === 0;
+            out.push(control(app, "finishchg", { zone: "rows", ctx: { id: r.id }, keyed }));
         }
         for (const l of r.links ?? []) {
             out.push(el("a", { href: l.href, target: "_blank", rel: "noreferrer" }, l.text));
