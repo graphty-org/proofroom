@@ -63,6 +63,43 @@ describe("row states", () => {
         expect(rows.get("3486").source).toBe("CI");
     });
 
+    it("names the held candidate and the rolling renders by their commit, and lists the candidate first", () => {
+        const sha = "660d4ca9ab0123456789012345678901234567ab";
+        const base = { id: "master", pr: null, branch: null, commit: undefined, headSha: undefined };
+        const candidate = rowOf(
+            target(0, {
+                ...base,
+                title: "master candidate 660d4ca9ab (0 queued)",
+                candidate: { commit: sha, runId: 9, queued: [] },
+            }),
+        );
+        expect(candidate).toMatchObject({
+            kind: "candidate",
+            tag: "candidate",
+            label: "master candidate 660d4ca9ab",
+            title: "master candidate 660d4ca9ab (0 queued)",
+            branch: "master at 660d4ca",
+            num: "",
+        });
+        const rolling = rowOf(
+            target(0, {
+                ...base,
+                id: "rolling",
+                title: "master rolling: rendered from 660d4ca9ab",
+                candidate: { commit: sha, queued: [] },
+                rolling: { commit: sha, at: 0, older: 0, waiting: 0 },
+            }),
+        );
+        expect(rolling).toMatchObject({ kind: "rolling", label: "master rolling 660d4ca9ab" });
+        expect(rows.get("master").label).toBe("seed");
+        // The candidate above the change with the fewest snapshots, in every sort.
+        const pr = rows.get("3484");
+        expect(candidate.section).toBe(pr.section);
+        for (const sort of ["needs", "newest", "most", "author"]) {
+            expect(sectionsOf([pr, candidate], sort).get(candidate.section)[0].id).toBe("master");
+        }
+    });
+
     it("gives every badge: behind, pending push, CI pending, stale, shares", () => {
         const text = (id) => rows.get(id).badges.map((b) => b.text);
         expect(text("3485")).toEqual(["behind master"]);

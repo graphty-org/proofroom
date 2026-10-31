@@ -63,7 +63,7 @@ JUnit file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the t
   --workers <n>           browsers in parallel (default: the project's "workers")
   --reference <dir>       the default branch's capture (from \`reference\`): a story with no
                           baseline that looks as it does there is "unseeded", not "new"
-  --stories <prefix,...>  only the story ids starting with a prefix, for a quick local preview
+  --stories <prefix,...>  only the story ids starting with a prefix (a whole id: that story alone)
   --retries <n>           shoot a snapshot that did not pass again, up to n times (default 0,
                           at most 20); each shot is one attempt, and the last one is the result
   --junit <file>          the JUnit file (default: <dir>/junit.xml)
@@ -72,7 +72,9 @@ JUnit file. Exits 0 when every snapshot passed, 1 when one did not, 2 when the t
     reference: `usage: proofroom reference --project <id> --out <dir>
 
 Downloads the default branch's newest complete capture of the project with gh into <dir> and
-prints its directory, or prints nothing when there is none. CI runs it before \`capture\`.`,
+prints its directory, or prints nothing when there is none. CI runs it before \`capture\`.
+With VISUAL_REVIEW_API_CACHE=<dir>, its GitHub API reads are kept in <dir> and read from there by
+the next call given the same directory, so finding several projects' references costs one walk.`,
 
     compare: `usage: proofroom compare --project <id> --captures <dir> [options]
        proofroom compare --baselines <dir> --captures <dir> [--threshold <0..1>] [--include-aa] [options]
@@ -113,7 +115,11 @@ The URL to open, with its session token, is printed at every start.
                      until it stops waiting, its accept commit reaches the default branch, or a
                      Finish rejects something in it, and newer ones queue behind it.
                      Finish opens a pull request of visual/approve-<sha> touching only the
-                     baselines and approvals directories
+                     baselines and approvals directories. With the config's \`rolling\` command,
+                     also lists the newest render commit of the default branch's rolling renders
+                     as the target "rolling": decisions bound to one render, its Finish on
+                     visual/approve-rolling-<sha>, refused while a candidate is offered or another
+                     approval pull request is open
   --candidate <id>   also list the default branch at that workflow run, for seeding baselines
   --master-run <id>  the same as --candidate <id>
   --results <dir>    serve a local directory of <project>/results.json instead, offline, as a
@@ -377,9 +383,11 @@ async function reference(args) {
         return 2;
     }
     const { root, config } = await settings();
-    const { ghRunner } = await import("./lib/github.mjs");
+    const { ghRunner, onceOnDisk } = await import("./lib/github.mjs");
     const { captureStoreFor } = await import("./lib/adapters/index.mjs");
-    const store = captureStoreFor(config, { gh: ghRunner(root) });
+    const cache = process.env.VISUAL_REVIEW_API_CACHE;
+    const gh = cache ? onceOnDisk(ghRunner(root), resolve(cache)) : ghRunner(root);
+    const store = captureStoreFor(config, { gh });
     console.log((await store.newestDefault(values.project, resolve(values.out), config)) ?? "");
     return 0;
 }
@@ -427,6 +435,48 @@ function runOption(values) {
     return { next, masterRun: run === undefined ? undefined : Number(run) };
 }
 
+/**
+ * A config command's JSON list, run in the repository at every refresh; null when the config has none.
+ * @param {string | null} command the shell command
+ * @param {string} root the repository
+ * @param {Function} exec github.mjs exec
+ * @returns {(() => Promise<any>) | null} the lister
+ */
+const lister = (command, root, exec) =>
+    command ? async () => JSON.parse(await exec("sh", ["-c", command], { cwd: root })) : null;
+
+/**
+ * Where local previews of pull requests are: `--previews`, else the main checkout's (not this worktree's), where a
+ * preview script run from any worktree writes them.
+ * @param {string | undefined} given the --previews option
+ * @param {string} root the repository
+ * @param {string} workDir the config's workDir
+ * @returns {Promise<string>} the directory
+ */
+async function previewsDir(given, root, workDir) {
+    if (given) {
+        return resolve(given);
+    }
+    const { execFileSync } = await import("node:child_process");
+    const { dirname } = await import("node:path");
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root })
+        .toString("utf8")
+        .trim();
+    return join(dirname(common), workDir, "local");
+}
+
+/**
+ * Why plain HTTP may not serve on this host: a host other machines reach needs HTTPS.
+ * @param {boolean} https whether a certificate is set
+ * @param {string} host the HOST to bind
+ * @returns {string} the refusal, or "" when it may
+ */
+const plainHttpProblem = (https, host) =>
+    https || LOOPBACK.has(host)
+        ? ""
+        : `proofroom serve: HOST=${host} is reachable from other machines, so the page needs HTTPS: ` +
+          "set HTTPS_CERT_PATH and HTTPS_KEY_PATH, or serve on localhost";
+
 async function serve(args) {
     if (args.includes("--branch")) {
         console.error("proofroom serve: --branch is gone: a --results preview is look only and has no Finish");
@@ -448,11 +498,9 @@ async function serve(args) {
         console.error(HELP.serve);
         return 2;
     }
-    if (!https && !LOOPBACK.has(HOST)) {
-        console.error(
-            `proofroom serve: HOST=${HOST} is reachable from other machines, so the page needs HTTPS: ` +
-                "set HTTPS_CERT_PATH and HTTPS_KEY_PATH, or serve on localhost",
-        );
+    const exposed = plainHttpProblem(https, HOST);
+    if (exposed) {
+        console.error(exposed);
         return 2;
     }
     const { root, config } = await settings();
@@ -469,13 +517,7 @@ async function serve(args) {
         return 1;
     }
     const tmp = join(root, config.workDir);
-    // The main checkout, not this worktree: a preview script run from any worktree writes there.
-    const { execFileSync } = await import("node:child_process");
-    const { dirname } = await import("node:path");
-    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root })
-        .toString("utf8")
-        .trim();
-    const previews = values.previews ? resolve(values.previews) : join(dirname(common), config.workDir, "local");
+    const previews = await previewsDir(values.previews, root, config.workDir);
     const token = sessionToken(join(tmp, "state"));
     const origin = serveOrigin(https, HOST, PORT);
     // Offline: a local results directory is a preview, so nothing is posted to GitHub.
@@ -492,7 +534,8 @@ async function serve(args) {
         token,
         origin,
         masterRun,
-        candidates: next ? async () => JSON.parse(await exec("sh", ["-c", config.candidates], { cwd: root })) : null,
+        candidates: next ? lister(config.candidates, root, exec) : null,
+        rolling: next ? lister(config.rolling, root, exec) : null,
         results: values.results && resolve(values.results),
         warm: true,
         previews: values.results ? null : previews,

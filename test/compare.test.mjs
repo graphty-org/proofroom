@@ -15,7 +15,7 @@ import { captureLines, compareRun, imageLines } from "../trusted/lib/compare-run
 import * as config from "../trusted/lib/config.mjs";
 import { parseResultLines } from "../trusted/lib/result-line.mjs";
 import { validateResults } from "../trusted/lib/results.mjs";
-import { capture as oldCapture } from "./fixtures/capture-0.9/capture/capture.mjs";
+import { capture as oldCapture, CHROMIUM_ARGS as OLD_CHROMIUM_ARGS } from "./fixtures/capture-0.9/capture/capture.mjs";
 import * as oldConfig from "./fixtures/old-gate/trusted/lib/config.mjs";
 import * as oldGate from "./fixtures/old-gate/trusted/gate.mjs";
 
@@ -451,7 +451,13 @@ describe("compare and run on a Storybook", () => {
             ]),
         );
         const options = { project: "demo", storybook: sb, baselines, workers: 2, ...quiet };
-        const before = await oldCapture({ ...options, out: tempDir("vr-old-") });
+        // 0.9 with this version's browser switches: the forced 2x scale lays text out otherwise, and
+        // what is compared here is the tool's results, not the browser's drawing.
+        const was = [...OLD_CHROMIUM_ARGS];
+        OLD_CHROMIUM_ARGS.splice(0, was.length, ...CHROMIUM_ARGS);
+        const before = await oldCapture({ ...options, out: tempDir("vr-old-") }).finally(() =>
+            OLD_CHROMIUM_ARGS.splice(0, OLD_CHROMIUM_ARGS.length, ...was),
+        );
         const { results: after } = await runCapture({ ...options, out: tempDir("vr-new-") });
 
         const statuses = Object.fromEntries(after.items.map((i) => [i.file, i.status]));

@@ -30,6 +30,8 @@ import { noCiStore, plainGitCodeHost } from "./plain-git.mjs";
  *     opens a change, returning its URL
  * @property {(branch: string) => Promise<{ number: number, html_url: string } | null>} [openChangeOf]
  *     the open change of a branch
+ * @property {(prefix: string) => Promise<{ number: number, html_url: string, branch: string }[]>} [openChangesOf] the
+ *     open changes whose branch starts with `prefix`
  * @property {(number: number) => Promise<any>} [change] one change: its state, head ref and sha
  * @property {(number: number, change: { body: string }) => Promise<void>} [updateChange] rewrites its description
  * @property {(number: number) => Promise<void>} [closeChange] closes it
@@ -52,6 +54,8 @@ import { noCiStore, plainGitCodeHost } from "./plain-git.mjs";
  * @property {(run: object, project: string) => Promise<string | null>} [expiresAt] when the host deletes a set
  * @property {(project: string, dir: string, config: { workflow: string, defaultBranch: string }) =>
  *     Promise<string | null>} newestDefault the default branch's newest complete set of a project
+ * @property {(runId: number, name: string, dir: string) => Promise<void>} [artifact] downloads one capture set by
+ *     its artifact's name into `dir` (serve's `rolling` renders)
  * @property {(wanted: (dir: string) => boolean) => void} hurry fetches these first
  * @property {(change: { pr: number, branch: string, head: string }, what: { projects: string[], stories: string[] },
  *     config: { workflow: string }) => Promise<object>} [request] asks CI for a capture of a change (of

@@ -138,9 +138,10 @@
                 }
             ]
         },
-        "api repos/{owner}/{repo}/commits?sha=master&per_page=10": [
+        "api repos/{owner}/{repo}/commits?sha=master&per_page=30": [
             {
-                "sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876"
+                "sha": "6dfc21d0c4b1e0f8a5c2b0d9e7a4f3c2b1a09876",
+                "parents": []
             }
         ]
     }

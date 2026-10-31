@@ -24,6 +24,7 @@ const DEFAULTS = {
     updateCheck: null,
     candidates: null,
     captureCommand: null,
+    rolling: null,
     usage: false,
     ignoreBranches: [],
     diskBudget: 10,
@@ -39,7 +40,7 @@ const REPO_PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\\]+$/;
  * Checks a parsed config and fills in the defaults.
  * @param {unknown} input the parsed JSON
  * @returns {{ defaultBranch: string, workflow: string, baselines: string, approvals: string, approvalFormat?: "change" | "tree", repositoryId?: string, selfApproval?: "allow" | "forbid", codeHost?: string, captureStore?: string, stories?: string, renderer?: string, workDir: string,
- *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, captureCommand: string | null, usage: boolean, ignoreBranches: string[], diskBudget: number, projects: Record<string, { storybook: string,
+ *     commitPrefix: string, issueLabels: string[], fontconfig: string | null, updateCheck: string | null, candidates: string | null, rolling: string | null, captureCommand: string | null, usage: boolean, ignoreBranches: string[], diskBudget: number, projects: Record<string, { storybook: string,
  *     build: string | null, workers: number, seedFromDefaultBranch: boolean, waitFor: { selector:
  *     string, method: string, failOnConsole: string | null } | null }> }} the settings
  */
@@ -185,7 +186,7 @@ function pathSettings(out, fail) {
 }
 
 /**
- * The optional fontconfig file and update check command.
+ * The optional fontconfig file and shell commands.
  * @param {any} raw the parsed config
  * @param {any} out the settings being filled in
  * @param {(msg: string) => never} fail throws the config error
@@ -199,30 +200,25 @@ function commandSettings(raw, out, fail) {
         }
         out.fontconfig = raw.fontconfig;
     }
-    // The shell command `update` runs in the merged checkout before it pushes, when the merge
-    // changed anything outside the baselines. Null: no check.
-    if (raw.updateCheck !== undefined && raw.updateCheck !== null) {
-        if (typeof raw.updateCheck !== "string" || raw.updateCheck.trim() === "") {
-            fail("updateCheck must be a shell command");
+    // The shell commands, each null when absent:
+    // - updateCheck: `update` runs it in the merged checkout before it pushes, when the merge changed anything
+    //   outside the baselines.
+    // - candidates: `serve --candidate next` runs it in the repository to list the default branch's full runs:
+    //   JSON on stdout, `[{ commit, runId, waiting, at }]`.
+    // - rolling: `serve --candidate next` also runs it to list the default branch's rolling renders, newest render
+    //   commit first: JSON on stdout, `[{ commit, at, items: [{ project, id, mode, runId, attempt, artifact }],
+    //   pending: [{ project, id, mode, why }] }]`.
+    // - captureCommand: the review server runs every capture started from its page through it, the `proofroom
+    //   run` command line appended to it (e.g. a wrapper that applies this machine's browser limits, or isolates
+    //   the capture). Null: run as it is.
+    for (const key of ["updateCheck", "candidates", "rolling", "captureCommand"]) {
+        const v = raw[key];
+        if (v !== undefined && v !== null) {
+            if (typeof v !== "string" || v.trim() === "") {
+                fail(`${key} must be a shell command`);
+            }
+            out[key] = v;
         }
-        out.updateCheck = raw.updateCheck;
-    }
-    // The command the review server runs every capture started from its page through, the
-    // `proofroom run` command line appended to it (e.g. a wrapper that applies this machine's
-    // browser limits, or isolates the capture). Null: run as it is.
-    if (raw.captureCommand !== undefined && raw.captureCommand !== null) {
-        if (typeof raw.captureCommand !== "string" || raw.captureCommand.trim() === "") {
-            fail("captureCommand must be a shell command");
-        }
-        out.captureCommand = raw.captureCommand;
-    }
-    // The shell command `serve --candidate next` runs in the repository to list the default
-    // branch's full runs: JSON on stdout, `[{ commit, runId, waiting, at }]`. Null: none.
-    if (raw.candidates !== undefined && raw.candidates !== null) {
-        if (typeof raw.candidates !== "string" || raw.candidates.trim() === "") {
-            fail("candidates must be a shell command");
-        }
-        out.candidates = raw.candidates;
     }
 }
 

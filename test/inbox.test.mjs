@@ -62,6 +62,22 @@ describe("inboxOf", () => {
         expect(inbox).toMatchObject({ capturing: 2, done: 1, rejected: 1 });
     });
 
+    it("offers the held candidate first, by its commit, and never a plain master seed", () => {
+        const commit = "4".repeat(40);
+        const candidate = target(null, [project("a", { undecided: 569 })], {
+            id: "master",
+            title: `master candidate ${commit.slice(0, 10)} (0 queued)`,
+            headSha: undefined,
+            candidate: { commit, runId: 1, queued: [] },
+        });
+        const inbox = inboxOf([...targets, candidate], { now: 1000 });
+        expect(inbox.ready[0]).toMatchObject({ id: "master", pr: null, headSha: commit, undecided: 569 });
+        expect(inbox.ready.filter((r) => r.pr === null)).toHaveLength(1);
+        expect(message([inbox.ready[0]], "https://x").message).toBe(
+            `master candidate ${commit.slice(0, 10)} (0 queued): 569 images\nhttps://x`,
+        );
+    });
+
     it("keeps when a pull request became ready, and orders equal counts by it", () => {
         const two = [target(1, [project("a", { undecided: 1 })]), target(2, [project("a", { undecided: 1 })])];
         const since = new Map([["2@2222", 5]]);

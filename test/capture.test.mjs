@@ -11,6 +11,7 @@ import {
     hasEmojiFont,
     loadSettings,
     pinnedFonts,
+    selectStoryIds,
     serve,
     storyIds,
     storySettings,
@@ -45,6 +46,27 @@ describe("storyUrl", () => {
         expect(storyUrl("a--b", { theme: "light", direction: "rtl" })).toBe(
             "iframe.html?id=a--b&viewMode=story&chromatic=true&globals=theme:light;direction:rtl",
         );
+    });
+
+    it("appends an extra query (VISUAL_REVIEW_STORY_QUERY), and nothing without one", () => {
+        expect(storyUrl("a--b", { theme: "dark" }, "features=all")).toBe(
+            "iframe.html?id=a--b&viewMode=story&chromatic=true&features=all&globals=theme:dark",
+        );
+        expect(storyUrl("a--b", null, "")).toBe("iframe.html?id=a--b&viewMode=story&chromatic=true");
+    });
+});
+
+describe("selectStoryIds", () => {
+    const ids = ["a--labels", "a--labels-p-1", "a--labels-p-10", "a--labels-p-2", "b--one"];
+    it("selects a whole story id alone, not the ids it is a prefix of (#3448)", () => {
+        expect(selectStoryIds(ids, ["a--labels-p-1", "b--one"])).toEqual(["a--labels-p-1", "b--one"]);
+    });
+    it("selects every id starting with an entry that is not a story id", () => {
+        expect(selectStoryIds(ids, ["a--labels-p-"])).toEqual(["a--labels-p-1", "a--labels-p-10", "a--labels-p-2"]);
+        expect(selectStoryIds(ids, ["b--"])).toEqual(["b--one"]);
+    });
+    it("selects every story without entries", () => {
+        expect(selectStoryIds(ids, undefined)).toEqual(ids);
     });
 });
 
