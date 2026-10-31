@@ -48,7 +48,7 @@ export const unstableLine = (project, item) =>
  * @param {{ id: string, mode: string | null, file: string, firstChangedPixels?: number | null }} item the item
  * @returns {string} the line
  */
-export const flakyLine = (project, item) => {
+const flakyLine = (project, item) => {
     const by = Number.isInteger(item.firstChangedPixels) ? `${item.firstChangedPixels} px` : "an unknown amount";
     return `[FLAKY] ${project} ${item.id} ${item.mode ?? "(no mode)"}: first shot differed from its baseline by ${by}, the second matched (flaky/${item.file})`;
 };
