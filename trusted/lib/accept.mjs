@@ -4,9 +4,9 @@
  * (on master, one issue).
  *
  * Accepts and exclusions are written as files under the baselines directory (the config's
- * `baselines`) in a throwaway worktree
- * at the captured head, never in the main checkout, together with one review record, and pushed
- * to the pull request's branch. Rejects become one pull request comment. Every accepted PNG is
+ * `baselines`) in a commit on the captured head, together with one review record, and pushed
+ * to the pull request's branch. The commit is built in a temporary index, never in the main
+ * checkout and with no worktree (writeAcceptCommit); only the push uses a throwaway worktree. Rejects become one pull request comment. Every accepted PNG is
  * the artifact's file only when its bytes hash to the capture results.json names.
  *
  * Baseline PNGs are stored in Git LFS (the repository's .gitattributes). The commit must hold LFS pointers,
@@ -24,7 +24,8 @@
  * lands:
  *
  * 1. the accept commit X: the accepted baselines and the review record, under the baselines
- *    directory (prepareApproval, before the owner is asked; X is not pushed yet);
+ *    directory (prepareApproval, before the owner is asked; X is not pushed yet). It takes seconds
+ *    on a large change, and the review server makes it ahead, as the decisions complete;
  * 2. a Finish that signs the tree: the statement, naming X, the tree of the baselines directory at
  *    X and the pull request (treeStatement); the owner's device signs its SHA-256 (WebAuthn). Any
  *    other Finish: the record; the owner's device signs its SHA-256, and X is amended to X' holding
@@ -47,7 +48,8 @@
 
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { PASSKEYS_FILE, parsePasskeys, verifyApproval } from "./approval.mjs";
@@ -96,13 +98,14 @@ export class AcceptError extends Error {
  * @param {string} cwd the repository or worktree
  * @param {string[]} args git's arguments
  * @param {string} [input] stdin
+ * @param {Record<string, string>} [env] more environment (a temporary index's GIT_INDEX_FILE)
  * @returns {Promise<string>} stdout
  */
-const git = (cwd, args, input) =>
+const git = (cwd, args, input, env = {}) =>
     exec("git", ["-c", "core.hooksPath=/dev/null", ...args], {
         cwd,
         input,
-        env: { ...process.env, HUSKY: "0", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0" },
+        env: { ...process.env, HUSKY: "0", GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", ...env },
     });
 
 /**
@@ -866,6 +869,8 @@ export function commitStatus({ accepted, rejected, excluded, undecided, unloaded
  * @param {ReturnType<typeof import("./config.mjs").normalizeConfig>} input.config the settings
  * @param {number[]} [input.retryDelays] as in finish
  * @param {string | null} [input.repository] as in finish
+ * @param {(step: string) => void} [input.progress] told each step as it starts, with "(n of N done)"
+ *     while it counts images, so the page can show the reviewer what the preparation is doing
  * @returns {Promise<{ commit: string, branch: string, record: string | null, recordBody: object | null,
  *     statement?: object, pushed: boolean, accepts: number, excludes: number, rejects: number }>}
  *     the accept commit and branch it goes to, the record's path and the record to sign, whether
@@ -882,6 +887,7 @@ export async function prepareApproval({
     config,
     retryDelays,
     repository = null,
+    progress = () => {},
 }) {
     const { accepts, rejects } = check(projects, decisions, target.pr, localBranchOf(target));
     const first = (accepts[0] ?? rejects[0])?.capture.results;
@@ -900,7 +906,7 @@ export async function prepareApproval({
         rejects,
         first,
         now,
-        progress: () => {},
+        progress,
         net,
         config,
         push: false,
@@ -1374,10 +1380,11 @@ async function commitAccepts({
         throw new AcceptError(`no usable branch for this target: ${branch}`);
     }
 
-    const writes = await verifiedWrites(accepts);
+    const writes = await verifiedWrites(accepts, progress);
     // The items come from the captured commit, as prepareRecord's did: the record built here must
     // hash to exactly what the owner approved.
     const plan = await planWrites(repo, base, writes, baselines);
+    progress("checking");
     // Finish fetches into refs of its own, never the remote-tracking refs a page reload fetches
     // into at the same time (two fetches of one ref fail on its lock).
     const fetch = fetcher(repo, target, net);
@@ -1421,17 +1428,19 @@ async function commitAccepts({
         version: recordVersion,
     });
 
+    const input = { repo, target, first, now, progress, net, config };
+    const built = await writeAcceptCommit(input, { parent, plan, body, local });
+    const { record } = built;
+    if (!push) {
+        return { commit: built.commit, branch, record };
+    }
+    // The push (and the statement committed on top) is the only step that takes a worktree.
     const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
-    await git(repo, ["worktree", "add", "-q", "--detach", tree, parent]);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, built.commit]);
     try {
-        const input = { repo, target, first, now, progress, net, config };
-        const record = await writeAcceptCommit(input, { tree, plan, writes, body, local });
-        if (!push) {
-            return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, record };
-        }
         if (statement) {
-            const commit = await git(tree, ["rev-parse", "HEAD"]);
+            const commit = built.commit;
             await writeStatement(tree, await treeStatement({ repo, commit, config, pr: target.pr, now }), config);
         }
         const commit = await pushAccepts(input, {
@@ -1501,18 +1510,23 @@ async function commitChange(input, { base, branch, plan, writes, fetch, reposito
     if (why) {
         throw new AcceptError(`this Finish's change statement is not valid (${why})`);
     }
+    const local = previewsOf([...input.rejects, ...writes], target.pr);
+    const built = await writeAcceptCommit(input, {
+        parent: found.parent,
+        plan,
+        body: null,
+        local,
+        statement: push ? statement : null,
+        dead: found.dead,
+    });
+    if (!push) {
+        return { commit: built.commit, branch, record: null, statement };
+    }
+    // The push (and pushChange's rebuild on a moved tip) is the only step that takes a worktree.
     const tree = join(repo, config.workDir, "worktrees", acceptTree(target));
     await removeWorktree(repo, tree);
-    await git(repo, ["worktree", "add", "-q", "--detach", tree, found.parent]);
+    await git(repo, ["worktree", "add", "-q", "--detach", tree, built.commit]);
     try {
-        if (found.dead.length > 0) {
-            await git(tree, ["rm", "-q", "--", ...found.dead]);
-        }
-        const local = previewsOf([...input.rejects, ...writes], target.pr);
-        await writeAcceptCommit(input, { tree, plan, writes, body: null, local, statement: push ? statement : null });
-        if (!push) {
-            return { commit: await git(tree, ["rev-parse", "HEAD"]), branch, record: null, statement };
-        }
         const commit = await pushChange(input, { tree, writes, branch, statement, fetch });
         return { commit, branch, record: null, statement, pending: await pendingPush(repo, target) };
     } catch (err) {
@@ -1769,22 +1783,28 @@ function requireOneHead(accepts, first, pr, base) {
 /**
  * Reads and verifies every new file before git is touched.
  * @param {object[]} accepts the checked accepts and exclusions
+ * @param {(step: string) => void} [progress] the step reporter
  * @returns {Promise<object[]>} the accepts, each accepted image with its `bytes`
  */
-async function verifiedWrites(accepts) {
-    const writes = [];
-    for (const a of accepts) {
+async function verifiedWrites(accepts, progress = () => {}) {
+    const total = accepts.filter((a) => a.decision === "accept" && a.item.status !== "removed").length;
+    const say = (done) =>
+        progress(`checking ${total} accepted ${total === 1 ? "image" : "images"} (${done} of ${total} done)`);
+    say(0);
+    let done = 0;
+    return inBatches(accepts, async (a) => {
         if (a.decision !== "accept" || a.item.status === "removed") {
-            writes.push(a);
-            continue;
+            return a;
         }
         const bytes = await readFile(join(a.capture.dir, a.item.file));
         if (sha256(bytes) !== a.item.capture) {
             throw new AcceptError(`${a.project}/${a.item.file} does not match the capture results.json names`);
         }
-        writes.push({ ...a, bytes });
-    }
-    return writes;
+        if (++done % WRITE_BATCH === 0 || done === total) {
+            say(done);
+        }
+        return { ...a, bytes };
+    });
 }
 
 /**
@@ -1908,20 +1928,28 @@ async function finishedBefore(repo, { tip, base, target, config, items, rejects,
 }
 
 /**
- * Writes the accepts and the record in the accept worktree and commits them. In change mode
- * (`body` null) no record is written: the commit holds `statement` instead, or, with none yet
- * (it is signed next, pushApproval), only the baselines.
+ * Builds the accept commit on `parent`: the accepts and the record (in change mode, `body` null,
+ * no record: `statement` instead, or, with none yet because it is signed next, only the
+ * baselines). No worktree and no process per file: a temporary index read from the parent, every
+ * blob written by one `git hash-object`, one `git update-index`, then `git write-tree` and
+ * `git commit-tree`. The commit is the one `git add` and `git commit` in a worktree of the parent
+ * would make of the same files: a path the attributes give `filter=lfs` gets git-lfs's pointer
+ * (its object stored where git-lfs keeps it, for the push), every other path its bytes, an
+ * overwritten file keeps its mode, and the commit is signed when the repository signs commits.
  * @param {object} input finish's repo, target, first, now, progress and config
- * @param {{ tree: string, plan: object, writes: object[], body: object | null, local: object[],
- *     statement?: object | null }} work the worktree, the planned writes, the record, the local
- *     previews and, in change mode, the statement to commit
- * @returns {Promise<string>} the path of the record (or of the statement; "pending" before it is signed)
+ * @param {{ parent: string, plan: object, body: object | null, local: object[],
+ *     statement?: object | null, dead?: string[] }} work the commit it goes on, the planned writes,
+ *     the record, the local previews, in change mode the statement to commit, and the files to remove
+ * @returns {Promise<{ commit: string, record: string }>} the commit, and the path of the record (or
+ *     of the statement; "pending" before it is signed)
  */
-async function writeAcceptCommit(input, { tree, plan, writes, body, local, statement = null }) {
+async function writeAcceptCommit(input, { parent, plan, body, local, statement = null, dead = [] }) {
     const { repo, target, first, now, progress, config } = input;
     const { baselines } = config;
     const isMaster = target.pr === null && !target.localBranch;
     const tracking = ownRef(config.defaultBranch);
+    /** What the commit changes, in the order the old worktree wrote it: bytes, or null to remove. */
+    const files = new Map();
     // A seed may be built on a commit older than the rule that stores baselines in Git LFS.
     // Carry the default branch's .gitattributes into it, so the PNGs become pointers and the
     // seed merges back with the same rule.
@@ -1930,26 +1958,22 @@ async function writeAcceptCommit(input, { tree, plan, writes, body, local, state
     const rules =
         isMaster && !target.candidate ? await git(repo, ["show", `${tracking}:.gitattributes`]).catch(() => "") : "";
     if (rules !== "") {
-        await put(join(tree, ".gitattributes"), `${rules}\n`);
-        await git(tree, ["add", "--", ".gitattributes"]);
+        files.set(".gitattributes", Buffer.from(`${rules}\n`));
     }
-    progress(`writing ${writes.length} ${writes.length === 1 ? "file" : "files"}`);
+    dead.forEach((path) => files.set(path, null));
     for (const f of plan.files) {
-        await (f.bytes === null ? rm(join(tree, f.path), { force: true }) : put(join(tree, f.path), f.bytes));
+        files.set(f.path, typeof f.bytes === "string" ? Buffer.from(f.bytes) : f.bytes);
     }
     const stamp = now.toISOString().replaceAll(/[-:]/g, "").replace(/\.\d+/, "");
     let record = `${baselines}/reviews/${stamp}-${isMaster ? "master" : `pr${target.pr}`}.json`;
     if (body === null) {
         record = statement ? statementPath(config.approvals, statement) : "pending";
         if (statement) {
-            await put(join(tree, record), `${JSON.stringify(statement, null, 2)}\n`);
-            await git(tree, ["add", "--", record]);
+            files.set(record, Buffer.from(`${JSON.stringify(statement, null, 2)}\n`));
         }
     } else {
-        await put(join(tree, record), `${JSON.stringify(body, null, 2)}\n`);
+        files.set(record, Buffer.from(`${JSON.stringify(body, null, 2)}\n`));
     }
-    progress("committing");
-    await git(tree, ["add", "-A", "--", baselines]);
     const message = commitMessage({
         pr: target.pr,
         branch: target.localBranch ? target.branch : null,
@@ -1963,10 +1987,171 @@ async function writeAcceptCommit(input, { tree, plan, writes, body, local, state
         candidate: target.candidate ?? null,
         rolling: Boolean(target.rolling),
     });
-    // Before a statement is signed, the commit may hold nothing: every file already as decided.
-    await git(tree, ["commit", "-q", "--no-verify", ...(body === null ? ["--allow-empty"] : []), "-F", "-"], message);
-    await requireLfsPointers(tree, plan.items);
-    return record;
+    const work = await mkdtemp(join(tmpdir(), "proofroom-accept-"));
+    const index = (args, stdin) => git(repo, args, stdin, { GIT_INDEX_FILE: join(work, "index") });
+    try {
+        const base = await git(repo, ["rev-parse", "--verify", `${parent}^{commit}`]);
+        await index(["read-tree", base]);
+        // The attributes the commit's own .gitattributes give, as `git add` in a worktree reads them.
+        const zero = "0".repeat(base.length);
+        if (files.has(".gitattributes")) {
+            const rulesOnly = new Map([[".gitattributes", files.get(".gitattributes")]]);
+            await updateIndex({ repo, index, work, zero }, rulesOnly, () => {});
+        }
+        const blobs = await lfsBlobs(repo, index, files, progress);
+        requireLfsPointers(blobs, plan.items);
+        await updateIndex({ repo, index, work, zero }, blobs, progress);
+        progress("committing");
+        const tree = await index(["write-tree"]);
+        // Before a statement is signed, the commit may hold nothing: every file already as decided.
+        if (body !== null && tree === (await git(repo, ["rev-parse", `${base}^{tree}`]))) {
+            throw new AcceptError("nothing to commit: every file is already as decided");
+        }
+        // commit-tree does not read commit.gpgSign as `git commit` does: asked here, so the commit is
+        // signed exactly when the repository signs its commits.
+        const sign = await git(repo, ["config", "--type=bool", "commit.gpgSign"]).catch(() => "false");
+        const commit = await git(
+            repo,
+            ["commit-tree", ...(sign === "true" ? ["-S"] : []), tree, "-p", base, "-F", "-"],
+            cleanMessage(message),
+        ).catch((err) => {
+            // commit-tree says only "error:" when signing fails, where `git commit` names what failed.
+            throw new AcceptError(`failed to write commit object: ${err.message}`);
+        });
+        return { commit, record };
+    } catch (err) {
+        throw err instanceof AcceptError ? err : new AcceptError(err.message);
+    } finally {
+        await rm(work, { recursive: true, force: true });
+    }
+}
+
+/**
+ * A commit message as `git commit -F -` cleans it (its default, `--cleanup=whitespace`): trailing
+ * whitespace and leading and trailing blank lines gone, blank lines runs made one, one final newline.
+ * @param {string} message the message
+ * @returns {string} it, cleaned
+ */
+const cleanMessage = (message) =>
+    `${message
+        .split("\n")
+        .map((l) => l.trimEnd())
+        .join("\n")
+        .replaceAll(/\n{3,}/g, "\n\n")
+        .trim()}\n`;
+
+/** Files written at once while an accept commit is built: enough to keep the disk busy. */
+const WRITE_BATCH = 64;
+
+/**
+ * Runs `work` on every element, WRITE_BATCH at a time, and tells `tell` how far it got.
+ * @param {any[]} list the elements
+ * @param {(x: any) => Promise<any>} work what to do with one
+ * @param {(done: number) => void} [tell] told after each batch
+ * @returns {Promise<any[]>} the results, in order
+ */
+async function inBatches(list, work, tell = () => {}) {
+    const out = [];
+    for (let i = 0; i < list.length; i += WRITE_BATCH) {
+        out.push(...(await Promise.all(list.slice(i, i + WRITE_BATCH).map(work))));
+        tell(Math.min(i + WRITE_BATCH, list.length));
+    }
+    return out;
+}
+
+/**
+ * The blob each changed path gets, as `git add` would make it: for a path whose attributes (read
+ * from the temporary index, so the commit's own .gitattributes count) say `filter=lfs`, git-lfs's
+ * pointer, its object stored in git-lfs's local store for `git lfs push`; for any other, its bytes.
+ * @param {string} repo the repository
+ * @param {(args: string[], stdin?: string) => Promise<string>} index git on the temporary index
+ * @param {Map<string, Buffer | null>} files the changes
+ * @param {(step: string) => void} progress the step reporter
+ * @returns {Promise<Map<string, Buffer | null>>} the blobs (null: removed)
+ */
+async function lfsBlobs(repo, index, files, progress) {
+    const written = [...files.keys()].filter((p) => files.get(p) !== null);
+    const out = new Map(files);
+    if (written.length === 0) {
+        return out;
+    }
+    const attrs = (await index(["check-attr", "--cached", "-z", "--stdin", "filter"], `${written.join("\0")}\0`))
+        .split("\0")
+        .filter((_, i, all) => i % 3 === 0 && i + 2 < all.length && all[i + 2] === "lfs");
+    // ponytail: only git-lfs's filter is applied; a path with another clean filter (or a text
+    // conversion that changes the bytes) would be committed as written. Baselines and records use none.
+    const lfs = attrs.filter((p) => files.get(p).length > 0);
+    if (lfs.length === 0) {
+        return out;
+    }
+    const media = /^LocalMediaDir=(.+)$/m.exec(await git(repo, ["lfs", "env"]))?.[1];
+    if (!media) {
+        throw new AcceptError("git lfs env names no LocalMediaDir: git-lfs cannot store the accepted images");
+    }
+    const total = lfs.length;
+    const say = (done) => progress(`writing the accepted images to Git LFS (${done} of ${total} done)`);
+    say(0);
+    await inBatches(
+        lfs,
+        async (path) => {
+            const bytes = files.get(path);
+            const oid = sha256(bytes);
+            out.set(
+                path,
+                Buffer.from(`version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${bytes.length}\n`),
+            );
+            const object = join(media, oid.slice(0, 2), oid.slice(2, 4), oid);
+            if (!existsSync(object)) {
+                // Written beside it and renamed, so a reader never finds half an object.
+                const part = `${object}.${process.pid}.part`;
+                await put(part, bytes);
+                await rename(part, object);
+            }
+        },
+        say,
+    );
+    return out;
+}
+
+/**
+ * Puts blobs into the temporary index: every blob written by one `git hash-object`, every path set
+ * by one `git update-index`. A path the parent has keeps its mode; a new one is a plain file.
+ * @param {{ repo: string, index: (args: string[], stdin?: string) => Promise<string>, work: string,
+ *     zero: string }} at the repository, git on the temporary index, a scratch directory and the
+ *     null object id
+ * @param {Map<string, Buffer | null>} blobs what each path holds (null: removed)
+ * @param {(step: string) => void} progress the step reporter
+ */
+async function updateIndex({ repo, index, work, zero }, blobs, progress) {
+    const paths = [...blobs.keys()];
+    const written = paths.filter((p) => blobs.get(p) !== null);
+    const total = written.length;
+    const say = (done) => progress(`writing ${total} ${total === 1 ? "file" : "files"} (${done} of ${total} done)`);
+    say(0);
+    const scratch = await inBatches(
+        written.map((path, i) => [path, join(work, "blobs", String(i))]),
+        async ([path, file]) => {
+            await put(file, blobs.get(path));
+            return file;
+        },
+        say,
+    );
+    const shas =
+        total === 0
+            ? []
+            : (await git(repo, ["hash-object", "-w", "--no-filters", "--stdin-paths"], scratch.join("\n"))).split("\n");
+    const dirs = [...new Set(paths.map((p) => dirname(p)))];
+    const modes = new Map(
+        (await index(["ls-files", "-s", "-z", "--", ...dirs.map((d) => `:(literal)${d}`)]))
+            .split("\0")
+            .filter(Boolean)
+            .map((line) => [line.slice(line.indexOf("\t") + 1), line.split(" ")[0]]),
+    );
+    const sha = new Map(written.map((p, i) => [p, shas[i]]));
+    const info = paths.map((p) =>
+        blobs.get(p) === null ? `0 ${zero}\t${p}\0` : `${modes.get(p) ?? "100644"} ${sha.get(p)}\t${p}\0`,
+    );
+    await index(["update-index", "-z", "--index-info"], info.join(""));
 }
 
 /**
@@ -1987,15 +2172,16 @@ async function requireApproval(repo, tracking, statement, approval) {
 
 /**
  * Refuses a commit that holds a raw PNG where a Git LFS pointer belongs.
- * @param {string} tree the accept worktree, its HEAD the new commit
+ * @param {Map<string, Buffer | null>} blobs what the commit holds at each path it changes
  * @param {{ path: string, to: string | null }[]} items the record items
  */
-async function requireLfsPointers(tree, items) {
+function requireLfsPointers(blobs, items) {
     for (const { path, to } of items) {
         if (!path.endsWith(".png") || to === null) {
             continue;
         }
-        if (!isLfsPointer(Buffer.from(await git(tree, ["cat-file", "blob", `HEAD:${path}`])))) {
+        const blob = blobs.get(path);
+        if (!blob || !isLfsPointer(blob)) {
             throw new AcceptError(`${path} was committed as a raw PNG, not a Git LFS pointer: check .gitattributes`);
         }
     }
@@ -2105,7 +2291,9 @@ async function moveLocalBranch({ repo, progress, net }, { tree, branch }) {
         progress(`pushing ${branch}`);
         await net("git lfs push", () => git(tree, ["lfs", "push", remote, "HEAD"]));
         await net("git push", () => git(tree, ["push", "-q", "--no-verify", remote, `HEAD:${merge}`])).catch((err) => {
-            throw new AcceptError(`the accept commit is on ${branch}, but pushing it to ${remote} failed: ${err.message}`);
+            throw new AcceptError(
+                `the accept commit is on ${branch}, but pushing it to ${remote} failed: ${err.message}`,
+            );
         });
     }
     return head;

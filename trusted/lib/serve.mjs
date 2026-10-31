@@ -920,6 +920,14 @@ export function createApp({
     // second ask for the same work (the sheet opened again while it runs) waits for that answer.
     /** @type {Map<string, { key: string, answer: Promise<Array<unknown>> }>} */
     const preparing = new Map();
+    /** The step of the preparation running now, for GET /api/finish-status: the sheet shows it. */
+    let prepareStep = null;
+    // Waits until no preparation runs: a Finish or an update waits for one instead of refusing.
+    const preparedAll = async () => {
+        while (preparing.size > 0) {
+            await Promise.allSettled([...preparing.values()].map((p) => p.answer));
+        }
+    };
     // Fails closed: only a missing file means no pending key; any other failure throws.
     const readPending = () => {
         let text;
@@ -1005,7 +1013,9 @@ export function createApp({
     let approvalPullRequests = [];
     /** The passkey pull request this server opened: listed until GitHub's list or the file has it. */
     let passkeyOpened = null;
-    const busy = (t) => finishing && job?.target === t.id;
+    // A running Finish or update of this target; a preparation (finish-prepare, or one made ahead)
+    // never blocks decisions.
+    const busy = (t) => finishing && job?.running === true && job.target === t.id;
     const BUSY = "a Finish is running on this target: wait for it to end";
 
     /**
@@ -1146,6 +1156,7 @@ export function createApp({
         const stat = writeJson(file, saved);
         savedStates.set(file, { stamp: stampOf(stat), saved });
         patchIndex(t, was, saved, touched);
+        prepareSoon(t.id);
     };
 
     /**
@@ -3371,8 +3382,9 @@ export function createApp({
     };
 
     /**
-     * Makes a Finish's accept commit in the accept worktree, holding the Finish lock meanwhile so
-     * nothing else uses that worktree.
+     * Makes a Finish's accept commit (no worktree: accept.mjs builds it in a temporary index),
+     * holding the Finish lock meanwhile, so no Finish fetches into the same refs and no capture it
+     * reads is pruned. Each step is kept in `prepareStep` for the sheet.
      * @param {object} t the target
      * @param {{ captures: object, list: object[] }} work as finishWork returns
      * @param {Date} now the Finish's time
@@ -3391,6 +3403,9 @@ export function createApp({
                 config,
                 retryDelays,
                 repository: await repositoryId(),
+                progress: (step) => {
+                    prepareStep = { target: t.id, step };
+                },
             });
             return { prepared };
         } catch (err) {
@@ -3400,6 +3415,101 @@ export function createApp({
             throw err;
         } finally {
             finishing = false;
+            prepareStep = null;
+        }
+    }
+
+    /**
+     * Starts a preparation (prepareAnswer) and keeps it in `preparing` until it ends; then the next
+     * one made ahead may start.
+     * @param {object} t the target
+     * @param {object} work as finishWork returns
+     * @param {{ resign: boolean, trusted: object[], here: object[], key: string }} how as prepareAnswer takes it
+     * @returns {Promise<Array<unknown>>} the answer
+     */
+    function startPrepare(t, work, how) {
+        const answer = prepareAnswer(t, work, how);
+        preparing.set(t.id, { key: how.key, answer });
+        return answer.finally(() => {
+            preparing.delete(t.id);
+            kickAhead();
+        });
+    }
+
+    /** Targets whose decisions changed, to be prepared ahead when they call for a signature. */
+    const wanted = new Set();
+    /** A timer per target prepared ahead, to prepare it again once its approval expires. */
+    const expiries = new Map();
+    /** The run of preparations made ahead, while one goes on (idle() waits for it). */
+    let aheadRun = null;
+    const prepareSoon = (id) => {
+        wanted.add(id);
+        kickAhead();
+    };
+    function kickAhead() {
+        aheadRun ??= (async () => {
+            // After the request that changed the decisions has been answered.
+            await new Promise((resolve) => setImmediate(resolve));
+            while (wanted.size > 0 && preparing.size === 0 && !finishing) {
+                await prepareAhead();
+            }
+        })().finally(() => {
+            aheadRun = null;
+        });
+    }
+
+    /**
+     * Prepares ahead, in the background, the approval a target's Finish will ask the owner to
+     * sign, so its sheet has it at once: when its decisions are complete (nothing undecided or
+     * unloaded, and in tree mode nothing rejected), it commits something, and a passkey for this
+     * host is known. One preparation at a time, never while a Finish runs, and never blocking a
+     * decision; a stale approval (its decisions changed) is dropped, and one prepared ahead is
+     * prepared again when it expires.
+     */
+    async function prepareAhead() {
+        const [id] = wanted;
+        wanted.delete(id);
+        const t = targets.get(id);
+        try {
+            if (!t || !keysKnown() || t.local || t.pendingPush || t.projects.some((p) => p.evicted)) {
+                return;
+            }
+            if (t.rolling && rollingRefused(t)) {
+                return;
+            }
+            const resign = resignOf(t);
+            const work = finishWork(t, resign);
+            const kept = approvals.get(id);
+            const complete = changeMode()
+                ? work.undecided === 0 && work.unloaded.length === 0
+                : signingProblem(t, work) === null;
+            const signs = complete && commitsOf(work);
+            if (!signs && !kept) {
+                return;
+            }
+            const { trusted } = await knownKeys();
+            const here = trusted.filter((k) => k.rpId === rpId);
+            const key = prepareKey(work, here);
+            // Prepared for other decisions: never offered again.
+            if (kept && kept.stage !== "signed" && kept.key !== key) {
+                approvals.delete(id);
+            }
+            const fresh = kept?.key === key && kept.stage !== "signed" && kept.expires > Date.now();
+            if (preparing.size > 0 || finishing) {
+                // Its turn comes when that preparation or Finish ends.
+                wanted.add(id);
+                return;
+            }
+            if (!signs || here.length === 0 || fresh) {
+                return;
+            }
+            await startPrepare(t, work, { resign, trusted, here, key });
+            clearTimeout(expiries.get(id));
+            const again = setTimeout(() => prepareSoon(id), APPROVAL_MS + 1000);
+            again.unref?.();
+            expiries.set(id, again);
+        } catch (err) {
+            console.error(`proofroom: preparing the approval of ${id} ahead failed: ${err.message}`);
         }
     }
 
@@ -4969,6 +5079,7 @@ export function createApp({
             if ([...main, ...pending].some((k) => k.id === body.credentialId)) {
                 return [409, { error: "this passkey is already registered" }];
             }
+            await preparedAll();
             if (finishing) {
                 return [409, { error: "a Finish is running: register when it ends" }];
             }
@@ -5013,6 +5124,7 @@ export function createApp({
             }
             const work = finishWork(t, resign);
             if (body.approval !== undefined) {
+                await preparedAll();
                 if (finishing) {
                     return [409, { error: "a Finish is already running" }];
                 }
@@ -5027,23 +5139,24 @@ export function createApp({
             if (same?.key === key) {
                 return same.answer;
             }
-            const kept = approvals.get(t.id);
-            if (kept?.key === key && kept.stage !== "signed" && kept.expires >= Date.now()) {
-                return kept.answer;
+            const kept = () => {
+                const k = approvals.get(t.id);
+                return k?.key === key && k.stage !== "signed" && k.expires >= Date.now() ? k.answer : null;
+            };
+            // Prepared already (ahead, as the decisions completed): at once.
+            if (kept()) {
+                return kept();
             }
-            if (preparing.size > 0) {
-                return [409, { error: "another Finish is being prepared: press Finish again when it is ready" }];
+            // Another preparation (made ahead, of other decisions or of another change): this one
+            // starts when it ends, and the sheet shows the wait meanwhile.
+            await preparedAll();
+            if (kept()) {
+                return kept();
             }
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];
             }
-            const answer = prepareAnswer(t, work, { resign, trusted, here, key });
-            preparing.set(t.id, { key, answer });
-            try {
-                return await answer;
-            } finally {
-                preparing.delete(t.id);
-            }
+            return startPrepare(t, work, { resign, trusted, here, key });
         },
         "POST /api/finish": async (_, body) => {
             const t = await targetOf(String(body.id));
@@ -5055,6 +5168,7 @@ export function createApp({
             if (refused) {
                 return refused;
             }
+            await preparedAll();
             if (finishing) {
                 return [409, { error: "a Finish is already running" }];
             }
@@ -5112,7 +5226,8 @@ export function createApp({
             });
             return [202, { job }];
         },
-        "GET /api/finish-status": async () => [200, { job }],
+        // `preparing`: the step of the preparation running now (`{ target, step }`), for the sheet.
+        "GET /api/finish-status": async () => [200, { job, preparing: prepareStep }],
         // Usage events (config `usage`): whether the page sends them, and the page's batches,
         // appended to usage-events.jsonl. Off, nothing is written.
         "GET /api/usage-setting": async () => [200, { on: config.usage === true }],
@@ -5137,6 +5252,7 @@ export function createApp({
             if (t.local || t.pr === null) {
                 return [403, { error: `only a pull request is updated from ${defaultBranch}` }];
             }
+            await preparedAll();
             if (finishing) {
                 return [409, { error: "a Finish or an update is already running" }];
             }
@@ -5192,6 +5308,7 @@ export function createApp({
             j.step = null;
             finishing = false;
             persist(j);
+            kickAhead();
         }
         if (j.result) {
             await refresh().catch((err) => console.error(`proofroom: refresh failed: ${err.message}`));
@@ -5284,6 +5401,7 @@ export function createApp({
             j.step = null;
             finishing = false;
             persist(j);
+            kickAhead();
         }
     }
 
@@ -5489,9 +5607,11 @@ export function createApp({
      */
     handler.idle = async () => {
         await captures.idle();
-        while (making.size || budgeting) {
+        while (making.size || budgeting || preparing.size || aheadRun) {
             await Promise.allSettled([...making.values()].map((m) => m.done));
             await budgeting;
+            await preparedAll();
+            await aheadRun;
         }
     };
     /**
