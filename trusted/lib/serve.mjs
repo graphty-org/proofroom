@@ -913,9 +913,13 @@ export function createApp({
      * @type {Map<string, { stage: "record" | "tree" | "signed", challenge: string, commit: string,
      *     branch: string, record: string, recordBody: object, pushed: boolean, tree: boolean,
      *     change: boolean, resign: boolean, statement?: object, now: string, work: object, digest: string,
-     *     expires: number }>}
+     *     expires: number, key?: string, answer?: Array<unknown> }>}
      */
     const approvals = new Map();
+    // The finish-prepare running now, by target: what it prepares (prepareKey) and its answer. A
+    // second ask for the same work (the sheet opened again while it runs) waits for that answer.
+    /** @type {Map<string, { key: string, answer: Promise<Array<unknown>> }>} */
+    const preparing = new Map();
     // Fails closed: only a missing file means no pending key; any other failure throws.
     const readPending = () => {
         let text;
@@ -3400,6 +3404,92 @@ export function createApp({
     }
 
     /**
+     * What finish-prepare prepares: the decisions (their digest), the captures they were made on and
+     * the passkeys that may sign. The same key, the same accept commit and challenge.
+     * @param {{ digest: string, captures: object }} work as finishWork returns
+     * @param {{ id: string }[]} here the trusted keys for this host
+     * @returns {string} the key
+     */
+    const prepareKey = (work, here) =>
+        JSON.stringify([
+            work.digest,
+            Object.values(work.captures).map((c) => [c.results.commit, c.results.headSha]),
+            here.map((k) => k.id),
+        ]);
+
+    /**
+     * POST /api/finish-prepare's first call: the accept commit made, and what the owner signs.
+     * @param {object} t the target
+     * @param {object} work as finishWork returns
+     * @param {{ resign: boolean, trusted: object[], here: object[], key: string }} how as the route
+     *     found it
+     * @returns {Promise<Array<unknown>>} the answer
+     */
+    async function prepareAnswer(t, work, { resign, trusted, here, key }) {
+        // A change statement signs exactly what this Finish decides, whatever is left undecided.
+        // This is only the guess of the last refresh: the format is decided below, by what
+        // prepareApproval built from the freshly fetched default branch.
+        const guess = changeMode() ? null : signingProblem(t, work);
+        const keyless = prepareWithoutKey(t, work, { trusted, here, unsigned: guess });
+        if (keyless) {
+            return keyless;
+        }
+        const now = new Date();
+        // The accept commit is made now, in the accept worktree: nothing else may use it meanwhile.
+        const { prepared, refused: notPrepared } = await prepareLocked(t, work, now);
+        if (notPrepared) {
+            return notPrepared;
+        }
+        if (resign && !prepared.pushed) {
+            return [409, { error: "the earlier Finish's record is not on the branch tip any more: reload the page" }];
+        }
+        // A tree statement is never signed over rejected or undecided images, whatever the guess.
+        const unsigned = prepared.statement ? null : signingProblem(t, work);
+        // Signing an earlier Finish's record signs nothing else: the tree is a Finish's of its own.
+        const tree = !unsigned && !resign;
+        // The tree holds the record, so signing the tree signs the decisions too: one approval.
+        // In change mode the one approval is of the change statement prepareApproval built.
+        const statement =
+            prepared.statement ??
+            (tree ? await treeStatement({ repo, commit: prepared.commit, config, pr: t.pr, now }) : undefined);
+        const challenge = recordHash(statement ?? prepared.recordBody).toString("base64url");
+        const answer = [
+            200,
+            {
+                required: true,
+                signs: prepared.statement ? "change" : tree ? "tree" : "record",
+                tree: tree && !prepared.statement,
+                resign,
+                ...(tree && { statement }),
+                ...(unsigned && { unsigned }),
+                challenge,
+                rpId,
+                allowCredentials: here.map((k) => k.id),
+                record: prepared.recordBody,
+                accepts: prepared.accepts,
+                excludes: prepared.excludes,
+                rejects: prepared.rejects,
+            },
+        ];
+        approvals.set(t.id, {
+            ...prepared,
+            key,
+            answer,
+            stage: tree ? "tree" : "record",
+            change: Boolean(prepared.statement),
+            challenge,
+            statement,
+            tree,
+            resign,
+            now: now.toISOString(),
+            work,
+            digest: work.digest,
+            expires: Date.now() + APPROVAL_MS,
+        });
+        return answer;
+    }
+
+    /**
      * The owner's approval POST /api/finish carries, checked against what finish-prepare built and
      * signed: the tree statement's approval when the Finish signs the tree, else the commit holding
      * the signed record.
@@ -4921,76 +5011,39 @@ export function createApp({
             if (refused) {
                 return refused;
             }
-            if (finishing) {
-                return [409, { error: "a Finish is already running" }];
-            }
             const work = finishWork(t, resign);
             if (body.approval !== undefined) {
+                if (finishing) {
+                    return [409, { error: "a Finish is already running" }];
+                }
                 return signPrepared(t, work, body);
             }
             const { trusted } = await knownKeys();
-            // A change statement signs exactly what this Finish decides, whatever is left undecided.
-            // This is only the guess of the last refresh: the format is decided below, by what
-            // prepareApproval built from the freshly fetched default branch.
-            const guess = changeMode() ? null : signingProblem(t, work);
             const here = trusted.filter((k) => k.rpId === rpId);
-            const keyless = prepareWithoutKey(t, work, { trusted, here, unsigned: guess });
-            if (keyless) {
-                return keyless;
+            const key = prepareKey(work, here);
+            // The same work prepared already, or being prepared now: its answer, not a second
+            // accept commit (that takes a minute on a large change) and never a conflict.
+            const same = preparing.get(t.id);
+            if (same?.key === key) {
+                return same.answer;
             }
-            const now = new Date();
-            // The accept commit is made now, in the accept worktree: nothing else may use it meanwhile.
-            const { prepared, refused: notPrepared } = await prepareLocked(t, work, now);
-            if (notPrepared) {
-                return notPrepared;
+            const kept = approvals.get(t.id);
+            if (kept?.key === key && kept.stage !== "signed" && kept.expires >= Date.now()) {
+                return kept.answer;
             }
-            if (resign && !prepared.pushed) {
-                return [
-                    409,
-                    { error: "the earlier Finish's record is not on the branch tip any more: reload the page" },
-                ];
+            if (preparing.size > 0) {
+                return [409, { error: "another Finish is being prepared: press Finish again when it is ready" }];
             }
-            // A tree statement is never signed over rejected or undecided images, whatever the guess.
-            const unsigned = prepared.statement ? null : signingProblem(t, work);
-            // Signing an earlier Finish's record signs nothing else: the tree is a Finish's of its own.
-            const tree = !unsigned && !resign;
-            // The tree holds the record, so signing the tree signs the decisions too: one approval.
-            // In change mode the one approval is of the change statement prepareApproval built.
-            const statement =
-                prepared.statement ??
-                (tree ? await treeStatement({ repo, commit: prepared.commit, config, pr: t.pr, now }) : undefined);
-            const challenge = recordHash(statement ?? prepared.recordBody).toString("base64url");
-            approvals.set(t.id, {
-                ...prepared,
-                stage: tree ? "tree" : "record",
-                change: Boolean(prepared.statement),
-                challenge,
-                statement,
-                tree,
-                resign,
-                now: now.toISOString(),
-                work,
-                digest: work.digest,
-                expires: Date.now() + APPROVAL_MS,
-            });
-            return [
-                200,
-                {
-                    required: true,
-                    signs: prepared.statement ? "change" : tree ? "tree" : "record",
-                    tree: tree && !prepared.statement,
-                    resign,
-                    ...(tree && { statement }),
-                    ...(unsigned && { unsigned }),
-                    challenge,
-                    rpId,
-                    allowCredentials: here.map((k) => k.id),
-                    record: prepared.recordBody,
-                    accepts: prepared.accepts,
-                    excludes: prepared.excludes,
-                    rejects: prepared.rejects,
-                },
-            ];
+            if (finishing) {
+                return [409, { error: "a Finish is already running" }];
+            }
+            const answer = prepareAnswer(t, work, { resign, trusted, here, key });
+            preparing.set(t.id, { key, answer });
+            try {
+                return await answer;
+            } finally {
+                preparing.delete(t.id);
+            }
         },
         "POST /api/finish": async (_, body) => {
             const t = await targetOf(String(body.id));
