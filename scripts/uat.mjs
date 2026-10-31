@@ -1456,7 +1456,7 @@ await step("Finish sheet opens; its confirm is not pressed", async ({ check }) =
 
 let secondOpen = false;
 await step(
-    "Back to changes, open the second change with Enter",
+    "Back to changes, open the second change by its row",
     async ({ check }) => {
         if (snapOpen) {
             // Out of any text field first: there Esc clears the field instead of going back.
@@ -1472,8 +1472,8 @@ await step(
             skip("no second change with snapshots to decide");
         }
         console.log(`        opening ${second.title}`);
+        // Clicking a change row opens it; Enter has nothing left to open.
         await changeRow(second.id).click();
-        await press("Enter", check);
         await page.waitForFunction(
             () =>
                 document.querySelector("#snaps-head")?.innerText.includes("decided") &&
