@@ -697,6 +697,17 @@ without moving it, and Zoom holds the caret.
 5. **Rails** widen to 64 px so `8` / `left`, `Changes` and `Shift+1` each sit on their own line
    without touching.
 
+Built as: line 1 is `chgmenu` and `pane2` only; the title is a two-line clamp, so the header grows
+from 121 to about 137 px only while a title needs its second line. On line 2 the chips sit at the
+right end; when tight, in order: `accepted earlier` goes, two chips fold into `2 notices`, the chip
+shortens (`Behind: 1,243`), `decided` goes, and last the chip's words are cut; `N left` never
+goes. A group name is cut from its start with 4 px to spare, so its end is never clipped. With a
+64 px rail, Snapshots' narrowest becomes 316 px (was 320), so a 1,180 px window still leaves the
+viewer 800 px. Tests: line 1 holds only the two controls; a long title draws on two lines at 1440
+and 1024; line 2 keeps `N left` and drops in that order; group names keep their end and none is
+clipped; `Wider  Enter` and its tooltip; `Hide  Shift+2` with the left caret; both rails 64 px
+with badge, name and key on their own lines.
+
 ### 9.5 Image only, Show menu, small items (items 5 to 7)
 
 1. **Image only hides the chrome, not the loop.** With Image only on, the top bar (tabs, Next
@@ -715,6 +726,24 @@ without moving it, and Zoom holds the caret.
 4. **Contrast:** the quiet key text measures 4.5:1 or more on white, on every tint and in dark mode;
    the row checkbox border measures 3:1 or more against the selected row's background in both
    themes. `test/page/contrast.test.mjs` checks both.
+
+Built as: Image only is its own state, on from its press until the next press, a Back, or a pane
+coming out of its rail; both panes folded by hand (or a viewing level's two rails) are not Image
+only and keep the top bar. While on, `body.ionly` hides `#top`, both rails, the item line and an
+empty message line; the strip is Back and the snapshot's name, the view segment, Zoom, Blink in
+Highlight, and `Image only  Shift+3` in Display's place: 7 to 8 strip controls and the decision
+bar's, 14 to 16 in all. A key with no visible control says `Hidden in Image only: Shift+3 brings it
+back.` once per Image only (P, Y, B, O and X too, whose controls went with Display and the item
+line); Zoom's digits still act. The Show menu's headings are the menu's existing `head` items
+(`.mh`), outside the arrow keys' walk. Baselines draws the view segment only once two versions are
+ticked (all four act then); a view key before that says `The views compare two versions: tick two
+in the history below.` Contrast: the current row's checkbox border is `--ink-2` (4.9:1 light, 5.5:1
+dark on `--sel`); a key on a filled button (a filled view, the primary button, Accept) is drawn at
+full strength, and Accept's words take `--on-ink` (white on dark green was 2.3:1 in dark mode).
+Tests: viewer (the strip, Finish gone, the message line only while it speaks, the way out), keys
+(hidden keys do nothing and say once, digits still zoom), list (the menu's order and the skipped
+headings), baselines (no view buttons until two are ticked), contrast (the checkbox, the keys on
+filled buttons).
 
 ### 9.6 The Removed count (item 8: checked, not a page defect)
 
@@ -737,3 +766,83 @@ filed separately, not changed in this pass.
   only would stop deciding.
 - Deleting the item-line `Open`: it is the only control for level 2 at that place; renaming it
   is enough.
+
+## 10. Fifth pass (2026-11-01, after the fourth build review)
+
+Where this section and sections 2-9 disagree, this section wins. Complaint 1 is still not met. The
+labels are gone and resized rows fill the frame, but on change #4455 only 2 of 20 resized rows
+(#1022, #1024) show the change: the `start` crop (9.2 item 2.3) lands on where the largest region
+begins, and on a resized page that region spans the page, so its start is an unchanged-looking
+table header or icon grid (#689 `images-charts-p-7`: the row shows the `passed / recorded` header
+while Highlight puts the red in the overlay panel and lower table rows). Those rows are also shown
+plain, because the change covers a third or more of the crop, so nothing in the picture marks what
+differs while the List menu says the rows are spotlit.
+
+### 10.1 The row crop goes where the most pixels changed
+
+1. **`start` is replaced by `dense`.** When neither every area nor the largest cluster fits
+   `ROW_MAX` (9.2 item 2, rules 1 and 2), the crop is the `ROW_MAX` window, at the row's shape and
+   inside the new image, holding the most changed pixels of the raw pixelmatch mask (not the grown
+   one, so a few stray pixels grown to blobs never win). Search it with a summed-area table of the
+   mask over window positions on a grid of a quarter of the window each way, then refine once at a
+   sixteenth around the best; ties go to the top-most, then left-most. Changed pixels inside the
+   strip a size change adds or removes at the edge do not count (the `kept` rect), so a resized row
+   never frames the new blank band.
+2. **Without the mask** (`factsOf`, before the job ran) the largest area's center stands in, and
+   the tooltip reads `Cropped to the change` until the job says `dense`. The drawn picture always
+   comes from the job.
+3. `firstChanged` and the `start` rule leave the code. Supersedes 9.2 item 2.3 and the 9.7 line
+   about anchoring on the first changed pixel.
+4. Tooltip for `dense`: `Cropped to where the most pixels changed`.
+
+### 10.2 The row picture marks the change itself
+
+1. **Every changed row marks its changed pixels, by one of two means, chosen per row:**
+   - the changed areas cover less than a third of the crop (`SPOT_UNDER`): Spotlight, as today
+     (`row-spot`);
+   - a third or more: **Tint** (`row-tint`), a new kind: the new image's crop with each raw changed
+     pixel, dilated by 2 image pixels so it survives the shrink to the row, blended 55% toward the
+     Highlight view's red. Nothing else is dimmed or drawn, so it stays a picture of the page.
+   Tint is the change, not a label over it: it is what Highlight shows, at row size.
+2. **The List menu's toggle says it.** `Spotlight small changes` becomes `Mark the change`
+   (default on), tooltip `Spotlights a small change; tints the changed pixels red when most of the
+   picture changed`. Off shows the plain crop (`row-plain`). A stored `spot` setting reads as this
+   toggle. The other Pictures choices stay (`Crop to the change`, `Whole image`, `Text only, no
+   pictures`). With `Whole image` the same mark rule applies to the whole image.
+3. `shownKind("auto")`: `row-spot` under `SPOT_UNDER`, else `row-tint`; with the toggle off,
+   `row-plain`. `PAIR_KINDS` gains `row-tint`. The picture version moves to `5` (serve.mjs
+   `SPOTS_MADE_BY`, `?v=5`), so every cached row picture and `areas.jsonl` fact is made again.
+4. **The crop wording reaches every reader.** The row `img` takes the tooltip sentence as its
+   `alt` (`Cropped to where the most pixels changed, changed pixels tinted`), not `alt=""`; the
+   tooltip stays on the `.pic` box. Locked principle 9 then holds for keyboard and screen-reader
+   readers too.
+5. Tests: `rowCrop` on a synthetic resized pair whose largest region spans the page but whose
+   dense change sits low picks the dense window (not the region's top); the edge strip never wins;
+   `shownKind` picks `row-tint` at a third or more and `row-spot` under it; a `row-tint` picture
+   has red pixels exactly where the mask is and the new image's pixels elsewhere; the toggle off
+   gives `row-plain`; the img `alt` matches the tooltip.
+
+### 10.3 Proof (the branch is not done without it)
+
+1. Everything on the branch is committed before any capture, and the captures name the commit.
+2. One capture set, `tmp/proofroom-studio/after-5/`, with every shot 01-33 of the earlier sets
+   (same names) plus an `inventory.md` listing each file, the commit, the server version, and what
+   each row close-up shows.
+3. **Row judgment, both kinds of snapshot.** The first 20 rows of graph-io-fidelity (resized) and
+   the first 20 of graphty (ordinary, same-size; take them from a change whose graphty rows are
+   not resized, and list which) at 1440, light and dark, each row close-up at 2x next to the same
+   snapshot's Highlight at Fit (`NN` and `NN-highlight`). Each row is judged with Read: does the
+   row show, at a glance, the place Highlight marks? Wait for the row picture to be the job's
+   (its `how` known, not `Making picture...`) before shooting: never capture the transient list
+   after a restart. Record per-row yes/no and the totals in `docs/decisions.md`. The bar: at least
+   18 of 20 yes on each kind, and every no explained.
+4. The acceptance test runs on that same commit against the preview server, its log kept as
+   `uat-after-5.log`, and the result is the run's own pass/fail/skip counts.
+
+### 10.4 Rejected in this pass
+
+- Drawing the crop bar (the "thin grey bar") again: dropped in 9.2 item 5; every changed row is a
+  crop.
+- Spotlight that ignores the one-third rule on rows: on a mostly-changed crop it is the dark slab
+  8.2 removed. Tint marks the change without darkening the page.
+- A bigger row: rejected in 3.2 and 9.7.
