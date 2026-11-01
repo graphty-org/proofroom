@@ -852,3 +852,99 @@ differs while the List menu says the rows are spotlit.
 - Spotlight that ignores the one-third rule on rows: on a mostly-changed crop it is the dark slab
   8.2 removed. Tint marks the change without darkening the page.
 - A bigger row: rejected in 3.2 and 9.7.
+
+## 11. Sixth pass (2026-11-01, after the fifth build review)
+
+Where this section and sections 2-10 disagree, this section wins. Five reviews of the fifth build
+judged the resized rows fixed (20 of 20 light and dark show where Highlight marks, nothing drawn on
+any picture). Two things stand: rows with a small change still read as a grey slab with one lit
+cell, and the fourth-pass page work is staged but uncommitted with `npm test` red.
+
+### 11.1 Every changed row is tinted, never dimmed (complaint 1, small changes)
+
+On a crop whose changed areas cover less than a third (`SPOT_UNDER`), the row is Spotlight: grey
+with a lit cell that looks like its neighbors (#541, #545, #547, #548 of #5420; #493). It shows
+where the change is, not what it is, and the list speaks two languages (red rows, grey rows).
+
+1. **A changed row picture is `row-tint` at every coverage.** `shownKind` for a row no longer
+   returns `row-spot`; with `Mark the change` on, a changed row is `row-tint`, off it is
+   `row-plain`. The red changed pixels show what changed (the glyphs of a changed cell, a moved
+   edge) on the page's own colors. Spotlight stays a viewer view (S, the default view); it leaves
+   the rows only. `row-spot` stays in `PAIR_KINDS` so an old URL still answers, but nothing asks
+   for it.
+2. **The toggle's tooltip says one thing:** `Mark the change`: `Tints the changed pixels red`. With
+   `Whole image` the same rule: `tint` at every coverage.
+3. **The crop holds what it frames.** #548's lit cell is cut in half by the frame's bottom edge.
+   When rule 1 or 2 of 9.2 item 2 frames areas, the crop, after it is fitted to the row's shape and
+   clamped inside the image, contains every area it frames whole; when the image edge forces it,
+   the crop slides, it does not cut. Test: an area against the image's bottom edge is wholly inside
+   the row crop.
+4. The picture version moves to `6` (serve.mjs `SPOTS_MADE_BY`, `?v=6`).
+5. Tests: `shownKind` gives `row-tint` under and over `SPOT_UNDER`, `row-plain` with the toggle
+   off; a small-change `row-tint` picture has red exactly at the dilated mask; the alt and tooltip
+   read `..., changed pixels tinted` on every changed row.
+
+### 11.2 The fourth-pass page work is finished and committed
+
+The staged edits on top of 55ee338 (header line 2 chip, `Wider`, Image only, Show headings,
+Baselines, contrast) fail 23 tests in 5 files and leave an unhandled error, so the lint-rule
+tests never run. Each failure is decided by the spec, not by which side is newer:
+
+1. **Code is wrong, fix the code:**
+   - `Image onlyShift+3`: the label and its key need the same gap every control uses
+     (`Image only  Shift+3` in innerText and to a screen reader).
+   - The item line `story-0 , light`: no space before the comma.
+   - Baselines at 1,180 px: the viewer is 796 px, under its 800 px floor. 9.4 promised 800 with
+     the 64 px rail; take the 4 px back where it was lost (Snapshots' narrowest or the Baselines
+     column), not by lowering the floor.
+   - `keys.page.test.mjs` "acts on Shift+Digit3 only as a visible key box says" hangs 60 s in 4
+     of 5 states, Chromium and WebKit. Find the mechanism before changing either side. If Shift+3
+     leaves a state from which the test's next step never settles (Image only hiding the box the
+     test reads, a second Shift+3 not finding its way out), the page is wrong; if the test looks
+     for the old Display item that Image only now replaces with the strip's `Image only  Shift+3`,
+     the test is. The rule is fixed: Shift+3 acts, from any state, only while a visible control
+     prints it.
+2. **Test is stale, fix the test** (the spec changed the page on purpose): `Wider` instead of
+   `Open` (9.4 item 3), the chip on line 2 and its drop order (9.4 item 1), the Show menu order and
+   headings (9.5 item 2), and Baselines drawing the view buttons only after two versions are ticked
+   (9.5 item 3; `layout.page.test.mjs` at 1,180, 1,280 and 1,440 ticks two before it measures).
+3. **The list test's route handler** reads `.projects` of undefined: its fixture must answer every
+   route the page now calls on load (the chip's master data). No unhandled error may remain;
+   vitest then reaches the lint-rule tests and they pass.
+4. **The covers check presses `stalechip` and `chgonmaster`**, so the chip's menu on line 2 is
+   tested.
+5. All of it is committed (one or more commits), `npm test` and lint exit 0 on the commit.
+
+### 11.3 The decide wait cannot read a stale mark
+
+Acceptance step 35 refused A with `Loading images: Accept waits for them.` after V: its wait read
+the `viewer-drawn` mark from before the V press. The page is right to refuse; the signal is
+ambiguous. The page also marks `viewer-drawing` (detail: the file) when it starts drawing a
+snapshot or a view, and the acceptance wait (`seen` in scripts/uat.mjs) takes only a
+`viewer-drawn` newer than the newest `viewer-drawing`. `viewer-drawn` is unchanged, so the
+benches keep working. A repeated run of step 35 (20 in a row against the preview server) passes
+every time.
+
+### 11.4 Proof
+
+As 10.3, into `tmp/proofroom-studio/after-6/`, on the committed head, with these changes:
+1. The ordinary rows are 20 small-change rows (changed areas under a third of the crop), light and
+   dark, from a change whose rows are not resized (#5420 or another; listed), each next to its
+   Highlight. The bar for each kind stays 18 of 20, judged by Read: the row shows what changed,
+   not only where.
+2. At least one new and one removed snapshot's row, light and dark.
+3. The resized 20 are shot again to show nothing went back.
+4. The acceptance test runs on the same commit; its counts are the result.
+
+### 11.5 Rejected in this pass
+
+- Easing A's refusal right after V: the quarter-second unseen-image guard is locked (section 5).
+- A darker or two-tone tint for red-green color blindness: the doubled text and shifted outlines
+  carry the change without color, and Flash shows it in the viewer. Revisit with the larger
+  accessibility work.
+- Lowering the tint where nearly all of the crop changed (#1028, #1030): the solid red is honest
+  for a drawing that changed everywhere, and the viewer shows it unmarked.
+- Moving the crop from the result table to the drawing: the table is where most pixels changed
+  (10.1); preferring the drawing would need a guess about which part matters.
+- Telling the tint apart from red content in the style-fidelity specimens: the specimens' red is
+  in fixed pass/fail cells, the tint follows the change.
