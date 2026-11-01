@@ -8,7 +8,7 @@
  */
 
 import { diffable, keptDiffs, targetsOf } from "./prefetch.js";
-import { dimmed } from "/spot.js";
+import { covered, dimmed } from "/spot.js";
 
 const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
 const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
@@ -20,6 +20,7 @@ const SKIM_MS = 120;
 // A first draw shows its panes' "Loading ..." only after this long: images in the browser's cache
 // arrive sooner, and then nothing flickers.
 const WAIT_SHOWN_MS = 300;
+const VIEW_NAMES = { highlight: "Highlight", flash: "Flash", spotlight: "Spotlight" };
 // Each item's focus point, as the box [x, y, width, height] in image pixels to center on: a few
 // numbers each, kept for the items of a long session.
 const FOCUS_KEPT = 2000;
@@ -171,6 +172,8 @@ export async function diffImages(a, b, { threshold, includeAA }) {
  * @param {(item: object) => void} host.drawn told when a snapshot's images are on the stage
  * @param {(item: object, at: number) => void} host.appeared told when they have been painted
  * @param {(text: string, count: number) => void} host.boxCount shows which changed area Next change is on, or that there is none
+ * @param {(item: object, share: number) => void} [host.covers] told, once a pair's changed areas are
+ *   known, what share of the image (0 to 1) they cover
  * @param {(item: object, view: string) => { leftLabel?: string, rightLabel?: string, flash?: [string, string], note?: string | null, wait?: [string, string] }} [host.labels]
  *   the frames' labels in place of the stage's own: each frame's, the two a flashing frame takes
  *   turns with, a note beside them, and what each frame says it is loading
@@ -330,6 +333,18 @@ export function createStage(host) {
             setTimeout(() => {
                 if (seq === stageRender && !left.isConnected && !right.isConnected && painted !== seq) {
                     stage.replaceChildren(...panes(left, right));
+                }
+            }, WAIT_SHOWN_MS);
+        } else if (viewName !== "side" && view.shownFile === item.file) {
+            // The same snapshot's pictures stay while a compared view's are made; past
+            // WAIT_SHOWN_MS both strips say which view is being drawn, so the filled button never
+            // sits over the old view's pictures without a word.
+            const name = viewName === "highlight" && opt().blink ? "Blink" : VIEW_NAMES[viewName];
+            setTimeout(() => {
+                if (seq === stageRender && painted !== seq) {
+                    for (const figure of stage.querySelectorAll("figure")) {
+                        stateOf(figure, `drawing ${name}...`);
+                    }
                 }
             }, WAIT_SHOWN_MS);
         }
@@ -618,6 +633,7 @@ export function createStage(host) {
             return;
         }
         shownBoxes = diff.boxes;
+        host.covers?.(item, covered(diff.boxes, [0, 0, diff.w, diff.h]));
         host.boxCount(
             diff.boxes.length === 0
                 ? "No changed area at this threshold"

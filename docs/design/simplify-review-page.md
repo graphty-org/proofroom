@@ -671,6 +671,15 @@ and L.
    Display, which is right-aligned and does not move.
 4. `Zoom: Fit` draws the menu caret of 7.1 item 7, as every menu button does.
 
+Built as: the drawing state goes on both strips of the held pictures (`Baseline (drawing
+Highlight...)`, `New (drawing Highlight...)`; `Blink...` while L draws, `Spotlight...` for S), only
+for the same snapshot (a move to another snapshot keeps 7.1 item 1's rule). The share is the boxes'
+cover of the whole diff (`covered`, `SPOT_UNDER` in spot.js), and the word is said only after an H or
+S press, never on opening a snapshot in Spotlight. Tests: H on a resized pair whose diff is held
+shows both drawing labels over the old pictures, then the diffmark canvases; H then S says the
+resized sentence once; H on a wholly red, same-size pair says the other; Blink sits right of Zoom
+without moving it, and Zoom holds the caret.
+
 ### 9.4 The header and the item line read at a glance (items 2 and 3)
 
 1. **The change title is never cut to a stub.** Snapshots line 1 holds only the title menu button

@@ -13,9 +13,9 @@ Where each key is printed:
 - **A, R, E, U**: the decision bar, boxed. **J, K**: Previous and Next on the decision bar, boxed,
   with **Left** and **Right** quiet after them (Up and Down belong to the list that owns them and
   are printed on its header).
-- **V, F (hold Space), H, S**: the view switch at the left of the viewer's toolbar, boxed. **L**:
-  **Blink** beside them, shown in Highlight, the one view it works in. **Z**: the **Zoom: Fit** button, which also opens the zoom menu when
-  clicked; its items print **0, 1, 2, 4, 8**.
+- **V, F (hold Space), H, S**: the view switch at the left of the viewer's toolbar, boxed. **Z**: the
+  **Zoom: Fit** button after them, which also opens the zoom menu when clicked; its items print
+  **0, 1, 2, 4, 8**. **L**: **Blink**, after Zoom, shown in Highlight, the one view it works in.
 - **P, Shift+3, Y, B, O**: the **Display** menu at the right end of the toolbar (Show baseline,
   Image only, Layout, Outline changed areas, Start zoomed on the change).
 - **Shift+N**: **Next change** in the top bar (and on the end card). **Shift+1**, **Shift+2**:

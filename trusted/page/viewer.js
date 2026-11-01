@@ -16,6 +16,7 @@ import { makeLocator, moveToPressed } from "./locator.js";
 import { statusMark } from "./marks.js";
 import { PANES, SMALL, applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow } from "./panes.js";
 import { HIGHLIGHTS, highlight } from "./settings.js";
+import { SPOT_UNDER } from "./spot.js";
 import { el, fmt, ic, kb } from "./ui.js";
 
 const KEPT_KEY = "proofroom:viewer";
@@ -98,6 +99,8 @@ export function createViewer(app, o = {}) {
     let parts = null; // the viewer's own elements, kept across redraws so the stage keeps its scroll
     let shownKey = null; // what the stage draws now
     let stacked = false; // whether the two frames are over and under now
+    let explain = null; // the snapshot H or S was just pressed on: its areas' share may need a word
+    const explained = new Set(); // the snapshots that word was said on
     let ioBefore = null; // the panes Image only hid
     let zoomStep = false; // the next drawing is a zoom step: it centers on the current area
     let centerKey = null; // the drawing a zoom step asked to center
@@ -229,6 +232,23 @@ export function createViewer(app, o = {}) {
             }
         },
         labels: (item, view) => (o.labels ? o.labels(item.snap, view, vs) : labelsOf(item.snap, view)),
+        // H or S on a snapshot whose changed areas cover a third or more of it: says once per
+        // snapshot why Highlight is a red slab and Spotlight dims nothing.
+        covers: (item, share) => {
+            const s = item.snap;
+            if (explain !== s.key || stageView(s) !== vs.view) {
+                return;
+            }
+            explain = null;
+            if (share >= SPOT_UNDER && !explained.has(s.key)) {
+                explained.add(s.key);
+                app.say(
+                    s.size && s.baselineSize && (s.size[0] !== s.baselineSize[0] || s.size[1] !== s.baselineSize[1])
+                        ? "Resized: everything below the first change moved, so it all counts as changed. Flash (F) shows the move."
+                        : "Most of this image changed. Flash (F) shows it.",
+                );
+            }
+        },
     });
 
     // The label strip above each frame: never over the image (design 5.6).
@@ -425,29 +445,38 @@ export function createViewer(app, o = {}) {
                 "div",
                 { class: "tg", "data-g": "view", title: "View" },
                 el("span", { class: "seg", role: "radiogroup", "aria-label": "View" }, segs),
-                ev === "highlight"
-                    ? control(app, "blink", {
-                          zone: "toolbar",
-                          quiet: true,
-                          attrs: { "aria-pressed": String(vs.blink) },
-                          children: [check(), "Blink", kb("L", true)],
-                      })
-                    : null,
             ),
             el(
                 "div",
                 { class: "tg", "data-g": "zoom", title: "Zoom" },
                 control(app, "zoomcycle", {
                     zone: "toolbar",
-                    quiet: true,
                     attrs: {
                         "aria-haspopup": "menu",
                         "data-menukeys": JSON.stringify(
                             Object.fromEntries(ZOOMS.map((z) => [ZOOM_KEY[z], `zoom-${z}`])),
                         ),
                     },
+                    children: [
+                        labelOf(app, "zoomcycle"),
+                        kb("Z", true),
+                        el("span", { class: "gcaret", "aria-hidden": "true" }),
+                    ],
                 }),
             ),
+            // Blink after Zoom: its coming and going in Highlight moves nothing but the gap after it.
+            ev === "highlight"
+                ? el(
+                      "div",
+                      { class: "tg", "data-g": "blink", title: "Blink" },
+                      control(app, "blink", {
+                          zone: "toolbar",
+                          quiet: true,
+                          attrs: { "aria-pressed": String(vs.blink) },
+                          children: [check(), "Blink", kb("L", true)],
+                      }),
+                  )
+                : null,
             imageOnly() && review
                 ? el("span", { class: "itemsum grow" }, lineHead(s, "iline", fullName(s)), lineEnd(s))
                 : el("span", { class: "grow" }),
@@ -791,6 +820,7 @@ export function createViewer(app, o = {}) {
             const ev = shownView();
             vs.spotFlash = v === "flash" && ev === "spotlight" && twoImages();
             vs.view = ev === v && v !== "side" ? "side" : v;
+            explain = vs.view === "highlight" || vs.view === "spotlight" ? current()?.key : null;
             save();
             redraw();
         },

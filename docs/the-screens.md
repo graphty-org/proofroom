@@ -183,13 +183,13 @@ The viewer's toolbar is one row. On the left, the four views: **Side by side [V]
 **Flash [F]** (or hold Space), **Highlight [H]** and **Spotlight [S]**. One view at a time: exactly
 one is filled, and pressing a view's key again goes back to Side by side. **F** from Spotlight
 flashes the spotlit pair (the label says "Baseline (flashing, spotlit)"); V, H or S leaves Flash,
-so S after H is plain Spotlight. In Highlight only, **Blink L** sits beside them; it blinks the
-highlight on and off and shows a check mark while on. **Zoom: Fit Z** names the zoom:
+so S after H is plain Spotlight. **Zoom: Fit Z**, a menu button with its small arrow, names the zoom:
 Z steps Fit, 1x, 2x, 4x and 8x, and a click opens its menu (**Fit 0**, **Actual size 1**,
 **2x 2**, **4x 4**, **8x 8**), whose digits also work with the menu closed. Every zoom step
 centers on the current changed area, the same place in both panes (the two images are lined up at
 their top left, also when the snapshot was resized); a pane whose image does not reach that place
-says "Baseline (outside this image)" in its label. From 2x a small map of the whole image at the right end
+says "Baseline (outside this image)" in its label. In Highlight only, **Blink L** sits after Zoom; it
+blinks the highlight on and off and shows a check mark while on. From 2x a small map of the whole image at the right end
 of the New panel's label moves the view where you click it. At the right end, **Display** holds
 what you set once a session, each printing its key, which works with the menu closed: **Show
 baseline P** (hide it to see the new image alone), **Image only Shift+3**, **Layout: Auto Y** (Y
@@ -221,7 +221,13 @@ whose image is the same, and, while flashing, which image is showing: "Baseline 
 The pictures never disappear under you: opening a menu or changing a setting keeps them, and
 moving on to another snapshot, view or zoom keeps the old pictures until the new ones are ready.
 "Loading..." shows only the first time a snapshot's images are fetched, and only after a third of a
-second.
+second. When a view takes longer than that to draw (a tall page's Highlight, say), both labels say so,
+"Baseline (drawing Highlight...)" and "New (drawing Highlight...)", over the old pictures.
+
+When the changed areas cover a third or more of the image, Highlight is mostly red and Spotlight
+dims nothing. The first H or S on such a snapshot says why on the message line: on a resized
+snapshot, "Resized: everything below the first change moved, so it all counts as changed. Flash (F)
+shows the move."; otherwise "Most of this image changed. Flash (F) shows it."
 
 A new snapshot, one with no baseline yet and a removed one show their one image; a failed one shows
 why the story did not render, with its console.

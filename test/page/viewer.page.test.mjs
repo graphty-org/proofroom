@@ -160,13 +160,14 @@ const rows = (id, name, query) => {
     };
 };
 
-async function open(id, viewport = { width: 1440, height: 900 }) {
+async function open(id, viewport = { width: 1440, height: 900 }, before = null) {
     t = await openNext(browser, { targets: targets(), rows: (i, n, q) => rows(i, n, q), viewport });
     t.errors = [];
     t.page.on("pageerror", (err) => t.errors.push(err.message));
     await t.page.route("**/api/blob/**", (route) =>
         route.fulfill({ status: 200, contentType: "image/png", body: blob(route.request().url().split("/").pop()) }),
     );
+    await before?.(t.page);
     await t.page.locator(`.chg[data-chg="${id}"]`).click();
     await drawn(t.page, 1);
     return t.page;
@@ -1135,6 +1136,90 @@ describe("pictures stay, one view, Image only and laptop width", () => {
         await page.keyboard.press("KeyV");
         await page.keyboard.press("KeyF");
         await expect.poll(() => labels(page)).toEqual(["Baseline (flashing)"]);
+    });
+
+    it("H on a resized snapshot keeps the pictures, says it is drawing Highlight, then draws it", async () => {
+        // The diff worker's answer for the second row's 1800 x 1400 pair is held until released,
+        // so its Highlight is still being made when H is pressed.
+        const page = await open(RESIZE, undefined, (p) =>
+            p.evaluate(() => {
+                const Real = globalThis.Worker;
+                const held = [];
+                globalThis.releaseDiffs = () => held.splice(0).forEach((f) => f());
+                globalThis.Worker = class extends Real {
+                    set onmessage(f) {
+                        super.onmessage = (e) =>
+                            e.data.mask?.length === 1800 * 1400 * 4 ? held.push(() => f(e)) : f(e);
+                    }
+                };
+            }),
+        );
+        // Start zoomed on the change off (O), so Side by side draws #2 without its diff.
+        await page.keyboard.press("KeyO");
+        await page.keyboard.press("KeyV");
+        await page.keyboard.press("KeyK");
+        await drawn(page, 2);
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => tool(page, "view-highlight").getAttribute("aria-checked")).toBe("true");
+        await expect
+            .poll(() => labels(page))
+            .toEqual(["Baseline (drawing Highlight...)", "New (drawing Highlight...)"]);
+        // The side by side pictures stay meanwhile.
+        expect(await page.locator("#stage .sheet > img").count()).toBe(2);
+        expect(await page.locator("#stage canvas.diffmark").count()).toBe(0);
+        await page.evaluate(() => globalThis.releaseDiffs());
+        await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(2);
+        await expect.poll(() => labels(page)).not.toContain("New (drawing Highlight...)");
+        expect(t.errors).toEqual([]);
+    });
+
+    it("H or S says once per snapshot why a mostly changed image reads as a slab", async () => {
+        const RESIZED_SAID =
+            "Resized: everything below the first change moved, so it all counts as changed. Flash (F) shows the move.";
+        const page = await open(RESIZE);
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => message(page)).toBe(RESIZED_SAID);
+        // Said once: S on the same snapshot does not say it again.
+        await page.keyboard.press("KeyS");
+        await expect.poll(() => tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
+        await drawn(page, 1);
+        expect(await message(page)).not.toBe(RESIZED_SAID);
+        // A small change says nothing.
+        await t.close();
+        const small = await open(SMALL);
+        await small.keyboard.press("KeyH");
+        await expect.poll(() => small.locator("#stage canvas.diffmark").count()).toBe(2);
+        await drawn(small, 1);
+        expect(await message(small)).not.toContain("Flash (F)");
+    });
+
+    it("H on a snapshot changed all over, not resized, says Flash shows it", async () => {
+        const red = new PNG({ width: W, height: H });
+        for (let i = 0; i < W * H; i++) {
+            red.data.set([220, 30, 30, 255], i * 4);
+        }
+        const page = await open(SMALL, undefined, (p) =>
+            p.route("**/api/blob/b0*", (route) =>
+                route.fulfill({ status: 200, contentType: "image/png", body: PNG.sync.write(red) }),
+            ),
+        );
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => message(page)).toBe("Most of this image changed. Flash (F) shows it.");
+    });
+
+    it("Blink sits after Zoom, so it never moves Zoom, and Zoom draws the menu caret", async () => {
+        const page = await open(SMALL);
+        const zoomBox = () => tool(page, "zoomcycle").boundingBox();
+        const before = await zoomBox();
+        expect(await tool(page, "zoomcycle").locator(".gcaret").count()).toBe(1);
+        expect(await zoomShown(page)).toBe("Zoom: Fit");
+        expect(await tool(page, "zoomcycle").locator("kbd").innerText()).toBe("Z");
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => page.locator('#vtb [data-act="blink"]:visible').count()).toBe(1);
+        expect((await zoomBox()).x).toBe(before.x);
+        const blink = await tool(page, "blink").boundingBox();
+        const zoom = await zoomBox();
+        expect(blink.x).toBeGreaterThanOrEqual(zoom.x + zoom.width);
     });
 
     it("Blink is drawn only in Highlight, the one view it acts in", async () => {

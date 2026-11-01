@@ -1377,6 +1377,15 @@ body.nokeys kbd .lk {
     font-size: 12px;
     flex: none;
 }
+/* Zoom is a menu button: its words, its quiet key, then the drawn caret, on one line. */
+.vtb [data-act="zoomcycle"] {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.vtb [data-act="zoomcycle"] kbd {
+    margin-left: 0;
+}
 .vtb kbd {
     margin-left: 4px;
     font-size: 10px;
