@@ -28,10 +28,8 @@ spotlit at full strength, so many thumbnails are a dark box with a speck.
 After:
 1. Nothing is drawn on any picture, anywhere on the page (rows, viewer and Baselines). Delete
    `.ztags` / `.ztag` and the `tags` array.
-2. A zoomed thumbnail is marked outside its pixels by a 3 px bar in `--muted` on the picture's left
-   edge (`.pic.zoomed`, a `box-shadow: -3px 0 0 var(--muted)` or border-left; never an outline,
-   never the focus color, so focus stays the only outline on the page). A whole-image thumbnail
-   keeps its plain 1 px border. (Keeps locked principle 9: a crop is never silent.)
+2. (Dropped in 9.2 item 5: no crop bar. A crop is said in the List menu and the picture's
+   tooltip, which keeps locked principle 9: a crop is never silent.)
 3. The zoom fact and the size are words on row line 4: `26 areas, 490k px, zoomed 4x`; unzoomed
    `26 areas, 490k px`; one area `1 area, 1,412 px`. Sizes under 10,000 print in full with
    separators; above, rounded to `k` / `M`. When the crop shows the largest cluster only:
@@ -367,7 +365,7 @@ opening a menu. Esc keeps "back" behind a guard against the double-Esc accident.
 - `test/page/covers.mjs`: remove `statshow`, `statmore`, `accsel`, `rejsel`, `excsel`, `options`,
   `more`; `zoom-*`, `baseline`, layout and display toggles become menu items (ids kept); add
   `displaymenu`, `zoommenu`, `stalechip`.
-- `test/page/contrast.test.mjs`: text on every tint, quiet keys, zoomed bar.
+- `test/page/contrast.test.mjs`: text on every tint, quiet keys.
 - New 1024 x 768 tests: every keyed control wholly in the viewport (a) with a change open, (b) with
   3 rows selected, (c) with stale data and both chips; the decision bar on one line in each.
 - Docs: `docs/the-screens.md`, `docs/keys.md` (Esc guard, Y cycle, Display menu, Shift+Down on
@@ -515,9 +513,8 @@ unzoomed.
    the crop at the row's shape, the picture is centered and the band beside it is the row's own
    background, not the Spotlight grey.
 3. **Row words say what changed, once.** Row line 3 reads `66 changed areas` (`1 changed area`).
-   `zoomed 4x` and the pixel size leave the row: the 3 px bar on the picture's edge already says the
-   picture is a crop, and the picture's tooltip says `Zoomed 4x to the changed areas` / `Whole
-   image`; the size stays in Details. The empty third line goes: a row is three text lines, the
+   `zoomed 4x` and the pixel size leave the row: the picture's tooltip says what part of the image
+   it shows (9.2 item 5); the size stays in Details. The empty third line goes: a row is three text lines, the
    areas line directly under the story name.
 4. Checked by eye before kept: capture the first 40 rows on the studio server at 1440 and 1024 and
    judge with the Read tool, row by row, whether the change can be seen. Record the count of rows
@@ -650,6 +647,11 @@ below is checked against change #4455 on the studio server (run 41129746454).
    page wider than `ROW_MAX`.
 7. The picture version moves (`?v=4`, serve.mjs `SPOTS_MADE_BY`), so cached row pictures and
    `areas.jsonl` facts made the old way are made again.
+8. A spotlit row picture asked for before the server knows its areas (no compare areas, job not
+   run) is made first and then chosen as the job decides, never sent spotlit by default: a
+   resized page asked for cold was a grey slab until a reload. Its tooltip reads `Cropped to the
+   change` until the row knows which rule cropped it. Pictures `run` makes in CI take the
+   capture's scale too (`compareRun({ scale })`).
 
 ### 9.3 Views on a resized snapshot do something visible (item 4)
 

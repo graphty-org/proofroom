@@ -40,7 +40,7 @@ only the story ids starting with a prefix, for a quick look (then no baseline is
 
 `run` also makes the pictures the review page's list shows for each snapshot that needs review:
 for a changed snapshot the new image whole and spotlit (everything but the change dimmed), each
-also zoomed to the change, and for any other the new image (or, when removed, the baseline). They
+also cropped to the change (at most 400 x 156 CSS pixels of the page, at the capture's scale), and for any other the new image (or, when removed, the baseline). They
 are WebP files, encoded by the same Chromium that took the captures, named in each item's
 `pictures`. The review server shows them as they are, so a capture made by `run` opens with every
 picture ready; for images judged by `compare` alone, the server makes the pictures itself.

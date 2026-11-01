@@ -1030,11 +1030,6 @@ body.infind .fk {
     height: 100%;
     object-fit: contain;
 }
-/* A zoomed picture: a 3 px bar in the muted ink outside its left edge, never over its pixels and
-   never an outline (focus is the only outline on the page). */
-.pic.zoomed {
-    box-shadow: -3px 0 0 var(--ink-2);
-}
 /* Placeholders: --ink text in a --surface chip inside the slot, never text on --stage. */
 .pic .ph {
     position: absolute;

@@ -28,7 +28,6 @@ import {
     undecided,
 } from "./groups.js";
 import { DECISION, ORDER, STATUS, mark } from "./marks.js";
-import { ROW_ZOOM_FROM } from "./spot.js";
 import { el, fmt, fmtShort, ic, kb } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -49,12 +48,13 @@ export const SHOWS = [
 ];
 export const SHOW_LABEL = Object.fromEntries(SHOWS);
 
-/** The Zoom rows to the change choices. */
+/** The row picture choices besides Text only: a crop onto the change, or the whole image. */
 export const ZOOMS = {
-    auto: "When small",
-    always: "Always",
-    never: "Never",
+    crop: "Crop to the change",
+    whole: "Whole image",
 };
+// The choices of an older page: When small and Always both became the crop, Never the whole image.
+const OLD_ZOOMS = { auto: "crop", always: "crop", never: "whole" };
 
 // ---------------------------------------------------------------- the model
 
@@ -251,44 +251,60 @@ function computeLayout(lv, snaps) {
 }
 
 /**
- * The picture a row asks for under the Row pictures choices, and how far it is zoomed: one request
- * per row. A changed pair is spotlit or plain, zoomed to its change or whole; Zoom Auto zooms when
- * the row crop is at least 2x Fit (the server's `auto` when spotlit). A snapshot of one image has
+ * The picture a row asks for under the Row pictures choices, and how it is cropped: one request
+ * per row. A changed pair is spotlit or plain (the server shows it plain when its change covers a
+ * third or more), cropped to its change (rowCrop, spot.js) or whole. A snapshot of one image has
  * only its plain picture.
  * @param {any} s the snapshot
- * @param {{ spot: boolean, zoom: "auto" | "always" | "never" }} pics the choices
- * @returns {{ kind: string, zoom: number | null, shown: number | null } | null} the kind, the zoom
- *     and how many of the changed areas the crop frames when zoomed (else null), or null for no
- *     picture
+ * @param {{ spot: boolean, zoom: "crop" | "whole" }} pics the choices
+ * @returns {{ kind: string, how: string | null, shown: number | null } | null} the kind, which
+ *     rule cropped it ("all", "cluster", "start" or "size"; null when whole) and how many of the
+ *     changed areas the crop frames, or null for no picture
  */
 export function pictureKind(s, pics) {
     if (!s.pic || s.status === "failed") {
         return null;
     }
     if (!pairOf(s)) {
-        return { kind: "plain", zoom: null, shown: null };
+        return { kind: "plain", how: null, shown: null };
+    }
+    if (pics.zoom === "whole") {
+        return { kind: pics.spot ? "spot" : "plain", how: null, shown: null };
     }
     const a = s.areas;
-    const big = Boolean(a && a.count > 0 && a.zoom >= ROW_ZOOM_FROM);
-    const zoomed = pics.zoom === "always" || (pics.zoom === "auto" && big);
-    let kind;
-    if (pics.spot) {
-        kind = pics.zoom === "auto" ? "auto" : zoomed ? "row-spot" : "spot";
-    } else {
-        kind = zoomed ? "row-plain" : "plain";
+    const shown = a ? (a.shown ?? a.count) : null;
+    // Before the server has found the areas, the row only knows it is cropped.
+    const how = a ? (a.how ?? (shown < a.count ? "cluster" : "all")) : "crop";
+    return { kind: pics.spot ? "row-spot" : "row-plain", how, shown };
+}
+
+/**
+ * How a resized snapshot's size changed: "2 px shorter", "10 px wider, 2 px taller".
+ * @param {any} s the snapshot
+ * @returns {string} the words, or "" when the size did not change
+ */
+export function sizeChange(s) {
+    if (!s.size || !s.baselineSize) {
+        return "";
     }
-    return zoomed && a ? { kind, zoom: a.zoom, shown: a.shown ?? a.count } : { kind, zoom: null, shown: null };
+    const [dw, dh] = [s.size[0] - s.baselineSize[0], s.size[1] - s.baselineSize[1]];
+    const said = (d, less, more) => (d === 0 ? null : `${fmt(Math.abs(d))} px ${d < 0 ? less : more}`);
+    return [said(dw, "narrower", "wider"), said(dh, "shorter", "taller")].filter(Boolean).join(", ");
 }
 
 /**
  * A row's words for its change, under the story's name: how many areas changed ("66 changed
- * areas", "1 changed area"), else what sizeText says ("image identical"). How far the picture is
- * zoomed is in its tooltip, its pixel size in Details.
+ * areas", "1 changed area"; "Only the size changed: 2 px shorter" when nothing else did), else
+ * what sizeText says ("image identical"). How the picture is cropped is in its tooltip, its pixel
+ * size in Details.
  * @param {any} s the snapshot
  * @returns {string} the words, or ""
  */
 export function rowSizeText(s) {
     const count = s.areas?.count;
+    if (s.status === "changed" && s.areas?.how === "size" && sizeChange(s)) {
+        return `Only the size changed: ${sizeChange(s)}`;
+    }
     if (s.status === "changed") {
         return typeof count === "number" ? `${fmt(count)} changed area${count === 1 ? "" : "s"}` : "";
     }
@@ -297,18 +313,19 @@ export function rowSizeText(s) {
 
 /**
  * The Row pictures choices, kept in this browser.
- * @returns {{ spot: boolean, zoom: "auto" | "always" | "never", none: boolean }} the choices
+ * @returns {{ spot: boolean, zoom: "crop" | "whole", none: boolean }} the choices
  */
 export function loadPictures() {
     try {
         const v = JSON.parse(localStorage.getItem(PICTURES_KEY) ?? "null");
-        if (v && typeof v.spot === "boolean" && ZOOMS[v.zoom] && typeof v.none === "boolean") {
-            return v;
+        const zoom = OLD_ZOOMS[v?.zoom] ?? v?.zoom;
+        if (v && typeof v.spot === "boolean" && ZOOMS[zoom] && typeof v.none === "boolean") {
+            return { ...v, zoom };
         }
     } catch {
         // A private window: the defaults.
     }
-    return { spot: true, zoom: "auto", none: false };
+    return { spot: true, zoom: "crop", none: false };
 }
 
 const savePictures = (pics) => {
@@ -432,7 +449,7 @@ export function setGrouping(app, grouping) {
 /**
  * Changes a Row pictures choice.
  * @param {any} app the page
- * @param {{ spot?: boolean, zoom?: "auto" | "always" | "never", none?: boolean }} change the choice
+ * @param {{ spot?: boolean, zoom?: "crop" | "whole", none?: boolean }} change the choice
  */
 export function setPictures(app, change) {
     app.lv.pics = { ...app.lv.pics, ...change };
@@ -963,14 +980,21 @@ const decisionMark = (s) => {
     return mark(d.shape, d.cls);
 };
 
-// A row picture's tooltip: how much of the image it shows.
+// A row picture's tooltip: which part of the image it shows.
 function pictureTitle(s, pk) {
-    if (!pk.zoom) {
-        return "Whole image";
-    }
     const count = s.areas?.count ?? 0;
-    const what = pk.shown < count ? `${fmt(pk.shown)} of the ${fmt(count)} changed areas` : "the changed areas";
-    return `Zoomed ${Math.round(pk.zoom)}x to ${what}`;
+    if (pk.how === "cluster" && pk.shown < count) {
+        return `Cropped to ${fmt(pk.shown)} of the ${fmt(count)} changed areas`;
+    }
+    return (
+        {
+            all: "Cropped to the changed areas",
+            cluster: "Cropped to the changed areas",
+            start: "Cropped to where the largest change starts",
+            size: "Centered: only the size changed",
+            crop: "Cropped to the change",
+        }[pk.how] ?? "Whole image"
+    );
 }
 
 // The row's picture: the server's picture for the Row pictures choices, or a placeholder chip.
@@ -983,20 +1007,16 @@ function pictureOf(app, s) {
     if (!pk) {
         return el("div", { class: "pic" }, chip("No picture"));
     }
-    // Nothing is drawn over the picture: a zoomed one is marked by a bar outside its left edge, and
-    // its zoom is said in this tooltip.
-    const box = el(
-        "div",
-        { class: pk.zoom ? "pic zoomed" : "pic", title: pictureTitle(s, pk) },
-        chip("Making picture..."),
-    );
+    // Nothing is drawn over the picture: how it is cropped is said in this tooltip (and chosen in
+    // the List menu).
+    const box = el("div", { class: "pic", title: pictureTitle(s, pk) }, chip("Making picture..."));
     const img = el("img", {
         alt: "",
         loading: "lazy",
         decoding: "async",
         // `v` names how the server makes pictures (serve.mjs SPOTS_MADE_BY): the browser keeps a
         // picture for good, so one made the older way is fetched again.
-        src: `/api/pic/${s.pic}-${pk.kind}?v=3${s.retried ? `&try=${s.retried}` : ""}`,
+        src: `/api/pic/${s.pic}-${pk.kind}?v=4${s.retried ? `&try=${s.retried}` : ""}`,
         "data-kind": pk.kind,
     });
     img.addEventListener("load", () => box.classList.add("ready"));
@@ -1024,7 +1044,8 @@ function pictureOf(app, s) {
 export function badgesOf(app, s) {
     const out = [];
     if (s.status === "changed" && s.size && s.baselineSize && String(s.size) !== String(s.baselineSize)) {
-        out.push({ text: "resized", title: "Resized: the new image is a different size from the baseline" });
+        const size = (z) => `${fmt(z[0])} x ${fmt(z[1])}`;
+        out.push({ text: "resized", title: `Resized: ${size(s.baselineSize)} to ${size(s.size)}` });
     }
     if (s.reReview) {
         out.push({
@@ -1662,16 +1683,14 @@ export const groupItems = (app) =>
 export function pictureItems(app) {
     const p = app.lv.pics;
     return [
-        { id: "picspot", label: "Spotlight rows", checked: p.spot && !p.none, check: true },
-        { head: "Zoom rows to the change" },
         ...Object.entries(ZOOMS).map(([k, label]) => ({
             id: "piczoom",
             label,
-            title: k === "auto" ? "Zooms a row when its change is small: the crop shows it 2x Fit or more" : null,
             ctx: { zoom: k },
             checked: p.zoom === k && !p.none,
         })),
-        { id: "picnone", label: "Text only, no pictures", checked: p.none, check: true },
+        { id: "picnone", label: "Text only, no pictures", checked: p.none },
+        { id: "picspot", label: "Spotlight small changes", checked: p.spot && !p.none, check: true },
     ];
 }
 

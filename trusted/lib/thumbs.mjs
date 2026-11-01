@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { PNG } from "pngjs";
 
-import { dimmed, grow, regions, ROW, rowCrop, ROW_ZOOM_FROM, SPOT_UNDER } from "../page/spot.js";
+import { dimmed, grow, regions, ROW, rowCrop, SPOT_UNDER } from "../page/spot.js";
 import { paddedPair } from "./compare.mjs";
 import { MAX_AREAS } from "./results.mjs";
 
@@ -103,15 +103,14 @@ export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 
 /**
  * The picture a row shows for a kind it asks for, from what the pair's job (or compare) found.
- * `auto` (Zoom Auto) zooms when the row crop shows the change at least twice as large as the
- * unzoomed picture would. A spotlit kind is shown plain when the changed areas cover a third or
+ * `auto` is the row's crop, spotlit (`row-spot`): every changed row is cropped to its change. A spotlit kind is shown plain when the changed areas cover a third or
  * more of what it shows: dimming the rest would hide what changed, not point at it.
  * @param {string} kind the kind asked for, one of PICTURE_KINDS
  * @param {{ zoom: number, areas: number, cover?: number, coverAll?: number }} facts what was found
  * @returns {string} the kind to show
  */
 export function shownKind(kind, facts) {
-    const want = kind === "auto" ? (facts.areas > 0 && facts.zoom >= ROW_ZOOM_FROM ? "row-spot" : "spot") : kind;
+    const want = kind === "auto" ? "row-spot" : kind;
     if (want === "row-spot" && facts.cover >= SPOT_UNDER) {
         return "row-plain";
     }
@@ -119,7 +118,7 @@ export function shownKind(kind, facts) {
 }
 
 /**
- * Zoom Auto's kind (shownKind of `auto`).
+ * The kind `auto` shows (shownKind of `auto`).
  * @param {{ zoom: number, areas: number, cover?: number, coverAll?: number }} facts what was found
  * @returns {string} the kind the row shows
  */
@@ -131,9 +130,10 @@ export const autoKind = (facts) => shownKind("auto", facts);
  * PAIR_KINDS made from that, with what the row needs to know about its areas. The server encodes them as PNG (`pictures`); `run` as WebP, in
  * capture's Chromium.
  * @param {{ image: Uint8Array } | { baseline: Uint8Array, capture: Uint8Array, threshold: number,
- *     includeAA: boolean }} job one image, or a pair with pixelmatch's options as the item has them
+ *     includeAA: boolean, scale?: number }} job one image, or a pair with pixelmatch's options as
+ *     the item has them and the capture's scale (results.json `scale`, 1 when it has none)
  * @returns {{ images: Record<string, { width: number, height: number, data: Uint8Array }>,
- *     facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number } }} the pixels per kind; for a pair,
+ *     facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number, how: string } }} the pixels per kind; for a pair,
  *     the row crop, its zoom against the unzoomed picture, how many separate areas changed and
  *     how many of them the crop frames
  */
@@ -148,7 +148,12 @@ export function pictureParts(job) {
     // whichever made them.
     const boxes = regions(grown, width, height).slice(0, MAX_AREAS);
     // The pictures show the new image: the padding a larger baseline adds is never drawn.
-    const { crop, zoom, shown, cover, coverAll } = rowCrop(boxes, b.width, b.height);
+    const scale = job.scale ?? 1;
+    const { crop, zoom, shown, cover, coverAll, how } = rowCrop(boxes, b.width, b.height, {
+        scale,
+        base: [a.width, a.height],
+        first: firstChanged(mask, width, boxes[0]),
+    });
     const plain = { width, height, data: pb };
     const lit = { width, height, data: dimmed(pb, grown) };
     // A row crop fitted in the row's shape: one narrower than it is centered by the page, its band
@@ -164,14 +169,34 @@ export function pictureParts(job) {
             // The capture's own thumbnail, unpadded: the same file a thumbnail of it alone would be.
             plain: plainOf(b),
         },
-        facts: { crop, zoom, areas: boxes.length, shown, cover, coverAll },
+        facts: { crop, zoom, areas: boxes.length, shown, cover, coverAll, how },
     };
+}
+
+/**
+ * The first changed pixel inside a box of a pixelmatch mask: its top-most changed row, the
+ * leftmost changed pixel on it.
+ * @param {Uint8Array} mask RGBA, a changed pixel opaque
+ * @param {number} w the mask's width
+ * @param {number[] | undefined} box [x, y, width, height]
+ * @returns {number[] | null} [x, y], or null
+ */
+export function firstChanged(mask, w, box) {
+    const [bx, by, bw, bh] = box ?? [0, 0, 0, 0];
+    for (let y = by; y < by + bh; y++) {
+        for (let x = bx; x < bx + bw; x++) {
+            if (mask[(y * w + x) * 4 + 3] !== 0) {
+                return [x, y];
+            }
+        }
+    }
+    return null;
 }
 
 /**
  * One job's pictures as PNG files (pictureParts).
  * @param {Parameters<typeof pictureParts>[0]} job one image, or a pair
- * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number } }}
+ * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number, how: string } }}
  *     a PNG per kind, and for a pair what pictureParts found
  */
 export function pictures(job) {
@@ -185,14 +210,16 @@ export function pictures(job) {
  * how many of them the crop frames),
  * from the areas compare wrote into its item, without a picture job.
  * @param {{ areas?: number[][], size?: number[] | null, baselineSize?: number[] | null }} item the item
+ * @param {number} [scale] the capture's scale (results.json `scale`)
  * @returns {{ crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number } | null} the facts, or null when the
  *     item has no areas or sizes
  */
-export function factsOf(item) {
+export function factsOf(item, scale = 1) {
     if (!Array.isArray(item.areas) || !item.size || !item.baselineSize) {
         return null;
     }
-    return { ...rowCrop(item.areas, item.size[0], item.size[1]), areas: item.areas.length };
+    const facts = rowCrop(item.areas, item.size[0], item.size[1], { scale, base: item.baselineSize });
+    return { ...facts, areas: item.areas.length };
 }
 
 const FLAG = "--visual-review-thumbnails";
@@ -209,7 +236,7 @@ if (process.argv[2] === FLAG) {
 }
 
 /**
- * @typedef {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number } }} Made
+ * @typedef {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number, how: string } }} Made
  * @typedef {{ run: (load: () => Promise<object>, when?: "now" | "ahead", tag?: unknown) => Promise<Made>,
  *     raise: (match: (tag: unknown) => boolean) => void }} Pool
  */

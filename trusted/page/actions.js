@@ -272,12 +272,12 @@ export const ACTIONS = {
     show: { label: (app, ctx) => `Show: ${ctx.show}`, run: (app, ctx) => app.setShow(ctx.show) },
     group: { label: (app, ctx) => ctx.grouping, run: (app, ctx) => app.setGrouping(ctx.grouping) },
     picspot: {
-        label: "Spotlight rows",
-        title: "Dims what did not change",
+        label: "Spotlight small changes",
+        title: "Dims what did not change when the change covers less than a third of the picture",
         run: (app) => app.setPictures({ spot: !(app.lv.pics.spot && !app.lv.pics.none), none: false }),
     },
     piczoom: { label: (app, ctx) => ctx.zoom, run: (app, ctx) => app.setPictures({ zoom: ctx.zoom, none: false }) },
-    picnone: { label: "No pictures (text rows)", run: (app) => app.setPictures({ none: !app.lv.pics.none }) },
+    picnone: { label: "Text only, no pictures", run: (app) => app.setPictures({ none: true }) },
     listlink: { label: "Copy link to this list", run: (app) => app.copyListLink() },
     // The open change's number and title, a menu of what is change-wide and rare (app.js).
     chgmenu: { label: "", run: (app, ctx) => app.changeMenu(ctx.el) },

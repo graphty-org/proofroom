@@ -156,13 +156,14 @@ export function clusters(boxes) {
 }
 
 /**
- * A row-shaped crop of a w x h image centered on one box, and its zoom (see rowCrop). Each side is
+ * A row-shaped crop of a w x h image centered on one box, and its width before it was kept inside
+ * the image (see rowCrop). Each side is
  * clamped inside the image on its own: an image narrower (or shorter) than the crop at the row's
  * shape is shown whole that way, centered in the row, never zoomed further to keep the shape.
  * @param {number[]} box [x, y, width, height]
  * @param {number} w the image's width
  * @param {number} h its height
- * @returns {{ crop: number[], zoom: number }} the crop and its zoom
+ * @returns {{ crop: number[], wide: number }} the crop and its width at the row's shape
  */
 function cropAround([bx, by, bw, bh], w, h) {
     const shape = ROW[0] / ROW[1];
@@ -173,14 +174,10 @@ function cropAround([bx, by, bw, bh], w, h) {
     } else {
         ch = cw / shape;
     }
+    const wide = cw;
     [cw, ch] = [Math.min(cw, w), Math.min(ch, h)];
     const clamp = (v, max) => Math.min(Math.max(0, v), max);
-    // How much larger than the whole image fitted in the row the crop fitted in the row shows it.
-    const fit = (x, y) => Math.min(ROW[0] / x, ROW[1] / y);
-    return {
-        crop: [clamp(bx + bw / 2 - cw / 2, w - cw), clamp(by + bh / 2 - ch / 2, h - ch), cw, ch],
-        zoom: fit(cw, ch) / fit(w, h),
-    };
+    return { crop: [clamp(bx + bw / 2 - cw / 2, w - cw), clamp(by + bh / 2 - ch / 2, h - ch), cw, ch], wide };
 }
 
 /**
@@ -202,26 +199,36 @@ export function covered(boxes, [rx, ry, rw, rh]) {
 /** The spotlight dims a picture only when its changed areas cover less than this share of it. */
 export const SPOT_UNDER = 1 / 3;
 
-/** The zoom from which Zoom Auto zooms a row: the crop shows the change twice as large as Fit. */
-export const ROW_ZOOM_FROM = 2;
+/**
+ * The largest part of a page a row crop shows, in CSS pixels (image pixels = CSS pixels x the
+ * capture's scale): at the row's 167 x 64 CSS px it keeps 14 px text about 6 CSS px tall, readable
+ * on a 2x screen.
+ */
+export const ROW_MAX = [400, 156];
 
 /**
- * Zoom rows to the change: the part of a w x h image a zoomed row shows, at the row's shape and at
- * least ROW_MIN, kept inside the image (see cropAround). It frames every changed area when that
- * crop still zooms ROW_ZOOM_FROM or more; else the largest cluster of nearby areas (clusters), so a
- * spread-out change still shows a change, never a blank stretch of page. With no boxes, it centers
- * on the whole image. Boxes are clipped to the image first (a baseline larger than the new image
- * changes pixels outside it). Also says how much of the crop, and of the whole image, the areas
- * cover: the spotlight helps only below SPOT_UNDER.
- * @param {number[][]} boxes what regions() returns
- * @param {number} w the image's width
+ * The part of a w x h image a changed row shows, at the row's shape. The first that fits in
+ * ROW_MAX (times `scale`) of: every changed area (`how` "all"), the largest cluster of nearby
+ * areas ("cluster"; see clusters); else a ROW_MAX crop with the largest area's first changed pixel
+ * (`first`, else that area's top-left corner) a quarter in from the crop's top-left ("start"). On a
+ * resized page that is where the shift begins. When the only areas are the strip a size change adds
+ * or removes at the image's edge, or none, a ROW_MAX crop centered on the image ("size"). Crops are
+ * kept inside the image; an image smaller than ROW_MAX both ways is shown whole. Boxes are clipped
+ * to the image first (a baseline larger than the new image changes pixels outside it). Also says
+ * how much of the crop, and of the whole image, the areas cover: the spotlight helps only below
+ * SPOT_UNDER.
+ * @param {number[][]} boxes what regions() returns, largest first
+ * @param {number} w the new image's width
  * @param {number} h its height
- * @returns {{ crop: number[], zoom: number, shown: number, cover: number, coverAll: number }} the
- *     crop [x, y, width, height] (fractions allowed), how much larger it shows the image than the
- *     row's unzoomed picture fitted whole, how many of the boxes it frames, and the share of the
- *     crop and of the whole image the boxes cover
+ * @param {{ scale?: number, base?: number[] | null, first?: number[] | null }} [opts] the capture's
+ *     scale, the baseline's [width, height], and the largest area's first changed pixel [x, y]
+ * @returns {{ crop: number[], zoom: number, shown: number, cover: number, coverAll: number,
+ *     how: "all" | "cluster" | "start" | "size" }} the crop [x, y, width, height] (fractions
+ *     allowed), how much larger it shows the image than the whole image fitted in the row, how many
+ *     of the boxes it frames, the share of the crop and of the whole image the boxes cover, and
+ *     which rule chose it
  */
-export function rowCrop(boxes, w, h) {
+export function rowCrop(boxes, w, h, { scale = 1, base = null, first = null } = {}) {
     const inside = boxes
         .map(([x, y, bw, bh]) => {
             const [x0, y0] = [Math.max(0, x), Math.max(0, y)];
@@ -229,14 +236,46 @@ export function rowCrop(boxes, w, h) {
         })
         .filter((b) => b[2] > 0 && b[3] > 0);
     const coverAll = covered(inside, [0, 0, w, h]);
-    const out = (made, shown) => ({ ...made, shown, cover: covered(inside, made.crop), coverAll });
-    if (inside.length === 0) {
-        return out(cropAround([0, 0, w, h], w, h), 0);
+    const fit = (x, y) => Math.min(ROW[0] / x, ROW[1] / y);
+    const out = (crop, shown, how) => ({
+        crop,
+        zoom: fit(crop[2], crop[3]) / fit(w, h),
+        shown,
+        cover: covered(inside, crop),
+        coverAll,
+        how,
+    });
+    const max = [ROW_MAX[0] * scale, ROW_MAX[1] * scale];
+    // Framed when the crop at the row's shape (before it is kept inside the image) fits ROW_MAX.
+    const framed = (group) => {
+        const { crop, wide } = cropAround(around(group), w, h);
+        return wide <= max[0] ? crop : null;
+    };
+    // The area left once the strip a size change adds or removes (grown by GROW) is taken off.
+    const resized = Boolean(base) && (base[0] !== w || base[1] !== h);
+    const kept = resized ? [0, 0, Math.min(w, base[0]) - GROW, Math.min(h, base[1]) - GROW] : [0, 0, w, h];
+    const sizeOnly = inside.every((b) => covered([b], kept) === 0);
+    if (inside.length > 0 && !sizeOnly) {
+        const all = framed(inside);
+        if (all) {
+            return out(all, inside.length, "all");
+        }
+        const [most] = clusters(inside);
+        const near = most.length < inside.length ? framed(most) : null;
+        if (near) {
+            return out(near, most.length, "cluster");
+        }
     }
-    const all = cropAround(around(inside), w, h);
-    if (all.zoom >= ROW_ZOOM_FROM || inside.length === 1) {
-        return out(all, inside.length);
+    // A ROW_MAX crop at the row's shape, smaller only where the image is; the whole image when it
+    // is smaller both ways.
+    const shape = ROW[0] / ROW[1];
+    const cw = w <= max[0] && h <= max[1] ? w : Math.min(max[0], w, h * shape);
+    const ch = w <= max[0] && h <= max[1] ? h : cw / shape;
+    const clamp = (v, top) => Math.min(Math.max(0, v), top);
+    if (inside.length === 0 || sizeOnly) {
+        return out([(w - cw) / 2, (h - ch) / 2, cw, ch], 0, "size");
     }
-    const [most] = clusters(inside);
-    return out(cropAround(around(most), w, h), most.length);
+    const [lx, ly, lw, lh] = inside[0];
+    const [fx, fy] = first && first[0] >= lx && first[0] < lx + lw && first[1] >= ly && first[1] < ly + lh ? first : [lx, ly];
+    return out([clamp(fx - cw / 4, w - cw), clamp(fy - ch / 4, h - ch), cw, ch], 1, "start");
 }

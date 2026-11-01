@@ -147,9 +147,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PAGE_DIR = "../page";
 // The version of the changed pairs' pictures kept in <tmp>/spots: 2 dims less (SPOT_ALPHA 110) and
 // frames every area or the largest cluster of them; 3 shows the new image only, keeps a narrow
-// image's crop at its own width, and knows how much of a picture the areas cover (shownKind). The
-// page asks for pictures with the same `v` (list.js), so a browser's kept picture is not reused.
-const SPOTS_MADE_BY = "3";
+// image's crop at its own width, and knows how much of a picture the areas cover (shownKind); 4
+// crops every changed row onto its change, at most ROW_MAX CSS pixels of the page. The page asks for pictures with the same `v` (list.js), so a browser's kept picture is not reused.
+const SPOTS_MADE_BY = "4";
 const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
 const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
@@ -3937,7 +3937,7 @@ export function createApp({
 
     /**
      * A changed item's picture of one kind, its pair's every kind made at once, unless `run` made
-     * them. `auto` is the spotlit picture, zoomed or not, and a spotlit kind is shown plain when
+     * them. `auto` is the row's crop, spotlit, and a spotlit kind is shown plain when
      * the areas cover a third or more of it, as shownKind decides from what the job found, or from
      * the areas compare wrote into the item.
      * @param {{ path: string, hash: string, file: string, dir: string }} a where the baseline is
@@ -3947,14 +3947,15 @@ export function createApp({
      *     settings, and what compare and run wrote into it)
      * @param {string} kind one of PICTURE_KINDS
      * @param {"now" | "ahead"} when see `createPool`
+     * @param {number} scale the capture's scale (results.json `scale`)
      * @returns {Promise<Array<unknown>>} the answer: the picture, or why not
      */
-    const spotOf = async (a, b, item, kind, when) => {
+    const spotOf = async (a, b, item, kind, when, scale) => {
         const { threshold, includeAA } = item;
         const key = pairKey(a.hash, b.hash, { threshold, includeAA });
         // Only a capture `run` made is read first: another's job is queued at once, in list order.
         if (item.pictures) {
-            const known = areas.get(key) ?? factsOf(item);
+            const known = areas.get(key) ?? factsOf(item, scale);
             const made = await madeByRun(item, b.dir, known ? shownKind(kind, known) : kind);
             if (made) {
                 return made;
@@ -3971,22 +3972,25 @@ export function createApp({
                     capture: await imageFor(b),
                     threshold,
                     includeAA,
+                    scale,
                     label: b.path,
                 }),
                 { tag: b.dir, found: foundAreas(key), again },
             );
-        if (kind !== "auto") {
-            const known = areas.get(key) ?? factsOf(item);
-            return make(known ? shownKind(kind, known) : kind);
+        const known = areas.get(key) ?? factsOf(item, scale);
+        if (known) {
+            return make(shownKind(kind, known));
         }
-        if (!areas.has(key)) {
-            // Its pictures may be on disk without what the job found (a lost areas file): made again.
-            const made = await make("row-spot", true);
-            if (made[0] !== 200) {
-                return made;
-            }
+        if (kind === "plain" || kind === "row-plain") {
+            return make(kind);
         }
-        return make(shownKind("auto", areas.get(key)));
+        // A spotlit kind is shown plain when its areas cover a third or more, which only the job
+        // finds: made first (again, when its pictures are on disk without what it found, a lost
+        // areas file), then the kind chosen.
+        const made = await make("row-spot", existsSync(files["row-spot"]));
+        const found = areas.get(key);
+        // Made in advance, the job made every kind: nothing to answer.
+        return made[0] === 200 && found && when === "now" ? make(shownKind(kind, found)) : made;
     };
 
     /**
@@ -3994,7 +3998,7 @@ export function createApp({
      * a list opens with them ready: one job per item, in list order. A changed pair's job makes
      * every kind; an item with one image only its thumbnail.
      * @param {string} dir the capture's directory
-     * @param {{ items: object[] }} r its results.json
+     * @param {{ items: object[], scale?: number }} r its results.json
      */
     function prewarm(dir, r) {
         const warn = (path) => (err) => warnOnce(`could not make the thumbnail of ${path}: ${err.message}`);
@@ -4010,7 +4014,7 @@ export function createApp({
                 const files = spotFiles(item.baseline, item.capture, item);
                 if (!existsSync(files["row-spot"]) || !existsSync(files.plain)) {
                     const a = { path: join(dir, "baselines", item.file), hash: item.baseline, file: item.file, dir };
-                    spotOf(a, where, item, "row-spot", "ahead").catch(warn(path));
+                    spotOf(a, where, item, "row-spot", "ahead", r.scale ?? 1).catch(warn(path));
                 }
             } else if (hash && !existsSync(join(tmp, "thumbs", `${hash}.png`))) {
                 thumbOf(where, false).catch(warn(path));
@@ -4034,18 +4038,24 @@ export function createApp({
         "reason",
         "reReview",
     ];
-    const rowOf = (item) => {
+    const rowOf = (item, scale) => {
         const row = Object.fromEntries(ROW_FIELDS.filter((k) => item[k] !== undefined).map((k) => [k, item[k]]));
         const imaged = item.status !== "failed" && (item.baseline || item.capture);
         const key = imaged ? pairKey(item.baseline ?? "none", item.capture ?? "none", item) : null;
-        const found = key && (areas.get(key) ?? factsOf(item));
+        const found = key && (areas.get(key) ?? factsOf(item, scale));
         // Attempts of this run that saw another status or image: a badge, never a status of its own.
         const disagree = (item.attempts ?? []).some((a) => a.status !== item.status || a.capture !== item.capture);
         return {
             ...row,
             pic: key,
             areas: found
-                ? { crop: found.crop, zoom: found.zoom, count: found.areas, shown: found.shown ?? found.areas }
+                ? {
+                      crop: found.crop,
+                      zoom: found.zoom,
+                      count: found.areas,
+                      shown: found.shown ?? found.areas,
+                      how: found.how,
+                  }
                 : null,
             ...(disagree && { disagree: true }),
         };
@@ -4201,7 +4211,7 @@ export function createApp({
             if (b) {
                 remember(blobs, item.capture, dir, b);
             }
-            remember(pictured, pairKey(item.baseline ?? "none", item.capture ?? "none", item), dir, { a, b, item });
+            remember(pictured, pairKey(item.baseline ?? "none", item.capture ?? "none", item), dir, { a, b, item, scale: r.scale ?? 1 });
         }
     }
 
@@ -4217,9 +4227,9 @@ export function createApp({
         if (!found) {
             return [404, { error: "no such picture" }];
         }
-        const { a, b, item } = found;
+        const { a, b, item, scale } = found;
         if (a && b && a.hash !== b.hash) {
-            return spotOf(a, b, item, kind, "now");
+            return spotOf(a, b, item, kind, "now", scale);
         }
         if (kind !== "plain") {
             return [404, { error: "nothing changed" }];
@@ -4800,7 +4810,7 @@ export function createApp({
                     project: name,
                     acceptable: acceptable(t, name),
                     results: meta,
-                    items: query?.get("rows") === "1" ? shown.map(rowOf) : shown,
+                    items: query?.get("rows") === "1" ? shown.map((i) => rowOf(i, meta.scale ?? 1)) : shown,
                     decisions: Object.fromEntries(decided),
                     clusters: grouped.clusters,
                     ...(earlier && { carried: carriedFrom(earlier, t, name) }),

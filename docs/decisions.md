@@ -254,6 +254,40 @@ change read far more clearly, plain. The 10 still hard to read are whole-image p
 page where the change is a few thin lines: their changed areas cover little, so they stay spotlit,
 and at the row's size the lines are a few pixels.
 
+## Every changed row is a crop of the change, at most 400 x 156 CSS pixels of the page
+
+Most rows still showed the whole page shrunk into the frame. The captures are 2,400 px wide and up to
+15,618 px tall, and on a resized page everything under the first change moved, so the largest
+changed area runs from there to the bottom. The old rule zoomed only when the crop showed the change
+twice as large as the whole image, and clamped a page-long area to the whole page: 3,517 of the
+5,636 rows the server had made were the whole image or under 2x.
+
+Now a changed row is always a crop that fills the row's shape and holds at most 400 x 156 CSS pixels
+of the page (image pixels = CSS pixels x the capture's scale), small enough that 14 px text stays
+readable at the row's size on a 2x screen. It frames every changed area when they fit; else the
+largest group of areas close together; else it puts the largest area's first changed pixel a
+quarter in from the crop's top-left, so a resized page shows where the shift begins with a little
+unchanged page above it. When the only change is the strip a size change adds or removes, the crop
+is centered and the row reads "Only the size changed: 2 px shorter". The List menu's Pictures are
+Crop to the change (the default), Whole image and Text only, plus Spotlight small changes; a stored
+When small or Always reads as the crop, Never as Whole image. The gray crop bar is gone: every
+changed row is a crop, so it marked nothing.
+
+Checked on change #4455 of the studio server, the first 40 rows of graph-io-fidelity (resized
+pages) and the first 40 of graphty (same-size pages), each at 1440 x 900 and 1024 x 768, light and
+dark, on a 2x screen, judged row by row:
+
+- graph-io-fidelity: all 40 rows are crops where the largest change starts, and the change can be
+  read in 40 of 40 (tables of pass counts, shifted labels, node grids); before, these rows showed
+  the whole page shrunk to about 40 x 60 px in the middle of the frame.
+- graphty: 38 changed rows (16 cropped where the largest change starts, 22 to the largest group of
+  areas) and 2 new or removed rows shown whole. The change can be seen in 31 of the 38. The 7 where
+  it cannot are six style-panel crops ("Shaders", "Edges: not styled") whose change is a 1 px border
+  line, and one menu crop beside a flat gray block; their pictures are readable, the change in them is too thin to see.
+- The row pictures are the same at both widths and in both themes (one picture per row), so the
+  counts are the same in all four. No changed row has a band beside its picture wider than 3 CSS px
+  (the slot is 2.61:1, the crop 2.56:1); only the two whole-image new and removed rows do.
+
 ## A calmer list pane
 
 The Snapshots header had a 590 px List menu holding Undo all decisions beside Accept all shown,

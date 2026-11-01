@@ -41,16 +41,18 @@ badge "+11 identical" when their change is identical to others'.
 
 **Pictures** in the list header's **List** menu chooses what each row's picture shows:
 
-- **Spotlight rows** (on by default): dims what did not change, so a small change stands out. A
-  picture is spotlit only when its changed areas cover less than a third of it; when most of it
-  changed it is shown plain, because dimming would hide the change.
-- **Zoom rows to the change**: **When small** (the default) zooms a row when its crop around the
-  change shows it at least twice as large as the whole image would; **Always** and **Never**
-  override it. A zoomed row's picture has a gray bar on its left edge, and its tooltip says how
-  much ("Zoomed 7x to the changed areas"). When the areas are too far apart to zoom to all of them,
-  the picture shows the largest group of areas close together ("Zoomed 7x to 1 of the 3 changed
-  areas"). The row itself says how many areas changed, "3 changed areas".
+- **Crop to the change** (the default): a changed row's picture is a crop of the change, at most
+  400 x 156 CSS pixels of the page, so it can be read at the row's size. It frames every changed
+  area when they fit, else the largest group of areas close together ("Cropped to 1 of the 3
+  changed areas"), else where the largest change starts ("Cropped to where the largest change
+  starts"): on a resized page, everything under the first change moved, and the crop shows where
+  that begins. When only the size changed, the crop is centered and the row reads "Only the size
+  changed: 2 px shorter". The row itself says how many areas changed, "3 changed areas".
+- **Whole image**: the whole new image, shrunk to the row.
 - **Text only, no pictures**: text rows, the densest list.
+- **Spotlight small changes** (on by default): dims what did not change, so a small change stands
+  out. A picture is spotlit only when its changed areas cover less than a third of it; when most
+  of it changed it is shown plain, because dimming would hide the change.
 
 ## Selecting
 

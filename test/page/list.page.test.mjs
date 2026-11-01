@@ -785,10 +785,10 @@ describe("groups", () => {
                 .map((x) => x.className),
         );
         expect(bold).toEqual([expect.stringMatching(/^nm1?$/)]);
-        // Spotlight rows, one name, with a tooltip saying what it does.
+        // Spotlight small changes, one name, with a tooltip saying what it does and when.
         await listMenu(page);
         expect(await page.locator('.menu .mi[data-act="picspot"]').getAttribute("title")).toBe(
-            "Dims what did not change",
+            "Dims what did not change when the change covers less than a third of the picture",
         );
     });
 
@@ -833,35 +833,43 @@ describe("rows", () => {
             .filter((p) => p.startsWith("/api/pic/"))
             .map((p) => p.split("-").slice(4).join("-").split("?")[0]);
 
-    it("asks for the picture the Row pictures choices name, says its zoom only in its tooltip, and its areas under the name", async () => {
+    it("asks for the picture the Row pictures choices name, says its crop only in its tooltip, and its areas under the name", async () => {
         const page = await openChange(RICH);
-        // A changed row: spotlit, zoom auto, so the server's auto picture. Its crop frames one of
-        // its three areas (the fixture's largest cluster), zoomed 7x.
+        // A changed row: Crop to the change and Spotlight small changes, so the row's spotlit crop.
+        // Its crop frames one of its three areas (the fixture's largest cluster).
         const r = page.locator('#snap-list .srow[data-snap="graphty-element/component-22--story-114.light.png"]');
         await page.locator("#snap-find").click();
         await page.keyboard.type("115");
         await r.waitFor();
-        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-auto\?v=\d+$/);
-        expect((await listChecked(page)).checked).toEqual(["Component", "Spotlight rows", "When small"]);
-        // Zoom rows' When small keeps its rule in its tooltip.
+        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-row-spot\?v=4$/);
+        expect((await listChecked(page)).checked).toEqual(["Component", "Crop to the change", "Spotlight small changes"]);
+        // The Pictures section: three choices, then the Spotlight toggle with its rule in its tooltip.
         await listMenu(page);
-        expect(await menuItem(page, "When small").locator("..").getAttribute("title")).toMatch(/2x Fit or more/);
+        const items = await page.getByRole("menu").locator(".mi").allInnerTexts();
+        const at = items.indexOf("Crop to the change");
+        expect(items.slice(at, at + 4)).toEqual([
+            "Crop to the change",
+            "Whole image",
+            "Text only, no pictures",
+            "Spotlight small changes",
+        ]);
+        expect(await page.locator('.menu .mi[data-act="picspot"]').getAttribute("title")).toBe(
+            "Dims what did not change when the change covers less than a third of the picture",
+        );
         await page.keyboard.press("Escape");
         // The row says how many areas changed, right under the story's name (grouped by component,
-        // the row has no component line); no zoom and no pixel size on the row.
+        // the row has no component line); no zoom and no pixel size on the row, and no crop bar.
         const line4 = r.locator(".x4 .keep");
         expect(await r.locator(".x3").count()).toBe(0);
         expect(await r.locator(".info > .nm1 + .x4").count()).toBe(1);
-        const isZoomed = () => r.locator(".pic").evaluate((p) => p.classList.contains("zoomed"));
-        const zoomed = async () => {
-            await expect.poll(() => isZoomed()).toBe(true);
+        const cropped = async () => {
+            await expect.poll(() => r.locator(".pic").getAttribute("title")).toBe("Cropped to 1 of the 3 changed areas");
             expect(await line4.innerText()).toBe("3 changed areas");
-            expect(await r.locator(".pic").getAttribute("title")).toBe("Zoomed 7x to 1 of the 3 changed areas");
+            expect(await r.locator(".pic").evaluate((p) => globalThis.getComputedStyle(p).boxShadow)).toBe("none");
         };
         const whole = async () => {
-            await expect.poll(() => isZoomed()).toBe(false);
+            await expect.poll(() => r.locator(".pic").getAttribute("title")).toBe("Whole image");
             expect(await line4.innerText()).toBe("3 changed areas");
-            expect(await r.locator(".pic").getAttribute("title")).toBe("Whole image");
         };
         // Nothing is drawn over any row picture: a loaded picture shows only its image (the
         // placeholder hides; a removed row's even hatching is its status, not a label).
@@ -874,9 +882,12 @@ describe("rows", () => {
                         .map((c) => c.className),
                 ),
             );
-        await zoomed();
+        await cropped();
         await expect.poll(() => r.locator(".pic.ready").count()).toBe(1);
         expect(await over()).toEqual([]);
+        // A row whose crop frames every area says so.
+        const titles = await page.locator("#snap-list .pic").evaluateAll((ps) => ps.map((p) => p.title));
+        expect(titles).toContain("Cropped to the changed areas");
         // A picture narrower than the row's shape is centered on the row's own background, never
         // on the stage grey.
         expect(await r.locator(".pic").evaluate((p) => globalThis.getComputedStyle(p).backgroundColor)).toBe(
@@ -889,14 +900,12 @@ describe("rows", () => {
             await expect.poll(() => asked(t, from)).toContain(kind);
             expect(await r.locator("img").getAttribute("src")).toMatch(new RegExp(`-${kind}\\?v=\\d+$`));
         };
-        await pics("Always", "row-spot");
-        await zoomed();
-        await pics("Never", "spot");
+        await pics("Whole image", "spot");
         await whole();
-        expect((await listChecked(page)).checked).toContain("Never");
-        await pics("Spotlight rows", "plain");
-        await pics("Always", "row-plain");
-        await zoomed();
+        expect((await listChecked(page)).checked).toContain("Whole image");
+        await pics("Spotlight small changes", "plain");
+        await pics("Crop to the change", "row-plain");
+        await cropped();
         expect(await over()).toEqual([]);
         // No pictures: 28 px text rows that ask for none.
         const from = t.requests.length;
@@ -905,6 +914,17 @@ describe("rows", () => {
         expect((await box(page, "#snap-list .srow")).height).toBe(28);
         expect(asked(t, from)).toEqual([]);
         expect((await listChecked(page)).checked).toEqual(["Component", "Text only, no pictures"]);
+    });
+
+    it.each([
+        ["auto", "Crop to the change"],
+        ["always", "Crop to the change"],
+        ["never", "Whole image"],
+    ])("reads an older page's stored Zoom rows %s as %s", async (zoom, choice) => {
+        const page = await openChange(RICH, {
+            storage: { "proofroom:pictures": JSON.stringify({ spot: true, zoom, none: false }) },
+        });
+        expect((await listChecked(page)).checked).toContain(choice);
     });
 
     it("says what a row's decision is, and Undo changes exactly that row element", async () => {
@@ -1243,9 +1263,14 @@ describe("at 1024 x 768", () => {
                 id === "8001"
                     ? {
                           project: name,
-                          items: [0, 1, 2].map((i) =>
-                              row(i, "changed", i === 1 ? { size: [1000, 760], disagree: true } : {}),
-                          ),
+                          items: [0, 1, 2].map((i) => {
+                              if (i === 2) {
+                                  // Only the size changed: 2 px shorter, its only area the strip.
+                                  const areas = { ...row(i, "changed").areas, how: "size", count: 1, shown: 0 };
+                                  return row(i, "changed", { size: [800, 598], areas });
+                              }
+                              return row(i, "changed", i === 1 ? { size: [1000, 760], disagree: true } : {});
+                          }),
                           decisions: {},
                           clusters: [],
                       }
@@ -1253,8 +1278,14 @@ describe("at 1024 x 768", () => {
         });
         const r = page.locator('#snap-list .srow[data-snap$="story-1.dark.png"]');
         expect(await r.locator(".mode").textContent()).toBe(", dark, resized");
+        // Its tooltip gives both sizes.
+        expect(await r.locator(".mode").getAttribute("title")).toBe("Resized: 800 x 600 to 1,000 x 760");
         expect(await r.locator(".badge").allTextContents()).toEqual(["unstable"]);
         expect(await r.locator(".badge").evaluate((n) => globalThis.getComputedStyle(n).flexShrink)).toBe("0");
+        // A size-only change says so in words, and its picture is centered on the image.
+        const only = page.locator('#snap-list .srow[data-snap$="story-2.light.png"]');
+        expect(await only.locator(".x4 .keep").innerText()).toBe("Only the size changed: 2 px shorter");
+        expect(await only.locator(".pic").getAttribute("title")).toBe("Centered: only the size changed");
     });
 });
 
@@ -1295,7 +1326,6 @@ describe("a calmer list pane", () => {
         expect(await menu.locator(".mh").allInnerTexts()).toEqual([
             "Group by: Component",
             "Pictures",
-            "Zoom rows to the change",
             "Select",
         ]);
         for (const gone of ["Accept all", "Undo all", "JUnit", "Copy link"]) {
