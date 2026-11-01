@@ -373,8 +373,14 @@ export function fakeGh({
             return JSON.stringify({ jobs: jobs[m[1]] ?? [] });
         }
         if ((m = /actions\/runs\/(\d+)\/artifacts/.exec(path))) {
+            // Paged as GitHub pages it: 100 at most per page.
+            const all = artifacts[m[1]] ?? [];
+            const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? 1);
             return JSON.stringify({
-                artifacts: (artifacts[m[1]] ?? []).map((name) => ({ name, expired: false, size_in_bytes: 1000000 })),
+                total_count: all.length,
+                artifacts: all
+                    .slice((page - 1) * 100, page * 100)
+                    .map((name) => ({ name, expired: false, size_in_bytes: 1000000 })),
             });
         }
         if ((m = /actions\/runs\/(\d+)$/.exec(path))) {

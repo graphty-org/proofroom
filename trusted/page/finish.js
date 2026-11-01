@@ -367,6 +367,12 @@ export function installFinish(app) {
         return progress.step.replace(/ done\)$/, ")").replaceAll(/\d+/g, (n) => fmt(Number(n)));
     }
 
+    const UNSIGNED = {
+        rejects: "something is rejected",
+        unloaded: "a project is not loaded",
+        undecided: "snapshots are still undecided",
+    };
+
     function oneBody({ id, t, prepared }, notice) {
         const f = t.finish;
         const c = app.change(id);
@@ -376,6 +382,17 @@ export function installFinish(app) {
         return [
             el("h3", {}, `Finish ${c?.label ?? id} ${c?.title ?? ""}`),
             notice ? el("p", { class: "c-failed" }, notice) : null,
+            f.unloaded.length > 0
+                ? el(
+                      "div",
+                      { class: "warnbox" },
+                      el(
+                          "b",
+                          {},
+                          `Not loaded: ${f.unloaded.join(", ")}. Finish will not sign the approval until ${f.unloaded.length === 1 ? "it loads" : "they load"}.`,
+                      ),
+                  )
+                : null,
             undecided > 0
                 ? el(
                       "div",
@@ -490,9 +507,7 @@ export function installFinish(app) {
             return line(` Passkey ${names.join(" or ") || "registered here"}${many ? "." : ""}`);
         }
         if (prepared?.unsigned) {
-            return line(
-                ` nothing, because ${prepared.unsigned === "rejects" ? "something is rejected" : "snapshots are still undecided"}.`,
-            );
+            return line(` nothing, because ${UNSIGNED[prepared.unsigned] ?? "snapshots are still undecided"}.`);
         }
         return line(" nothing: a Finish of rejects alone signs nothing.");
     }
@@ -687,7 +702,9 @@ export function installFinish(app) {
                     ? `Touch your passkey to sign ${label(id)}${after}. Stay on this page.`
                     : `Finishing ${label(id)}${after}.`,
                 "",
-                prepared.required && !item.approval ? [control(app, "signfinish", { zone: "msgline", ctx: { id } })] : [],
+                prepared.required && !item.approval
+                    ? [control(app, "signfinish", { zone: "msgline", ctx: { id } })]
+                    : [],
             );
             redraw();
             let approval = null;
