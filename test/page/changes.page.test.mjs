@@ -214,7 +214,7 @@ describe("with 50 changes", () => {
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Opened #3481 Change 3481: 7 undecided.");
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         await page.locator('.chg.cur [data-act="openchg"]').click();
         await expect.poll(() => message(page)).toBe("Opened #3481 Change 3481: 7 undecided.");
     });
@@ -230,7 +230,7 @@ describe("with 50 changes", () => {
         await page.keyboard.press("Shift+KeyN");
         await expect.poll(() => message(page)).toBe("Opened seed Seed from master: 12 undecided.");
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         // Back at the changes, the Changes header carries it.
         expect(await page.locator('#snaps-head [data-act="nextchange"]').count()).toBe(0);
         await page.locator('#changes [data-act="nextchange"]').click();
@@ -285,8 +285,9 @@ describe("with 50 changes", () => {
         await expect.poll(() => page.locator("#snap-list .summary .title").innerText()).toBe("#3484 Legend overlay");
         const text = await page.locator("#snap-list").innerText();
         expect(text).toContain("by mlin, from CI, 1 of 1 projects ready, 4 min ago");
-        expect(text).toContain("3 undecided of 3");
-        expect(text).toContain("3 changed");
+        // One plain sentence of what the change holds, and what is left.
+        expect(text).toContain("3 snapshots: 3 changed");
+        expect(text).toContain("3 left");
         await page.locator("#snap-list").getByRole("button", { name: "Open" }).click();
         await expect.poll(() => message(page)).toBe("Opened #3484 Legend overlay: 3 undecided.");
     });

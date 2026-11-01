@@ -207,7 +207,7 @@ export const splitWords = (split) =>
 
 /**
  * The groups that open collapsed: every group over 50 rows that holds undecided rows, except the
- * first such; and Approved before, unless Show is All or Accepted.
+ * first such; and Approved before, unless Show is All or Accepted earlier.
  * @param {{ key: string, rows: object[] }[]} groups the groups
  * @param {string} show the Show choice
  * @returns {Set<string>} their keys
@@ -217,7 +217,7 @@ export function collapsedAtStart(groups, show) {
     let first = true;
     for (const g of groups) {
         if (g.key === BEFORE) {
-            if (show !== "all" && show !== "accept") {
+            if (show !== "all" && show !== "before") {
                 out.add(g.key);
             }
             continue;

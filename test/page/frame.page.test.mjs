@@ -1,6 +1,6 @@
 /*
  * The frame around the review on the new page, by real input in Chromium and in WebKit: the Keys
- * sheet [?] with its key map, letter keys switch and last 20 messages; Settings with letter keys,
+ * sheet [?] with its key map grouped by task and the single-letter keys switch; Settings with letter keys,
  * the Highlight color (the drawn highlight changes) and the theme each way; a message that stays
  * through unrelated key presses and polls; the server stopped mid-review (every control that
  * writes unavailable, a press sends nothing and says why, Retry after a restart enables them
@@ -97,7 +97,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await closeBox(page);
             });
 
-            it("opens by ? and by its button, lists the keys the page has, and the last 20 messages", async () => {
+            it("opens by ? and by its button, lists the keys the page has grouped by task, and no messages", async () => {
                 const page = await open({});
                 // 22 messages: a sort, then Changes hidden and shown 21 times.
                 await page.getByRole("button", { name: /^Sort:/ }).click();
@@ -121,11 +121,16 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 ]) {
                     expect(text).toContain(words);
                 }
-                await box(page).getByText("The last 20 messages").click();
-                const items = await box(page).locator("li").allInnerTexts();
-                expect(items).toHaveLength(20);
-                expect(items[0]).toMatch(/^\d\d:\d\d Changes hidden: its rail or Shift\+1 brings it back\.$/);
-                expect(items.join("\n")).not.toContain("Sorted: Newest.");
+                expect(await box(page).locator(".kgroup").allInnerTexts()).toEqual([
+                    "Decide",
+                    "Move",
+                    "Look",
+                    "Panes",
+                    "Select",
+                ]);
+                expect(text).toContain("Close or clear; again to go back");
+                // The message history is behind Messages, not in this sheet.
+                expect(await box(page).locator("li").count()).toBe(0);
                 await closeBox(page);
                 await page.getByRole("button", { name: "Keys" }).click();
                 await expect.poll(() => box(page).locator("h3").innerText()).toBe("Keys");
@@ -155,7 +160,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             it("off from the Keys sheet: hints gone, letter, digit and symbol keys dead, arrows and Enter act; on from Settings", async () => {
                 const page = await open({});
                 await page.keyboard.press("Shift+Slash");
-                const sw = box(page).getByRole("checkbox", { name: /^Letter, digit and symbol keys on \(off:/ });
+                const sw = box(page).getByRole("checkbox", { name: "Single-letter keys" });
                 expect(await sw.isChecked()).toBe(true);
                 await sw.click();
                 await expect

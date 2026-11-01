@@ -87,7 +87,9 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 const page = await open({ viewport: { width: 1280, height: 800 } });
                 await page.locator('.chg[data-chg="3486"]').click();
                 await page.locator('.iline [data-act="openrow"]').click();
-                await expect.poll(() => page.locator(".iline").innerText()).toContain("Back to list");
+                await expect
+                    .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
+                    .toBe("Back to the list (Esc)");
                 return page;
             },
             "back at the changes with a change open": async () => {
@@ -95,7 +97,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.locator('.chg[data-chg="3486"]').click();
                 await page.locator(".iline").waitFor({ state: "attached" });
                 await page.keyboard.press("Escape");
-                await expect.poll(() => message(page)).toBe("Back to the changes.");
+                await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
                 return page;
             },
             "a menu open": async () => {
@@ -171,7 +173,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             expect(await rails()).toEqual([true, false]);
             await page.keyboard.press("Enter");
             await expect.poll(rails).toEqual([true, true]);
-            expect(await page.locator('.iline [data-act="back"]').innerText()).toBe("Back to listEsc");
+            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe("Back to the list (Esc)");
             await page.keyboard.press("Shift+Digit2");
             await expect.poll(rails).toEqual([true, false]);
             await page.keyboard.press("Shift+Digit1");
@@ -186,7 +188,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => message(page)).toBe("Back to the list.");
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
             // At 1280 the viewer keeps its snapshot, so Snapshots stays a rail beside Changes.
             expect(await rails()).toEqual([false, true]);
         });
@@ -202,7 +204,9 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await page.keyboard.press("Escape");
             await expect.poll(() => page.evaluate(() => globalThis.document.activeElement?.id)).toBe("chg-list");
-            expect(await page.locator('.iline [data-act="back"]').innerText()).toBe("Back to changesEsc");
+            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe(
+                "Back to the changes (Esc)",
+            );
             // A menu takes Esc first, and Back shows no key box while it is open.
             await page.getByRole("button", { name: /^Sort:/ }).click();
             await page.getByRole("menu").waitFor();
@@ -210,15 +214,52 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => page.getByRole("menu").count()).toBe(0);
             expect(await page.locator(".iline").count()).toBe(1);
+            // Right after an Esc that closed something, Esc says how to go back instead.
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toBe("Press Esc again to go back to the changes.");
+            expect(await page.locator(".iline").count()).toBe(1);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
+        });
+
+        it("goes back with a second Esc only after saying so when the first one cleared something", async () => {
+            const page = await open({});
+            await page.locator('.chg[data-chg="3486"]').click();
+            await page.locator(".iline").waitFor({ state: "attached" });
+            // The item line prints where a selection starts: Select X Shift+Up/Down.
+            expect(await page.locator('.iline [data-act="select"]').innerText()).toMatch(
+                /^Select\s*X\s*Shift\+Up\/Down$/,
+            );
+            await page.keyboard.press("KeyX");
+            await expect.poll(() => page.locator("#snaps-head .lselbar").count()).toBe(1);
+            // The first Esc clears the selection; the second, right after it, stays and says so.
+            await page.keyboard.press("Escape");
+            await expect.poll(() => page.locator("#snaps-head .lselbar").count()).toBe(0);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toBe("Press Esc again to go back to the changes.");
+            expect(await page.locator(".iline").count()).toBe(1);
+            // The third goes back, and says how to come back.
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toBe("Back to the changes. Enter opens #3486 again.");
+            await page.keyboard.press("Enter");
+            await expect.poll(() => message(page)).toMatch(/^Opened #3486 /);
+            // Any other key in between ends the guard: a menu closed, then a letter, then Esc goes back.
+            await page.getByRole("button", { name: "List", exact: true }).click();
+            await page.getByRole("menu").waitFor();
+            await page.keyboard.press("Escape");
+            await expect.poll(() => page.getByRole("menu").count()).toBe(0);
+            await page.keyboard.press("KeyV");
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         });
 
         it("closes a menu with Esc after Tab took focus out of it, then goes back", async () => {
             const page = await open({});
             await page.locator('.chg[data-chg="3486"]').click();
             await page.locator(".iline").waitFor({ state: "attached" });
-            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe("Back to changes [Esc]");
+            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe(
+                "Back to the changes (Esc)",
+            );
             await page.keyboard.press("Shift+Digit1");
             await expect.poll(() => page.locator("#chg-find").isVisible()).toBe(true);
             await page.getByRole("button", { name: /^Sort:/ }).click();
@@ -230,8 +271,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => page.getByRole("menu").count()).toBe(0);
             expect(await page.locator(".iline").count()).toBe(1);
+            // Right after an Esc that closed something, Esc says how to go back instead.
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toBe("Press Esc again to go back to the changes.");
+            expect(await page.locator(".iline").count()).toBe(1);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         });
 
         it("does what the printed [Enter] says after a box closes", async () => {
@@ -282,11 +327,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             expect(await visibleKeys(page)).toEqual([
                 { act: "view-flash", key: "hold Space" },
                 { act: "back", key: "Esc" },
+                { act: "select", key: "Shift+Up/Down" },
                 { act: "prev", key: "Left" },
                 { act: "next", key: "Right" },
             ]);
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         });
 
         it.skipIf(name !== "chromium")("reads AZERTY's digit row by key position", async () => {

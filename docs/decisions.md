@@ -4,17 +4,17 @@
 
 Every snapshot of a capture has one status:
 
-| Status                     | What it means                                                                                                        |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `unchanged`                | The capture is the baseline. Nothing to decide                                                                       |
-| `changed`                  | The capture differs from its baseline                                                                                |
-| `moved`                    | A renamed story that looks exactly as its old id's baseline (see [renames](../README.md#reorganizing-stories-renames)) |
-| `new`                      | No baseline, and on a pull request the story is new or looks different from the default branch's newest capture     |
-| `no baseline yet`          | Status `unseeded`: no baseline, and the pull request does not change the story                                       |
-| `removed`                  | A baseline whose story no longer exists, lost a mode, or whose own parameters now exclude it                         |
-| `failed`                   | The story could not be shot (it did not render, or timed out)                                                        |
-| `excluded`                 | The story is not captured (its settings exclude it)                                                                  |
-| `unstable (old capture)`   | Only in a capture made by `@graphty/visual-review`: two shots of one commit differed. It can only be excluded        |
+| Status                   | What it means                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `unchanged`              | The capture is the baseline. Nothing to decide                                                                         |
+| `changed`                | The capture differs from its baseline                                                                                  |
+| `moved`                  | A renamed story that looks exactly as its old id's baseline (see [renames](../README.md#reorganizing-stories-renames)) |
+| `new`                    | No baseline, and on a pull request the story is new or looks different from the default branch's newest capture        |
+| `no baseline yet`        | Status `unseeded`: no baseline, and the pull request does not change the story                                         |
+| `removed`                | A baseline whose story no longer exists, lost a mode, or whose own parameters now exclude it                           |
+| `failed`                 | The story could not be shot (it did not render, or timed out)                                                          |
+| `excluded`               | The story is not captured (its settings exclude it)                                                                    |
+| `unstable (old capture)` | Only in a capture made by `@graphty/visual-review`: two shots of one commit differed. It can only be excluded          |
 
 `new` and `no baseline yet` block the pull request alike: they need a decision, and accepting one
 makes its capture the story's first baseline.
@@ -74,3 +74,50 @@ first 40 rows of a nightly capture of about 1,800 snapshots at the list's widths
 px screen: plain pictures did not show where the change was, the earlier, darker spotlight turned
 many rows into dark slabs, and framing every area left some rows showing a whole page with the
 change too small to see.
+
+## What the progress line counts
+
+The Snapshots header says first what is left for you ("34 left"), then, muted, what you decided
+and what was accepted before this capture ("12 decided, 1,208 accepted earlier"). The two are kept
+apart because images accepted earlier were never looked at in this review: counting them with your
+own decisions ("1,220 of 1,254 decided") hid how much of the work was yours. The Finish sheet says
+the same split ("Saves 12 you accepted and 1,208 accepted earlier"), and the Show menu offers
+**Accepted earlier** apart from **Accepted**.
+
+## Two kinds of printed keys
+
+Every key still has a visible control that prints it, but only the keys of the look-decide-next
+loop (the view switch, the decision bar, boxes) are boxed. Every other control prints its key as
+quiet muted text after its label, so the dozen keys you press every few seconds stand out from the
+ones you press once a session.
+
+## Seven controls on the viewer's toolbar
+
+The toolbar keeps only what you use while looking: the four views, Blink, Zoom, and one **Display**
+menu for what you set once a session (show the baseline, image only, layout, outline changed
+areas, start zoomed on the change). Each Display item prints its key and the key works with the
+menu closed, so no key that took one press before takes two. The view switch shows exactly one
+filled button; a setting that is on shows a check mark, never a second filled or ringed style.
+Technical details moved off the toolbar to a quiet **Details** at the end of the item line, next to
+the facts it explains.
+
+## Y steps the layout
+
+**Y** used to open the Layout menu. A menu opened by a key holds every other key until it closes,
+so Y now steps the layout in one press: Auto, Side by side, Over and under. The Display menu's
+Layout item still lists the three when clicked or given Enter. Z stays as it was: one press steps
+the zoom, and a click on Zoom opens its menu.
+
+## A second Esc does not leave the change
+
+Esc goes back one level, but a reader often presses it twice: once to clear a selection or close a
+box, and again by habit. The second press after an Esc that closed or cleared something now says
+"Press Esc again to go back to the changes." and stays; the next press goes back. Backspace was
+considered as the back key instead and rejected: it does nothing while single-letter keys are off,
+it is a common correction key, and on a Mac it is labelled delete.
+
+## One place to decide a selection
+
+The selection bar says how many are selected and offers Clear and its menu; it no longer has its
+own Accept, Reject and Exclude. The decision bar decides the selection while the current row is in
+it, and says so ("Accept 3"), so there is one place to look for what a decision will do.

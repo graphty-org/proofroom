@@ -1,7 +1,6 @@
 /*
- * The snapshot list (design section 4): the five header lines (folded for a change of 10 or fewer),
- * the groups with their sticky headers, and the rows with their pictures, marks, badges and
- * decisions. The rows are real elements with `content-visibility: auto` and a fixed intrinsic size,
+ * The snapshot list (design section 4): the three header lines, the groups with their sticky
+ * headers, and the rows with their pictures, marks, badges and decisions. The rows are real elements with `content-visibility: auto` and a fixed intrinsic size,
  * and their pictures load lazily from the server's content-addressed picture names, one request per
  * row. The list is built again only when what it shows changes (Show, Group, Pictures, Find, a
  * group opened or closed, a newer capture loaded); moving the current row moves one class, and a
@@ -35,11 +34,15 @@ import { el, fmt, fmtShort, ic, kb } from "./ui.js";
 const $ = (id) => document.getElementById(id);
 const PICTURES_KEY = "proofroom:pictures";
 
-/** The Show menu's choices after Undecided and All: each status, then each decision. */
+/**
+ * The Show menu's choices after Undecided and All: each status, then what was accepted before this
+ * capture, then each decision (Accepted is the reader's own, never the carry-over).
+ */
 export const SHOWS = [
     ["undecided", "Undecided"],
     ["all", "All"],
-    ...ORDER.map((s) => [s, STATUS[s].word]),
+    ...ORDER.map((s) => [s, STATUS[s].word.charAt(0).toUpperCase() + STATUS[s].word.slice(1)]),
+    ["before", "Accepted earlier"],
     ["accept", "Accepted"],
     ["reject", "Rejected"],
     ["exclude", "Excluded"],
@@ -147,29 +150,46 @@ export function shownBy(s, show, keep) {
     if (show === "undecided") {
         return !s.decision || s.before || s.rejectedBefore;
     }
+    if (show === "before") {
+        return s.before;
+    }
+    if (show === "accept" && s.before) {
+        return false;
+    }
     return STATUS[show] ? s.status === show : s.decision?.decision === show;
 }
 
 /**
- * How many snapshots each Show choice holds (the menu's counts): a status or decision with none is
- * not offered, Undecided and All always are.
+ * How many snapshots each Show choice holds (the menu's counts): a status the change does not have
+ * is not offered (it can never gain one); every other choice is, a count of 0 included.
  * @param {any[]} snaps the snapshots
  * @returns {[string, string, number][]} key, label, count
  */
 export function showCounts(snaps) {
-    const count = (k) =>
-        snaps.filter((s) =>
-            k === "all"
-                ? true
-                : k === "undecided"
-                  ? !s.decision
-                  : STATUS[k]
-                    ? s.status === k
-                    : s.decision?.decision === k,
-        ).length;
+    const none = new Set();
+    const count = (k) => snaps.filter((s) => (k === "undecided" ? !s.decision : shownBy(s, k, none))).length;
     return SHOWS.map(([k, label]) => /** @type {[string, string, number]} */ ([k, label, count(k)])).filter(
-        ([k, , n]) => n > 0 || k === "undecided" || k === "all",
+        ([k, , n]) => n > 0 || !STATUS[k],
     );
+}
+
+/**
+ * The progress line's words: what is left, then the reader's own decisions and what was accepted
+ * before this capture, each only when it is not 0. A change of 10 or fewer says only what is left
+ * until something is decided.
+ * @param {any[]} snaps the snapshots
+ * @returns {{ left: string, rest: string[] }} "34 left", and the parts after it in the order they
+ *     drop when the line is tight (the last first)
+ */
+export function progressOf(snaps) {
+    const earlier = snaps.filter((s) => s.before).length;
+    const left = snaps.filter((s) => !s.decision).length;
+    const mine = snaps.length - left - earlier;
+    const rest =
+        snaps.length <= 10 && mine === 0
+            ? []
+            : [mine > 0 ? `${fmt(mine)} decided` : null, earlier > 0 ? `${fmt(earlier)} accepted earlier` : null];
+    return { left: `${fmt(left)} left`, rest: rest.filter(Boolean) };
 }
 
 /**
@@ -301,24 +321,6 @@ const savePictures = (pics) => {
     }
 };
 
-/**
- * The Pictures button's label at three widths: "spotlit, zoom auto" (after "Pictures: "),
- * "Spotlit, zoom auto", then "Zoom auto" / "Zoomed" / "Not zoomed". The word zoom never drops.
- * @param {{ spot: boolean, zoom: string, none: boolean }} pics the choices
- * @param {number} [level] 0, 1 or 2
- * @returns {string} the label
- */
-export function picturesLabel(pics, level = 0) {
-    if (pics.none) {
-        return "No pictures";
-    }
-    if (level >= 2) {
-        return { auto: "Zoom auto", always: "Zoomed", never: "Not zoomed" }[pics.zoom];
-    }
-    const t = `${pics.spot ? "spotlit" : "plain"}, zoom ${pics.zoom}`;
-    return level ? t[0].toUpperCase() + t.slice(1) : t;
-}
-
 // ---------------------------------------------------------------- the list's state
 
 /**
@@ -408,7 +410,7 @@ export function setShow(app, show) {
     const lv = app.lv;
     lv.show = show;
     lv.keep = new Set();
-    if (show === "all" || show === "accept") {
+    if (show === "all" || show === "before") {
         lv.collapsed.delete(BEFORE);
     } else {
         lv.collapsed.add(BEFORE);
@@ -573,7 +575,7 @@ export function findBox() {
                 "data-act": "find",
                 "data-key": "/",
                 "data-zone": "snaps-head",
-                "data-find": "Find a story, or jump to a number",
+                "data-find": "Find, or #number",
                 "aria-label": "Find a story, or jump to a number",
                 autocomplete: "off",
             })
@@ -625,82 +627,40 @@ const line = (cls) => {
     return lines[cls];
 };
 
-/**
- * The status summary's entries: one per status present, a mark, a count and a word, each setting
- * Show to that status.
- * @param {any} app the page
- * @param {string[]} [only] the statuses to draw
- * @returns {HTMLElement[]} the entries
- */
-function statusEntries(app, only = null) {
-    return ORDER.filter((st) => (only ?? ORDER).includes(st))
-        .map((st) => [st, app.snaps.filter((s) => s.status === st).length])
-        .filter(([, n]) => n > 0)
-        .map(([st, n]) =>
-            control(app, "statshow", {
-                zone: "snaps-head",
-                ctx: { status: st },
-                attrs: {
-                    "aria-pressed": app.lv.show === st ? "true" : "false",
-                    title: `Show: ${STATUS[st].word}`,
-                    "data-status": st,
-                },
-                children: [
-                    mark(STATUS[st].shape, STATUS[st].cls),
-                    el("span", { class: "num" }, fmt(n)),
-                    ` ${STATUS[st].word}`,
-                ],
-            }),
-        );
-}
+// Whether a header line is wider than its box.
+const over = (n) => n.scrollWidth > n.clientWidth + 1;
 
-// The entries that fold into "+N more" first: moved, then no baseline yet, then changed. Failed,
-// new and removed never fold.
-const FOLD = ["moved", "unseeded", "changed"];
+// The Find box's placeholder words, longest first (the box prints its key "/" after them).
+const FIND_WORDS = ["Find, or #number", "Find", ""];
 
-// Folds the status entries that do not fit on their line into one "+N more" menu.
-function foldStatus(app, host) {
-    app.lv.more = [];
-    if (host.scrollWidth <= host.clientWidth + 1) {
+// Shortens the Find box's placeholder to what its box holds: "Find, or #number  /", then
+// "Find  /", then "/". The box gives way first on line 3, so this is all that is ever cut there.
+function fitFind(box) {
+    const w = box.clientWidth - 18;
+    if (box.clientWidth === 0) {
         return;
     }
-    const more = () =>
-        control(app, "statmore", {
-            zone: "snaps-head",
-            label: `+${app.lv.more.length} more`,
-            attrs: { title: "The other statuses", "data-more": "" },
-        });
-    host.append(more());
-    for (const st of FOLD) {
-        if (host.scrollWidth <= host.clientWidth + 1) {
-            break;
-        }
-        const b = host.querySelector(`[data-status="${st}"]`);
-        if (b) {
-            b.remove();
-            app.lv.more.push(st);
-            host.querySelector("[data-more]").replaceWith(more());
-        }
-    }
-    if (app.lv.more.length === 0) {
-        host.querySelector("[data-more]").remove();
-    }
+    const font = `13px ${FONT()}`;
+    box.dataset.find =
+        FIND_WORDS.find((t) => textWidth([t, "/"].filter(Boolean).join("  "), font) <= w) ?? FIND_WORDS.at(-1);
 }
 
 /**
- * The header's five lines, or four for a change of 10 or fewer (progress and summary on one line,
- * one View options menu), plus the notice chips on line 1.
+ * The header's three lines (design 2.4 item 3), plus the notice chips on line 1:
+ * 1. the change's number and title, the chips and the fold button (built by the page);
+ * 2. the progress line, "34 left" then "12 decided, 1,208 accepted earlier", over the bar;
+ * 3. Find, Show, the List menu and the Up/Down pair;
+ * and, only while rows are selected, the selection bar under them (its bulk buttons need the room).
+ * Nothing wraps: line 2 drops "accepted earlier", then "decided"; line 3's Find shortens its
+ * placeholder. "N left", the Show value and the change's number never go.
  * @param {any} app the page
- * @param {HTMLElement} h1 line 1, built by the page (title, Next change, Hide)
+ * @param {HTMLElement} h1 line 1, built by the page (number, title, Next change, the fold button)
  */
 export function drawHead(app, h1) {
     const lv = app.lv;
     const snaps = app.snaps;
-    const small = snaps.length <= 10;
-    const decided = snaps.filter((s) => s.decision).length;
-    const left = snaps.length - decided;
     const lay = layoutOf(lv, snaps);
-    const shownN = lay.filtering ? `${fmt(lay.shown)} of ${fmt(snaps.length)} shown` : "";
+    const decided = snaps.filter((s) => s.decision).length;
     // Set through the element's style: the page's content security policy refuses style attributes.
     const fill = el("div");
     fill.style.width = `${snaps.length ? (100 * decided) / snaps.length : 0}%`;
@@ -709,26 +669,12 @@ export function drawHead(app, h1) {
     const h2 = line("h2");
     const h3 = line("h3");
     const h4 = line("h4");
-    const h5 = line("h5");
     h1.classList.add("hl", "h1");
-    if (small) {
-        h2.classList.add("ssum");
-        h2.replaceChildren(
-            el("span", { class: "num lead" }, `${fmt(decided)} of ${fmt(snaps.length)} decided:`),
-            ...statusEntries(app),
-            bar,
-        );
-    } else {
-        h2.classList.remove("ssum");
-        h2.replaceChildren(
-            el("span", { class: "num" }, `${fmt(decided)} of ${fmt(snaps.length)} decided, ${fmt(left)} left`),
-            el("span", { class: "grow" }),
-            el("span", { class: "muted num" }, shownN),
-            bar,
-        );
-        h3.replaceChildren(...statusEntries(app));
-    }
-    // Line 4: Find, its count in a small change, and Clear while it holds text.
+    // Line 2: the progress, the number the reader acts on first.
+    const p = progressOf(snaps);
+    const rest = el("span", { class: "muted num rest" }, p.rest.join(", "));
+    h2.replaceChildren(el("b", { class: "num left" }, p.left), rest, bar);
+    // Line 3: Find, Clear while it holds text, Show and List (or the selection bar), Up and Down.
     const box = findBox();
     if (box.value !== lv.find) {
         box.value = lv.find;
@@ -736,64 +682,33 @@ export function drawHead(app, h1) {
     const clear = control(app, "clearfind", {
         zone: "snaps-head",
         attrs: { id: "find-clear", hidden: lv.find === "" ? true : null, title: "Empty Find" },
-        children: ["Clear", el("kbd", { class: "fk", "aria-hidden": "true" }, "Esc")],
+        children: ["Clear", el("kbd", { class: "fk quiet", "aria-hidden": "true" }, "Esc")],
     });
-    if (box.parentNode !== h4) {
-        h4.replaceChildren(box);
+    // The count shows only while the list is filtered: by Show away from Undecided, or by Find.
+    const show = `Show: ${SHOW_LABEL[lv.show]}`;
+    const showLabel = lv.show !== "undecided" || lay.filtering ? `${show} (${fmt(lay.shown)})` : show;
+    const selecting = app.sel.size > 0;
+    if (box.parentNode !== h3) {
+        h3.replaceChildren(box);
     }
-    while (h4.childNodes.length > 1) {
-        h4.lastChild.remove();
+    while (h3.childNodes.length > 1) {
+        h3.lastChild.remove();
     }
-    h4.append(
-        small && shownN ? el("span", { class: "small muted num" }, shownN) : "",
+    h3.append(
         clear,
+        control(app, "showmenu", {
+            zone: "snaps-head",
+            label: showLabel,
+            attrs: { "aria-label": showLabel, "aria-haspopup": "menu" },
+        }),
+        control(app, "listmenu", { zone: "snaps-head", attrs: { "aria-haspopup": "menu" } }),
         ...rowButtons(app, "snaps", "snaps-head"),
     );
-    h4.classList.add("findwrap");
-    // Line 5: the controls, their labels shortened (never cut) when the line would wrap.
-    const show = SHOW_LABEL[lv.show];
-    const showN = showCounts(snaps).find(([k]) => k === lv.show)?.[2] ?? 0;
-    const controls = (level) =>
-        small
-            ? [
-                  control(app, "viewopts", {
-                      zone: "snaps-head",
-                      attrs: {
-                          title: `Show: ${show}; Group: ${GROUPINGS[lv.grouping]}; Pictures: ${picturesLabel(lv.pics)}`,
-                      },
-                  }),
-                  el("span", { class: "grow" }),
-                  el("span", { class: "small muted" }, `${show}, ${picturesLabel(lv.pics, 1)}`),
-              ]
-            : [
-                  control(app, "showmenu", {
-                      zone: "snaps-head",
-                      label: `${level ? "" : "Show: "}${show} (${fmt(showN)})`,
-                      attrs: { title: `Show: ${show}`, "aria-label": `Show: ${show} (${fmt(showN)})` },
-                  }),
-                  control(app, "groupmenu", {
-                      zone: "snaps-head",
-                      label: `${level ? "" : "Group: "}${GROUPINGS[lv.grouping]}`,
-                      attrs: {
-                          title: `Group: ${GROUPINGS[lv.grouping]}`,
-                          "aria-label": `Group: ${GROUPINGS[lv.grouping]}`,
-                      },
-                  }),
-                  control(app, "picsmenu", {
-                      zone: "snaps-head",
-                      label: `${level ? "" : "Pictures: "}${picturesLabel(lv.pics, level)}`,
-                      attrs: {
-                          title: `Pictures: ${picturesLabel(lv.pics)}`,
-                          "aria-label": `Pictures: ${picturesLabel(lv.pics)}`,
-                      },
-                  }),
-                  control(app, "listmenu", { zone: "snaps-head" }),
-              ];
-    const selecting = app.sel.size > 0;
-    h5.classList.toggle("lselbar", selecting);
-    h5.classList.remove("tight");
-    h5.replaceChildren(...(selecting ? selectionBar(app) : controls(0)));
-    const parts = small ? [h1, h2, h4, h5] : [h1, h2, h3, h4, h5];
+    h3.classList.add("findwrap");
+    h4.classList.add("lselbar");
+    h4.classList.remove("tight");
+    h4.replaceChildren(...(selecting ? selectionBar(app) : []));
+    const parts = selecting ? [h1, h2, h3, h4] : [h1, h2, h3];
     // Only the lines that are new go in: a line already in place never moves, so the Find box
     // keeps the reader's focus and caret while the header is drawn again.
     for (const c of [...head.children]) {
@@ -801,32 +716,44 @@ export function drawHead(app, h1) {
             c.remove();
         }
     }
-    parts.forEach((p, i) => {
-        if (head.children[i] !== p) {
-            head.insertBefore(p, head.children[i] ?? null);
+    parts.forEach((x, i) => {
+        if (head.children[i] !== x) {
+            head.insertBefore(x, head.children[i] ?? null);
         }
     });
-    for (const level of [1, 2]) {
-        if (!small && !selecting && h5.scrollWidth > h5.clientWidth + 1) {
-            h5.replaceChildren(...controls(level));
-        }
+    // Line 2, tight: "accepted earlier" goes first, then "decided"; "N left" stays.
+    for (let n = p.rest.length - 1; n >= 0 && over(h2); n--) {
+        rest.textContent = p.rest.slice(0, n).join(", ");
     }
+    fitFind(box);
     // The selection bar never wraps and never cuts a label: "(3 not shown)" goes into the count's
     // tooltip first, then the buttons drop their marks.
-    if (selecting && h5.scrollWidth > h5.clientWidth + 1) {
-        h5.querySelector(".nsh").textContent = "";
+    if (selecting && over(h4)) {
+        h4.querySelector(".nsh").textContent = "";
     }
-    if (selecting && h5.scrollWidth > h5.clientWidth + 1) {
-        h5.classList.add("tight");
+    if (selecting && over(h4)) {
+        h4.classList.add("tight");
     }
-    foldStatus(app, small ? h2 : h3);
     drawNotices(app, h1);
+    // Line 1 still tight: Next change says only "Next" (its key and tooltip stay), and the chips are
+    // drawn again in the room that frees.
+    const next = h1.querySelector('[data-act="nextchange"]');
+    const chips = [...h1.querySelectorAll('[data-act="stalechip"]')];
+    const cramped =
+        over(h1) ||
+        chips.some((c) => c.classList.contains("squeeze") || c.textContent !== c.getAttribute("aria-label"));
+    if (next && cramped) {
+        next.firstChild.textContent = "Next";
+        next.setAttribute("aria-label", "Next change");
+        chips.forEach((c) => c.remove());
+        drawNotices(app, h1);
+    }
     drawRenderer(app);
     $("snaps").classList.toggle("nopics", lv.pics.none);
 }
 
-// The selection bar, in place of the controls line (design 4.6): the count, Accept N, Reject N...,
-// Exclude N..., Clear [Esc] and its menu.
+// The selection bar, under line 3 while rows are selected (design 4.6): the count, Clear [Esc] and
+// its menu. The decision bar decides the selection ("Accept 3") while the current row is in it.
 function selectionBar(app) {
     const n = app.sel.size;
     const hid = app.selHidden();
@@ -838,9 +765,6 @@ function selectionBar(app) {
             `${fmt(n)} selected`,
             el("span", { class: "nsh" }, hid ? ` (${fmt(hid)} not shown)` : ""),
         ),
-        control(app, "accsel", { zone, children: [ic("accept", "c-accept"), ` Accept ${fmt(n)}`] }),
-        control(app, "rejsel", { zone }),
-        control(app, "excsel", { zone }),
         control(app, "clearsel", { zone, attrs: { class: "clearsel" } }),
         control(app, "selmenu", { zone }),
     ];
@@ -1740,21 +1664,23 @@ export function drawList(app, h1) {
 // ---------------------------------------------------------------- menus
 
 /**
- * The Show menu's items.
+ * The Show menu's items: each choice with its count right-aligned, a choice of 0 greyed.
  * @param {any} app the page
  * @returns {any[]} the items
  */
 export const showItems = (app) =>
     showCounts(app.snaps).map(([k, label, n]) => ({
         id: "show",
-        label: `${label} (${fmt(n)})`,
+        label,
+        count: fmt(n),
+        dim: n === 0,
         ctx: { show: k },
         checked: app.lv.show === k,
         mark: STATUS[k] ? [STATUS[k].shape, STATUS[k].cls] : null,
     }));
 
 /**
- * The Group menu's items.
+ * The Group by items of the List menu.
  * @param {any} app the page
  * @returns {any[]} the items
  */
@@ -1767,7 +1693,7 @@ export const groupItems = (app) =>
     }));
 
 /**
- * The Row pictures menu's items.
+ * The Pictures items of the List menu.
  * @param {any} app the page
  * @returns {any[]} the items
  */
@@ -1775,7 +1701,6 @@ export function pictureItems(app) {
     const p = app.lv.pics;
     return [
         { id: "picspot", label: "Spotlight rows (switch)", checked: p.spot && !p.none, check: true },
-        { sep: true },
         { head: "Zoom rows to the change" },
         ...Object.entries(ZOOMS).map(([k, label]) => ({
             id: "piczoom",
@@ -1783,22 +1708,27 @@ export function pictureItems(app) {
             ctx: { zoom: k },
             checked: p.zoom === k && !p.none,
         })),
-        { sep: true },
         { id: "picnone", label: "No pictures (text rows)", checked: p.none, check: true },
     ];
 }
 
 /**
- * The list menu's items: Accept all shown (N)..., Undo all decisions..., Download the comparison
- * report (JUnit), Copy link.
+ * The List menu's items: Group by, Pictures, then Accept all shown (N)..., Undo all decisions...,
+ * Download the comparison report (JUnit) and Copy link to this list.
  * @param {any} app the page
  * @returns {any[]} the items
  */
 export const listItems = (app) => [
+    { head: `Group by: ${GROUPINGS[app.lv.grouping]}` },
+    ...groupItems(app),
+    { sep: true },
+    { head: "Pictures" },
+    ...pictureItems(app),
+    { sep: true },
     { id: "acceptshown", label: `Accept all shown (${fmt(shownUndecided(app).length)})...` },
     { id: "undoall", label: "Undo all decisions..." },
     { id: "junit", label: "Download the comparison report (JUnit)" },
-    { id: "listlink", label: "Copy link" },
+    { id: "listlink", label: "Copy link to this list" },
 ];
 
 /**
@@ -1810,35 +1740,3 @@ export const shownUndecided = (app) =>
     layoutOf(app.lv, app.snaps)
         .groups.flatMap((g) => g.rows)
         .filter(undecided);
-
-/**
- * The View options menu of a small change: Show, Group, Pictures and the list menu's items.
- * @param {any} app the page
- * @returns {any[]} the items
- */
-export const viewItems = (app) => [
-    { head: "Show" },
-    ...showItems(app),
-    { sep: true },
-    { head: "Group" },
-    ...groupItems(app),
-    { sep: true },
-    { head: "Pictures" },
-    ...pictureItems(app),
-    { sep: true },
-    ...listItems(app),
-];
-
-/**
- * The "+N more" menu: the status entries that did not fit on their line.
- * @param {any} app the page
- * @returns {any[]} the items
- */
-export const moreItems = (app) =>
-    (app.lv.more ?? []).map((st) => ({
-        id: "statshow",
-        label: `${fmt(app.snaps.filter((s) => s.status === st).length)} ${STATUS[st].word}`,
-        ctx: { status: st },
-        checked: app.lv.show === st,
-        mark: [STATUS[st].shape, STATUS[st].cls],
-    }));

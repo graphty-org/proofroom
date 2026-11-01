@@ -47,16 +47,13 @@ import {
     findBox,
     findEnter,
     findTyped,
-    groupItems,
     jumpTo,
     keepCurrentShown,
     layoutOf,
     listItems,
     noticeItems,
     listState,
-    moreItems,
     openList,
-    pictureItems,
     rendererBlocked,
     scrollToCurrent,
     setGrouping,
@@ -66,7 +63,6 @@ import {
     snapsOf,
     toggleGroup,
     updateRow,
-    viewItems,
     visibleRows,
 } from "./list.js";
 import { ORDER, STATUS, mark } from "./marks.js";
@@ -82,7 +78,7 @@ import {
     settingsSheet,
     startRegistration,
 } from "./settings.js";
-import { el, fmt, ic, kb, megabytes } from "./ui.js";
+import { el, fmt, ic, kb, megabytes, plural } from "./ui.js";
 import { installSelect } from "./select.js";
 import { installUndo } from "./undo.js";
 import { confirmChange, newCapture, sheetBack } from "./new-capture.js";
@@ -262,9 +258,10 @@ const noCapturesYet = (w) =>
 
 // The summary of a change, in the Snapshots pane while no change is open.
 function summaryOf(c) {
-    const statuses = REVIEWABLE.filter((s) => c.counts[s] > 0).map((s) =>
-        el("span", { class: "st" }, mark(STATUS[s].shape, STATUS[s].cls), `${fmt(c.counts[s])} ${STATUS[s].word}`),
-    );
+    // "720 snapshots: 653 changed, 65 new, 2 removed", one plain sentence.
+    const statuses = REVIEWABLE.filter((s) => c.counts[s] > 0)
+        .map((s) => `${fmt(c.counts[s])} ${STATUS[s].word}`)
+        .join(", ");
     const ready = !c.notReady && c.state !== "nothing";
     return el(
         "div",
@@ -280,29 +277,29 @@ function summaryOf(c) {
         ),
         ready
             ? [
-                  el("div", { class: "small" }, `${fmt(c.undecided)} undecided of ${fmt(c.total)}`),
-                  el("div", { class: "ssum" }, statuses),
+                  el("div", { class: "small" }, `${plural(c.total, "snapshot")}: ${statuses}`),
+                  el("div", { class: "small" }, el("b", {}, `${fmt(c.undecided)} left`)),
               ]
             : el("div", { class: "small" }, c.count),
         el("div", {}, control(app, "summaryopen", { zone: "snaps-head", ctx: { id: c.id } })),
     );
 }
 
-// The open change's title, a link to it on the code host: pressed, it runs Open on <host> (logged as that
-// action); the address stays on the link for copying and the browser's own menu.
-function titleLink(c, title) {
+// The open change's number and title, a link to it on the code host: pressed, it runs Open on <host>
+// (logged as that action); the address stays on the link for copying and the browser's own menu.
+function titleLink(c, title, name) {
     const a = control(app, "onhost", {
         zone: "snaps-head",
         tag: "a",
         ctx: { id: c.id },
         attrs: {
-            class: "grow ell",
+            class: "grow ctl",
             href: c.url,
             target: "_blank",
             rel: "noreferrer",
             title: `${title}: open on ${wordsOf(app.list).hostName}`,
         },
-        children: [title],
+        children: name,
     });
     a.addEventListener("click", (e) => e.preventDefault());
     return a;
@@ -323,7 +320,12 @@ function drawSnaps() {
             ],
         }),
     );
-    const hide = control(app, "pane2", { zone: "snaps-head" });
+    // The fold button, compact: "< Shift+2", its name in its label for a screen reader.
+    const hide = control(app, "pane2", {
+        zone: "snaps-head",
+        attrs: { class: "fold", "aria-label": "Hide Snapshots" },
+        children: [ic("chevLeft"), ...kb("Shift+2", true)],
+    });
     const list = $("snap-list");
     if (!c || app.snaps.length === 0) {
         $("snap-renderer").hidden = true;
@@ -353,12 +355,18 @@ function drawSnaps() {
         );
         return;
     }
+    // Line 1: the number, never cut, then the title, cut first ("..."), its whole in the tooltip.
     const title = `${c.num}${c.title}`;
+    const name = [c.num ? el("span", { class: "cnum" }, c.num.trim()) : null, el("span", { class: "ell" }, c.title)];
     const h1 = el(
         "div",
         { class: "h1" },
-        c.url && hostCan(app.list, "openChange") ? titleLink(c, title) : el("span", { class: "grow ell", title }, title),
-        changesShown ? null : control(app, "nextchange", { zone: "snaps-head", attrs: { id: "snap-next-btn" } }),
+        c.url && hostCan(app.list, "openChange")
+            ? titleLink(c, title, name)
+            : el("span", { class: "grow ctl", title }, name),
+        changesShown
+            ? null
+            : control(app, "nextchange", { zone: "snaps-head", quiet: true, attrs: { id: "snap-next-btn" } }),
         hide,
     );
     if (app.snaps.length === 0) {
@@ -607,7 +615,8 @@ app.back = () => {
         draw();
         app.focusPane = "changes";
         $("chg-list").focus({ preventScroll: true });
-        say("Back to the changes.");
+        const label = app.change(app.openId)?.label;
+        say(`Back to the changes.${label ? ` Enter opens ${label} again.` : ""}`);
     }
 };
 
@@ -973,7 +982,8 @@ function showMenu(anchor, items, owner = app) {
             tag: "div",
             ctx: it.ctx ?? {},
             attrs: {
-                class: "mi",
+                // A choice holding nothing is greyed, never hidden (Show: Rejected 0).
+                class: it.dim ? "mi dim" : "mi",
                 role: it.checked === undefined ? "menuitem" : it.check ? "menuitemcheckbox" : "menuitemradio",
                 tabindex: "-1",
                 "aria-checked": it.checked === undefined ? null : String(it.checked),
@@ -981,7 +991,9 @@ function showMenu(anchor, items, owner = app) {
             children: [
                 el("span", { class: "tick" }, it.checked ? ic("accept") : null),
                 it.mark ? mark(it.mark[0], it.mark[1]) : null,
-                el("span", {}, it.label),
+                el("span", { class: "ml" }, it.label),
+                // A count, right-aligned (the Show menu's).
+                it.count === undefined ? null : el("span", { class: "mc num" }, it.count),
                 // A menu item prints its key in its right column (design 8.1.1).
                 (it.key ?? ACTIONS[it.id].key) ? el("span", { class: "mk" }) : null,
                 (it.key ?? ACTIONS[it.id].key) ? kb(it.key ?? ACTIONS[it.id].key) : null,
@@ -1049,17 +1061,12 @@ app.showMenu = showMenu;
 app.listMenu = (name, anchor) => {
     const items = {
         show: showItems,
-        group: groupItems,
-        pics: pictureItems,
         list: listItems,
-        view: viewItems,
-        more: moreItems,
     };
     showMenu(anchor, items[name](app));
 };
 app.noticeMenu = (which, anchor) => showMenu(anchor, noticeItems(app, which));
 app.setShow = (k) => setShow(app, k);
-app.setShowStatus = (k) => setShow(app, app.lv.show === k ? "undecided" : k);
 app.setGrouping = (k) => setGrouping(app, k);
 app.setPictures = (change) => setPictures(app, change);
 app.toggleGroup = (key, open) => toggleGroup(app, key, open);
@@ -1092,7 +1099,10 @@ app.downloadJunit = async () => {
         return;
     }
     if (!res.ok) {
-        const why = await res.json().then((b) => b.error, () => `HTTP ${res.status}`);
+        const why = await res.json().then(
+            (b) => b.error,
+            () => `HTTP ${res.status}`,
+        );
         say(`The comparison report could not be downloaded: ${why}`, "err");
         return;
     }
@@ -1210,7 +1220,9 @@ app.aboutChange = async (id) => {
         [c.branch, c.author && `by ${c.author}`].filter(Boolean).join(", "),
     );
     // "Shares 2,188 baselines with #1677": a fact about the change, not a badge on its row.
-    const shares = c.shares ? el("p", { class: "small" }, `${c.shares.charAt(0).toUpperCase()}${c.shares.slice(1)}.`) : null;
+    const shares = c.shares
+        ? el("p", { class: "small" }, `${c.shares.charAt(0).toUpperCase()}${c.shares.slice(1)}.`)
+        : null;
     if (!c.hostChange || c.capId !== null || !hostCan(app.list, "describe")) {
         openBox(head, facts, shares);
         return;
@@ -1469,7 +1481,9 @@ async function askCaptures() {
     try {
         // Once the page has the list, only what changes: the captures waiting or running, and how
         // the ones it saw waiting or running ended.
-        const watch = allCaptures(had).filter(busy).map((c) => c.id);
+        const watch = allCaptures(had)
+            .filter(busy)
+            .map((c) => c.id);
         const got = await api(had ? `/api/captures?watch=${watch.join(",")}` : "/api/captures");
         const kept = (had?.finished ?? []).filter((c) => !got.finished.some((x) => x.id === c.id));
         app.captures = had ? { ...got, finished: [...got.finished, ...kept] } : got;
@@ -1845,11 +1859,7 @@ async function loadFirst() {
         const first = nextNeeding(app.changes, app.sort, null) ?? walkOrder(app)[0];
         app.curId = first?.id ?? null;
         draw();
-        say(
-            app.changes.length === 0
-                ? "Ready. The server checks the code host every 2 minutes."
-                : CHOOSE_HINT,
-        );
+        say(app.changes.length === 0 ? "Ready. The server checks the code host every 2 minutes." : CHOOSE_HINT);
     }
 }
 

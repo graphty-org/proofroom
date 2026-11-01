@@ -1,10 +1,12 @@
 /*
  * The viewer of the new page (design section 5), by real input in Chromium: the four views by key
- * and by click, the active view's key back to Side by side, holding Space, zoom, Baseline [P] in
- * every view, new, removed, moved and failed snapshots, Blink, Outline, Open centered on the area,
- * Next area, Layout and what Auto chose, Image only with the item line in the toolbar, the
- * locator, Details, More and the keys of its items, Previous and Next; the toolbar within its one
- * row at 1280 and 1440 in every view and level; the frames scrolling together at every zoom; and
+ * and by click, the active view's key back to Side by side, holding Space, zoom by Z, digits and
+ * its menu (each step centered on the area), Baseline [P] in every view, new, removed, moved and
+ * failed snapshots, Blink, Outline changed areas, Start zoomed on the change, Next area, Layout (Y
+ * cycles) and what Auto chose, Image only with the item line in the toolbar, the locator, Details
+ * on the item line, the Display menu and its keys acting closed, the item line's drop order,
+ * Previous and Next; the toolbar of seven controls within its one row at 1280 and 1440 in every
+ * view and level; the frames scrolling together at every zoom; and
  * the counted work: a cold open waits for one worker diff, and Right to a snapshot worked out ahead
  * waits for none.
  */
@@ -129,9 +131,9 @@ const frames = (page) =>
             drawn: f.querySelector(".sheet") !== null,
         })),
     );
-// Waits until snapshot #n is drawn: the decision bar names it and every frame has its pictures.
+// Waits until snapshot #n is drawn: the item line names it and every frame has its pictures.
 async function drawn(page, n) {
-    await expect.poll(() => page.locator(".decide .pos b").textContent()).toBe(`#${n}`);
+    await expect.poll(() => page.locator(".iline .num").first().textContent()).toBe(`#${n}`);
     await expect
         .poll(async () => {
             const f = await frames(page);
@@ -147,6 +149,21 @@ const scrolls = (page) =>
         [...globalThis.document.querySelectorAll("#stage .frame")].map((f) => [f.scrollLeft, f.scrollTop]),
     );
 const menuItem = (page, name) => page.getByRole("menu").getByText(name, { exact: true });
+// A Display menu item's state: opens the menu, reads the item, closes the menu again.
+async function displayItem(page, act) {
+    await tool(page, "displaymenu").click();
+    const item = page.getByRole("menu").locator(`[data-act="${act}"]`);
+    const out = {
+        text: (await item.innerText()).replace(/\s+/g, " ").trim(),
+        checked: await item.getAttribute("aria-checked"),
+        disabled: await item.getAttribute("aria-disabled"),
+        title: await item.getAttribute("title"),
+    };
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.getByRole("menu").count()).toBe(0);
+    return out;
+}
+const zoomShown = (page) => tool(page, "zoomcycle").evaluate((n) => n.firstChild.textContent);
 
 describe("the four views", () => {
     it("draws each view by key and by click, and the active view's key returns to Side by side", async () => {
@@ -245,7 +262,7 @@ describe("zoom", () => {
         ]) {
             await page.keyboard.press(key);
             await expect.poll(width).toBe(W * zoom);
-            expect(await tool(page, `zoom-${zoom}`).getAttribute("class")).toBe("on");
+            expect(await zoomShown(page)).toBe(`Zoom: ${zoom}x`);
             // Scrolled in one frame, the other follows to the same place.
             const frame = await page.locator("#stage .frame").first().boundingBox();
             await page.mouse.move(frame.x + frame.width / 2, frame.y + frame.height / 2);
@@ -256,18 +273,40 @@ describe("zoom", () => {
         }
         await page.keyboard.press("Digit0");
         await expect.poll(width).toBeLessThan(W);
-        expect(await tool(page, "zoom-fit").getAttribute("class")).toBe("on");
-        // Z cycles Fit, 1x, 2x, 4x, 8x.
+        expect(await zoomShown(page)).toBe("Zoom: Fit");
+        // Z cycles Fit, 1x, 2x, 4x, 8x in one press each.
         await page.keyboard.press("KeyZ");
         await expect.poll(width).toBe(W);
-        await tool(page, "zoomcycle").click();
+        await page.keyboard.press("KeyZ");
         await expect.poll(width).toBe(2 * W);
-        for (const zoom of [4, 8, 1, 2]) {
-            await tool(page, `zoom-${zoom}`).click();
+        // A click opens the Zoom menu, its items printing their digits; the current step ticked.
+        await tool(page, "zoomcycle").click();
+        expect(
+            await page
+                .getByRole("menu")
+                .locator(".mi")
+                .evaluateAll((ns) => ns.map((n) => n.innerText.replace(/\s+/g, " ").trim())),
+        ).toEqual(["Fit 0", "Actual size 1", "2x 2", "4x 4", "8x 8"]);
+        expect(await page.getByRole("menu").locator('[data-act="zoom-2"]').getAttribute("aria-checked")).toBe("true");
+        await page.keyboard.press("Escape");
+        for (const [zoom, name] of [
+            [4, "4x"],
+            [8, "8x"],
+            [1, "Actual size"],
+            [2, "2x"],
+        ]) {
+            await tool(page, "zoomcycle").click();
+            await menuItem(page, name).click();
             await expect.poll(width).toBe(W * zoom);
         }
-        await tool(page, "zoom-fit").click();
+        await tool(page, "zoomcycle").click();
+        await menuItem(page, "Fit").click();
         await expect.poll(width).toBeLessThan(W);
+        // Enter on the focused Zoom button opens its menu too.
+        await tool(page, "zoomcycle").focus();
+        await page.keyboard.press("Enter");
+        await page.getByRole("menu").waitFor();
+        await page.keyboard.press("Escape");
         // From 4x, pixels are hard squares.
         await page.keyboard.press("Digit4");
         await expect.poll(() => page.locator("#stage figure img.crisp").count()).toBe(2);
@@ -323,15 +362,15 @@ describe("Baseline [P] in every view", () => {
                 await page.keyboard.press(key);
             }
             await expect.poll(() => labels(page)).toEqual(shown);
-            expect(await tool(page, "baseline").getAttribute("aria-pressed")).toBe("true");
-            expect(await tool(page, "baseline").getAttribute("title")).toBe("Baseline shown");
+            expect(await displayItem(page, "baseline")).toMatchObject({ checked: "true", title: "Baseline shown" });
             await page.keyboard.press("KeyP");
             await expect.poll(() => labels(page)).toEqual(hidden);
-            expect(await tool(page, "baseline").getAttribute("title")).toBe("Baseline hidden");
+            expect(await displayItem(page, "baseline")).toMatchObject({ checked: "false", title: "Baseline hidden" });
             if (key === "KeyH") {
                 await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(1);
             }
-            await tool(page, "baseline").click();
+            await tool(page, "displaymenu").click();
+            await menuItem(page, "Show baseline").click();
             await expect.poll(() => labels(page)).toEqual(shown);
         }
         // Spotlight flash: one frame, baseline shown or hidden.
@@ -346,7 +385,7 @@ describe("Baseline [P] in every view", () => {
         await page.keyboard.press("KeyF");
         await expect.poll(async () => (await labels(page)).length).toBe(1);
         await page.keyboard.press("KeyP");
-        expect(await tool(page, "baseline").getAttribute("title")).toBe("Baseline shown");
+        expect((await displayItem(page, "baseline")).title).toBe("Baseline shown");
         await expect.poll(async () => (await labels(page)).length).toBe(1);
         await page.keyboard.press("KeyV");
         await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
@@ -378,8 +417,11 @@ describe("one-sided snapshots and failures", () => {
             expect(await unavailable(act)).toEqual(["true", "Needs a baseline: this snapshot is new."]);
         }
         expect(await tool(page, "view-side").getAttribute("aria-checked")).toBe("true");
-        expect(await tool(page, "baseline").innerText()).toContain("Baseline: none");
-        expect(await unavailable("baseline")).toEqual(["true", "This snapshot has only one image"]);
+        expect(await displayItem(page, "baseline")).toMatchObject({
+            text: "Show baseline (none) P",
+            disabled: "true",
+            title: "This snapshot has only one image",
+        });
         await page.keyboard.press("KeyH");
         await expect.poll(() => message(page)).toBe("Highlight: Needs a baseline: this snapshot is new.");
         // #4 no baseline yet.
@@ -396,7 +438,7 @@ describe("one-sided snapshots and failures", () => {
         expect(await unavailable("view-spotlight")).toEqual(["true", "Needs a new image: this snapshot was removed."]);
         // #6 failed: the error panel, no view available.
         await page.keyboard.press("ArrowRight");
-        await expect.poll(() => page.locator(".decide .pos b").textContent()).toBe("#6");
+        await expect.poll(() => page.locator(".iline .num").textContent()).toBe("#6");
         const panel = page.locator("#stage .errpanel");
         await expect.poll(() => panel.innerText()).toContain("TypeError: nodes is undefined");
         await expect.poll(() => panel.innerText()).toContain("Reason: Timed out after 30 s");
@@ -449,32 +491,50 @@ describe("the label strips", () => {
 });
 
 describe("the item line", () => {
-    it("removes the Accept sentence whole when there is no room, before the component and the name are cut", async () => {
-        // At 1440 the short sentence has room beside Select [X]; at 1280 the long one has none.
+    it("reads Back Esc, the number and status, the name, the size, Next area, Select X Shift+Up/Down and Details", async () => {
+        const page = await open(SMALL);
+        await expect.poll(() => page.locator("#area-at").count()).toBe(0);
+        const parts = await page
+            .locator(".iline")
+            .evaluate((n) =>
+                [...n.children].map((c) => c.innerText.replace(/\s+/g, " ").trim()).filter((x) => x !== ""),
+            );
+        expect(parts[0]).toBe("BackEsc");
+        expect(parts.slice(1, 4)).toEqual(["#1", "changed", "story-0, light"]);
+        expect(parts).toContain("Next areaN");
+        expect(parts.at(-2)).toBe("SelectXShift+Up/Down");
+        expect(parts.at(-1)).toBe("Details");
+        // Back, Next area, Select and Details print their keys quiet: no box.
+        for (const act of ["back", "nextarea", "select"]) {
+            expect(await page.locator(`.iline [data-act="${act}"] kbd`).first().getAttribute("class")).toContain(
+                "quiet",
+            );
+        }
+        // Above Fit the area counter joins Next area.
+        await page.keyboard.press("Digit2");
+        await expect.poll(() => page.locator("#area-at").textContent()).toBe("Area 1 of 3");
+        await page.keyboard.press("Digit0");
+        await expect.poll(() => page.locator("#area-at").count()).toBe(0);
+    });
+
+    it("drops other badges first, then the size, then cuts the name, never below 24 characters", async () => {
         const page = await open(SMALL);
         const line = () =>
             page.evaluate(() => {
-                const n = (sel) => globalThis.document.querySelector(`.iline ${sel}`);
-                const cut = (x) => x !== null && x.scrollWidth > x.clientWidth + 1;
+                const l = globalThis.document.querySelector(".iline");
                 return {
-                    say: n(".asay")?.textContent ?? null,
-                    sayCut: cut(n(".asay")),
-                    nameCut: cut(n(".name")),
-                    comp: n(".comp") !== null,
+                    over: l.scrollWidth > l.clientWidth + 1,
+                    name: l.querySelector(".name").textContent,
+                    size: l.querySelector(".size")?.textContent ?? null,
                 };
             });
-        // A short sentence fits beside everything else.
-        await expect.poll(async () => (await line()).say).toBe("Accept replaces the baseline with the new image.");
-        expect(await line()).toMatchObject({ sayCut: false, nameCut: false });
-        await page.setViewportSize(NARROW);
-        // The failed story's long sentence does not: it goes whole, the name stays whole.
-        for (let i = 0; i < 5; i++) {
-            await page.keyboard.press("ArrowRight");
-        }
-        await expect.poll(() => page.locator(".iline .num").textContent()).toBe("#6");
-        const failed = await line();
-        expect(failed.say).toBeNull();
-        expect(failed.nameCut).toBe(false);
+        expect((await line()).size).not.toBeNull();
+        // Narrow the viewer by showing both side panes: the line still fits, nothing cut below 24.
+        await page.setViewportSize({ width: 1180, height: 820 });
+        await page.keyboard.press("Shift+Digit1");
+        await expect.poll(async () => (await line()).over).toBe(false);
+        const l = await line();
+        expect(l.name.length).toBeGreaterThanOrEqual(Math.min(24, "story-0".length));
     });
 });
 
@@ -503,19 +563,19 @@ describe("one test per toolbar control", () => {
         await expect.poll(() => tool(page, "blink").getAttribute("aria-pressed")).toBe("false");
     });
 
-    it("Outline [B] and Open centered on the area [O], from Options", async () => {
+    it("Outline changed areas [B] and Start zoomed on the change [O], from Display, and every zoom step centers", async () => {
         const page = await open(SMALL, NARROW);
         await page.keyboard.press("KeyV");
         await drawn(page, 1);
         expect(await page.locator("#stage .boxmark").count()).toBe(0);
         await page.keyboard.press("KeyB");
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
-        await tool(page, "options").click();
-        expect(await menuItem(page, "Outline").locator("..").getAttribute("aria-checked")).toBe("true");
+        await tool(page, "displaymenu").click();
+        expect(await menuItem(page, "Outline changed areas").locator("..").getAttribute("aria-checked")).toBe("true");
         expect(await page.getByRole("menu").locator('[data-act="outline"] kbd').textContent()).toBe("B");
-        await menuItem(page, "Outline").click();
+        await menuItem(page, "Outline changed areas").click();
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(0);
-        // Open centered on the area is on for a new reader: at 4x the largest area is in the middle.
+        // Start zoomed on the change is on for a new reader: at 4x the largest area is in the middle.
         await page.keyboard.press("Digit4");
         const [x, y, w, h] = AREAS[0];
         const frame = await page
@@ -528,16 +588,20 @@ describe("one test per toolbar control", () => {
             return Math.abs(sx - middle[0]) <= 12 && Math.abs(sy - middle[1]) <= 12;
         };
         await expect.poll(near).toBe(true);
-        await tool(page, "options").click();
-        await menuItem(page, "Open centered on the area").click();
-        await expect.poll(() => message(page)).toBe("Open centered on the area: off.");
+        await tool(page, "displaymenu").click();
+        await menuItem(page, "Start zoomed on the change").click();
+        await expect.poll(() => message(page)).toBe("Start zoomed on the change: off.");
         await page.keyboard.press("ArrowRight");
         await drawn(page, 2);
         await page.keyboard.press("ArrowLeft");
         await drawn(page, 1);
         expect(await near()).toBe(false);
+        // Off, a zoom step still centers on the area: it governs only the first open.
+        await page.keyboard.press("Digit0");
+        await page.keyboard.press("Digit4");
+        await expect.poll(near).toBe(true);
         await page.keyboard.press("KeyO");
-        await expect.poll(() => message(page)).toBe("Open centered on the area: on.");
+        await expect.poll(() => message(page)).toBe("Start zoomed on the change: on.");
         await page.keyboard.press("ArrowRight");
         await drawn(page, 2);
         await page.keyboard.press("ArrowLeft");
@@ -547,11 +611,12 @@ describe("one test per toolbar control", () => {
 
     it("Next area [N] steps through the changed areas, 1 of 3 to 3 of 3", async () => {
         const page = await open(SMALL, NARROW);
-        await expect.poll(() => page.locator("#area-at:visible").textContent()).toBe("1 of 3");
+        await page.keyboard.press("Digit2");
+        await expect.poll(() => page.locator("#area-at:visible").textContent()).toBe("Area 1 of 3");
         await page.keyboard.press("KeyN");
-        await expect.poll(() => page.locator("#area-at:visible").textContent()).toBe("2 of 3");
+        await expect.poll(() => page.locator("#area-at:visible").textContent()).toBe("Area 2 of 3");
         await page.locator('[data-act="nextarea"]:visible').click();
-        await expect.poll(() => page.locator("#area-at:visible").textContent()).toBe("3 of 3");
+        await expect.poll(() => page.locator("#area-at:visible").textContent()).toBe("Area 3 of 3");
         // A snapshot with one image has no areas to step through: Next area is absent.
         await page.keyboard.press("ArrowRight");
         await page.keyboard.press("ArrowRight");
@@ -559,37 +624,48 @@ describe("one test per toolbar control", () => {
         expect(await page.locator('[data-act="nextarea"]').count()).toBe(0);
     });
 
-    it("Layout [Y]: its menu, and what Auto chose after the window changed size", async () => {
+    it("Layout [Y]: Y cycles in one press, the Display item opens the three, and what Auto chose", async () => {
         const page = await open(SMALL, NARROW);
-        expect(await tool(page, "layoutmenu").innerText()).toContain("Layout: Auto");
-        expect(await tool(page, "layoutmenu").getAttribute("title")).toBe("Auto chose side by side for this window");
+        const layout = async () => (await displayItem(page, "layoutmenu")).text;
+        expect(await layout()).toBe("Layout: Auto Y");
+        expect((await displayItem(page, "layoutmenu")).title).toBe("Auto chose side by side for this window");
+        // Y: Side by side, Over and under, Auto, each one press, with the menu closed.
         await page.keyboard.press("KeyY");
-        expect(await page.getByRole("menu").locator(".mi").allInnerTexts()).toEqual([
-            "Auto (side by side now)",
-            "Side by side",
-            "Over and under",
-        ]);
-        await menuItem(page, "Over and under").click();
+        await expect.poll(() => message(page)).toBe("Layout: Side by side.");
+        expect(await page.getByRole("menu").count()).toBe(0);
+        await page.keyboard.press("KeyY");
         await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("stacked");
         const [a, b] = await page
             .locator("#stage figure")
             .evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().toJSON()));
         expect(b.top).toBeGreaterThanOrEqual(a.bottom);
-        await tool(page, "layoutmenu").click();
-        await menuItem(page, "Side by side").click();
+        await page.keyboard.press("KeyY");
         await expect.poll(() => page.locator("#stage").getAttribute("class")).not.toContain("stacked");
-        await tool(page, "layoutmenu").click();
-        await menuItem(page, "Auto (side by side now)").click();
-        await expect.poll(() => tool(page, "layoutmenu").innerText()).toContain("Layout: Auto");
+        expect(await layout()).toBe("Layout: Auto Y");
+        // A click on the Display item opens the three layouts.
+        await tool(page, "displaymenu").click();
+        await menuItem(page, "Layout: Auto").click();
+        expect(await page.getByRole("menu").locator(".mi").allInnerTexts()).toEqual([
+            "Auto (side by side now)",
+            "Side by side",
+            "Over and under",
+        ]);
+        await menuItem(page, "Side by side").click();
+        await expect.poll(async () => (await displayItem(page, "layoutmenu")).text).toBe("Layout: Side by side Y");
+        await tool(page, "displaymenu").click();
+        await menuItem(page, "Layout: Side by side").click();
+        await menuItem(page, "Over and under").click();
+        await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("stacked");
+        await tool(page, "displaymenu").click();
+        await menuItem(page, "Layout: Over and under").click();
+        await page.getByRole("menuitemradio", { name: /^Auto/ }).click();
+        await expect.poll(() => page.locator("#stage").getAttribute("class")).not.toContain("stacked");
         // A tall window: each image is drawn larger over and under, and Auto says so.
         await page.setViewportSize({ width: 1280, height: 1500 });
         await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("stacked");
         await expect
-            .poll(() => tool(page, "layoutmenu").getAttribute("title"))
+            .poll(async () => (await displayItem(page, "layoutmenu")).title)
             .toBe("Auto chose over and under for this window");
-        await tool(page, "layoutmenu").click();
-        await menuItem(page, "Auto (over and under now)").waitFor();
-        await page.keyboard.press("Escape");
         await page.setViewportSize(NARROW);
         await expect.poll(() => page.locator("#stage").getAttribute("class")).not.toContain("stacked");
     });
@@ -606,9 +682,9 @@ describe("one test per toolbar control", () => {
         expect(await page.locator(".vtb .itemsum .name").innerText()).toBe("component-0 / story-0");
         expect(await page.locator(".iline").isVisible()).toBe(false);
         await expect.poll(() => message(page)).toBe("Image only: Shift+3 brings the panes back.");
-        // In the merged row, Image only sits in More.
-        expect(await page.locator('#vtb [data-act="imageonly"]').isVisible()).toBe(false);
-        await tool(page, "more").click();
+        // Image only sits in Display, ticked.
+        expect((await displayItem(page, "imageonly")).checked).toBe("true");
+        await tool(page, "displaymenu").click();
         await menuItem(page, "Image only").click();
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).not.toContain("rail");
         await expect.poll(() => message(page)).toBe("Image only off: Snapshots shown again.");
@@ -616,17 +692,12 @@ describe("one test per toolbar control", () => {
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).toContain("rail");
         await page.keyboard.press("Shift+Digit3");
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).not.toContain("rail");
-        // Wide enough with the list shown, Image only is a button of its own.
-        await page.setViewportSize({ width: 1600, height: 900 });
-        await tool(page, "imageonly").click();
-        await expect.poll(() => page.locator("#snaps").getAttribute("class")).toContain("rail");
     });
 
-    it("Details opens under the item line and closes again", async () => {
+    it("Details, at the item line's end, opens under it with Copy link to this image, and closes again", async () => {
         const page = await open(SMALL, NARROW);
         expect(await page.locator("#details").isVisible()).toBe(false);
-        await tool(page, "options").click();
-        await menuItem(page, "Details").click();
+        await page.locator('.iline [data-act="details"]').click();
         await expect.poll(() => page.locator("#det-console").textContent()).toBe("[log] story ready");
         const text = await page.locator("#details").innerText();
         for (const part of [
@@ -644,50 +715,57 @@ describe("one test per toolbar control", () => {
         const line = await page.locator(".iline").boundingBox();
         const details = await page.locator("#details").boundingBox();
         expect(details.y).toBeGreaterThanOrEqual(line.y + line.height - 1);
-        await tool(page, "options").click();
-        await menuItem(page, "Details").click();
+        await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+        await page.locator('#details [data-act="imagelink"]').click();
+        await expect
+            .poll(() => message(page))
+            .toBe("Link copied: it opens this snapshot of this change, and carries your session token.");
+        await page.locator('.iline [data-act="details"]').click();
         await expect.poll(() => page.locator("#details").isVisible()).toBe(false);
     });
 
-    it("More holds Image only, Layout and Options below 1100 px, each printing its key, and their keys act", async () => {
+    it("Display holds the once-a-session settings, each printing its key, and their keys act with it closed", async () => {
         const page = await open(LARGE, { width: 1280, height: 800 });
-        expect(await page.locator('#vtb [data-act="layoutmenu"]').isVisible()).toBe(false);
-        await tool(page, "more").click();
+        // Seven controls: the four views, Blink, Zoom and Display; no More, no Options.
+        expect(await page.locator("#vtb [data-act]:visible").evaluateAll((ns) => ns.map((n) => n.dataset.act))).toEqual(
+            ["view-side", "view-flash", "view-highlight", "view-spotlight", "blink", "zoomcycle", "displaymenu"],
+        );
+        await tool(page, "displaymenu").click();
         const keys = await page
             .getByRole("menu")
             .locator("[data-act]")
             .evaluateAll((ns) => ns.map((n) => [n.dataset.act, n.querySelector("kbd")?.textContent ?? null]));
-        // The viewer is under 900 px wide here, so More also holds Flash while held.
         expect(keys).toEqual([
-            ["flashheld", "hold Space"],
+            ["baseline", "P"],
             ["imageonly", "Shift+3"],
-            ["layout-auto", "Y"],
-            ["layout-side", "Y"],
-            ["layout-stacked", "Y"],
+            ["layoutmenu", "Y"],
             ["outline", "B"],
             ["centerarea", "O"],
-            ["details", null],
-            ["listlink", null],
         ]);
-        await menuItem(page, "Layout: Over and under").click();
-        await expect.poll(() => page.locator("#stage").getAttribute("class")).toContain("stacked");
-        await tool(page, "more").click();
-        await menuItem(page, "Flash while held").click();
-        await expect.poll(() => message(page)).toBe("Hold Space to flash the current view; release to stop.");
-        await tool(page, "more").click();
-        await menuItem(page, "Layout: Auto").click();
-        await expect.poll(() => page.getByRole("menu").count()).toBe(0);
-        // B acts through More while Options is in it.
+        await page.keyboard.press("Escape");
+        // Each key acts in one press with the menu closed.
         await page.keyboard.press("KeyV");
         await page.keyboard.press("KeyB");
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
-        // Y opens More while Layout is in it, where the Layout items print [Y].
-        await page.keyboard.press("KeyY");
-        await menuItem(page, "Layout: Over and under").waitFor();
-        await page.keyboard.press("Escape");
+        await page.keyboard.press("KeyP");
+        await expect.poll(() => message(page)).toBe("Baseline hidden.");
+        await page.keyboard.press("KeyP");
+        await page.keyboard.press("KeyO");
+        await expect.poll(() => message(page)).toBe("Start zoomed on the change: off.");
+        await page.keyboard.press("Shift+Digit3");
+        await expect.poll(() => message(page)).toBe("Image only: Shift+3 brings the panes back.");
+        expect(await page.getByRole("menu").count()).toBe(0);
+        // The pressed style is gone: a toggle shows a check mark, never an inset ring.
+        await page.keyboard.press("KeyH");
+        await page.keyboard.press("KeyL");
+        await expect.poll(() => tool(page, "blink").getAttribute("aria-pressed")).toBe("true");
+        expect(await tool(page, "blink").evaluate((n) => globalThis.getComputedStyle(n).boxShadow)).toBe("none");
+        expect(await tool(page, "blink").locator(".chk").isVisible()).toBe(true);
+        // Exactly one filled view.
+        expect(await page.locator("#vtb .seg button.on").count()).toBe(1);
     });
 
-    it("Previous [Left / J] and Next [Right / K] by key and by click", async () => {
+    it("Previous [J] Left and Next [K] Right by key and by click", async () => {
         const page = await open(LARGE);
         await page.keyboard.press("ArrowRight");
         await drawn(page, 2);
@@ -701,13 +779,27 @@ describe("one test per toolbar control", () => {
         await drawn(page, 2);
         await page.locator('.decide [data-act="prev"]').click();
         await drawn(page, 1);
-        expect(await page.locator(".decide .pos").innerText()).toBe("#1, 40 left");
+        // J and K boxed, the arrows quiet; no position text on the bar.
+        for (const [act, word, letter, arrow] of [
+            ["prev", "Previous", "J", "Left"],
+            ["next", "Next", "K", "Right"],
+        ]) {
+            const kbds = await page
+                .locator(`.decide [data-act="${act}"] kbd`)
+                .evaluateAll((ns) => ns.map((n) => [n.textContent, n.classList.contains("quiet")]));
+            expect(kbds).toEqual([
+                [letter, false],
+                [arrow, true],
+            ]);
+            expect(await page.locator(`.decide [data-act="${act}"]`).getAttribute("aria-label")).toBe(word);
+        }
+        expect(await page.locator(".decide .pos").count()).toBe(0);
     });
 });
 
 describe("the toolbar's one row", () => {
     // Every button in the toolbar wholly inside its one 44 px row, none cut or wrapped; every key
-    // the page binds now printed on a visible box; the item line's Accept sentence never cut.
+    // the page binds now printed on a visible box.
     async function oneRow(page, what) {
         const bad = await page.evaluate(() => {
             const bar = globalThis.document.getElementById("vtb").getBoundingClientRect();
@@ -726,13 +818,6 @@ describe("the toolbar's one row", () => {
                 }
                 if (b.scrollWidth > b.clientWidth + 1) {
                     out.push(`${name} cut`);
-                }
-            }
-            const say = globalThis.document.querySelector(".iline .asay");
-            if (say && say.getClientRects().length > 0) {
-                const line = globalThis.document.querySelector(".iline").getBoundingClientRect();
-                if (say.scrollWidth > say.clientWidth + 1 || say.getBoundingClientRect().right > line.right + 1) {
-                    out.push("the Accept sentence cut");
                 }
             }
             return out;
@@ -767,7 +852,9 @@ describe("the toolbar's one row", () => {
             const page = await open(LARGE, size);
             if ((await page.locator('.iline [data-act="openrow"]').count()) > 0) {
                 await page.locator('.iline [data-act="openrow"]').click();
-                await expect.poll(() => page.locator(".iline").innerText()).toContain("Back to list");
+                await expect
+                    .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
+                    .toBe("Back to the list (Esc)");
             }
             return page;
         },
@@ -842,7 +929,11 @@ describe("the diff worker", () => {
     it("shows the error when the worker cannot start, and starts it again for Retry", async () => {
         t = await openNext(browser, { targets: targets(), rows: (i, n, q) => rows(i, n, q) });
         await t.page.route("**/api/blob/**", (route) =>
-            route.fulfill({ status: 200, contentType: "image/png", body: blob(route.request().url().split("/").pop()) }),
+            route.fulfill({
+                status: 200,
+                contentType: "image/png",
+                body: blob(route.request().url().split("/").pop()),
+            }),
         );
         await t.page.route("**/viewer/diff-worker.js", (route) => route.fulfill({ status: 500, body: "" }));
         await t.page.locator(`.chg[data-chg="${SMALL}"]`).click();

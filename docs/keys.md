@@ -1,43 +1,62 @@
 # Keys
 
-Every key the review page answers is printed on the control it presses, in a key box such as
-**Accept [A]**, and a key does only what a visible key box says. **Keys [?]** in the top bar opens
-the Keys sheet: this whole map, the switch for letter keys and the last 20 messages.
+Every key the review page answers is printed on the control it presses, and a key does only what
+a visible printed key says. Keys on the look-decide-next loop (the view switch, the decision bar,
+boxes) are printed in a key box such as **Accept [A]**; every other control prints its key as
+quiet muted text after its label, such as **Next change Shift+N** or the Find box's "Find, or
+#number /". Each control also names its key to a screen reader (`aria-keyshortcuts`). **Keys ?** in the top bar opens
+the Keys sheet: this whole map, grouped by task (Decide, Move, Look, Panes, Select), one short line
+a key, and the switch for single-letter keys. Earlier messages are behind **Messages** on the
+message line.
 
-| Key                   | Action                                                                                                          |
-| --------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Left / J              | Previous snapshot                                                                                               |
-| Right / K             | Next snapshot                                                                                                   |
-| Up / Down             | Move the current row (in the list: Previous / Next)                                                             |
-| Shift+Up / Shift+Down | Extend the selection                                                                                            |
-| Enter                 | Open the current change or snapshot; the default button of a box or the end card; a button you focused with Tab |
-| Esc                   | Close a menu, box or selection; else what the Back button says                                                  |
-| A                     | Accept (or the selection)                                                                                       |
-| Shift+A               | Accept the current group                                                                                        |
-| R                     | Reject...                                                                                                       |
-| E                     | Exclude...                                                                                                      |
-| U                     | Undo the last decision                                                                                          |
-| X                     | Select or unselect the row                                                                                      |
-| V                     | Side by side                                                                                                    |
-| F                     | Flash; again: Side by side (in Spotlight: Spotlight flash)                                                      |
-| hold Space            | Flash the current view while held                                                                               |
-| H                     | Highlight; again: Side by side                                                                                  |
-| L                     | Blink (in Highlight)                                                                                            |
-| S                     | Spotlight; again: Side by side                                                                                  |
-| P                     | Baseline shown / hidden                                                                                         |
-| Y                     | Layout menu                                                                                                     |
-| B                     | Outline                                                                                                         |
-| O                     | Open centered on the area                                                                                       |
-| N                     | Next area                                                                                                       |
-| 0                     | Fit                                                                                                             |
-| 1 / 2 / 4 / 8         | Zoom 1x, 2x, 4x, 8x                                                                                             |
-| Z                     | Cycle zoom                                                                                                      |
-| Shift+1               | Show / hide Changes                                                                                             |
-| Shift+2               | Show / hide Snapshots                                                                                           |
-| Shift+3               | Image only                                                                                                      |
-| Shift+N               | Next change that needs you                                                                                      |
-| /                     | Find in the focused pane                                                                                        |
-| ?                     | This sheet                                                                                                      |
+Where each key is printed:
+
+- **A, R, E, U**: the decision bar, boxed. **J, K**: Previous and Next on the decision bar, boxed,
+  with **Left** and **Right** quiet after them (Up and Down belong to the list that owns them and
+  are printed on its header).
+- **V, F (hold Space), H, S**: the view switch at the left of the viewer's toolbar, boxed. **L**:
+  **Blink** beside them. **Z**: the **Zoom: Fit** button, which also opens the zoom menu when
+  clicked; its items print **0, 1, 2, 4, 8**.
+- **P, Shift+3, Y, B, O**: the **Display** menu at the right end of the toolbar (Show baseline,
+  Image only, Layout, Outline changed areas, Start zoomed on the change).
+- **N**: **Next area** on the item line, when the snapshot has more than one changed area. **X**:
+  **Select X Shift+Up/Down** on the item line. **Esc**: **Back** on the item line, and Clear,
+  Close and Cancel wherever something can be cleared or closed.
+
+| Key                   | Action                                          |
+| --------------------- | ----------------------------------------------- |
+| Left / J              | Previous snapshot                               |
+| Right / K             | Next snapshot                                   |
+| Up / Down             | Previous / next row of the list you are in      |
+| Shift+Up / Shift+Down | Extend the selection                            |
+| Enter                 | Open, or press the button that shows Enter      |
+| Esc                   | Close or clear; again to go back                |
+| A                     | Accept (or the selection)                       |
+| Shift+A               | Accept the current group                        |
+| R                     | Reject...                                       |
+| E                     | Exclude...                                      |
+| U                     | Undo the last decision                          |
+| X                     | Select or unselect the row                      |
+| V                     | Side by side                                    |
+| F                     | Flash; in Spotlight, flash the spotlit pair     |
+| hold Space            | Flash the current view while held               |
+| H                     | Highlight; again: Side by side                  |
+| L                     | Blink (in Highlight)                            |
+| S                     | Spotlight; again: Side by side                  |
+| P                     | Show or hide the baseline                       |
+| Y                     | Next layout: Auto, side by side, over and under |
+| B                     | Outline changed areas                           |
+| O                     | Start zoomed on the change                      |
+| N                     | Next area                                       |
+| 0                     | Fit                                             |
+| 1 / 2 / 4 / 8         | Zoom 1x (actual size), 2x, 4x, 8x               |
+| Z                     | Next zoom step: Fit, 1x, 2x, 4x, 8x             |
+| Shift+1               | Show / hide Changes                             |
+| Shift+2               | Show / hide Snapshots                           |
+| Shift+3               | Image only                                      |
+| Shift+N               | Next change that needs you                      |
+| /                     | Find in the focused pane                        |
+| ?                     | This sheet                                      |
 
 Rules:
 
@@ -55,5 +74,18 @@ Rules:
   within a quarter second of a snapshot's images being drawn is ignored, and the message line says
   why. While a decision is being saved the page says "Saving the last decision..." and waits for
   it before moving on; a save that fails leaves the snapshot undecided, with why.
+- **Keys printed in a closed menu act with it closed.** The Zoom menu's digits and the Display
+  menu's P, Shift+3, Y, B and O each act in one press without opening their menu. Y steps the
+  layout (Auto, Side by side, Over and under); the Display menu's Layout item, clicked or given
+  Enter, lists the three. Z steps the zoom; a click on Zoom (or Enter on it) opens its menu. Every
+  zoom step centers the view on the current changed area; Start zoomed on the change decides only
+  how a snapshot first opens.
+- **Esc goes back only on purpose.** Esc first closes a menu or box, clears a field or the
+  selection. It goes back one level (to the list, or to the changes) only when nothing is on top
+  and the key pressed just before was not an Esc that closed or cleared something. That second Esc
+  says "Press Esc again to go back to the changes." instead; the next one goes back, and the message
+  line says "Back to the changes. Enter opens #4455 again."
+- **Shift+Down starts a selection** from the current row (Shift+Up the other way); it is printed
+  on **Select X Shift+Up/Down** on the item line and in the selection bar's `...` menu.
 - **Enter does what the visible [Enter] says**: open the current change or snapshot, the default
   button of a box or the end card, or a button you focused with Tab.

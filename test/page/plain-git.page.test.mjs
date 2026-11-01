@@ -165,7 +165,7 @@ describe("the page on a plain git repository", () => {
         const box = page.locator("dialog.finish[open]:not([aria-busy])");
         await box.waitFor();
         const summary = await box.innerText();
-        expect(summary).toContain("Will commit: 0 accepted (0 not opened), 0 excluded, to branch feat/x as ");
+        expect(summary).toContain("Saves the rejects file to branch feat/x, as ");
         expect(summary).toContain("Will write 1 reject to visual-review-rejects/feat-x.md on the branch.");
         expect(summary).not.toContain("Will post");
         expect(summary).not.toContain("Will set");

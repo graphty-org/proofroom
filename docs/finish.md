@@ -16,8 +16,10 @@ Each opens the summary sheet, which says what will happen before anything does:
 - **Still undecided**, first, when snapshots are left: "17 snapshots are still undecided; they
   will block the merge." **Go to the first undecided** closes the sheet on the first of them.
   Finishing with undecided snapshots is allowed.
-- **Will commit**: how many accepted (and how many of those you never opened) and excluded, the
-  branch, and the git identity that commits.
+- **Saves**: what it commits, your own work apart from what was accepted before this capture,
+  each part only when it is not 0, then the branch and the git identity that commits: "Saves 12
+  you accepted (2 not opened), 3 excluded and 1,208 accepted earlier to branch feat/x, as Ada
+  Owner."
 - **Will post**: the rejects, as one comment on the pull request, with their reasons under **The
   reasons**.
 - **Will set**: the commit status, in the server's own words, for example

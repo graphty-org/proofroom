@@ -374,7 +374,7 @@ describe.each(["chromium", "webkit"])("the decision keys in %s", (name) => {
 });
 
 const head = (page, comp) => page.locator(`.ghead[data-group="c:graphty-element > ${comp}"]`);
-const selBar = (page) => page.locator("#snaps-head > .h5.lselbar");
+const selBar = (page) => page.locator("#snaps-head > .h4.lselbar");
 const menuItem = (page, name) => page.locator(".menu .mi", { hasText: name });
 const dialog = (page) => page.locator("dialog[open]");
 const activeId = (page) => page.evaluate(() => globalThis.document.activeElement?.id ?? "");
@@ -389,12 +389,16 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         const page = await openIn(MAIN);
         await page.keyboard.press("KeyX");
         await expect.poll(() => selBar(page).innerText()).toMatch(/^1 selected/);
-        expect(await shows(page.locator('.iline [data-act="select"]'))).toBe("Unselect [X]");
-        expect(await barText(page, "accept")).toBe("Accept 1 selected [A]");
-        expect(await barText(page, "reject")).toBe("Reject 1 selected... [R]");
-        expect(await barText(page, "exclude")).toBe("Exclude 1 selected... [E]");
-        // The selection bar's Accept 1 shows no key: A acts through the decision bar's.
-        expect(await shows(selBar(page).locator('[data-act="accsel"]'))).toBe("Accept 1");
+        expect(await shows(page.locator('.iline [data-act="select"]'))).toBe("Unselect [X / Shift+Up/Down]");
+        expect(await barText(page, "accept")).toBe("Accept 1 [A]");
+        expect(await barText(page, "reject")).toBe("Reject 1... [R]");
+        expect(await barText(page, "exclude")).toBe("Exclude 1... [E]");
+        // The selection bar holds only the count, Clear and its menu: the decision bar decides it.
+        expect(
+            await selBar(page)
+                .locator("[data-act]")
+                .evaluateAll((ns) => ns.map((n) => n.dataset.act)),
+        ).toEqual(["clearsel", "selmenu"]);
         expect(await keyOwners(page, "A")).toEqual(["accept"]);
         // On a row that is not selected, A decides that row: the plain Accept [A].
         await page.keyboard.press("ArrowRight");
@@ -411,12 +415,13 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         await page.keyboard.press("KeyA");
         await expect.poll(() => message(page)).toBe("Accepted #1.");
         expect(posts("/api/accept-all").map((p) => p.body.files)).toEqual([[fileOf(MAIN, 1)]]);
-        // The selection is cleared once decided: Show, Group and Pictures are back.
+        // The selection is cleared once decided: Show and List are back.
         await expect.poll(() => selBar(page).count()).toBe(0);
-        expect(await page.locator('#snaps-head > .h5 [data-act="showmenu"]').count()).toBe(1);
+        expect(await page.locator('#snaps-head > .h3 [data-act="showmenu"]').count()).toBe(1);
+        expect(await page.locator('#snaps-head > .h3 [data-act="listmenu"]').count()).toBe(1);
     });
 
-    it("selects by checkbox, shift-click ranges across groups and over a collapsed one, Ctrl/Cmd-click, Extend up and down by menu and key; the bar replaces line 5 and no row moves", async () => {
+    it("selects by checkbox, shift-click ranges across groups and over a collapsed one, Ctrl/Cmd-click, Extend up and down by menu and key; the bar appears under line 3 and no row moves", async () => {
         const page = await openIn(MAIN);
         await head(page, "component-1").locator(".caret").click();
         await expect.poll(() => row$(page, 6).count()).toBe(0);
@@ -427,7 +432,7 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
                 return n.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
             });
         const before = await rowTop();
-        const h5 = await page.locator("#snaps-head > .h5").boundingBox();
+        const line3 = await page.locator("#snaps-head > .h3").boundingBox();
         await row$(page, 2).locator(".rcheck").click();
         await expect.poll(() => selBar(page).innerText()).toMatch(/^1 selected/);
         // The range runs through the collapsed component-1, whose rows are not drawn.
@@ -435,15 +440,15 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
             .locator(".rcheck")
             .click({ modifiers: ["Shift"] });
         await expect.poll(() => selBar(page).locator(".selcount").innerText()).toBe("12 selected");
-        expect(await shows(selBar(page).locator('[data-act="accsel"]'))).toBe("Accept 12");
+        expect(await shows(selBar(page).locator('[data-act="clearsel"]'))).toBe("Clear [Esc]");
         for (const n of [2, 5, 11, 13]) {
             expect(await row$(page, n).getAttribute("class"), `#${n}`).toContain("selx");
             expect(await row$(page, n).locator(".rcheck").getAttribute("aria-checked")).toBe("true");
         }
         expect(await row$(page, 14).getAttribute("class")).not.toContain("selx");
-        // Same height, same place: the bar took line 5's place and no row moved.
+        // Its own line, right under line 3 and as tall; no row moved in the list.
         const sb = await selBar(page).boundingBox();
-        expect([sb.y, sb.height]).toEqual([h5.y, h5.height]);
+        expect([sb.y, sb.height]).toEqual([line3.y + line3.height, line3.height]);
         expect(await rowTop()).toBe(before);
         // Ctrl/Cmd-click toggles a row without making it current.
         await row$(page, 20).click({ modifiers: ["ControlOrMeta"] });
@@ -499,7 +504,8 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         };
         const byProject = (list) => list.map((p) => [p.body.project, p.body.decision, p.body.files.length]).sort();
         await selectAll();
-        await selBar(page).locator('[data-act="accsel"]').click();
+        expect(await barText(page, "accept")).toBe("Accept 24 [A]");
+        await bar(page, "accept").click();
         // Over 20: it asks first, and its default button has focus.
         expect(await dialog(page).locator("h3").innerText()).toBe("Accept 24 snapshots without opening them?");
         expect(await dialog(page).innerText()).toContain("they will be marked Accepted (not opened).");
@@ -519,7 +525,7 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         expect(await page.locator("#snap-list .srow.decided").count()).toBe(0);
         // Bulk Reject, with one reason.
         await selectAll();
-        await selBar(page).locator('[data-act="rejsel"]').click();
+        await bar(page, "reject").click();
         expect(await page.locator("#popbox").innerText()).toContain("One reason for 24 snapshots.");
         await page.keyboard.type("Text is clipped");
         await page.keyboard.press("Enter");
@@ -537,7 +543,7 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         // Bulk Exclude, with its second step; one project fails, is named, and Retry sends it alone.
         failGraphty = true;
         await selectAll();
-        await selBar(page).locator('[data-act="excsel"]').click();
+        await bar(page, "exclude").click();
         await page.keyboard.type("Animated");
         await page.keyboard.press("Enter");
         expect(await page.locator("#popbox b").innerText()).toBe("Exclude 24 snapshots");
@@ -551,7 +557,9 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
         await expect.poll(() => posts("/api/accept-all").length).toBe(11);
         expect(byProject(posts("/api/accept-all").slice(10))).toEqual([["graphty", "exclude", 12]]);
-        await expect.poll(() => page.locator("#snaps-head > .h2").innerText()).toMatch(/^24 of 24 decided/);
+        await expect
+            .poll(async () => (await page.locator("#snaps-head > .h2").innerText()).replaceAll(/\s+/g, " "))
+            .toMatch(/^0 left 24 decided/);
     });
 });
 
@@ -710,7 +718,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .toBe("Accept 5 [Shift+A]");
         expect(await keyOwners(page, "Enter")).toEqual(["openrow"]);
         await page.keyboard.press("Enter");
-        await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back to list [Esc]");
+        await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back [Esc]");
         expect(posts("/api/accept-all")).toHaveLength(1);
         await page.keyboard.press("Escape");
         // On a group with nothing left, Shift+A says so.
@@ -765,10 +773,10 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .getByRole("button", { name: /^Cancel/ })
             .click();
         // Rejected before: no Undo; Reject says why not, Accept replaces it.
-        await page.getByRole("button", { name: /^Group:/ }).click();
+        await page.locator('#snaps-head [data-act="listmenu"]').click();
         await menuItem(page, "None").click();
         await page.getByRole("button", { name: /^Show:/ }).click();
-        await menuItem(page, "Rejected (2)").click();
+        await page.getByRole("menu").locator(".mi", { hasText: "Rejected" }).click();
         const rej = page.locator("#snap-list .srow", { hasText: "Rejected before (#5000, 2026-10-20)" });
         expect(await rej.getByRole("button", { name: "Undo" }).count()).toBe(0);
         await rej.click();
@@ -849,10 +857,10 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         );
         expect(await keyOwners(page, "Esc")).toEqual(["endback"]);
         expect(await keyOwners(page, "Shift+N")).toEqual(["nextchange"]);
-        expect(await shows(page.locator('.iline [data-act="back"]'))).toBe("Back to changes");
+        expect(await shows(page.locator('.iline [data-act="back"]'))).toBe("Back");
         // Esc: Back, as the card prints it.
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
     });
 
     it("opens the next change from the end card by Shift+N", async () => {
@@ -875,8 +883,7 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
 });
 
 describe("the decision bar's layout", () => {
-    // Every button wholly inside the bar's one 52 px row, none wrapped, none drawn as its key alone;
-    // the position text whole, or gone.
+    // Every button wholly inside the bar's one 52 px row, none wrapped, none drawn as its key alone.
     const fits = (page) =>
         page.evaluate(() => {
             const d = globalThis.document.querySelector(".decide");
@@ -893,8 +900,7 @@ describe("the decision bar's layout", () => {
                     bad.push(b.dataset.act);
                 }
             }
-            const pos = d.querySelector(".pos")?.textContent ?? "";
-            return { bad, pos, row: box.height };
+            return { bad, row: box.height };
         });
 
     for (const viewport of [
@@ -907,16 +913,15 @@ describe("the decision bar's layout", () => {
                 const f = await fits(page);
                 expect(f.bad).toEqual([]);
                 expect(f.row).toBe(52);
-                expect(f.pos).toMatch(/^(#\d+(, \d+ left)?)?$/);
             };
             await check();
             await page.keyboard.press("KeyX");
-            await expect.poll(() => barText(page, "accept")).toBe("Accept 1 selected [A]");
+            await expect.poll(() => barText(page, "accept")).toBe("Accept 1 [A]");
             await check();
             await page.keyboard.press("Escape");
             if (viewport.width < 1400) {
                 await page.keyboard.press("Enter");
-                await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back to list [Esc]");
+                await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back [Esc]");
                 await check();
             }
         });
@@ -1021,7 +1026,7 @@ describe("on the review server", () => {
             await page.keyboard.press("Slash");
             await page.keyboard.type("slider");
             await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(1);
-            await page.locator('#snaps-head [data-act="viewopts"]').click();
+            await page.locator('#snaps-head [data-act="listmenu"]').click();
             await menuItem(page, "Accept all shown (1)...").click();
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toMatch(/^Accepted #\d+\.$/);

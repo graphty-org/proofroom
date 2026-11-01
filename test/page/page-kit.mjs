@@ -262,7 +262,7 @@ export const visibleKeys = (page, { unavailable = false } = {}) =>
                 .filter((n) => n.getClientRects().length > 0 && (all || n.getAttribute("aria-disabled") !== "true"))
                 .flatMap((n) =>
                     n instanceof globalThis.HTMLInputElement
-                        ? n.placeholder.endsWith(`[${n.dataset.key}]`)
+                        ? n.placeholder.endsWith(n.dataset.key)
                             ? [{ act: n.dataset.act, key: n.dataset.key }]
                             : []
                         : [

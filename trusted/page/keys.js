@@ -7,14 +7,39 @@
  * be switched off (WCAG 2.1.4): every key made of a letter, digit or symbol then does nothing and
  * its hints are hidden; arrows, Enter, Esc, Tab and Space stay. A control may print two keys
  * ("Left / J"): either acts. Holding Space flashes the viewer while held and never presses a
- * focused button. A key printed only in a closed menu (Options > Outline [B]) acts through the
- * visible button that opens that menu, which names it in `data-menukeys`.
+ * focused button. A key printed only in a closed menu (Display > Outline changed areas B) acts
+ * through the visible button that opens that menu, which names it in `data-menukeys`.
+ *
+ * Esc goes back one level only when nothing is on top and the key pressed before it was not an Esc
+ * that closed or cleared something: a second Esc after clearing a selection or closing a box says
+ * "Press Esc again to go back" instead of leaving the change by accident.
  */
 
 import { ZONES, contextOf, hostOf, runAction } from "./actions.js";
 
 // The decision keys: held down, each decides once, never the snapshots after it unseen.
 const ONCE = new Set(["accept", "reject", "exclude", "undo", "gaccept", "select"]);
+// The controls Esc goes back one level with.
+const BACK = new Set(["back", "endback"]);
+const MODIFIER = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
+
+/**
+ * Whether an Esc pressed now closes or clears something (a menu, a box, the reason box, a field,
+ * the selection) rather than going back one level.
+ * @returns {boolean} it does
+ */
+function escTakesSomething() {
+    const ae = document.activeElement;
+    if (
+        document.querySelector(".menu, dialog[open]") !== null ||
+        document.getElementById("popbox") !== null ||
+        ae?.matches?.("input, textarea, select") === true
+    ) {
+        return true;
+    }
+    const owner = ownerOf("Esc");
+    return owner !== null && !BACK.has(owner.dataset.act);
+}
 
 const LETTERS_KEY = "proofroom:letter-keys";
 let chosen = null; // the reader's choice in this visit, kept even where storage is not
@@ -171,10 +196,10 @@ export function syncHints() {
             box.hidden = !mine;
         }
     }
-    // The Find boxes print their key in the placeholder: the one the key goes to.
+    // The Find boxes print their key, quiet, at the end of the placeholder: the one the key goes to.
     const finder = own.get("/") ?? null;
     for (const f of document.querySelectorAll("input[data-find]")) {
-        f.placeholder = `${f.dataset.find}${letterKeysOn() && f === finder ? "  [/]" : ""}`;
+        f.placeholder = [f.dataset.find, letterKeysOn() && f === finder ? "/" : ""].filter(Boolean).join("  ");
     }
     // While the list's Find has focus, its Clear shows the Esc that clears it.
     document.body.classList.toggle("infind", ae?.id === "snap-find");
@@ -201,6 +226,22 @@ export function startKeys(app) {
     });
     // A Space released while the window was away is never seen: losing focus ends the flash.
     addEventListener("blur", () => app.holdSpace?.(false));
+    // The Esc guard, read before any handler (a menu stops the key from reaching the document): this
+    // press is an Esc right after an Esc that closed or cleared something.
+    let escClosed = false;
+    let escGuard = false;
+    document.addEventListener(
+        "keydown",
+        (e) => {
+            if (MODIFIER.has(e.key)) {
+                return;
+            }
+            const esc = e.key === "Escape" && !e.shiftKey;
+            escGuard = esc && escClosed;
+            escClosed = esc && escTakesSomething();
+        },
+        true,
+    );
     document.addEventListener("keydown", (e) => {
         if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) {
             return;
@@ -272,6 +313,10 @@ export function startKeys(app) {
             }
             e.preventDefault();
             if (e.repeat && ONCE.has(node.dataset.act)) {
+                return;
+            }
+            if (escGuard && BACK.has(node.dataset.act)) {
+                app.say(`Press Esc again to go back to ${app.level === 2 ? "the list" : "the changes"}.`);
                 return;
             }
             runAction(hostOf(node) ?? app, node.dataset.act, { ...contextOf(node), el: node }, "key");

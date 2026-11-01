@@ -4,7 +4,8 @@
  * pane key, with 3 and 300 snapshots; the levels move by clicks on the rows, Open, Back and the
  * viewer as they do by keys; and the top bar's 36 px, the message line's 24 px and the rails' 44 px.
  * The Baselines screen too: its viewer at 800 px or more after every pane key, and its toolbar in
- * one row with every zoom segment showing.
+ * one row with its seven controls showing. At 1024 x 768, with a change open and with three rows
+ * selected, every keyed control is wholly inside the window and the decision bar is one line.
  */
 
 import { chromium } from "playwright";
@@ -81,7 +82,7 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
             await look("back to the list");
         }
         await itemControl(page, "back").click();
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         await look("back to the changes");
         for (const key of ["Shift+Digit2", "Shift+Digit1", "Shift+Digit2"]) {
             await page.keyboard.press(key);
@@ -160,14 +161,17 @@ describe.each(SIZES)("the Baselines screen at %i x %i", (width, height) => {
                 return out;
             });
             expect(bad, what).toEqual([]);
-            // Never in More: View, Blink and the whole Zoom group, each digit's segment showing.
-            for (const act of ["view-side", "view-flash", "view-highlight", "view-spotlight", "blink", "zoomcycle"]) {
+            // The same seven controls as Review's toolbar, every one showing.
+            for (const act of [
+                "view-side",
+                "view-flash",
+                "view-highlight",
+                "view-spotlight",
+                "blink",
+                "zoomcycle",
+                "displaymenu",
+            ]) {
                 expect(await page.locator(`#bl-vtb [data-act="${act}"]`).isVisible(), `${what}: ${act}`).toBe(true);
-            }
-            for (const z of ["fit", "1", "2", "4", "8"]) {
-                expect(await page.locator(`#bl-vtb [data-act="zoom-${z}"]`).isVisible(), `${what}: zoom ${z}`).toBe(
-                    true,
-                );
             }
         };
         await look("opened");
@@ -183,8 +187,56 @@ describe.each(SIZES)("the Baselines screen at %i x %i", (width, height) => {
             await look(`after ${key}`);
         }
         await page.keyboard.press("Digit4");
-        await expect.poll(() => page.locator('#bl-vtb [data-act="zoom-4"]').getAttribute("class")).toContain("on");
+        await expect.poll(() => page.locator('#bl-vtb [data-act="zoomcycle"]').innerText()).toMatch(/^Zoom: 4x/);
         await look("at 4x");
+    });
+});
+
+describe("at 1024 x 768", () => {
+    // Every visible control that prints a key (or opens a menu whose items print keys) wholly inside
+    // the window, and the decision bar one 52 px line with every button inside it.
+    const check = async (page, what) => {
+        const outside = await page.evaluate(() =>
+            [...globalThis.document.querySelectorAll("[data-key], [data-menukeys]")]
+                .filter((n) => n.getClientRects().length > 0 && !n.closest("dialog"))
+                .filter((n) => {
+                    const r = n.getBoundingClientRect();
+                    return (
+                        r.left < 0 ||
+                        r.top < 0 ||
+                        r.right > globalThis.innerWidth + 0.5 ||
+                        r.bottom > globalThis.innerHeight + 0.5
+                    );
+                })
+                .map((n) => n.dataset.act),
+        );
+        expect(outside, what).toEqual([]);
+        const bar = await box(page, "#viewer .decide");
+        expect(bar.height, what).toBe(52);
+        const buttons = await page
+            .locator("#viewer .decide button")
+            .evaluateAll((ns) => ns.map((n) => n.getBoundingClientRect().toJSON()));
+        for (const b of buttons) {
+            expect(b.top >= bar.top && b.bottom <= bar.bottom && b.right <= bar.right + 0.5, what).toBe(true);
+        }
+    };
+    it("keeps every keyed control in the window with a change open, and with three rows selected", async () => {
+        t = await openNext(browser, { targets: fiftyChanges(), viewport: { width: 1024, height: 768 } });
+        const page = t.page;
+        await page.locator('.chg[data-chg="3486"]').click();
+        await page.locator(".iline").waitFor({ state: "attached" });
+        await check(page, "change open");
+        // The decision words never drop: Previous and Next show their keys, named for a screen reader.
+        expect(await page.locator('.decide [data-act="accept"]').innerText()).toMatch(/^Accept/);
+        expect(await page.locator('.decide [data-act="prev"]').getAttribute("aria-label")).toBe("Previous");
+        await page.keyboard.press("KeyX");
+        await page.keyboard.press("Shift+ArrowDown");
+        await page.keyboard.press("Shift+ArrowDown");
+        await expect.poll(() => page.locator("#snaps-head .lselbar .selcount").innerText()).toBe("3 selected");
+        await expect.poll(() => page.locator('.decide [data-act="accept"]').innerText()).toMatch(/^Accept 3/);
+        expect(await page.locator('.decide [data-act="reject"]').innerText()).toMatch(/^Reject 3\.\.\./);
+        expect(await page.locator('.decide [data-act="exclude"]').innerText()).toMatch(/^Exclude 3\.\.\./);
+        await check(page, "three selected");
     });
 });
 
@@ -202,18 +254,24 @@ describe("levels by pointer", () => {
             "snap=graphty-element%2Fcomponent-1--story-7.dark.png",
         );
         await page.locator("#stage").click();
-        await expect.poll(() => page.locator(".iline").innerText()).toContain("Back to list");
+        await expect
+            .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
+            .toBe("Back to the list (Esc)");
         expect(await page.locator('.iline [data-act="openrow"]').count()).toBe(0);
         expect(await page.locator("#snaps").getAttribute("class")).toContain("rail");
         await page.locator('.iline [data-act="back"]').click();
         await expect.poll(() => message(page)).toBe("Back to the list.");
         await page.locator('.iline [data-act="openrow"]').click();
-        await expect.poll(() => page.locator(".iline").innerText()).toContain("Back to list");
+        await expect
+            .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
+            .toBe("Back to the list (Esc)");
         // The rails show the panes again, and a row click from a shown list returns to the list level.
         await page.locator("#rail-s").click();
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).not.toContain("rail");
         await page.locator('.srow[data-snap="graphty-element/component-0--story-2.light.png"]').click();
-        await expect.poll(() => page.locator(".iline").innerText()).toContain("Back to changes");
+        await expect
+            .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
+            .toBe("Back to the changes (Esc)");
         await page.locator("#rail-c").click();
         await expect.poll(() => page.locator("#changes").getAttribute("class")).not.toContain("rail");
     });
@@ -223,12 +281,14 @@ describe("levels by pointer", () => {
         const page = t.page;
         await page.locator('.chg[data-chg="3486"]').click();
         await page.locator('.iline [data-act="openrow"]').click();
-        await expect.poll(() => page.locator(".iline").innerText()).toContain("Back to list");
+        await expect
+            .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
+            .toBe("Back to the list (Esc)");
         await page.setViewportSize({ width: 1440, height: 900 });
         await expect
             .poll(() => message(page))
             .toBe("The window is 1400 px or wider: the list is shown beside the viewer.");
-        expect(await page.locator(".iline").innerText()).toContain("Back to changes");
+        expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe("Back to the changes (Esc)");
         expect(await page.locator("#snaps").getAttribute("class")).not.toContain("rail");
     });
 });

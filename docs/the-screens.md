@@ -32,8 +32,10 @@ image gets the width at once. The viewer is never narrower than 800 px. **Image 
 folds both side panes. The page remembers your pane choices in this browser, separately for small
 and large changes.
 
-**Back [Esc]** names where it goes: back to the list, or back to the changes. Esc first closes an
-open menu, box or selection.
+**Back Esc** on the item line goes back one level: to the list, or to the changes (its tooltip
+says which). Esc first closes an open menu or box, or clears the selection; right after such an
+Esc, a second one says "Press Esc again to go back to the changes." rather than leaving the change
+by accident.
 
 ### Changes
 
@@ -65,19 +67,28 @@ few seconds while it is shown.
 
 ### Snapshots
 
-The open change's snapshots. Its header holds, top to bottom:
+The open change's snapshots. Its header is three lines that never wrap:
 
-- The change's title, a link to it on the code host.
-- How many are decided and how many are left, with a progress line.
-- The **status summary**: one entry per status present, each a mark, a count and a word ("249
-  changed, 24 new, 9 no baseline yet, 8 removed, 3 failed"); pressing one shows only that status.
-- **Find [/]**: filters the rows by story; a number ("47" or "#47") jumps to that snapshot instead.
-  Esc clears the box first, then leaves it.
-- **Show** (Undecided, the default, All, each status, Accepted, Rejected, Excluded, each with its
-  count), **Group** (Component, Same change, Project, Status, None), **Pictures** (Spotlight rows,
-  Zoom rows to the change Auto, Always or Never, or No pictures) and **...** (Accept all shown...,
-  Undo all decisions..., Download the comparison report (JUnit), Copy link). On a small change these
-  are one **View options** menu.
+1. The change's number and title, a link to it on the code host, then any notice chips and the
+   fold button **< Shift+2**. When the line is tight the title is cut first ("..."); the number and
+   the fold button never go.
+2. The progress line: **34 left** in bold, then, muted, what you decided and what was accepted
+   before this capture, "12 decided, 1,208 accepted earlier", each only when it is not 0. Under it,
+   the bar fills with both. A change of 10 or fewer says only "3 left" until you decide something.
+   When the line is tight, "accepted earlier" goes first, then "decided"; "N left" always stays.
+3. **Find** (its placeholder "Find, or #number /"): filters the rows by story; a number ("47" or
+   "#47") jumps to that snapshot instead. Esc clears the box first, then leaves it. When the line is
+   tight the placeholder shortens to "Find /", then "/". Then **Show: Undecided**, the one filter:
+   its menu lists Undecided (the default), All, each status the change has, Accepted earlier,
+   Accepted (yours), Rejected and Excluded, each with its count on the right, a choice of 0 greyed.
+   The button shows the count only while the list is filtered, "Show: Rejected (3)". Then **List**:
+   **Group by** (Component, Same change, Project, Status, None), **Pictures** (Spotlight rows, Zoom
+   rows to the change Auto, Always or Never, or No pictures), Accept all shown..., Undo all
+   decisions..., Download the comparison report (JUnit) and **Copy link to this list**. Last, the
+   list's **Up** and **Down**, their keys printed quietly.
+
+Keys off the look-decide-next loop are printed as quiet muted text after their label ("Next change
+Shift+N"); boxed keys are kept for the view switch, the decision bar and boxes.
 
 Each row shows the snapshot's number, story, mode and status, its decision, and a picture of the
 new image: spotlit (everything but the change dimmed) and, under Zoom Auto, zoomed to the change
@@ -101,21 +112,33 @@ Shift+A walks the change group by group. Accepting more than 20 at once asks fir
 
 **Selection.** A click makes a row current (the viewer shows it). **Select [X]**, a row's checkbox,
 a shift-click (a range) or **Shift+Up / Shift+Down** add rows to the selection; the selection bar
-then takes the place of the header's controls line, with **Accept 12**, **Reject 12...**, **Exclude
-12...** and **Clear [Esc]**. A, R and E act on the selection when the current row is in it, and the
-decision bar says so ("Accept 12 selected [A]"); otherwise they act on the current row. Every bulk
-decision is one request per project and one step for Undo.
+then appears under the header's third line: **12 selected**, **Clear [Esc]** and `...` (Extend up,
+Extend down, Select all shown). The decision bar decides the selection when the current row is in
+it, and says so: **Accept 12**, **Reject 12...**, **Exclude 12...**; otherwise A, R and E act on
+the current row. Every bulk decision is one request per project and one step for Undo.
 
 ### The viewer
 
-The current snapshot, in four views: **Side by side [V]**, **Flash [F]** (or hold Space),
-**Highlight [H]** (with **Blink [L]**) and **Spotlight [S]**. Pressing a view's key again goes back
-to Side by side. **Zoom [Z]** and Fit [0], 1x [1], 2x [2], 4x [4] and 8x [8] zoom both images
-together, and from 2x a small map of the whole image at the right end of the New panel's label
-moves the view where you click it. **Baseline [P]** hides the baseline to see the new image alone; **Layout [Y]** puts the
-two images side by side or over and under (Auto picks whichever draws them larger); **Options**
-has Outline [B], Open centered on the area [O], Details (the snapshot's story, settings, console
-and attempts) and Copy link. **Next area [N]** steps through the changed areas.
+The viewer's toolbar has seven controls. On the left, the four views: **Side by side [V]**,
+**Flash [F]** (or hold Space), **Highlight [H]** and **Spotlight [S]**, the one shown filled;
+pressing a view's key again goes back to Side by side. Beside them **Blink L**, which blinks the
+highlight on and off in Highlight and shows a check mark while on. **Zoom: Fit Z** names the zoom:
+Z steps Fit, 1x, 2x, 4x and 8x, and a click opens its menu (**Fit 0**, **Actual size 1**,
+**2x 2**, **4x 4**, **8x 8**), whose digits also work with the menu closed. Every zoom step
+centers on the current changed area, and from 2x a small map of the whole image at the right end
+of the New panel's label moves the view where you click it. At the right end, **Display** holds
+what you set once a session, each printing its key, which works with the menu closed: **Show
+baseline P** (hide it to see the new image alone), **Image only Shift+3**, **Layout: Auto Y** (Y
+steps Auto, Side by side and Over and under; Auto picks whichever draws the images larger),
+**Outline changed areas B** and **Start zoomed on the change O**.
+
+Under the toolbar, the item line: **Back Esc**, the snapshot's number and status ("#1028 changed"),
+its story's name (with dark or light after it), the size of the change ("490k px"), its badges,
+**Next area N** when it has more than one changed area (with "Area 1 of 26" while zoomed above
+Fit), **Select X Shift+Up/Down** and **Details**. When the line is tight, the other badges go
+first, then the size, then the name is cut in the middle (never below 24 characters); "unstable"
+and "resized" always stay. **Details** opens the snapshot's threshold, renderer, hashes, settings
+file, component, attempts and console under the line, with **Copy link to this image**.
 
 Nothing is drawn over the images. The label above each panel says what it shows and what state it
 is in: "Baseline", "New", "New (loading)", "Baseline (missing)", "New (blank image)" (a capture
@@ -129,8 +152,10 @@ why the story did not render, with its console.
 
 Under the image, the same place for every snapshot:
 
-**Previous [Left / J]**, the snapshot's number and how many are left, **Next [Right / K]**, then
-**Undo [U]**, **Exclude... [E]**, **Reject... [R]** and **Accept [A]**. Accept moves on to the next
+**Previous [J] Left**, **Next [K] Right**, then **Undo [U]**, **Exclude... [E]**, **Reject... [R]**
+(a red outline) and **Accept [A]**, the only filled button. With a selection that holds the current
+row they read **Accept 3**, **Reject 3...** and **Exclude 3...**. In a viewer under 760 px wide
+Previous and Next show only their keys, then Undo; the decision words never drop. Accept moves on to the next
 undecided snapshot; Left and Right step through every row. Reject and Exclude ask for a reason in a
 small box above the bar (the author reads a reject's reason); recent reasons are one press away.
 See [What each decision does](decisions.md).
@@ -182,7 +207,7 @@ Every approved baseline in the repository: what the gate compares new captures w
   when it last changed in which change. **Find [/]** finds a story by name or by its number
   ("#12"); **Group** groups the rows by component, by project, or not at all.
 - **The viewer**, on the right: the baseline the row chose, with the same zoom controls as a review
-  and **Image only [Shift+3]**. **Previous [Left / J]** and **Next [Right / K]** move through the
+  and **Image only Shift+3**. **Previous [J] Left** and **Next [K] Right** move through the
   baselines. Under it, the **History**: every version of that baseline, newest first, with its
   date, who accepted it, in which change, and its approval (signed by which passkey, or not signed).
   Tick two versions to compare them with **Side by side [V]**, **Flash [F]**, **Highlight [H]** and

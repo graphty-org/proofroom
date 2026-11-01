@@ -201,7 +201,7 @@ describe("the summary sheet", () => {
             );
             const text = await s.innerText();
             expect(text).toContain(
-                `Will commit: 2 accepted (0 not opened), 0 excluded, to branch feat/${OPEN}-change as Ada Owner.`,
+                `Saves 2 you accepted to branch feat/${OPEN}-change, as Ada Owner.`,
             );
             // The commit status in the server's own words (commitStatus), never "approved" with
             // snapshots undecided.
@@ -327,6 +327,21 @@ describe("the summary sheet", () => {
         expect(posts("/api/finish")).toEqual([]);
     });
 
+    it("says what it saves with the reader's own accepts apart from those accepted earlier, zero parts left out", async () => {
+        const page = await open({
+            finishPreview: (id, tg) =>
+                finishPreview(tg, id === A ? { accepts: 1220, approvedBefore: 1208, excludes: 3, notOpened: 2 } : {}),
+        });
+        await rowOf(page, A).getByRole("button", { name: "Finish..." }).click();
+        const s = sheet(page);
+        await s.waitFor();
+        expect(await s.locator("p.saves").innerText()).toBe(
+            `Saves 12 you accepted (2 not opened), 3 excluded and 1,208 accepted earlier to branch feat/${A}-change, as Ada Owner.`,
+        );
+        await s.getByRole("button", { name: "Cancel" }).click();
+        await s.waitFor({ state: "detached" });
+    });
+
     it("refuses when decisions changed in another tab, and shows the new counts", async () => {
         let changed = false;
         let tries = 0;
@@ -354,12 +369,12 @@ describe("the summary sheet", () => {
         });
         await rowOf(page, A).getByRole("button", { name: "Finish..." }).click();
         await sheet(page).waitFor();
-        expect(await sheet(page).innerText()).toContain("Will commit: 5 accepted");
+        expect(await sheet(page).innerText()).toContain("Saves 5 you accepted");
         await page.keyboard.press("Enter");
         await expect
             .poll(() => sheet(page).locator("p.c-failed").first().innerText())
             .toBe("Decisions changed since this sheet opened: check the summary again.");
-        expect(await sheet(page).innerText()).toContain("Will commit: 6 accepted");
+        expect(await sheet(page).innerText()).toContain("Saves 6 you accepted");
         await page.keyboard.press("Enter");
         await openNothing(page);
         await expect.poll(() => countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
@@ -423,7 +438,7 @@ describe("a change whose last snapshot was just decided (issue #1)", () => {
         }
         await page.locator(".endcard").waitFor();
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         // The next look at the list (Refresh now, or the 15 s poll) moves the row.
         await page.locator('[data-act="refresh"]').click();
         await expect.poll(() => countOf(page, OPEN)).toBe("4 decided, not finished");
@@ -443,12 +458,12 @@ describe("a change whose last snapshot was just decided (issue #1)", () => {
         await rowOf(page, NEW).click();
         await expect.poll(() => message(page)).toBe(`Opened #${NEW} Change ${NEW}: 3 undecided.`);
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         await page.keyboard.press("Shift+KeyN");
         // (The fake's rows keep only their first two decisions: the count after the colon is the fake's.)
         await expect.poll(() => message(page)).toMatch(new RegExp(`^Opened #${OPEN} Four: `));
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
 
         // Enter on its row opens its summary sheet, without opening the change.
         await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe(OPEN);
@@ -828,7 +843,7 @@ describe("on the review server", () => {
             await sh.waitFor();
             expect(await sh.locator("h3").innerText()).toBe("Finish seed Seed from master");
             expect(await sh.innerText()).toMatch(
-                /Will commit: 1 accepted \(0 not opened\), 0 excluded, to branch visual\/seed-\d{4}-\d\d-\d\d as .+, and open its pull request\./,
+                /Saves 1 you accepted to branch visual\/seed-\d{4}-\d\d-\d\d, as .+, and opens its pull request\./,
             );
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toMatch(/^Finished seed at \d\d:\d\d\./);
