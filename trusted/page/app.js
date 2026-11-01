@@ -346,25 +346,35 @@ function summaryOf(c) {
     );
 }
 
-// The open change's number and title, a link to it on the code host: pressed, it runs Open on <host>
-// (logged as that action); the address stays on the link for copying and the browser's own menu.
-function titleLink(c, title, name) {
-    const a = control(app, "onhost", {
+// The open change's number and title: a menu button (a drawn caret after it, its whole title in the
+// tooltip) holding what is change-wide and rare: Open on <host>, Copy link to this list, the JUnit
+// report, and apart from them, Undo all decisions...
+function titleMenu(title, name) {
+    return control(app, "chgmenu", {
         zone: "snaps-head",
-        tag: "a",
-        ctx: { id: c.id },
-        attrs: {
-            class: "grow ctl",
-            href: c.url,
-            target: "_blank",
-            rel: "noreferrer",
-            title: `${title}: open on ${wordsOf(app.list).hostName}`,
-        },
-        children: name,
+        attrs: { class: "grow ctl tmenu", title, "aria-haspopup": "menu", "aria-label": `${title}: menu` },
+        children: [...name, el("span", { class: "gcaret", "aria-hidden": "true" })],
     });
-    a.addEventListener("click", (e) => e.preventDefault());
-    return a;
 }
+
+app.changeMenu = (anchor) => {
+    const c = app.open();
+    if (!c) {
+        return;
+    }
+    showMenu(anchor, [
+        { text: `${c.num}${c.title}`, strong: true },
+        // A code host that cannot open changes (plain git) has no page to open them on. The item is
+        // a link, so the browser's own menu can copy its address.
+        ...(c.url && hostCan(app.list, "openChange")
+            ? [{ id: "onhost", label: `Open on ${wordsOf(app.list).hostName}`, ctx: { id: c.id }, href: c.url }]
+            : []),
+        { id: "listlink", label: "Copy link to this list" },
+        { id: "junit", label: "Download the comparison report (JUnit)" },
+        { sep: true },
+        { id: "undoall", label: "Undo all decisions..." },
+    ]);
+};
 
 function drawSnaps() {
     const c = app.open();
@@ -403,14 +413,7 @@ function drawSnaps() {
     // Line 1: the number, never cut, then the title, cut first ("..."), its whole in the tooltip.
     const title = `${c.num}${c.title}`;
     const name = [c.num ? el("span", { class: "cnum" }, c.num.trim()) : null, el("span", { class: "ell" }, c.title)];
-    const h1 = el(
-        "div",
-        { class: "h1" },
-        c.url && hostCan(app.list, "openChange")
-            ? titleLink(c, title, name)
-            : el("span", { class: "grow ctl", title }, name),
-        hide,
-    );
+    const h1 = el("div", { class: "h1" }, titleMenu(title, name), hide);
     if (app.snaps.length === 0) {
         $("snaps-head").replaceChildren(h1);
         list.replaceChildren(el("p", { class: "muted empty" }, `${c.count}. Nothing to review yet.`));
@@ -1030,7 +1033,7 @@ function showMenu(anchor, items, owner = app) {
     for (const it of items) {
         // A sentence a menu says before its items (a notice chip's): read, never chosen.
         if (it.text) {
-            m.append(el("p", { class: "mt" }, it.text));
+            m.append(el("p", { class: it.strong ? "mt mtitle" : "mt" }, it.text));
             continue;
         }
         if (it.sep || it.head) {
@@ -1039,11 +1042,17 @@ function showMenu(anchor, items, owner = app) {
         }
         const node = control(owner, it.id, {
             zone: "menu",
-            tag: "div",
+            // An item with an address is a link, so the browser's own menu can copy it; pressed, it
+            // runs its action.
+            tag: it.href ? "a" : "div",
             ctx: it.ctx ?? {},
             attrs: {
                 // A choice holding nothing is greyed, never hidden (Show: Rejected 0).
                 class: it.dim ? "mi dim" : "mi",
+                href: it.href ?? null,
+                target: it.href ? "_blank" : null,
+                rel: it.href ? "noreferrer" : null,
+                title: it.title ?? null,
                 role: it.checked === undefined ? "menuitem" : it.check ? "menuitemcheckbox" : "menuitemradio",
                 tabindex: "-1",
                 "aria-checked": it.checked === undefined ? null : String(it.checked),
@@ -1060,7 +1069,10 @@ function showMenu(anchor, items, owner = app) {
                 (it.key ?? ACTIONS[it.id].key) ? kb(it.key ?? ACTIONS[it.id].key, true) : null,
             ],
         });
-        node.addEventListener("click", () => {
+        node.addEventListener("click", (e) => {
+            if (it.href) {
+                e.preventDefault();
+            }
             // An item that opened another menu (More > Layout) leaves that one open.
             if (app.menu !== m) {
                 return;
@@ -1076,7 +1088,12 @@ function showMenu(anchor, items, owner = app) {
     document.body.append(m);
     const r = anchor.getBoundingClientRect();
     m.style.top = `${Math.min(r.bottom + 4, innerHeight - m.offsetHeight - 8)}px`;
-    m.style.left = `${Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8))}px`;
+    // A menu opened from the list pane stays over it, never over the viewer's pictures, while the
+    // pane is wide enough: from its button, or left-aligned to the pane when that would cross it.
+    const pane = anchor.closest("#snaps")?.getBoundingClientRect();
+    const fits = pane && m.offsetWidth <= pane.width - 16;
+    const left = fits && r.left + m.offsetWidth > pane.right - 8 ? pane.left + 8 : r.left;
+    m.style.left = `${Math.max(8, Math.min(left, innerWidth - m.offsetWidth - 8))}px`;
     app.menu = m;
     const nodes = [...m.querySelectorAll(".mi")];
     let at = -1;
@@ -1137,7 +1154,7 @@ app.clearFind = () => {
     syncHints();
 };
 
-// The list menu's Copy link: this change at the current snapshot.
+// The change's menu's Copy link to this list: this change at the current snapshot.
 app.copyListLink = async () => {
     const link = `${location.origin}${location.pathname}${formatAddress({ token: currentToken(), change: app.openId, snap: app.snap })}`;
     try {
@@ -1148,7 +1165,7 @@ app.copyListLink = async () => {
     }
 };
 
-// The list menu's Download the comparison report (JUnit): the open change's run, saved as a file.
+// The change's menu's Download the comparison report (JUnit): the open change's run, saved as a file.
 app.downloadJunit = async () => {
     const c = app.open();
     const q = app.loadedRun ? `?${new URLSearchParams({ run: app.loadedRun })}` : "";

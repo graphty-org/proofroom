@@ -156,7 +156,9 @@ export function clusters(boxes) {
 }
 
 /**
- * A row-shaped crop of a w x h image centered on one box, and its zoom (see rowCrop).
+ * A row-shaped crop of a w x h image centered on one box, and its zoom (see rowCrop). Each side is
+ * clamped inside the image on its own: an image narrower (or shorter) than the crop at the row's
+ * shape is shown whole that way, centered in the row, never zoomed further to keep the shape.
  * @param {number[]} box [x, y, width, height]
  * @param {number} w the image's width
  * @param {number} h its height
@@ -171,39 +173,70 @@ function cropAround([bx, by, bw, bh], w, h) {
     } else {
         ch = cw / shape;
     }
-    const fit = Math.min(1, w / cw, h / ch);
-    [cw, ch] = [cw * fit, ch * fit];
+    [cw, ch] = [Math.min(cw, w), Math.min(ch, h)];
     const clamp = (v, max) => Math.min(Math.max(0, v), max);
+    // How much larger than the whole image fitted in the row the crop fitted in the row shows it.
+    const fit = (x, y) => Math.min(ROW[0] / x, ROW[1] / y);
     return {
         crop: [clamp(bx + bw / 2 - cw / 2, w - cw), clamp(by + bh / 2 - ch / 2, h - ch), cw, ch],
-        zoom: Math.max(w / cw, h / ch),
+        zoom: fit(cw, ch) / fit(w, h),
     };
 }
+
+/**
+ * How much of a rect the boxes cover, from 0 to 1 (overlapping boxes count twice, capped at 1).
+ * @param {number[][]} boxes the boxes, each [x, y, width, height]
+ * @param {number[]} rect [x, y, width, height]
+ * @returns {number} the share covered
+ */
+export function covered(boxes, [rx, ry, rw, rh]) {
+    let sum = 0;
+    for (const [x, y, bw, bh] of boxes) {
+        const iw = Math.min(x + bw, rx + rw) - Math.max(x, rx);
+        const ih = Math.min(y + bh, ry + rh) - Math.max(y, ry);
+        sum += iw > 0 && ih > 0 ? iw * ih : 0;
+    }
+    return rw * rh > 0 ? Math.min(1, sum / (rw * rh)) : 0;
+}
+
+/** The spotlight dims a picture only when its changed areas cover less than this share of it. */
+export const SPOT_UNDER = 1 / 3;
 
 /** The zoom from which Zoom Auto zooms a row: the crop shows the change twice as large as Fit. */
 export const ROW_ZOOM_FROM = 2;
 
 /**
  * Zoom rows to the change: the part of a w x h image a zoomed row shows, at the row's shape and at
- * least ROW_MIN, kept inside the image (so a small image gives a smaller crop, still at the row's
- * shape). It frames every changed area when that crop still zooms ROW_ZOOM_FROM or more; else the
- * largest cluster of nearby areas (clusters), so a spread-out change still shows a change, never a
- * blank stretch of page. With no boxes, it centers on the whole image.
+ * least ROW_MIN, kept inside the image (see cropAround). It frames every changed area when that
+ * crop still zooms ROW_ZOOM_FROM or more; else the largest cluster of nearby areas (clusters), so a
+ * spread-out change still shows a change, never a blank stretch of page. With no boxes, it centers
+ * on the whole image. Boxes are clipped to the image first (a baseline larger than the new image
+ * changes pixels outside it). Also says how much of the crop, and of the whole image, the areas
+ * cover: the spotlight helps only below SPOT_UNDER.
  * @param {number[][]} boxes what regions() returns
  * @param {number} w the image's width
  * @param {number} h its height
- * @returns {{ crop: number[], zoom: number, shown: number }} the crop [x, y, width, height]
- *     (fractions allowed), how much larger it shows the image than the row's unzoomed picture
- *     fitted whole, and how many of the boxes it frames
+ * @returns {{ crop: number[], zoom: number, shown: number, cover: number, coverAll: number }} the
+ *     crop [x, y, width, height] (fractions allowed), how much larger it shows the image than the
+ *     row's unzoomed picture fitted whole, how many of the boxes it frames, and the share of the
+ *     crop and of the whole image the boxes cover
  */
 export function rowCrop(boxes, w, h) {
-    if (boxes.length === 0) {
-        return { ...cropAround([0, 0, w, h], w, h), shown: 0 };
+    const inside = boxes
+        .map(([x, y, bw, bh]) => {
+            const [x0, y0] = [Math.max(0, x), Math.max(0, y)];
+            return [x0, y0, Math.min(x + bw, w) - x0, Math.min(y + bh, h) - y0];
+        })
+        .filter((b) => b[2] > 0 && b[3] > 0);
+    const coverAll = covered(inside, [0, 0, w, h]);
+    const out = (made, shown) => ({ ...made, shown, cover: covered(inside, made.crop), coverAll });
+    if (inside.length === 0) {
+        return out(cropAround([0, 0, w, h], w, h), 0);
     }
-    const all = cropAround(around(boxes), w, h);
-    if (all.zoom >= ROW_ZOOM_FROM || boxes.length === 1) {
-        return { ...all, shown: boxes.length };
+    const all = cropAround(around(inside), w, h);
+    if (all.zoom >= ROW_ZOOM_FROM || inside.length === 1) {
+        return out(all, inside.length);
     }
-    const [most] = clusters(boxes);
-    return { ...cropAround(around(most), w, h), shown: most.length };
+    const [most] = clusters(inside);
+    return out(cropAround(around(most), w, h), most.length);
 }

@@ -94,40 +94,45 @@ few seconds while it is shown.
 
 The open change's snapshots. Its header is three lines that never wrap:
 
-1. The change's number and title, a link to it on the code host, then any notice chips and the
-   fold button **< Shift+2**. When the line is tight the title is cut first ("..."); the number and
-   the fold button never go.
+1. The change's number and title, then any notice chips and the fold button **< Shift+2**. When
+   the line is tight the title is cut first ("..."); the number and the fold button never go. The
+   number and title are the change's own menu (a small caret after them, the whole title in their
+   tooltip), for what is change-wide and rare: the whole title, wrapped; **Open on GitHub** (the
+   code host's name; a link, so the browser can copy its address); **Copy link to this list**;
+   **Download the comparison report (JUnit)**; and, apart from them under a line, **Undo all
+   decisions...**.
 2. The progress line: **34 left** in bold, then, muted, what you decided and what was accepted
    before this capture, "12 decided, 1,208 accepted earlier", each only when it is not 0. Under it,
    the bar fills with both. A change of 10 or fewer says only "3 left" until you decide something.
    When the line is tight, "accepted earlier" goes first, then "decided"; "N left" always stays.
-3. **Find** (its placeholder "Find, or #number /"): filters the rows by story; a number ("47" or
-   "#47") jumps to that snapshot instead. Esc clears the box first, then leaves it. When the line is
-   tight the placeholder shortens to "Find /", never less. Then **Show: Undecided**, the one filter:
-   its menu lists Undecided (the default), All, each status the change has, Accepted earlier,
-   Accepted (yours), Rejected and Excluded, each with its count on the right, a choice of 0 greyed.
-   The button shows the count only while the list is filtered, "Show: Rejected (3)". Then **List**:
-   **Group by** (Component, Same change, Project, Status, None), **Pictures** (**Spotlight rows**,
-   which dims what did not change, Zoom
-   rows to the change Auto, Always or Never, or No pictures), **Select** (**Extend selection up
-   Shift+Up**, **Extend selection down Shift+Down**, both acting with the menu closed, and **Select
-   all shown**), Accept all shown..., Undo all decisions..., Download the comparison report (JUnit)
-   and **Copy link to this list**. Last, the
-   list's **Up** and **Down**, their keys printed quietly.
+3. **Find** (its placeholder "Find /", its tooltip "Find a story, or #number"): filters the rows by
+   story; a number ("47" or "#47") jumps to that snapshot instead. Esc clears the box first, then
+   leaves it. Then **Show: Undecided**, the one filter: its menu lists Undecided (the default), All,
+   each status the change has, Accepted earlier, Accepted (yours), Rejected and Excluded, each with
+   its count on the right, a choice of 0 greyed, and last, under a line, **Accept all 34 shown...**,
+   which accepts what Show and Find show and always asks first. The button shows the count only
+   while the list is filtered, "Show: Rejected (3)". Then **List**, about the list only: **Group by**
+   (Component, Same change, Project, Status, None), **Pictures** (**Spotlight rows**, which dims
+   what did not change; Zoom rows to the change **When small**, Always or Never; or **Text only, no
+   pictures**) and **Select** (**Extend selection up Shift+Up**, **Extend selection down
+   Shift+Down**, both acting with the menu closed, and **Select all shown**). A menu opened from the
+   list stays over the list, never over the pictures. Last, the list's **Up** and **Down**, in the
+   same size as Show and List.
 
 Keys off the look-decide-next loop are printed as quiet muted text after their label ("Next change
 Shift+N"); boxed keys are kept for the view switch, the decision bar and boxes.
 
 Each row shows the snapshot's number and status, its story's name (the one bold thing on the row,
 its mode and "resized" after it in muted words: "graph-file, dark, resized"), its decision, and a picture of the new
-image: spotlit (everything but the change dimmed) and, under Zoom Auto, zoomed to the change
-when that shows it at least twice as large. Nothing is ever drawn over a picture. A zoomed picture
-has a gray bar outside its left edge, and the line under the story says the size and the zoom in
-words: "26 areas, 490k px, zoomed 4x". When the changed areas are spread too far apart to zoom to
-all of them, the picture shows the largest group of areas that lie close together, and the line
-says how many: "zoomed 4x to 3 of them". When the row is too narrow, a badge's word is kept and the
-zoom words give way first; they stay in the line's tooltip. Hover a picture for "Zoomed 4x to the changed areas" or
-"Whole image". "resized" (the new image is a different size) is a muted word after the name, not a
+image: under Zoom When small, zoomed to the change when that shows it at least twice as large,
+and spotlit (everything but the change dimmed) only when the changed areas cover less than a third
+of what the picture shows: when most of it changed, dimming would hide the change, so the picture
+is plain. Nothing is ever drawn over a picture, and a picture narrower than the row is centered on
+the row's own background. A zoomed picture has a gray bar outside its left edge. Right under the
+story's name the row says how many areas changed, "66 changed areas"; hover the picture for how
+far it is zoomed, "Zoomed 4x to the changed areas" (when the areas are spread too far apart to zoom
+to all of them, the picture shows the largest group that lies close together, "Zoomed 4x to 3 of
+the 26 changed areas"), or "Whole image". The changed pixels' count is in **Details**. "resized" (the new image is a different size) is a muted word after the name, not a
 badge. Badges: **unstable** (its attempts in the run did not agree, with `run --retries` or a
 runner's retries; its status is its last attempt's), **re-review**, and **+4 identical** (the same
 change as 4 other snapshots). A badge never shrinks; "unstable" always keeps its word; the others fold, when they do not fit, into "+2 more" (their
@@ -139,13 +144,15 @@ the border color, until the row is hovered or a selection exists.
 **Groups.** By component (the default above 10 snapshots). Each group header is one line: the
 chevron folds and unfolds the group; the name button, "legend" with a small caret after it (a
 component is named alone, its project in the tooltip, unless two projects share the name; a long
-name is cut keeping its end, "...fidelity-cx-specimens", so groups that share a start stay apart,
+name is cut in the middle, "style-fi...cx-specimens", keeping both ends, so groups that share a start stay apart,
 the whole name in the header's tooltip), underlines on hover and opens the group's actions:
 **Accept 14** (printing **Shift+A** on the current snapshot's group), **Collapse** or **Expand**,
 **Reject 14...**, **Exclude 14...**, **Select all 14**, and **Undo 3...** while the group holds
 decisions to take back. The header carries no count: it is said once, in **Accept 14**, at the
 end of the line. That button shows always on the group of the current snapshot (green, with its key
-**Shift+A**) and on the other groups only while their header is hovered or focused; once nothing in
+**Shift+A**) and on the other groups only while their header is hovered or focused. While rows are
+selected no header shows it: the decision bar's **Accept 12** is the one bulk Accept on screen,
+and each group's name menu still lists **Accept 14 Shift+A**. Once nothing in
 the group is left it becomes **Undo 14**. Same change groups snapshots with exactly the same change first (a fact), then
 look-alike changes (a guess, labeled so). A group of more than 50 opens folded, except the first.
 
@@ -250,8 +257,9 @@ The banner never shows when either capture does not say which browser drew it.
 
 ### A newer capture, and a stale one
 
-Both are notices, never blocks: a small chip on the first line of the Snapshots header, in the
-warning color. Each is a menu button that says what it means and what to do. When both apply and
+Both are notices, never blocks: a small outlined button on the first line of the Snapshots
+header, its mark in the warning color and a caret after its words. Each is a menu button that says
+what it means and what to do. When both apply and
 the line is tight, they fold into one **2 notices** chip whose menu holds both.
 
 - **Behind master: 1,242**: the default branch accepted that many newer baselines after this

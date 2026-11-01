@@ -266,7 +266,7 @@ export const ACTIONS = {
     },
     listmenu: {
         label: "List",
-        title: "Group by, pictures, and more for this list",
+        title: "Group by, pictures and selection for this list",
         run: (app, ctx) => app.listMenu("list", ctx.el),
     },
     show: { label: (app, ctx) => `Show: ${ctx.show}`, run: (app, ctx) => app.setShow(ctx.show) },
@@ -279,6 +279,8 @@ export const ACTIONS = {
     piczoom: { label: (app, ctx) => ctx.zoom, run: (app, ctx) => app.setPictures({ zoom: ctx.zoom, none: false }) },
     picnone: { label: "No pictures (text rows)", run: (app) => app.setPictures({ none: !app.lv.pics.none }) },
     listlink: { label: "Copy link to this list", run: (app) => app.copyListLink() },
+    // The open change's number and title, a menu of what is change-wide and rare (app.js).
+    chgmenu: { label: "", run: (app, ctx) => app.changeMenu(ctx.el) },
     gtoggle: { label: "", run: (app, ctx) => app.toggleGroup(ctx.group) },
     gshowall: { label: "Show all", run: (app, ctx) => app.toggleGroup(ctx.group, true) },
     rowundo: {
@@ -336,7 +338,7 @@ export const ACTIONS = {
     extendup: { label: "Extend up", key: "Shift+Up", run: (app) => app.extendSel(-1) },
     extenddown: { label: "Extend down", key: "Shift+Down", run: (app) => app.extendSel(1) },
     selshown: { label: "Select all shown", run: (app) => app.selectShown() },
-    // The list menu.
+    // The Show menu's last item, and the change's own menu's.
     acceptshown: {
         label: "Accept all shown...",
         run: (app) => app.acceptShown(),

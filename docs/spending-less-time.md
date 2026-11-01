@@ -39,20 +39,22 @@ badge "+11 identical" when their change is identical to others'.
 
 ## Row pictures
 
-**Pictures** in the list header chooses what each row's picture shows:
+**Pictures** in the list header's **List** menu chooses what each row's picture shows:
 
-- **Spotlight rows** (on by default): dims what did not change, so a small change stands out.
-- **Zoom rows to the change**: **Auto** (the default) zooms a row when its crop around the change
-  shows it at least twice as large as the whole image would; **Always** and
-  **Never** override it. A zoomed row's picture has a gray bar on its left edge, and the row says
-  how much in words beside the size ("3 areas, 4,318 px, zoomed 7x"). When the areas are too far
-  apart to zoom to all of them, the picture shows the largest group of areas close together
-  ("zoomed 7x to 1 of them").
-- **No pictures**: text rows, the densest list.
+- **Spotlight rows** (on by default): dims what did not change, so a small change stands out. A
+  picture is spotlit only when its changed areas cover less than a third of it; when most of it
+  changed it is shown plain, because dimming would hide the change.
+- **Zoom rows to the change**: **When small** (the default) zooms a row when its crop around the
+  change shows it at least twice as large as the whole image would; **Always** and **Never**
+  override it. A zoomed row's picture has a gray bar on its left edge, and its tooltip says how
+  much ("Zoomed 7x to the changed areas"). When the areas are too far apart to zoom to all of them,
+  the picture shows the largest group of areas close together ("Zoomed 7x to 1 of the 3 changed
+  areas"). The row itself says how many areas changed, "3 changed areas".
+- **Text only, no pictures**: text rows, the densest list.
 
 ## Selecting
 
 Select rows with **Select [X]**, a checkbox, a shift-click or **Shift+Up / Shift+Down**, and decide
 them together from the selection bar, or with A, R or E while the current row is in the selection.
-**Accept all shown...** in the list's menu accepts every undecided row the filter and Find show,
-after asking. Every bulk decision is one step for **Undo [U]**.
+**Accept all 34 shown...**, the last item of the **Show** menu, accepts every undecided row the
+filter and Find show, after asking. Every bulk decision is one step for **Undo [U]**.

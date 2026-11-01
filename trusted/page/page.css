@@ -725,20 +725,62 @@ body.held [data-zone="end"] kbd {
 #snaps-head > .h1 .cnum {
     flex: none;
 }
+/* The number and title are the change's own menu: they read as the title, not a box (the border
+   shows on hover and focus), with the group names' drawn caret after them. */
+#snaps-head > .h1 button.tmenu {
+    font-weight: 700;
+    font-size: 14px;
+    height: 26px;
+    min-height: 26px;
+    flex: 1 1 auto;
+    align-items: center;
+    padding: 0 4px;
+    margin-left: -4px;
+    border-color: transparent;
+    background: transparent;
+    text-align: left;
+}
+#snaps-head > .h1 button.tmenu:hover {
+    border-color: var(--line);
+}
+#snaps-head > .h1 .ctl > .ell {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* A drawn caret (a bordered triangle, no glyph) after a menu button's words: the change's title,
+   a notice chip, a group's name. */
+.gcaret {
+    flex: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--ink-2);
+}
+/* The change's own menu starts with its whole title, wrapped, never cut. */
+.menu .mt.mtitle {
+    font-weight: 700;
+    color: var(--ink);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
 /* The fold button, compact: a chevron and its quiet key. */
 #snaps-head > .h1 button.fold {
     display: inline-flex;
     align-items: center;
     padding: 0 6px;
 }
-/* A notice chip on line 1 (Behind master: 1,242, Newer capture, 2 notices): one line, its mark and
-   words in the warning color (mixed with the ink to read at 4.5:1), no tinted block. */
+/* A notice chip on line 1 (Behind master: 1,242, Newer capture, 2 notices): an outlined menu button
+   on one line, its words in the ordinary ink and only its small mark in the warning color, a drawn
+   caret after them. */
 #snaps-head > .h1 button.chip {
     display: inline-flex;
     align-items: center;
     white-space: nowrap;
     gap: 4px;
-    color: color-mix(in srgb, var(--warn) 75%, var(--ink));
+    color: var(--ink);
+    border-color: var(--line);
 }
 #snaps-head > .h1 button.chip .ic {
     color: var(--warn);
@@ -831,6 +873,10 @@ body[data-open="false"] #snaps {
     height: 31px;
     gap: 3px;
 }
+/* Show, List, Up and Down in one text size, which keeps the row inside the pane at 1024 px. */
+#snaps-head > .h3 button {
+    font-size: 12px;
+}
 #snaps-head > .h3 button,
 #snaps-head > .h4 button {
     min-height: 24px;
@@ -877,6 +923,10 @@ body[data-open="false"] #snaps {
 }
 .findwrap button[hidden] {
     display: none;
+}
+/* Up and Down in the find row print only their keys: in the same text size as Show and List. */
+.findwrap button[data-rows] > kbd {
+    font: inherit;
 }
 /* Previous [Up] and Next [Down] (actions.js rowButtons): the key box alone, which fits the narrow
    pane headers beside their other controls; the word while the other pane's pair has the boxes. */
@@ -996,6 +1046,11 @@ body.infind .fk {
 }
 .pic.ready .ph {
     display: none;
+}
+/* Loaded, a picture narrower than the row's shape is centered on the row's own background, never
+   on the stage grey. */
+.pic.ready {
+    background: transparent;
 }
 /* A removed row's hatching covers its loaded picture, never the placeholder chip. */
 .pic.ready .rm {
@@ -1206,14 +1261,7 @@ body.infind .fk {
 }
 /* The name is a button: a small drawn caret after it (a bordered triangle, no glyph), and an
    underline on hover. */
-.ghead .gname .gcaret {
-    flex: none;
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid var(--ink-2);
-}
+/* (Its caret is the shared .gcaret.) */
 .ghead button.gname:hover .gn {
     text-decoration: underline;
     text-underline-offset: 2px;
@@ -1224,6 +1272,11 @@ body.infind .fk {
 .ghead .acc.mine {
     border-color: var(--accept);
     font-weight: 700;
+}
+/* While rows are selected the decision bar's Accept N is the one bulk Accept on screen: no group
+   header draws its own (the group's name menu still lists it, with Shift+A). */
+#snaps.selecting .ghead .acc {
+    display: none;
 }
 /* Hidden by opacity, not visibility, so Tab still reaches it (WebKit drops focus out of the page
    on a visibility-hidden button) and shows it; no pointer reaches it while it is unseen. */
@@ -1853,14 +1906,15 @@ button.quietbtn[aria-expanded="true"] {
     overflow: auto;
     outline: none;
 }
+/* 24 px items: the List menu stays under 460 px at 1440 x 900. */
 .menu .mi {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 5px 10px;
+    padding: 3px 10px;
     border-radius: 5px;
     cursor: pointer;
-    min-height: 26px;
+    min-height: 24px;
 }
 .menu .mi:hover,
 .menu .mi:focus {
@@ -2247,4 +2301,9 @@ dialog.finish .warnbox {
     padding: 0 4px;
     font-size: 12px;
     font-weight: 400;
+}
+/* A menu item that is a link (Open on GitHub): it reads as the other items. */
+.menu a.mi {
+    color: inherit;
+    text-decoration: none;
 }

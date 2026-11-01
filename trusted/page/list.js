@@ -51,7 +51,7 @@ export const SHOW_LABEL = Object.fromEntries(SHOWS);
 
 /** The Zoom rows to the change choices. */
 export const ZOOMS = {
-    auto: "Auto: when the change is small (2x Fit or more)",
+    auto: "When small",
     always: "Always",
     never: "Never",
 };
@@ -281,20 +281,18 @@ export function pictureKind(s, pics) {
 }
 
 /**
- * A row's line 4 words for its picture: the size, then how far the picture is zoomed and, when the
- * crop frames only some of the areas, how many. "26 areas, 490k px, zoomed 4x to 3 of them".
+ * A row's words for its change, under the story's name: how many areas changed ("66 changed
+ * areas", "1 changed area"), else what sizeText says ("image identical"). How far the picture is
+ * zoomed is in its tooltip, its pixel size in Details.
  * @param {any} s the snapshot
- * @param {{ zoom: number | null, shown: number | null } | null} pk what pictureKind gave
- * @returns {{ full: string, short: string }} the words, and them without "to 3 of them"
+ * @returns {string} the words, or ""
  */
-export function rowSizeText(s, pk) {
-    const size = sizeText(s);
-    if (!pk?.zoom) {
-        return { full: size, short: size };
+export function rowSizeText(s) {
+    const count = s.areas?.count;
+    if (s.status === "changed") {
+        return typeof count === "number" ? `${fmt(count)} changed area${count === 1 ? "" : "s"}` : "";
     }
-    const short = [size, `zoomed ${Math.round(pk.zoom)}x`].filter(Boolean).join(", ");
-    const count = s.areas?.count ?? 0;
-    return { full: pk.shown < count ? `${short} to ${fmt(pk.shown)} of them` : short, short };
+    return sizeText(s);
 }
 
 /**
@@ -575,7 +573,8 @@ export function findBox() {
                 "data-act": "find",
                 "data-key": "/",
                 "data-zone": "snaps-head",
-                "data-find": "Find, or #number",
+                "data-find": "Find",
+                title: "Find a story, or #number",
                 "aria-label": "Find a story, or jump to a number",
                 autocomplete: "off",
             })
@@ -621,24 +620,6 @@ export function midCut(t, w, font) {
     return cut(lo);
 }
 
-/**
- * A name cut keeping its end ("...fidelity-cx-specimens"), so names that share a start stay apart.
- * @param {string} t the name
- * @param {number} w the width
- * @param {string} font the font
- * @returns {string} the name, whole or cut
- */
-function endCut(t, w, font) {
-    if (textWidth(t, font) <= w) {
-        return t;
-    }
-    let k = t.length - 1;
-    while (k > 4 && textWidth(`...${t.slice(t.length - k)}`, font) > w) {
-        k--;
-    }
-    return `...${t.slice(t.length - k)}`;
-}
-
 const lines = {};
 const line = (cls) => {
     lines[cls] ??= el("div", { class: `hl ${cls}` });
@@ -648,30 +629,14 @@ const line = (cls) => {
 // Whether a header line is wider than its box.
 const over = (n) => n.scrollWidth > n.clientWidth + 1;
 
-// The Find box's placeholder words, longest first (the box prints its key "/" after them).
-const FIND_WORDS = ["Find, or #number", "Find"];
-
-// Shortens the Find box's placeholder to what its box holds: "Find, or #number  /", then
-// "Find  /", never less: the word stays at 1024 px.
-function fitFind(box) {
-    // Less its 5 px padding each side and a little air.
-    const w = box.clientWidth - 12;
-    if (box.clientWidth === 0) {
-        return;
-    }
-    const font = `13px ${FONT()}`;
-    box.dataset.find =
-        FIND_WORDS.find((t) => textWidth([t, "/"].filter(Boolean).join("  "), font) <= w) ?? FIND_WORDS.at(-1);
-}
-
 /**
  * The header's three lines (design 2.4 item 3), plus the notice chips on line 1:
  * 1. the change's number and title, the chips and the fold button (built by the page);
  * 2. the progress line, "34 left" then "12 decided, 1,208 accepted earlier", over the bar;
  * 3. Find, Show, the List menu and the Up/Down pair;
  * and, only while rows are selected, the selection bar under them (its bulk buttons need the room).
- * Nothing wraps: line 2 drops "accepted earlier", then "decided"; line 3's Find shortens its
- * placeholder. "N left", the Show value and the change's number never go.
+ * Nothing wraps: line 2 drops "accepted earlier", then "decided"; Find's placeholder is
+ * "Find  /" at every width. "N left", the Show value and the change's number never go.
  * @param {any} app the page
  * @param {HTMLElement} h1 line 1, built by the page (number, title, Next change, the fold button)
  */
@@ -752,7 +717,6 @@ export function drawHead(app, h1) {
     for (let n = p.rest.length - 1; n >= 0 && over(h2); n--) {
         rest.textContent = p.rest.slice(0, n).join(", ");
     }
-    fitFind(box);
     // The selection bar never wraps and never cuts a label: "(3 not shown)" goes into the count's
     // tooltip first, then the buttons drop their marks.
     if (selecting && over(h4)) {
@@ -777,6 +741,9 @@ export function drawHead(app, h1) {
     }
     drawRenderer(app);
     $("snaps").classList.toggle("nopics", lv.pics.none);
+    // One bulk Accept on screen: while rows are selected, the decision bar's Accept N is it, and
+    // the group headers draw none (each group's name menu still lists Accept N  Shift+A).
+    $("snaps").classList.toggle("selecting", selecting);
 }
 
 // The selection bar, under line 3 while rows are selected (design 4.6): the count, Clear [Esc] and
@@ -892,7 +859,11 @@ function noticeChip(app, which, short) {
         zone: "snaps-head",
         ctx: { which },
         attrs: { class: "chip", "aria-haspopup": "menu", "aria-label": full, "data-notice": which },
-        children: [ic("clock"), el("span", { class: "cl" }, label)],
+        children: [
+            ic("clock"),
+            el("span", { class: "cl" }, label),
+            el("span", { class: "gcaret", "aria-hidden": "true" }),
+        ],
     });
 }
 
@@ -1013,7 +984,7 @@ function pictureOf(app, s) {
         return el("div", { class: "pic" }, chip("No picture"));
     }
     // Nothing is drawn over the picture: a zoomed one is marked by a bar outside its left edge, and
-    // its zoom is said in words on line 4 and here.
+    // its zoom is said in this tooltip.
     const box = el(
         "div",
         { class: pk.zoom ? "pic zoomed" : "pic", title: pictureTitle(s, pk) },
@@ -1023,7 +994,9 @@ function pictureOf(app, s) {
         alt: "",
         loading: "lazy",
         decoding: "async",
-        src: `/api/pic/${s.pic}-${pk.kind}${s.retried ? `?try=${s.retried}` : ""}`,
+        // `v` names how the server makes pictures (serve.mjs SPOTS_MADE_BY): the browser keeps a
+        // picture for good, so one made the older way is fetched again.
+        src: `/api/pic/${s.pic}-${pk.kind}?v=3${s.retried ? `&try=${s.retried}` : ""}`,
         "data-kind": pk.kind,
     });
     img.addEventListener("load", () => box.classList.add("ready"));
@@ -1123,12 +1096,6 @@ function badgeFit(badges, room) {
     return { shown: [...pinned, ...shown], folded };
 }
 
-// The least room a row's badges take: the pinned ones and the first other, or the fold.
-const badgeNeed = (badges) => {
-    const { shown, folded } = badgeFit(badges, 0);
-    return shown.reduce((w, b) => w + badgeW(b) + 6, 0) + (folded.length > 0 ? MORE_W() : 0);
-};
-
 function badgeNodes(badges, room) {
     const { shown, folded } = badgeFit(badges, room);
     return [
@@ -1194,23 +1161,18 @@ export function rowOf(app, s, filled = true) {
         const l23 = one
             ? [
                   el("div", { class: "nm1" }, named(s.name)),
-                  el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)),
+                  comp ? el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)) : null,
               ]
             : [el("div", { class: "nm" }, named(midCut(s.name, 2 * textW - 24 - modeW, NAME_FONT())))];
-        // The zoom's words only with the picture they describe. When tight, "to 3 of them" goes
-        // first, then the zoom (the picture's bar still marks it), before a badge's word folds;
-        // the whole is in the tooltip.
-        const words = rowSizeText(s, lv.pics.none ? null : pictureKind(s, lv.pics));
+        const size = rowSizeText(s);
         const badges = all.filter((b) => b !== resized);
-        const need = badgeNeed(badges);
         const width = (x) => (x ? textWidth(x, SIZE_FONT()) + 8 : 0);
-        const size = [words.full, words.short].find((x) => width(x) + need <= textW) ?? sizeText(s);
         body = [
             ...l23,
             el(
                 "div",
                 { class: "l x4" },
-                el("span", { class: "keep muted", title: words.full === size ? null : words.full }, size),
+                el("span", { class: "keep muted" }, size),
                 badgeNodes(badges, textW - width(size)),
             ),
         ];
@@ -1238,7 +1200,7 @@ export function rowOf(app, s, filled = true) {
               ]
             : [
                   name1,
-                  el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)),
+                  comp ? el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)) : null,
                   el("div", { class: "l x4" }, el("span", { class: "keep st" }, decisionMark(s), words), undo),
               ];
     }
@@ -1364,7 +1326,7 @@ function actionWidth(app, g, mine) {
 
 /**
  * A group's sticky header, one line: the chevron (collapses and expands, with `aria-expanded`), the
- * name button (cut keeping its end, a drawn caret after it) that opens the group's actions, and
+ * name button (cut in the middle, a drawn caret after it) that opens the group's actions, and
  * Accept N: always on the current snapshot's group, on the others only while the header is hovered
  * or focused. The count is said once, in Accept N; it is also the first item of the name's menu.
  * @param {any} app the page
@@ -1412,7 +1374,7 @@ function headerOf(app, g) {
         },
         children: [
             shape ? mark(shape.shape, shape.cls) : null,
-            el("span", { class: "gn" }, endCut(label, Math.max(room, 48), font)),
+            el("span", { class: "gn" }, midCut(label, Math.max(room, 48), font)),
             el("span", { class: "gcaret", "aria-hidden": "true" }),
         ],
     });
@@ -1659,12 +1621,13 @@ export function drawList(app, h1) {
 // ---------------------------------------------------------------- menus
 
 /**
- * The Show menu's items: each choice with its count right-aligned, a choice of 0 greyed.
+ * The Show menu's items: each choice with its count right-aligned, a choice of 0 greyed, then
+ * Accept all N shown...
  * @param {any} app the page
  * @returns {any[]} the items
  */
-export const showItems = (app) =>
-    showCounts(app.snaps).map(([k, label, n]) => ({
+export const showItems = (app) => [
+    ...showCounts(app.snaps).map(([k, label, n]) => ({
         id: "show",
         label,
         count: fmt(n),
@@ -1672,7 +1635,11 @@ export const showItems = (app) =>
         ctx: { show: k },
         checked: app.lv.show === k,
         mark: STATUS[k] ? [STATUS[k].shape, STATUS[k].cls] : null,
-    }));
+    })),
+    // It acts on what Show shows, so it sits with Show, under a separator.
+    { sep: true },
+    { id: "acceptshown", label: `Accept all ${fmt(shownUndecided(app).length)} shown...` },
+];
 
 /**
  * The Group by items of the List menu.
@@ -1700,17 +1667,18 @@ export function pictureItems(app) {
         ...Object.entries(ZOOMS).map(([k, label]) => ({
             id: "piczoom",
             label,
+            title: k === "auto" ? "Zooms a row when its change is small: the crop shows it 2x Fit or more" : null,
             ctx: { zoom: k },
             checked: p.zoom === k && !p.none,
         })),
-        { id: "picnone", label: "No pictures (text rows)", checked: p.none, check: true },
+        { id: "picnone", label: "Text only, no pictures", checked: p.none, check: true },
     ];
 }
 
 /**
- * The List menu's items: Group by, Pictures, Select (Extend selection up and down, whose keys act
- * with the menu closed, and Select all shown), then Accept all shown (N)..., Undo all decisions...,
- * Download the comparison report (JUnit) and Copy link to this list.
+ * The List menu's items, about the list only: Group by, Pictures, and Select (Extend selection up
+ * and down, whose keys act with the menu closed, and Select all shown). Accept all shown is the Show
+ * menu's last item; Undo all, the JUnit report and Copy link are in the change's own menu.
  * @param {any} app the page
  * @returns {any[]} the items
  */
@@ -1723,11 +1691,6 @@ export const listItems = (app) => [
     { sep: true },
     { head: "Select" },
     ...app.selectItems(),
-    { sep: true },
-    { id: "acceptshown", label: `Accept all shown (${fmt(shownUndecided(app).length)})...` },
-    { id: "undoall", label: "Undo all decisions..." },
-    { id: "junit", label: "Download the comparison report (JUnit)" },
-    { id: "listlink", label: "Copy link to this list" },
 ];
 
 /**

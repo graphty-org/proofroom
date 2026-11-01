@@ -2,7 +2,7 @@
  * Decisions on the page (design 6): Accept, Reject..., Exclude... and Undo on the decision
  * bar, the reason box with its recent reasons and Exclude's second step, auto-advance to the next
  * undecided snapshot and the end card, the selection bar's and the group headers' bulk decisions,
- * the list menu's Accept all shown and Undo all, and the stale capture's Update from the default
+ * the Show menu's Accept all shown, the change's menu's Undo all, and the stale capture's Update from the default
  * branch.
  *
  * Error prevention: a held key decides once (keys.js), a decision

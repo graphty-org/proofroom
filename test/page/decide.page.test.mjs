@@ -598,8 +598,8 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
                     : x,
             ),
         });
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
-        await menuItem(page, "Accept all shown (24)...").click();
+        await page.locator('#snaps-head [data-act="showmenu"]').click();
+        await menuItem(page, "Accept all 24 shown...").click();
         await page.keyboard.press("Enter");
         await expect
             .poll(() => message(page))
@@ -611,10 +611,10 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         ]);
     });
 
-    it("Accept all shown... and Undo all decisions... from the list menu ask first, one request each", async () => {
+    it("Accept all N shown... (Show menu) and Undo all decisions... (the change's menu) ask first, one request each", async () => {
         const page = await openIn(MAIN);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
-        await menuItem(page, "Accept all shown (30)...").click();
+        await page.locator('#snaps-head [data-act="showmenu"]').click();
+        await menuItem(page, "Accept all 30 shown...").click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Accept 30 matching?");
         expect(await dialog(page).innerText()).toContain("Every undecided row the filter and Find show.");
         await dialog(page)
@@ -622,7 +622,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .click();
         await expect.poll(() => posts("/api/accept-all").length).toBe(1);
         expect(posts("/api/accept-all")[0].body.files).toHaveLength(30);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
+        await page.locator('#snaps-head [data-act="chgmenu"]').click();
         await menuItem(page, "Undo all decisions...").click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Undo all decisions?");
         expect(await dialog(page).innerText()).toContain("30 decisions go back to undecided.");
@@ -631,7 +631,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .click();
         expect(await dialog(page).count()).toBe(0);
         expect(posts("/api/accept-all")).toHaveLength(1);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
+        await page.locator('#snaps-head [data-act="chgmenu"]').click();
         await menuItem(page, "Undo all decisions...").click();
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Undone: 30 decisions.");
@@ -1010,8 +1010,8 @@ describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
 describe("counted work", () => {
     it("accepts 1,000 shown in one project with one request, and undoes it with one", async () => {
         const page = await openChange(BIG);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
-        await menuItem(page, "Accept all shown (1,000)...").click();
+        await page.locator('#snaps-head [data-act="showmenu"]').click();
+        await menuItem(page, "Accept all 1,000 shown...").click();
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Accepted 1,000 snapshots.");
         await page.keyboard.press("KeyU");
@@ -1046,8 +1046,8 @@ describe("on the review server", () => {
             await page.keyboard.press("Slash");
             await page.keyboard.type("slider");
             await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(1);
-            await page.locator('#snaps-head [data-act="listmenu"]').click();
-            await menuItem(page, "Accept all shown (1)...").click();
+            await page.locator('#snaps-head [data-act="showmenu"]').click();
+            await menuItem(page, "Accept all 1 shown...").click();
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toMatch(/^Accepted #\d+\.$/);
             const saved = JSON.parse(readFileSync(join(s.tmp, "state", "123.json"), "utf8"));

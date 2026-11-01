@@ -173,7 +173,7 @@ describe("the list menu", () => {
                 body: xml,
             });
         });
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
+        await page.locator('#snaps-head [data-act="chgmenu"]').click();
         const saved = page.waitForEvent("download");
         await page.getByRole("menu").getByText("Download the comparison report (JUnit)", { exact: true }).click();
         const download = await saved;
@@ -191,7 +191,7 @@ describe("the list menu", () => {
         await page.route("**/api/junit/**", (route) =>
             route.fulfill({ status: 404, json: { error: "this change has no comparison results yet" } }),
         );
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
+        await page.locator('#snaps-head [data-act="chgmenu"]').click();
         await page.getByRole("menu").getByText("Download the comparison report (JUnit)", { exact: true }).click();
         await expect
             .poll(() => message(page))

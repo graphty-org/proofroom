@@ -127,7 +127,7 @@ const serialized = (page, shape) =>
         return n.innerHTML;
     }, shape);
 const menuItem = (page, name) => page.getByRole("menu").getByText(name, { exact: true });
-// The List menu: Group by, Pictures and the list's actions.
+// The List menu: Group by, Pictures and Select.
 const listMenu = (page) => page.getByRole("button", { name: "List", exact: true }).click();
 // Picks an item of the List menu.
 const listPick = async (page, label) => {
@@ -380,10 +380,10 @@ describe("Show, Find and the progress line", () => {
         expect(await show.innerText()).toBe("Show: Undecided");
         await show.click();
         // Each choice with its count right-aligned; statuses the change has, then the decisions,
-        // a choice of 0 greyed, never hidden.
+        // a choice of 0 greyed, never hidden (Accept all N shown... follows them, tested apart).
         const items = await page
             .getByRole("menu")
-            .locator(".mi")
+            .locator('.mi[data-act="show"]')
             .evaluateAll((ns) =>
                 ns.map((n) => [
                     n.querySelector(".ml").textContent,
@@ -461,8 +461,9 @@ describe("Show, Find and the progress line", () => {
         await page.locator("#snap-list").focus();
         await page.keyboard.press("Slash");
         await expect.poll(() => page.evaluate(() => globalThis.document.activeElement?.id)).toBe("snap-find");
-        // At 1280 the whole placeholder fits; at 1024 it gives way to "Find  /" (tested there).
-        expect(await find.getAttribute("placeholder")).toBe("Find, or #number  /");
+        // "Find  /" at every width; the tooltip says what it finds.
+        expect(await find.getAttribute("placeholder")).toBe("Find  /");
+        expect(await find.getAttribute("title")).toBe("Find a story, or #number");
         // Text filters across every group; the big group, collapsed, opens while Find holds text.
         await page.keyboard.type("story-1");
         await expect
@@ -832,7 +833,7 @@ describe("rows", () => {
             .filter((p) => p.startsWith("/api/pic/"))
             .map((p) => p.split("-").slice(4).join("-").split("?")[0]);
 
-    it("asks for the picture the Row pictures choices name, and says its zoom in words, never on it", async () => {
+    it("asks for the picture the Row pictures choices name, says its zoom only in its tooltip, and its areas under the name", async () => {
         const page = await openChange(RICH);
         // A changed row: spotlit, zoom auto, so the server's auto picture. Its crop frames one of
         // its three areas (the fixture's largest cluster), zoomed 7x.
@@ -840,25 +841,26 @@ describe("rows", () => {
         await page.locator("#snap-find").click();
         await page.keyboard.type("115");
         await r.waitFor();
-        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-auto$/);
-        expect((await listChecked(page)).checked).toEqual([
-            "Component",
-            "Spotlight rows",
-            "Auto: when the change is small (2x Fit or more)",
-        ]);
-        // Line 4 in words, the full words in its tooltip when "to 1 of them" does not fit.
+        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-auto\?v=\d+$/);
+        expect((await listChecked(page)).checked).toEqual(["Component", "Spotlight rows", "When small"]);
+        // Zoom rows' When small keeps its rule in its tooltip.
+        await listMenu(page);
+        expect(await menuItem(page, "When small").locator("..").getAttribute("title")).toMatch(/2x Fit or more/);
+        await page.keyboard.press("Escape");
+        // The row says how many areas changed, right under the story's name (grouped by component,
+        // the row has no component line); no zoom and no pixel size on the row.
         const line4 = r.locator(".x4 .keep");
+        expect(await r.locator(".x3").count()).toBe(0);
+        expect(await r.locator(".info > .nm1 + .x4").count()).toBe(1);
         const isZoomed = () => r.locator(".pic").evaluate((p) => p.classList.contains("zoomed"));
-        const said = async () => (await line4.getAttribute("title")) ?? (await line4.innerText());
         const zoomed = async () => {
             await expect.poll(() => isZoomed()).toBe(true);
-            expect(await said()).toBe("3 areas, 4,318 px, zoomed 7x to 1 of them");
-            expect(await line4.innerText()).toMatch(/^3 areas, 4,318 px, zoomed 7x( to 1 of them)?$/);
+            expect(await line4.innerText()).toBe("3 changed areas");
             expect(await r.locator(".pic").getAttribute("title")).toBe("Zoomed 7x to 1 of the 3 changed areas");
         };
         const whole = async () => {
             await expect.poll(() => isZoomed()).toBe(false);
-            expect(await line4.innerText()).toBe("3 areas, 4,318 px");
+            expect(await line4.innerText()).toBe("3 changed areas");
             expect(await r.locator(".pic").getAttribute("title")).toBe("Whole image");
         };
         // Nothing is drawn over any row picture: a loaded picture shows only its image (the
@@ -875,12 +877,17 @@ describe("rows", () => {
         await zoomed();
         await expect.poll(() => r.locator(".pic.ready").count()).toBe(1);
         expect(await over()).toEqual([]);
+        // A picture narrower than the row's shape is centered on the row's own background, never
+        // on the stage grey.
+        expect(await r.locator(".pic").evaluate((p) => globalThis.getComputedStyle(p).backgroundColor)).toBe(
+            "rgba(0, 0, 0, 0)",
+        );
         // A choice: the row asks for its picture of that kind (the request is made).
         const pics = async (label, kind) => {
             const from = t.requests.length;
             await listPick(page, label);
             await expect.poll(() => asked(t, from)).toContain(kind);
-            expect(await r.locator("img").getAttribute("src")).toMatch(new RegExp(`-${kind}$`));
+            expect(await r.locator("img").getAttribute("src")).toMatch(new RegExp(`-${kind}\\?v=\\d+$`));
         };
         await pics("Always", "row-spot");
         await zoomed();
@@ -893,11 +900,11 @@ describe("rows", () => {
         expect(await over()).toEqual([]);
         // No pictures: 28 px text rows that ask for none.
         const from = t.requests.length;
-        await listPick(page, "No pictures (text rows)");
+        await listPick(page, "Text only, no pictures");
         await expect.poll(() => page.locator("#snap-list .srow img").count()).toBe(0);
         expect((await box(page, "#snap-list .srow")).height).toBe(28);
         expect(asked(t, from)).toEqual([]);
-        expect((await listChecked(page)).checked).toEqual(["Component", "No pictures (text rows)"]);
+        expect((await listChecked(page)).checked).toEqual(["Component", "Text only, no pictures"]);
     });
 
     it("says what a row's decision is, and Undo changes exactly that row element", async () => {
@@ -1028,9 +1035,10 @@ describe("rows", () => {
         expect(await page.locator("#snap-list .srow").nth(1).textContent()).toContain("graphty-element > component-0");
     });
 
-    it("copies a link to the current snapshot from the list menu", async () => {
+    it("copies a link to the current snapshot from the change's own menu", async () => {
         const page = await openChange("3486");
-        await listPick(page, "Copy link to this list");
+        await page.locator('#snaps-head [data-act="chgmenu"]').click();
+        await menuItem(page, "Copy link to this list").click();
         await expect.poll(() => message(page)).toMatch(/^Link copied/);
         const link = await page.evaluate(() => globalThis.navigator.clipboard.readText());
         expect(link).toContain(`snap=${encodeURIComponent(await current(page))}`);
@@ -1186,7 +1194,7 @@ describe("at 1024 x 768", () => {
         expect((await page.locator("#snaps-head > .h1").boundingBox()).height).toBeLessThanOrEqual(28);
     });
 
-    it("cuts group names keeping their end, so no two visible headers read the same", async () => {
+    it("cuts group names in the middle, keeping both ends, so no two visible headers read the same", async () => {
         const comps = ["high-fidelity-cx-specimens", "high-fidelity-cy-specimens", "high-fidelity-cz-specimens"].map(
             (x) => `graphty-element-very-long-shared-prefix-for-${x}`,
         );
@@ -1212,9 +1220,13 @@ describe("at 1024 x 768", () => {
         expect(names).toHaveLength(3);
         expect(new Set(names).size).toBe(3);
         for (const [i, n] of names.entries()) {
-            expect(n.startsWith("...") ? comps[i].endsWith(n.slice(3)) : n === comps[i]).toBe(true);
+            const [start, end] = n.split("...");
+            expect(n.includes("...") ? comps[i].startsWith(start) && comps[i].endsWith(end) : n === comps[i]).toBe(
+                true,
+            );
+            expect(n.startsWith("...")).toBe(false);
         }
-        expect(names.some((n) => n.startsWith("..."))).toBe(true);
+        expect(names.some((n) => n.includes("..."))).toBe(true);
         expect(await page.locator("#snap-list .ghead").first().getAttribute("title")).toBe(
             `graphty-element > ${comps[0]}`,
         );
@@ -1243,6 +1255,118 @@ describe("at 1024 x 768", () => {
         expect(await r.locator(".mode").textContent()).toBe(", dark, resized");
         expect(await r.locator(".badge").allTextContents()).toEqual(["unstable"]);
         expect(await r.locator(".badge").evaluate((n) => globalThis.getComputedStyle(n).flexShrink)).toBe("0");
+    });
+});
+
+describe("a calmer list pane", () => {
+    it("opens the change's own menu from its number and title: the whole title, Open on GitHub as a link, Copy link, the report, then Undo all apart", async () => {
+        const page = await openChange("3486");
+        const button = page.locator('#snaps-head > .h1 [data-act="chgmenu"]');
+        const title = await button.getAttribute("title");
+        expect(title).toMatch(/^#3486 /);
+        // Its number is never cut, and it carries the group names' drawn caret.
+        expect(await button.locator(".cnum").innerText()).toBe("#3486");
+        expect(await button.locator(".gcaret").count()).toBe(1);
+        await button.click();
+        const menu = page.getByRole("menu");
+        expect(await menu.locator(".mtitle").innerText()).toBe(title);
+        expect(await menu.getByRole("menuitem").allInnerTexts()).toEqual([
+            "Open on GitHub",
+            "Copy link to this list",
+            "Download the comparison report (JUnit)",
+            "Undo all decisions...",
+        ]);
+        // Undo all sits apart, after a separator; Open on GitHub keeps its address for copying.
+        expect(await menu.locator('.sep + [data-act="undoall"]').count()).toBe(1);
+        const onhost = menu.locator('[data-act="onhost"]');
+        expect(await onhost.evaluate((n) => n.tagName)).toBe("A");
+        expect(await onhost.getAttribute("href")).toBe("https://gh/pull/3486");
+        const [popup] = await Promise.all([page.waitForEvent("popup"), onhost.click()]);
+        await popup.waitForLoadState();
+        expect(popup.url()).toBe("https://gh/pull/3486");
+        await popup.close();
+        expect(t.errors).toEqual([]);
+    });
+
+    it("keeps the List menu about the list, under 460 px, over the list pane; Accept all shown is the Show menu's last item", async () => {
+        const page = await openChange("3486", { viewport: { width: 1440, height: 900 } });
+        await listMenu(page);
+        const menu = page.getByRole("menu");
+        expect(await menu.locator(".mh").allInnerTexts()).toEqual([
+            "Group by: Component",
+            "Pictures",
+            "Zoom rows to the change",
+            "Select",
+        ]);
+        for (const gone of ["Accept all", "Undo all", "JUnit", "Copy link"]) {
+            expect(await menu.innerText()).not.toContain(gone);
+        }
+        const m = await menu.boundingBox();
+        const pane = await page.locator("#snaps").boundingBox();
+        expect(m.height).toBeLessThanOrEqual(460);
+        expect(m.x).toBeGreaterThanOrEqual(pane.x);
+        expect(m.x + m.width).toBeLessThanOrEqual(pane.x + pane.width);
+        await page.keyboard.press("Escape");
+        await page.getByRole("button", { name: /^Show:/ }).click();
+        const items = await menu
+            .locator(".mi, .sep")
+            .evaluateAll((ns) => ns.map((n) => (n.classList.contains("sep") ? "---" : n.textContent.trim())));
+        expect(items.at(-2)).toBe("---");
+        expect(items.at(-1)).toMatch(/^Accept all \d[\d,]* shown\.\.\.$/);
+        await page.keyboard.press("Escape");
+    });
+
+    it("prints Up and Down in the text size of Show and List, at their height", async () => {
+        const page = await openChange("3486");
+        const look = (sel) =>
+            page.locator(`#snaps-head > .h3 ${sel}`).evaluate((n) => {
+                const k = n.querySelector(":scope > kbd:not([hidden])") ?? n;
+                return [globalThis.getComputedStyle(k).fontSize, n.getBoundingClientRect().height];
+            });
+        const show = await look('[data-act="showmenu"]');
+        expect(await look('[data-act="listmenu"]')).toEqual(show);
+        expect(await look('[data-act="rowup"]')).toEqual(show);
+        expect(await look('[data-act="rowdown"]')).toEqual(show);
+    });
+
+    it("draws a notice chip as an outlined menu button with a caret, its words in the ordinary ink", async () => {
+        const page = await openChange("3486", { clock: true });
+        const list = targets();
+        list.find((x) => x.id === "3486").stale = 5;
+        t.setList(listAnswer(list));
+        await page.clock.fastForward(16000);
+        const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]').first();
+        await chip.waitFor();
+        const look = await chip.evaluate((n) => ({
+            caret: n.querySelectorAll(".gcaret").length,
+            ink: globalThis.getComputedStyle(n.querySelector(".cl")).color,
+            body: globalThis.getComputedStyle(globalThis.document.body).color,
+            border: globalThis.getComputedStyle(n).borderTopStyle,
+        }));
+        expect(look.caret).toBe(1);
+        expect(look.ink).toBe(look.body);
+        expect(look.border).toBe("solid");
+    });
+
+    it("draws no group Accept N while rows are selected; the name menu still lists it and Shift+A still accepts", async () => {
+        const page = await openChange(RICH);
+        const accepts = () =>
+            page
+                .locator("#snap-list .ghead .acc")
+                .evaluateAll((ns) => ns.filter((n) => n.getClientRects().length > 0).length);
+        expect(await accepts()).toBeGreaterThan(0);
+        await page.locator("#snap-list").focus();
+        await page.keyboard.press("KeyX");
+        await expect.poll(() => page.locator("#snaps-head .lselbar .selcount").count()).toBe(1);
+        expect(await accepts()).toBe(0);
+        const mine = page.locator("#snap-list .ghead.mine");
+        await mine.locator('[data-act="gmenu"]').click();
+        const item = page.getByRole("menu").locator('[data-act="gaccept"]');
+        expect(await item.innerText()).toMatch(/^Accept \d+\s+Shift\+A$/);
+        await page.keyboard.press("Escape");
+        await page.locator("#snap-list").focus();
+        await page.keyboard.press("Shift+KeyA");
+        await expect.poll(() => message(page)).toMatch(/^Accepted /);
     });
 });
 

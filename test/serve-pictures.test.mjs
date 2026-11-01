@@ -11,8 +11,8 @@ import { PNG } from "pngjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
-import { autoKind, createPool, PAIR_KINDS, pictures, thumbnail } from "../trusted/lib/thumbs.mjs";
-import { clusters, ROW, rowCrop, ROW_ZOOM_FROM } from "../trusted/page/spot.js";
+import { autoKind, createPool, PAIR_KINDS, pictures, shownKind, thumbnail } from "../trusted/lib/thumbs.mjs";
+import { clusters, covered, ROW, rowCrop, ROW_ZOOM_FROM, SPOT_UNDER } from "../trusted/page/spot.js";
 import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
 import { capturedItems, copyFixture, FIXTURE, FIXTURE_CONFIG, job, makeRepo, until } from "./helpers.mjs";
 
@@ -219,20 +219,50 @@ describe("rowCrop", () => {
         expect(groups.map((g) => g.length)).toEqual([3, 1]);
     });
 
-    it("with no area, shows the middle of the image at the row's shape, as large as fits", () => {
+    it("with no area, shows the whole image, unzoomed", () => {
         const { crop, zoom } = rowCrop([], 2400, 1800);
-        expect(crop[0]).toBe(0);
-        expect(crop[2]).toBeCloseTo(2400, 6);
-        expect(crop[2] / crop[3]).toBeCloseTo(SHAPE, 6);
-        expect(crop[1] + crop[3] / 2).toBeCloseTo(900, 6);
-        expect(zoom).toBeLessThan(2);
+        expect(crop).toEqual([0, 0, 2400, 1800]);
+        expect(zoom).toBeCloseTo(1, 6);
     });
 
-    it("on an image smaller than its smallest size, crops inside the image at the row's shape", () => {
-        const { crop } = rowCrop([[160, 80, 40, 40]], 320, 200);
+    it("on an image narrower than the crop at the row's shape, keeps the crop inside it, its whole width, not zoomed further", () => {
+        const { crop, zoom } = rowCrop([[160, 80, 40, 40]], 320, 200);
         expect(inside(crop, 320, 200)).toBe(true);
         expect(crop[2]).toBeCloseTo(320, 6);
-        expect(crop[2] / crop[3]).toBeCloseTo(SHAPE, 6);
+        // The smallest height kept: the band beside the picture is the row's background.
+        expect(crop[3]).toBeCloseTo(380 / SHAPE, 6);
+        expect(crop[2] / crop[3]).toBeLessThan(SHAPE);
+        expect(zoom).toBeCloseTo(200 / (380 / SHAPE), 6);
+    });
+
+    it("never frames the padding a larger baseline adds: areas are clipped to the new image", () => {
+        const { crop, shown } = rowCrop(
+            [
+                [900, 0, 300, 300],
+                [10, 10, 20, 20],
+            ],
+            800,
+            600,
+        );
+        expect(inside(crop, 800, 600)).toBe(true);
+        expect(shown).toBe(1);
+    });
+
+    it("says how much of the crop and of the whole image the areas cover", () => {
+        const small = rowCrop([[1000, 800, 20, 10]], 2400, 1800);
+        expect(small.cover).toBeLessThan(SPOT_UNDER);
+        expect(small.coverAll).toBeCloseTo((20 * 10) / (2400 * 1800), 9);
+        const most = rowCrop([[0, 0, 2000, 1500]], 2400, 1800);
+        expect(most.cover).toBeGreaterThanOrEqual(SPOT_UNDER);
+        expect(
+            covered(
+                [
+                    [0, 0, 10, 10],
+                    [5, 5, 10, 10],
+                ],
+                [0, 0, 10, 10],
+            ),
+        ).toBe(1);
     });
 });
 
@@ -264,7 +294,10 @@ describe("the picture job", () => {
         const capture = PNG.sync.read(png(800, 600, [0, 0, 800, 600]));
         capture.data.set([240, 240, 240, 255], 0);
         const wide = pictures({ baseline, capture: PNG.sync.write(capture), threshold: 0.1, includeAA: false });
-        expect(autoKind(wide.facts)).toBe("spot");
+        // Unzoomed, and plain: the change covers the whole image, so dimming would hide it.
+        expect(autoKind(wide.facts)).toBe("plain");
+        expect(shownKind("row-spot", wide.facts)).toBe("row-plain");
+        expect(shownKind("spot", wide.facts)).toBe("plain");
         const two = pictures({
             baseline,
             capture: png(800, 600, [10, 10, 5, 5]),
@@ -407,9 +440,12 @@ describe("serve: the picture queue", () => {
         // A 320 x 200 capture: its row crop is the whole width, under twice Fit, so Auto is spotlit.
         const spot = await s.api("GET", pic("button--primary.dark.png", "spot"));
         expect(auto.body.equals(spot.body)).toBe(true);
+        // Its row crop is the image's whole width at the row's smallest height: narrower than the
+        // row's shape, so the picture is too, and the page centers it.
         const row = await s.api("GET", pic("button--primary.dark.png", "row-spot"));
         const drawn = PNG.sync.read(row.body);
-        expect([drawn.width, drawn.height]).toEqual(ROW);
+        expect(drawn.height).toBe(ROW[1]);
+        expect(drawn.width).toBeLessThan(ROW[0]);
         const lines = readFileSync(join(s.tmp, "spots", "areas.jsonl"), "utf8")
             .trim()
             .split("\n");
@@ -444,7 +480,7 @@ describe("serve: the picture queue", () => {
         const s = await start({ fakes: onePrFakes(), pictures: first.pool });
         await s.api("GET", "/api/prs");
         await s.app.idle();
-        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("2");
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("3");
         // Made before the spotlight dimmed less and the row crop framed every area.
         writeFileSync(join(s.tmp, "spots", "made-by"), "1");
         const again = fakePool();
@@ -460,7 +496,7 @@ describe("serve: the picture queue", () => {
         await t.app.idle();
         // The three pairs again; the captures' own thumbnails are kept.
         expect(again.started).toHaveLength(3);
-        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("2");
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("3");
     });
 
     it("makes a pair's pictures again for Auto when the areas file was lost", async () => {

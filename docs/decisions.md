@@ -234,3 +234,45 @@ thing everywhere: it folds the list to its rail (under 1400 px, that is the view
 At 1024 px the item line cut a story name to "i...". Now the badges other than "unstable" and
 "resized" go first, then the name is cut in the middle, never below 24 characters, and if it still
 does not fit the item line wraps to a second line.
+
+## Row pictures show the change, and the spotlight only where it helps
+
+At a row's size most pictures were dim Spotlight grey: the spotlight dimmed everything outside the
+changed areas even when those areas were most of the picture, and an image narrower than the row
+sat on grey bands. A row picture is now spotlit only when the changed areas cover less than a third
+of the part of the image it shows; otherwise it is the plain new image. The row crop stays inside
+the new image (never the padding a larger baseline adds), and an image narrower than the crop at
+the row's shape is shown at its own width, centered on the row's own background, not zoomed
+further. The row says "66 changed areas" right under the story's name; how far a picture is zoomed
+is in its tooltip, its pixel size in Details.
+
+Checked by eye on a nightly candidate of about 1,800 changed screenshots, the first 40 rows of its
+first change at 1440 x 900 and 1024 x 768, row by row: the change could be seen on 26 of 40 rows
+before and on 30 of 40 after, at both widths. The 4 gained are whole-image rows of a graph whose
+change covers most of the picture, which the spotlight had dimmed; the 8 rows of a large graph
+change read far more clearly, plain. The 10 still hard to read are whole-image pictures of a full
+page where the change is a few thin lines: their changed areas cover little, so they stay spotlit,
+and at the row's size the lines are a few pixels.
+
+## A calmer list pane
+
+The Snapshots header had a 590 px List menu holding Undo all decisions beside Accept all shown,
+three bulk Accepts on screen at once, and controls that looked alike but did unlike things. Now:
+
+- The change's number and title are its own menu: the whole title, Open on the code host, Copy
+  link to this list, the JUnit report and, apart under a line, Undo all decisions. What is
+  change-wide and rare lives with the change's name, and the one destructive bulk action sits apart
+  from every Accept.
+- The List menu is about the list only (Group by, Pictures, Select) and stays under 460 px, over
+  the list pane. Zoom rows' Auto reads "When small"; its tooltip keeps the rule.
+- Accept all N shown is the last item of the Show menu: it acts on what Show shows.
+- While rows are selected, the group headers draw no Accept N, so the decision bar's Accept N is
+  the one bulk Accept on screen; each group's name menu still lists Accept N Shift+A.
+- Notice chips are outlined menu buttons with a caret, their words in the ordinary ink and only
+  their mark in the warning color.
+- Find reads "Find /" at every width; Up and Down are the same size as Show and List.
+- Group names are cut in the middle, keeping both ends.
+
+On the opened change at 1440 x 900 with Changes folded, the page now shows 53 controls (50 at 1024
+x 768), no menu taller than 460 px (the List menu is 423 px), at most two numbers per row (its
+number and its changed areas) and one bulk Accept.

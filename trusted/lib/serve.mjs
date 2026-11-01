@@ -134,16 +134,11 @@ import { branchCaptures, branchTargetId, captureQueue, CaptureRefused, lookCaptu
 import { exec, retrying } from "./github.mjs";
 import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
-import {
-    approvalIndex,
-    baselineWriters,
-    clusters,
-    itemsByFile,
-} from "./filters.mjs";
+import { approvalIndex, baselineWriters, clusters, itemsByFile } from "./filters.mjs";
 import { inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { junitXml } from "./junit.mjs";
-import { autoKind, factsOf, PAIR_KINDS, PICTURE_KINDS, pool } from "./thumbs.mjs";
+import { factsOf, PAIR_KINDS, PICTURE_KINDS, pool, shownKind } from "./thumbs.mjs";
 import { USAGE_FILE } from "./usage.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -151,8 +146,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // its viewer's, and the diff library its worker imports.
 const PAGE_DIR = "../page";
 // The version of the changed pairs' pictures kept in <tmp>/spots: 2 dims less (SPOT_ALPHA 110) and
-// frames every area or the largest cluster of them.
-const SPOTS_MADE_BY = "2";
+// frames every area or the largest cluster of them; 3 shows the new image only, keeps a narrow
+// image's crop at its own width, and knows how much of a picture the areas cover (shownKind). The
+// page asks for pictures with the same `v` (list.js), so a browser's kept picture is not reused.
+const SPOTS_MADE_BY = "3";
 const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
 const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
@@ -3940,8 +3937,9 @@ export function createApp({
 
     /**
      * A changed item's picture of one kind, its pair's every kind made at once, unless `run` made
-     * them. `auto` is the spotlit picture, zoomed or not as autoKind decides from what the job
-     * found, or from the areas compare wrote into the item.
+     * them. `auto` is the spotlit picture, zoomed or not, and a spotlit kind is shown plain when
+     * the areas cover a third or more of it, as shownKind decides from what the job found, or from
+     * the areas compare wrote into the item.
      * @param {{ path: string, hash: string, file: string, dir: string }} a where the baseline is
      * @param {{ path: string, hash: string, file: string, dir: string }} b where the capture is
      * @param {{ threshold: number, includeAA: boolean, areas?: number[][], size?: number[] | null,
@@ -3957,7 +3955,7 @@ export function createApp({
         // Only a capture `run` made is read first: another's job is queued at once, in list order.
         if (item.pictures) {
             const known = areas.get(key) ?? factsOf(item);
-            const made = await madeByRun(item, b.dir, kind === "auto" && known ? autoKind(known) : kind);
+            const made = await madeByRun(item, b.dir, known ? shownKind(kind, known) : kind);
             if (made) {
                 return made;
             }
@@ -3978,7 +3976,8 @@ export function createApp({
                 { tag: b.dir, found: foundAreas(key), again },
             );
         if (kind !== "auto") {
-            return make(kind);
+            const known = areas.get(key) ?? factsOf(item);
+            return make(known ? shownKind(kind, known) : kind);
         }
         if (!areas.has(key)) {
             // Its pictures may be on disk without what the job found (a lost areas file): made again.
@@ -3987,7 +3986,7 @@ export function createApp({
                 return made;
             }
         }
-        return make(autoKind(areas.get(key)));
+        return make(shownKind("auto", areas.get(key)));
     };
 
     /**
@@ -5548,9 +5547,7 @@ export function createApp({
         const name = pathname === "/" ? "index.html" : pathname.slice(1);
         const path = Object.hasOwn(VENDOR, name) ? VENDOR[name] : PAGE_FILE.test(name) ? join(PAGE_DIR, name) : null;
         const body = req.method === "GET" && path ? await readFile(join(HERE, path)).catch(() => null) : null;
-        return body
-            ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()])
-            : send(res, 404, { error: "not found" });
+        return body ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()]) : send(res, 404, { error: "not found" });
     }
 
     const handler = async (req, res) => {

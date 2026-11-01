@@ -3,8 +3,7 @@
 Every key the review page answers is printed on the control it presses, and a key does only what
 a visible printed key says. Keys on the look-decide-next loop (the view switch, the decision bar,
 boxes) are printed in a key box such as **Accept [A]**; every other control prints its key as
-quiet muted text after its label, such as **Next change Shift+N** or the Find box's "Find, or
-#number /". Each control also names its key to a screen reader (`aria-keyshortcuts`). **Keys ?** in the top bar opens
+quiet muted text after its label, such as **Next change Shift+N** or the Find box's "Find /". Each control also names its key to a screen reader (`aria-keyshortcuts`). **Keys ?** in the top bar opens
 the Keys sheet: this whole map, grouped by task (Decide, Move, Look, Panes, Select), one short line
 a key, and the switch for single-letter keys. Earlier messages are behind **Messages** on the
 message line.
@@ -23,6 +22,13 @@ Where each key is printed:
   the Changes pane's **Hide** and the Snapshots pane's fold button, and each pane's rail, where the
   key is printed quietly on one line under the pane's name. **?**: **Keys** in the top bar. **/**: the Find box's
   placeholder.
+- **Shift+A**: **Accept 14** on the current snapshot's group header, and the first item of that
+  group's name menu. While rows are selected the header draws no Accept (the decision bar's
+  **Accept 12** is the bulk action); the name menu still lists **Accept 14 Shift+A** and the key
+  still accepts the group.
+- No key: the change's own menu (its number and title in the Snapshots header) holds **Open on
+  GitHub**, **Copy link to this list**, **Download the comparison report (JUnit)** and, apart,
+  **Undo all decisions...**; **Accept all 34 shown...** is the last item of the **Show** menu.
 - **N**: **Next area** on the item line, when the snapshot has more than one changed area. **X**:
   **Select X** on the item line. **Esc**: **Back** on the item line, and Clear,
   Close and Cancel wherever something can be cleared or closed.
