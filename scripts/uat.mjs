@@ -3,7 +3,10 @@
  * User acceptance test of a running review page: walks a reviewer's journey in Chromium against
  * whatever the page lists, on its real screenshots.
  *
- *   npm run uat -- '<page URL with #token=...>' [--shots <dir>]
+ *   npm run uat -- '<page URL with #token=...>' [--shots <dir>] [--repeat-decide <N>]
+ *
+ * --repeat-decide N runs the second change's Accept-and-Reject step N times in a row (each its own
+ * step line), to show the decide wait never races the viewer (design 11.3).
  *
  * Prints one PASS, FAIL or SKIP line per step (SKIP with the reason, when the page has nothing for
  * the step), records each failure and carries on, saves a screenshot per step to --shots (default
@@ -22,7 +25,10 @@ import { chromium } from "playwright";
 
 const { values: opts, positionals } = parseArgs({
     allowPositionals: true,
-    options: { shots: { type: "string", default: "tmp/uat-shots" } },
+    options: {
+        shots: { type: "string", default: "tmp/uat-shots" },
+        "repeat-decide": { type: "string", default: "1" },
+    },
 });
 const url = positionals[0];
 if (!url || !url.includes("#token=")) {
@@ -1598,20 +1604,42 @@ await step("Second change: walk snapshots, all viewer modes", async ({ check }) 
     }
 });
 
-await step("Second change: Accept with A and Reject with the button, both undone", async ({ check }) => {
-    needSecond();
-    await decideAndUndo(check, { count: 1, decide: () => press("A", check), undo: () => act("undo").click() });
-    await decideAndUndo(check, {
-        count: 1,
-        decide: async () => {
-            await act("reject").click();
-            await page.locator("#popbox #reason").fill("UAT: test reject, undone at once");
-            check(/Enter/.test(await page.locator("#popok").innerText()), "the reason box's OK shows no Enter key");
-            await page.keyboard.press("Enter");
+const DECIDE_RUNS = Math.max(1, Number.parseInt(opts["repeat-decide"], 10) || 1);
+for (let run = 1; run <= DECIDE_RUNS; run++) {
+    await step(
+        `Second change: Accept with A and Reject with the button, both undone${DECIDE_RUNS > 1 ? ` (run ${run} of ${DECIDE_RUNS})` : ""}`,
+        async ({ check }) => {
+            needSecond();
+            if (run > 1) {
+                // As step 34 ends: a new snapshot and a view pressed right before A, so the decide
+                // wait must tell this snapshot's drawing from the last one's.
+                await press("Right", check);
+                for (const [k, id] of [
+                    ["H", "view-highlight"],
+                    ["V", "view-side"],
+                ]) {
+                    if ((await act(id).getAttribute("aria-disabled")) !== "true") {
+                        await press(k, check);
+                    }
+                }
+            }
+            await decideAndUndo(check, { count: 1, decide: () => press("A", check), undo: () => act("undo").click() });
+            await decideAndUndo(check, {
+                count: 1,
+                decide: async () => {
+                    await act("reject").click();
+                    await page.locator("#popbox #reason").fill("UAT: test reject, undone at once");
+                    check(
+                        /Enter/.test(await page.locator("#popok").innerText()),
+                        "the reason box's OK shows no Enter key",
+                    );
+                    await page.keyboard.press("Enter");
+                },
+                undo: () => press("U", check),
+            });
         },
-        undo: () => press("U", check),
-    });
-});
+    );
+}
 
 await step("Second change: open snapshots approved before", async ({ check }) => {
     needSecond();

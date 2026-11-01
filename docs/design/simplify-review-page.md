@@ -957,6 +957,16 @@ newer `viewer-drawn` to find. The refusal after V came from the snapshot under i
 drawing is marked. Test: Next marks one `viewer-drawing` for the new file and its `viewer-drawn`
 follows; V adds none.
 
+Found in the sixth-pass proof: steps 21 to 26 of the acceptance test timed out in its wait. Its
+step before pressed Right and came back before the next snapshot drew, so the newest
+`viewer-drawing` named a snapshot never drawn and no `viewer-drawn` could follow it: the snapshot
+back on the stage had kept its pictures and was not drawn again. The page now marks
+`viewer-drawn` again for the snapshot on the stage when a render returns to it after a drawing of
+another was marked, once the stage has it. Test: away to a snapshot whose pictures are held, then
+back, and the newest `viewer-drawn` names the first and follows the newest `viewer-drawing`.
+`scripts/uat.mjs --repeat-decide N` runs step 35 N times, each after Right and a view key, the
+race 11.3 is about.
+
 ### 11.4 Proof
 
 As 10.3, into `tmp/proofroom-studio/after-6/`, on the committed head, with these changes:

@@ -361,6 +361,42 @@ describe("the drawing marks (design 11.3)", () => {
         await expect.poll(() => tool(page, "view-side").getAttribute("aria-checked")).toBe("true");
         expect((await marks())[0].length).toBe(drawing.length);
     });
+
+    it("marks the snapshot still on the stage drawn again when the reader leaves and comes back before the next one draws", async () => {
+        const page = await open(LARGE);
+        const newest = () =>
+            page.evaluate(() =>
+                ["viewer-drawing", "viewer-drawn"].map((n) => {
+                    const m = performance.getEntriesByName(n).at(-1);
+                    return m ? { file: m.detail, at: m.startTime } : null;
+                }),
+            );
+        const rows = page.locator("#snap-list .srow");
+        const first = await rows.nth(0).getAttribute("data-snap");
+        const last = rows.nth((await rows.count()) - 1);
+        const far = await last.getAttribute("data-snap");
+        // The last snapshot's pictures are held, so it never draws; the first's, asked for again on
+        // the way back, are answered.
+        const held = [];
+        let holding = true;
+        await page.route("**/api/blob/**", (route) => (holding ? held.push(route) : route.fallback()));
+        await last.click();
+        await expect.poll(async () => (await newest())[0]?.file).toBe(far);
+        await expect.poll(() => held.length).toBeGreaterThan(0);
+        holding = false;
+        await rows.nth(0).click();
+        // Back on the first, whose pictures never left the stage: its viewer-drawn is the newest mark.
+        await expect
+            .poll(async () => {
+                const [drawing, done] = await newest();
+                return done.file === first && done.at > drawing.at;
+            })
+            .toBe(true);
+        await page.unroute("**/api/blob/**");
+        for (const r of held) {
+            await r.fallback().catch(() => {});
+        }
+    });
 });
 
 describe("zoom", () => {

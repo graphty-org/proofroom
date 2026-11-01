@@ -106,6 +106,7 @@ export function createViewer(app, o = {}) {
     let zoomStep = false; // the next drawing is a zoom step: it centers on the current area
     let centerKey = null; // the drawing a zoom step asked to center
     let doneKey = null; // the last drawing the stage finished
+    let drawingFile = null; // the snapshot of the newest "viewer-drawing" mark
 
     const save = () => {
         try {
@@ -341,12 +342,22 @@ export function createViewer(app, o = {}) {
         // A wait for the picture on screen (scripts/uat.mjs) takes only a "viewer-drawn" newer than
         // this mark (design 11.3). Marked when the stage starts drawing a snapshot it does not show:
         // a view or zoom of the one on the stage keeps its pictures, and Accept never waits for it.
-        if (stage.shownFile !== s.key) {
+        const fresh = stage.shownFile !== s.key;
+        if (fresh) {
             performance.mark("viewer-drawing", { detail: s.key });
+            drawingFile = s.key;
         }
+        // Back on the snapshot still on the stage before the one marked since was drawn (Next, then
+        // Previous at once): that drawing was dropped, so this one is marked drawn again once the
+        // stage has it, or the newest "viewer-drawing" would name a snapshot never drawn.
+        const back = !fresh && drawingFile !== null && drawingFile !== s.key;
         stage.render(st, itemOf(s), view, keep).then(() => {
             if (shownKey === key) {
                 doneKey = key;
+            }
+            if (back && shownKey === key && stage.shownFile === s.key) {
+                drawingFile = s.key;
+                performance.mark("viewer-drawn", { detail: s.key });
             }
             if (shownKey === key && st.isConnected) {
                 decorate(s, view);
