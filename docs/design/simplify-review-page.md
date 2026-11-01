@@ -575,3 +575,154 @@ but do unlike things.
   the same.
 - Narrowing the Snapshots pane to give the viewer more room: line 3 is already tight at 420 px.
 - Moving `Signs with` to the confirm button's label: too long for a button; it is a line above it.
+
+## 9. Fourth pass (2026-11-01, after the third build review)
+
+Where this section and sections 2-8 disagree, this section wins. Complaint 1 is still not met: on
+a snapshot whose size changed, the row shows the whole tall page shrunk into the frame. Everything
+below is checked against change #4455 on the studio server (run 41129746454).
+
+### 9.1 Why the row shows the whole page (measured)
+
+- The captures are 2,400 px wide (scale 2) and often tall: 2,400 x 3,804, 2,400 x 4,792, up to
+  2,400 x 15,618. A small height change shifts everything under it, so the diff's largest region
+  runs from the first shifted line to the bottom: `ddram` has 17 regions, the largest
+  `[0, 1150, 2400, 2654]`.
+- `rowCrop` frames all areas only when that zooms 2x of Fit, else the largest cluster, and
+  `cropAround` clamps the crop to the image. A region that spans the page clamps to the whole page,
+  so the crop is the whole page (`ddram`: crop `[0, 0, 2400, 3804]`, zoom 1.00). Of the 5,636 row
+  facts the server holds, 2,118 have zoom 1.0 (the whole image) and 1,399 more are under 2x.
+- Even a plain 2,400 x 1,800 page fits the 400 x 156 row at about half its width, so a whole-image
+  row always has empty bands beside it.
+- `Zoom rows to the change: When small` and `Spotlight rows` were both on, but these rows got
+  neither: zoom under 2x means no crop, and areas covering a third or more mean no Spotlight.
+- The 3 px crop bar (2.1 item 2, 8.2 item 3) was never drawn: `.pic.zoomed` has no style.
+
+### 9.2 The row picture shows the change (complaint 1)
+
+1. **A row picture of a changed pair is always a crop of the change, at a size where it can be
+   read, filling the row's shape.** Its largest crop is `ROW_MAX`: 400 x 156 CSS pixels of the
+   page (800 x 312 image pixels at scale 2; image pixels = CSS x the capture's `results.scale`, which
+   the picture job is now given). At the row's 167 x 64 CSS px that keeps 14 px text at about 6 CSS
+   px, readable as text on a 2x screen (checked by eye on 8 real pairs, see item 6).
+2. **What the crop frames**, first that fits in `ROW_MAX`:
+   1. every changed area (today's all-areas box);
+   2. the largest cluster of nearby areas (today's `clusters`);
+   3. otherwise a `ROW_MAX` crop placed on the **start of the largest region**: its first changed
+      pixel (top-most changed row inside that region, leftmost changed pixel on it) sits a quarter
+      of the crop in from the crop's top-left corner, the crop clamped inside the image. On a
+      resized page this is where the shift begins, with unchanged lines above it for context.
+      Without the mask (`factsOf`, before the job ran) the region's top-left corner stands in; the
+      drawn picture always comes from the job.
+   4. A change where the only region is the strip the size change adds or removes at the image's
+      edge (nothing else changed, as on `camera-controls--fit-two-d`, 2 px shorter): a `ROW_MAX`
+      crop centered on the image, so the row shows what the story is, and its words say the rest
+      (item 4).
+   Boxes are clipped to the new image first, as today. `ROW_MIN` stays the smallest crop, so a tiny
+   change is never blown past one image pixel per screen pixel. An image smaller than `ROW_MAX`
+   both ways is shown whole, centered, the band beside it the row's own background (8.2 item 2).
+   `ROW_ZOOM_FROM` and the 2x-of-Fit rule leave the row code.
+3. **The List menu says what rows do.** Its `Pictures` section is three choices and one toggle:
+   `Crop to the change` (default), `Whole image`, `Text only, no pictures`, and `Spotlight small
+   changes`, tooltip `Dims what did not change when the change covers less than a third of the
+   picture`. `Zoom rows to the change: When small / Always / Never` is deleted: a stored `auto` or
+   `always` reads as `Crop to the change`, `never` as `Whole image` (supersedes 8.4's "dropping
+   Always": nothing is lost, both become the one crop). Spotlight keeps the `SPOT_UNDER` rule; on a
+   start-of-region crop the unchanged quarter above the start is what it dims.
+4. **Row words.** Line 3 stays `66 changed areas`. A size-only change (item 2.4) reads
+   `Only the size changed: 2 px shorter` (`taller`, `narrower`, `wider`; both when both).
+   The muted `resized` after the story name gains the numbers in its tooltip:
+   `Resized: 2,400 x 3,770 to 2,400 x 3,804`.
+5. **The crop marker is dropped from the spec.** With `Crop to the change` every changed row is a
+   crop, so a bar on every row says nothing. The crop is said where it is chosen (the List menu)
+   and on the picture's tooltip: `Cropped to the changed areas`, `Cropped to 3 of the 66 changed
+   areas`, `Cropped to where the largest change starts`, `Centered: only the size changed`, or
+   `Whole image`. Locked principle 9 (a crop is never silent) is kept by the menu and the tooltip.
+   Delete the bar from 2.1 item 2, 6 (contrast test) and 8.2 item 3.
+6. **Checked before kept.** A prototype of item 2 on 8 real pairs of #4455 (`ddram`,
+   `palette-picker`, `compact-overview`, `workspace-start-screen--answered`, `gallery-formats`,
+   `compact-buttons--all-buttons`, `ai-control--default`, `camera-controls--fit-two-d`), drawn at
+   the row's real size on a 2x screen, showed readable content at the change on all but the
+   size-only pair, which item 2.4 handles. The build repeats it on the page: capture the first 40
+   rows of graph-io-fidelity (555 of 573 resized) and the first 40 of graphty (6 of 353 resized,
+   so these are ordinary same-size rows) at 1440 and 1024, light and dark, judge each row with the
+   Read tool, and record the counts in `docs/decisions.md`. No row may show empty bands beside a
+   page wider than `ROW_MAX`.
+7. The picture version moves (`?v=4`, serve.mjs `SPOTS_MADE_BY`), so cached row pictures and
+   `areas.jsonl` facts made the old way are made again.
+
+### 9.3 Views on a resized snapshot do something visible (item 4)
+
+Measured: Highlight does draw (red on 2.9% of the 2,400 x 3,804 pixels of `images-charts-p-6`), but
+the pair's diff takes long enough that the old Spotlight pictures stay on screen (7.1 item 1)
+while the Highlight button is already filled, so H looks like it did nothing. The same holds for S
+and L.
+
+1. While a view's pictures are being made, both label strips say so after 300 ms: `New (drawing
+   Highlight...)`, and the button of the view being drawn is filled at once. The old pictures stay,
+   as 7.1 item 1 requires.
+2. When the changed areas cover a third or more of the image, pressing H or S also says why it
+   looks like a slab, once per snapshot, in the message line: `Resized: everything below the first
+   change moved, so it all counts as changed. Flash (F) shows the move.` (not resized: `Most of
+   this image changed. Flash (F) shows it.`).
+3. Blink moves to the right of `Zoom: Fit  Z`, so its appearing in Highlight shifts nothing but
+   Display, which is right-aligned and does not move.
+4. `Zoom: Fit` draws the menu caret of 7.1 item 7, as every menu button does.
+
+### 9.4 The header and the item line read at a glance (items 2 and 3)
+
+1. **The change title is never cut to a stub.** Snapshots line 1 holds only the title menu button
+   and the fold button. The title wraps to at most two lines and is cut only after that. The
+   `Behind master` / `Newer capture` chip moves to the right end of line 2 (the progress line); its
+   drop order there is: `accepted earlier`, then `Behind master: 1,243` shortens to `Behind:
+   1,243`; `N left` never goes.
+2. **Group names are cut keeping their end** (`...cytoscape-js-specimens`), full name in the
+   tooltip. Supersedes 8.3 item 8: at 1024 the middle cut left eight letters of each end, and in
+   this repository sibling groups share their start (`style-fidelity-`), so the end is what tells
+   them apart. The no-two-headers-alike test stays.
+3. **The item line's `Open  Enter` becomes `Wider  Enter`**, tooltip `Fold the snapshot list to its
+   rail; Esc brings it back`. It does what it did (level 2); the word now says it.
+4. **The fold button has a word:** `Hide  Shift+2`, with the CSS caret pointing left.
+5. **Rails** widen to 64 px so `8` / `left`, `Changes` and `Shift+1` each sit on their own line
+   without touching.
+
+### 9.5 Image only, Show menu, small items (items 5 to 7)
+
+1. **Image only hides the chrome, not the loop.** With Image only on, the top bar (tabs, Next
+   change, Keys, Settings, Finish), the rails and the message line (unless it holds a message) are
+   hidden. One strip stays above the picture: the view segment, Blink (in Highlight), `Zoom`,
+   `Back  Esc` and `Image only  Shift+3` (filled check, the way out). The decision bar stays. About
+   14 controls instead of about 25. A key whose control Image only hid (`Shift+N`, `?`, `Shift+1`,
+   `Shift+2`) does nothing and says once `Hidden in Image only: Shift+3 brings it back.` This is the
+   one exception to section 5's "Finish stays on screen": the reader chose it and leaves it with one
+   printed key.
+2. **Show menu headings.** Order: `Undecided`, `All`; heading `By kind`: `Changed`, `New`,
+   `Removed`; heading `By decision`: `Accepted earlier`, `Accepted`, `Rejected`, `Excluded`;
+   separator; `Accept all N shown...`. Headings are muted, not focusable, and the arrow keys skip
+   them.
+3. **Baselines draws no view buttons** it cannot use; only what acts there is drawn.
+4. **Contrast:** the quiet key text measures 4.5:1 or more on white, on every tint and in dark mode;
+   the row checkbox border measures 3:1 or more against the selected row's background in both
+   themes. `test/page/contrast.test.mjs` checks both.
+
+### 9.6 The Removed count (item 8: checked, not a page defect)
+
+The Show menu's `Removed 3` is right for today's data: #4455 has 1,543 snapshots (1,167 changed,
+73 new, 3 removed, 284 unchanged, 16 excluded). The third removed one,
+`graph-io-fidelity/style-fidelity-vis-network-matched--vis-siblings.png`, has no baseline at the
+change's head (`fe2cc79e01`); master added it on 2026-10-31 (`7fcfd61bbc`), after the capture,
+and the scratch clone fetched it between the two reads. So "removed" here counts a baseline master
+gained, which the change never removed. That is a wording question for changes behind master,
+filed separately, not changed in this pass.
+
+### 9.7 Rejected in this pass
+
+- A bigger row (rejected again, 3.2): the crop rule fills the row instead.
+- Drawing the crop bar on every row: every changed row is a crop now, so it would mark nothing.
+- Anchoring a resized row on the first changed pixel of the whole image: on `ddram` that is one
+  stray pixel in the title at y 21; the largest region's start is where the shift begins.
+- Keeping `When small`: it is the rule that drew the whole page on 3,517 of the 5,636 rows.
+- Hiding the decision bar in Image only: A, R and E act only through a visible control, so Image
+  only would stop deciding.
+- Deleting the item-line `Open`: it is the only control for level 2 at that place; renaming it
+  is enough.
