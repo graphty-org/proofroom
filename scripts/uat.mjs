@@ -140,8 +140,13 @@ async function step(name, fn, opt = {}) {
             fails.push(`picture did not load: ${m}`);
         }
         for (const line of await badText()) {
-            // A change whose CI capture failed says so in its row: data, not a page fault.
-            if (!(opt.allowText && opt.allowText.test(line)) && !/^Capture failed: /.test(line)) {
+            // A change whose CI capture failed says so in its row, and a story may be named
+            // like "failed-model-placeholder": data, not a page fault.
+            if (
+                !(opt.allowText && opt.allowText.test(line)) &&
+                !/^Capture failed: /.test(line) &&
+                !/^[a-z0-9]+(-[a-z0-9]+)+$/.test(line)
+            ) {
                 fails.push(`on screen: "${line}"`);
             }
         }
@@ -874,7 +879,12 @@ await step("Open the first change (a candidate or seed run when listed) by its r
 await step("Every key in the Keys sheet has a visible button (snapshot open)", async ({ check }) => {
     needOpen();
     const shown = await shownKeys();
+    // Blink [L] acts only in Highlight, and is drawn only there; the viewer-mode steps check it in Highlight.
+    const inHighlight = (await act("view-highlight").getAttribute("aria-checked")) === "true";
     for (const k of SNAPSHOT_KEYS) {
+        if (k === "L" && !inHighlight) {
+            continue;
+        }
         check(shown.has(k), `key ${k} acts here but no visible button shows it`);
     }
     const lit = await page.evaluate(() =>
@@ -943,6 +953,17 @@ await step("Walk snapshots with Right / Left and K / J keys", async ({ check }) 
     check(Number(b) === Number(a) + 1, `after Right Right Left K J expected #${Number(a) + 1}, at #${b}`);
 });
 
+// Show baseline [P] lives in the Display menu: its state is the menu item's check.
+async function baselineShown() {
+    await act("displaymenu").click();
+    const item = page.locator('.menu [data-act="baseline"]');
+    await item.waitFor();
+    const on = await item.getAttribute("aria-checked");
+    await page.keyboard.press("Escape");
+    await page.locator(".menu").waitFor({ state: "detached" });
+    return on;
+}
+
 await step("Viewer modes by button", async ({ check }) => {
     needOpen();
     await onChanged();
@@ -973,13 +994,17 @@ await step("Viewer modes by button", async ({ check }) => {
     await bl.click();
     // Baseline shown / hidden.
     await act("view-side").click();
-    const p = act("baseline");
-    const pb = await p.getAttribute("aria-pressed");
-    await p.click();
-    check((await p.getAttribute("aria-pressed")) !== pb, "Baseline did not toggle");
+    const clickBaseline = async () => {
+        await act("displaymenu").click();
+        await page.locator('.menu [data-act="baseline"]').click();
+        await page.locator(".menu").waitFor({ state: "detached" });
+    };
+    const pb = await baselineShown();
+    await clickBaseline();
+    check((await baselineShown()) !== pb, "Show baseline did not toggle");
     await viewerSettled();
-    await p.click();
-    check((await p.getAttribute("aria-pressed")) === pb, "Baseline did not toggle back");
+    await clickBaseline();
+    check((await baselineShown()) === pb, "Show baseline did not toggle back");
 });
 
 await step("Viewer modes by key (V F H L S P)", async ({ check }) => {
@@ -1011,12 +1036,11 @@ await step("Viewer modes by key (V F H L S P)", async ({ check }) => {
     check((await bl.getAttribute("aria-pressed")) !== before, "L did not toggle Blink");
     await press("L", check);
     await press("V", check);
-    const p = act("baseline");
-    const pb = await p.getAttribute("aria-pressed");
+    const pb = await baselineShown();
     await press("P", check);
-    check((await p.getAttribute("aria-pressed")) !== pb, "P did not toggle Baseline");
+    check((await baselineShown()) !== pb, "P did not toggle Show baseline");
     await press("P", check);
-    check((await p.getAttribute("aria-pressed")) === pb, "P did not toggle Baseline back");
+    check((await baselineShown()) === pb, "P did not toggle Show baseline back");
 });
 
 await step("Zoom buttons and keys (0 1 2 4 8 Z)", async ({ check }) => {
@@ -1077,8 +1101,10 @@ await step("Display menu, Outline, Next area", async ({ check }) => {
         .catch(() => check(false, "B did not say Outline changed areas: on"));
     await press("B", check);
     await page
-        .waitForFunction(() => /Outline off/.test(document.querySelector("#msg-t").innerText), null, { timeout: 5000 })
-        .catch(() => check(false, "second B did not say Outline off"));
+        .waitForFunction(() => /Outline changed areas: off/.test(document.querySelector("#msg-t").innerText), null, {
+            timeout: 5000,
+        })
+        .catch(() => check(false, "second B did not say Outline changed areas: off"));
     const n1 = (await page.locator("#viewer").innerText()).match(/(\d+) of (\d+)/);
     if (n1 && Number(n1[2]) > 1) {
         await act("nextarea").click();
@@ -1486,6 +1512,18 @@ await step(
             // Out of any text field first: there Esc clears the field instead of going back.
             await page.evaluate(() => document.activeElement?.blur());
             await press("Esc", check);
+            // Right after an Esc that closed something (the Finish sheet), Esc is guarded: it says
+            // "Press Esc again to go back" and the next Esc goes back.
+            await page.waitForFunction(
+                () =>
+                    document.querySelector('#chg-list [data-act="pickchg"]')?.getClientRects().length > 0 ||
+                    /Press Esc again to go back/.test(document.querySelector("#msg-t")?.innerText ?? ""),
+                null,
+                { timeout: 10_000 },
+            );
+            if (/Press Esc again to go back/.test(await message())) {
+                await press("Esc", check);
+            }
         }
         await page
             .locator('#chg-list [data-act="pickchg"]')
