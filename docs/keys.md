@@ -57,7 +57,7 @@ Where each key is printed:
 | Z                     | Next zoom step: Fit, 1x, 2x, 4x, 8x             |
 | Shift+1               | Show / hide Changes                             |
 | Shift+2               | Show / hide Snapshots                           |
-| Shift+3               | Image only                                      |
+| Shift+3               | Image only; again: the panes back as they were  |
 | Shift+N               | Next change that needs you                      |
 | /                     | Find in the focused pane                        |
 | ?                     | This sheet                                      |
@@ -89,8 +89,16 @@ Rules:
   and the key pressed just before was not an Esc that closed or cleared something. That second Esc
   says "Press Esc again to go back to the changes." instead; the next one goes back, and the message
   line says "Back to the changes. Enter opens #4455 again."
-- **Shift+Down starts a selection** from the current row (Shift+Up the other way); it is printed
-  in the List menu (**Extend selection up / down**) and in the selection bar's menu.
+- **Shift+Down starts a selection** from the current row (Shift+Up the other way); both are
+  printed in the **Select** section of the Snapshots header's **List** menu (**Extend selection up
+  Shift+Up**, **Extend selection down Shift+Down**) and in the selection bar's **More** menu, and
+  act with either menu closed.
+- **One view at a time.** V, F, H and S each choose a view, and pressing the key of the view
+  already shown goes back to Side by side. F is never a toggle on another view: from Spotlight it
+  switches to Flash and flashes the spotlit pair; V, H or S leaves Flash. Holding Space flashes only
+  while held, then returns to the view it left.
+- **Shift+3 gives back what it took.** Image only folds both side panes; pressed again it restores
+  exactly the panes it folded, so a pane you had folded yourself stays folded.
 - **Enter does what the visible [Enter] says**: open the current change (its summary's **Open
   [Enter]** while no change is open) or snapshot, the default button of a box or the end card, or
   a button you focused with Tab. A focused button shows its Enter just under itself, so focusing it

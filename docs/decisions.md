@@ -178,3 +178,29 @@ keeping their end, because sibling groups usually share their start and differ a
 The rails used to print the pane's name turned on its side and the key stacked "Shift" over "1".
 At 56 px wide a rail now reads top down without turning the head: the badge ("7 / left"), the name
 at 11 px ("Changes", "Snaps") and the key on one quiet line ("Shift+1").
+
+## One view at a time
+
+Flash used to switch on over Spotlight as a second toggle, so two buttons in the view switch could
+look pressed and the reader had to work out which images were flashing. Now Flash is a view like
+the other three: exactly one view button is filled and none carries a check mark. F from Spotlight
+switches to Flash and flashes the spotlit pair, and the panel labels say so ("Baseline (flashing,
+spotlit)"); V, H or S leaves Flash, so S after H is plain Spotlight. Blink, which only works in
+Highlight, is drawn only in Highlight instead of sitting greyed out beside the other views.
+
+## Zoom shows the same place in both panes
+
+A zoom step used to center each pane on the area in its own image, so on a resized snapshot the
+baseline pane showed a different place, often grey. Every zoom step now centers on the current
+changed area in the new image and maps that point into the baseline the way the comparison lines
+the two images up: by their top left corners. Both panes show the same place. When that place lies
+outside the smaller image, its panel label says "Baseline (outside this image)" instead of showing
+an empty grey box.
+
+## Previous, Next and Undo never lose their words
+
+On a narrow window the decision bar used to drop the words of Previous, Next and Undo below a fixed
+760 px and keep only their key boxes, so a laptop reader saw a row of letters. Every word now stays
+at every width, a 1024 x 768 laptop included. If the bar is ever too narrow, the quiet Left and
+Right after J and K shorten to `<-` and `->`, and then the bar takes a compact size; no button
+loses its name.

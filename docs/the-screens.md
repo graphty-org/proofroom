@@ -48,7 +48,7 @@ Changes, its tooltip "7 changes need you"; "34 / left" on Snapshots, "34 snapsho
 decide"; no badge with nothing left), the pane's name ("Changes", "Snaps") and its key quietly on
 one line ("Shift+1"). Opening a change folds the panes the review
 does not need: a small change (10 snapshots or fewer) opens with both side panes as rails, so the
-image gets the width at once. The viewer is never narrower than 800 px. **Image only [Shift+3]**
+image gets the width at once. The viewer is never narrower than 800 px. **Image only Shift+3**
 folds both side panes, and pressed again gives back exactly the panes it folded ("Image only off:
 panes back as they were."). The page remembers your pane choices in this browser, separately for small
 and large changes.
