@@ -626,6 +626,27 @@ body.held [data-zone="end"] kbd {
 #snaps-head > .h1 a {
     color: inherit;
 }
+/* A notice chip on line 1 (Behind master: 1,242, Newer capture, 2 notices): one line, its mark and
+   words in the warning color (mixed with the ink to read at 4.5:1), no tinted block. */
+#snaps-head > .h1 button.chip {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    gap: 4px;
+    color: color-mix(in srgb, var(--warn) 75%, var(--ink));
+}
+#snaps-head > .h1 button.chip .ic {
+    color: var(--warn);
+}
+/* Last resort on a narrow line: the chip's words are cut, its mark and the fold button stay. */
+#snaps-head > .h1 button.chip.squeeze {
+    flex: 0 1 auto;
+    min-width: 28px;
+}
+#snaps-head > .h1 button.chip .cl {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .summary {
     padding: 10px 12px;
     display: flex;
@@ -1747,6 +1768,12 @@ body.nokeys kbd .lk {
     height: 1px;
     background: var(--line);
     margin: 4px 2px;
+}
+.menu .mt {
+    max-width: 360px;
+    margin: 4px 10px 6px;
+    font-size: 12px;
+    line-height: 1.4;
 }
 .menu .mh {
     font-size: 11px;

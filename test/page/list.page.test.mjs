@@ -826,13 +826,21 @@ describe("a newer capture", () => {
         newer.projects = [project("graphty-element", { reviewable: 299 })];
         t.setList(listAnswer(list));
         await page.clock.fastForward(16000);
-        await page.locator("#snap-banner").waitFor();
-        expect(await page.locator("#snap-banner").innerText()).toContain(
-            "A newer capture of this change is ready (7abc123).",
-        );
+        // A chip on line 1, and said once in the message line with its own Load it.
+        const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
+        await chip.waitFor();
+        expect((await chip.innerText()).trim()).toBe("Newer capture");
+        await expect
+            .poll(() => message(page))
+            .toMatch(/^A newer capture of .+ is ready\. Your decisions on unchanged images are kept\.$/);
+        expect(await page.locator('#msg-x [data-act="loadnewer"]').innerText()).toBe("Load it");
         expect(await rowTexts(page)).toEqual(before);
         expect(await head.innerText()).toMatch(/\bof 300 decided\b/);
-        await page.getByRole("button", { name: "Load it" }).click();
+        await chip.click();
+        expect(await page.locator(".menu").innerText()).toContain(
+            "A newer capture (7abc123) is ready. Your decisions on unchanged images are kept.",
+        );
+        await menuItem(page, "Load it").click();
         await expect
             .poll(() => message(page))
             .toBe(
@@ -840,8 +848,38 @@ describe("a newer capture", () => {
             );
         expect(since).toBe("4486-1");
         await expect.poll(() => head.innerText()).toMatch(/\bof 299 decided\b/);
-        expect(await page.locator("#snap-banner").isVisible()).toBe(false);
+        expect(await chip.count()).toBe(0);
         await currentIsShown(page);
+    });
+});
+
+describe("the notice chips", () => {
+    it("fold Behind master and Newer capture into one 2 notices chip on a tight line 1, its menu holding both", async () => {
+        const page = await openChange("3486", { clock: true });
+        const list = targets();
+        const t3486 = list.find((x) => x.id === "3486");
+        t3486.runId += 1;
+        t3486.headSha = "7abc1234ff";
+        t3486.stale = 5;
+        t.setList(listAnswer(list));
+        await page.clock.fastForward(16000);
+        const chips = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
+        await expect.poll(() => chips.count()).toBeGreaterThan(0);
+        const names = await chips.evaluateAll((ns) => ns.map((n) => n.getAttribute("aria-label")));
+        // Two chips fit only with room to spare for the title; otherwise one.
+        expect([["Behind master: 5", "Newer capture"], ["2 notices"]]).toContainEqual(names);
+        // Line 1 never wraps and its fold button stays wholly in view.
+        const h1 = page.locator("#snaps-head > .h1");
+        expect((await h1.boundingBox()).height).toBeLessThanOrEqual(28);
+        const hide = await h1.locator('[data-act="pane2"]').boundingBox();
+        const line = await h1.boundingBox();
+        expect(hide.x + hide.width).toBeLessThanOrEqual(line.x + line.width + 0.5);
+        await chips.last().click();
+        const menu = await page.locator(".menu").innerText();
+        if (names.length === 1) {
+            expect(menu).toContain("Master accepted 5 newer baselines after this capture.");
+        }
+        expect(menu).toContain("A newer capture (7abc123) is ready.");
     });
 });
 

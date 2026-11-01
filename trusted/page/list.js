@@ -689,7 +689,7 @@ function foldStatus(app, host) {
 
 /**
  * The header's five lines, or four for a change of 10 or fewer (progress and summary on one line,
- * one View options menu), plus the newer-capture banner.
+ * one View options menu), plus the notice chips on line 1.
  * @param {any} app the page
  * @param {HTMLElement} h1 line 1, built by the page (title, Next change, Hide)
  */
@@ -820,9 +820,8 @@ export function drawHead(app, h1) {
         h5.classList.add("tight");
     }
     foldStatus(app, small ? h2 : h3);
-    drawBanner(app);
+    drawNotices(app, h1);
     drawRenderer(app);
-    drawStale(app);
     $("snaps").classList.toggle("nopics", lv.pics.none);
 }
 
@@ -845,29 +844,6 @@ function selectionBar(app) {
         control(app, "clearsel", { zone, attrs: { class: "clearsel" } }),
         control(app, "selmenu", { zone }),
     ];
-}
-
-// "master has 3 newer baselines since this capture": what changed there, and Update from it.
-function drawStale(app) {
-    const b = $("snap-stale");
-    const c = app.open();
-    const n = c?.stale ?? 0;
-    b.hidden = n === 0;
-    const master = app.list?.defaultBranch ?? "master";
-    b.replaceChildren(
-        ...(n > 0
-            ? [
-                  ic("clock", "c-changed"),
-                  el(
-                      "span",
-                      { class: "grow" },
-                      `${master} has ${fmt(n)} newer baseline${n === 1 ? "" : "s"} since this capture.`,
-                  ),
-                  control(app, "chgonmaster", { zone: "snaps-head", ctx: { id: c.id } }),
-                  control(app, "updatefrom", { zone: "snaps-head", ctx: { id: c.id } }),
-              ]
-            : []),
-    );
 }
 
 const rendererName = (r, major) => `${r.name} ${major ? r.version.split(".")[0] : r.version}`;
@@ -922,23 +898,81 @@ function drawRenderer(app) {
     );
 }
 
-// "A newer capture of this change is ready": the rows never change under the reader.
-function drawBanner(app) {
-    const b = $("snap-banner");
-    const n = app.lv.newer;
-    b.hidden = !n;
-    b.replaceChildren(
-        ...(n
-            ? [
-                  el(
-                      "span",
-                      { class: "grow" },
-                      `A newer capture of this change is ready${n.sha ? ` (${n.sha.slice(0, 7)})` : ""}.`,
-                  ),
-                  control(app, "loadnewer", { zone: "snaps-head" }),
-              ]
-            : []),
-    );
+// The notices on line 1: "Behind master: 1,242" and "Newer capture", each a menu button saying
+// what it means and what to do. When line 1 is tight the title is cut first, then the two fold into
+// one "2 notices", then a chip says it shorter ("Behind: 1,242"), and last its words are cut; the
+// fold button after it never goes. They never block anything: the rows never change under the
+// reader.
+function drawNotices(app, h1) {
+    const which = noticesOf(app);
+    if (which.length === 0) {
+        return;
+    }
+    const hide = h1.lastElementChild;
+    const title = h1.firstElementChild;
+    const tight = (room) => h1.scrollWidth > h1.clientWidth + 1 || title.clientWidth < room;
+    const chips = (list, short = false) => list.map((w) => h1.insertBefore(noticeChip(app, w, short), hide));
+    let drawn = chips(which);
+    if (drawn.length === 2 && tight(TITLE_MIN)) {
+        drawn.forEach((n) => n.remove());
+        drawn = chips(["both"]);
+    }
+    if (tight(0)) {
+        const w = drawn[0].dataset.notice;
+        drawn[0].remove();
+        drawn = chips([w], true);
+    }
+    if (tight(0)) {
+        drawn[0].classList.add("squeeze");
+    }
+}
+
+// The title keeps this much room before two notices fold into one.
+const TITLE_MIN = 160;
+
+const noticesOf = (app) => [...((app.open()?.stale ?? 0) > 0 ? ["stale"] : []), ...(app.lv.newer ? ["newer"] : [])];
+
+function noticeChip(app, which, short) {
+    const master = app.list?.defaultBranch ?? "master";
+    const n = fmt(app.open()?.stale ?? 0);
+    const full = { stale: `Behind ${master}: ${n}`, newer: "Newer capture", both: "2 notices" }[which];
+    const label = short ? { stale: `Behind: ${n}`, newer: "Newer", both: "2 notices" }[which] : full;
+    return control(app, "stalechip", {
+        zone: "snaps-head",
+        ctx: { which },
+        attrs: { class: "chip", "aria-haspopup": "menu", "aria-label": full, "data-notice": which },
+        children: [ic("clock"), el("span", { class: "cl" }, label)],
+    });
+}
+
+const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+
+/**
+ * A notice chip's menu: what the notice means and what to do about it; "both" holds both.
+ * @param {any} app the page
+ * @param {"stale" | "newer" | "both"} which the chip
+ * @returns {any[]} the items
+ */
+export function noticeItems(app, which) {
+    const c = app.open();
+    const n = c?.stale ?? 0;
+    const master = app.list?.defaultBranch ?? "master";
+    const stale = [
+        { text: `${cap(master)} accepted ${fmt(n)} newer baseline${n === 1 ? "" : "s"} after this capture.` },
+        {
+            text: `Your decisions stay valid unless ${master} changed the same images. If it did, updating first saves reviewing them twice: Update from ${master} merges ${master} in and CI captures again.`,
+        },
+        { id: "chgonmaster", label: `See what changed on ${master}`, ctx: { id: c?.id } },
+        { id: "updatefrom", label: `Update from ${master}...`, ctx: { id: c?.id } },
+    ];
+    const sha = app.lv.newer?.sha;
+    const newer = [
+        {
+            text: `A newer capture${sha ? ` (${sha.slice(0, 7)})` : ""} is ready. Your decisions on unchanged images are kept.`,
+        },
+        { id: "loadnewer", label: "Load it" },
+    ];
+    return { stale, newer, both: [...stale, { sep: true }, ...newer] }[which];
 }
 
 // ---------------------------------------------------------------- drawing: the rows

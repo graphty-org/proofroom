@@ -51,11 +51,14 @@ Every change with captures, in sections, each with its count:
 7. **Drafts**: draft pull requests, never offered for review. A draft you already finished part of
    is listed in Needs you.
 
-Each row says what state the change is in and what it waits for. **Find [/]** finds a change by
+Each row says what state the change is in and what it waits for. A **behind master** badge marks a
+change whose branch is behind the default branch, or whose capture is older than baselines the
+default branch accepted since (its tooltip says how many). **Find [/]** finds a change by
 number, title, branch or author; **Sort** orders them (Needs me first, Newest, Most undecided,
 Author); **Next change [Shift+N]** opens the next change that needs you. A row's **...** menu has
 **About this change** (its title, description and comments, as plain text, each marked when not
-written by the repository's owner), Open on the code host and **Copy link**.
+written by the repository's owner, and which other change shares baselines with it: "Shares 2,188
+baselines with #1677"), Open on the code host and **Copy link**.
 
 The number of changes that need you is in the tab's title, and the page asks the server again every
 few seconds while it is shown.
@@ -154,12 +157,19 @@ The banner never shows when either capture does not say which browser drew it.
 
 ### A newer capture, and a stale one
 
-When CI captures the change again while you review it, the list says "A newer capture of this change
-is ready" with **Load it**; your rows never change under you. Decisions are kept by image: loading
-the newer capture keeps every decision whose image is the same, and says which ones it could not
-keep. When the default branch has accepted newer baselines since the capture, the list says so and
-offers **Update from master...** (see [Updating from the default
-branch](../README.md#updating-from-the-default-branch)).
+Both are notices, never blocks: a small chip on the first line of the Snapshots header, in the
+warning color. Each is a menu button that says what it means and what to do. When both apply and
+the line is tight, they fold into one **2 notices** chip whose menu holds both.
+
+- **Behind master: 1,242**: the default branch accepted that many newer baselines after this
+  capture. Your decisions stay valid unless the default branch changed the same images; if it did,
+  updating first saves reviewing them twice. The menu has **See what changed on master** and
+  **Update from master...**, which merges the default branch in so CI captures again (see
+  [Updating from the default branch](../README.md#updating-from-the-default-branch)).
+- **Newer capture**: CI captured the change again while you review it. Your rows never change
+  under you; the message line says so once, with **Load it**, and the chip's menu has **Load it**
+  too. Decisions are kept by image: loading the newer capture keeps every decision whose image is
+  the same, and says which ones it could not keep.
 
 ## Baselines
 

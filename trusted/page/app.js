@@ -52,6 +52,7 @@ import {
     keepCurrentShown,
     layoutOf,
     listItems,
+    noticeItems,
     listState,
     moreItems,
     openList,
@@ -325,9 +326,7 @@ function drawSnaps() {
     const hide = control(app, "pane2", { zone: "snaps-head" });
     const list = $("snap-list");
     if (!c || app.snaps.length === 0) {
-        $("snap-banner").hidden = true;
         $("snap-renderer").hidden = true;
-        $("snap-stale").hidden = true;
         list.hidden = false;
         $("snaps").classList.remove("nopics");
         app.lv.built = null;
@@ -960,6 +959,11 @@ function showMenu(anchor, items, owner = app) {
     closeMenu();
     const m = el("div", { class: "menu", role: "menu", tabindex: "-1" });
     for (const it of items) {
+        // A sentence a menu says before its items (a notice chip's): read, never chosen.
+        if (it.text) {
+            m.append(el("p", { class: "mt" }, it.text));
+            continue;
+        }
         if (it.sep || it.head) {
             m.append(it.sep ? el("div", { class: "sep", role: "separator" }) : el("div", { class: "mh" }, it.head));
             continue;
@@ -1053,6 +1057,7 @@ app.listMenu = (name, anchor) => {
     };
     showMenu(anchor, items[name](app));
 };
+app.noticeMenu = (which, anchor) => showMenu(anchor, noticeItems(app, which));
 app.setShow = (k) => setShow(app, k);
 app.setShowStatus = (k) => setShow(app, app.lv.show === k ? "undecided" : k);
 app.setGrouping = (k) => setGrouping(app, k);
@@ -1204,12 +1209,14 @@ app.aboutChange = async (id) => {
         { class: "small muted" },
         [c.branch, c.author && `by ${c.author}`].filter(Boolean).join(", "),
     );
+    // "Shares 2,188 baselines with #1677": a fact about the change, not a badge on its row.
+    const shares = c.shares ? el("p", { class: "small" }, `${c.shares.charAt(0).toUpperCase()}${c.shares.slice(1)}.`) : null;
     if (!c.hostChange || c.capId !== null || !hostCan(app.list, "describe")) {
-        openBox(head, facts);
+        openBox(head, facts, shares);
         return;
     }
     const body = el("div", { class: "body" }, "Loading the description...");
-    openBox(head, facts, body);
+    openBox(head, facts, shares, body);
     try {
         const ctx = await api(`/api/pr-context/${encodeURIComponent(id)}`);
         body.replaceChildren(
@@ -1697,7 +1704,8 @@ async function poll() {
     }
 }
 
-// A newer run of the open change: offered by the list's banner, never swapped in under the reader.
+// A newer run of the open change: offered by the Newer capture chip and once in the message line,
+// never swapped in under the reader.
 function noticeNewer() {
     const t = app.openId && app.list.targets.find((x) => x.id === app.openId);
     if (!t || t.runId === null || t.runId === undefined || app.loadedRun === null || app.snaps.length === 0) {
@@ -1706,7 +1714,9 @@ function noticeNewer() {
     const run = `${t.runId}-${t.runAttempt}`;
     if (run !== app.loadedRun && app.lv.newer?.run !== run) {
         app.lv.newer = { run, sha: t.headSha ?? t.commit ?? null };
-        say(`A newer capture of ${app.open().label} is ready: Load it, at the top of the list, shows it.`);
+        say(`A newer capture of ${app.open().label} is ready. Your decisions on unchanged images are kept.`, "", [
+            control(app, "loadnewer", { zone: "msgline" }),
+        ]);
     }
 }
 

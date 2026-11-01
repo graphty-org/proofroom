@@ -58,7 +58,7 @@ export function projectState(p) {
     return /expired/.test(p.problem) ? "expired" : "failed";
 }
 
-const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`;
 const atCommit = (commit) => (commit ? ` at ${commit.slice(0, 7)}` : "");
 
 /** The kinds of the default branch's targets: a seed, the held candidate, or the rolling renders of one commit. */
@@ -279,14 +279,17 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
                       ? "decided"
                       : "needs";
     // Badges.
-    if (row.stale > 0 && row.state !== "finished") {
+    // Behind the default branch, one badge: its branch is behind, or the branch accepted newer
+    // baselines after this capture (the tooltip says how many).
+    const stale = row.stale > 0 && row.state !== "finished";
+    if (stale || t.behind) {
         row.badges.push({
-            text: `Changed on ${defaultBranch}: ${plural(row.stale, "newer baseline")}`,
-            mark: ["clock", "c-changed"],
+            text: `behind ${t.behind || defaultBranch}`,
+            title: stale
+                ? `${defaultBranch} accepted ${plural(row.stale, "newer baseline")} after this capture`
+                : `The branch is behind ${t.behind}`,
+            ...(stale && { mark: ["clock", "c-changed"] }),
         });
-    }
-    if (t.behind) {
-        row.badges.push({ text: `behind ${t.behind}` });
     }
     if (t.pendingPush || t.unpushed) {
         row.badges.push({ text: "pending push" });
@@ -294,9 +297,8 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
     if (projects.some((p) => p.preview && p.ci && p.ci.status !== "completed")) {
         row.badges.push({ text: `${words.ciName ?? "CI"} pending` });
     }
-    if (shares.has(t.id)) {
-        row.badges.push({ text: shares.get(t.id) });
-    }
+    // "shares 14 baselines with #3471": said in About this change, not on the row.
+    row.shares = shares.get(t.id) ?? null;
     return row;
 }
 
@@ -525,7 +527,7 @@ function rowOf(app, r) {
                 ),
                 el("span", { class: "ell grow" }, details),
                 r.badges.map((b) =>
-                    el("span", { class: "badge", title: b.text }, b.mark ? ic(b.mark[0], b.mark[1]) : null, b.text),
+                    el("span", { class: "badge", title: b.title ?? b.text }, b.mark ? ic(b.mark[0], b.mark[1]) : null, b.text),
                 ),
                 acts,
             ),

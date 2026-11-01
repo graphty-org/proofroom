@@ -926,23 +926,32 @@ describe("the decision bar's layout", () => {
 describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
     const openIn = inBrowser(name);
 
-    it("says master has newer baselines, lists them, and Update from master runs the job, shows its steps and reloads the list", async () => {
+    it("says Behind master on line 1, its menu says what it means, lists them, and Update from master runs the job and reloads the list", async () => {
         let done = false;
         const page = await openIn(STALE, {
             update: (b) => ({ job: { kind: "update", target: b.id, running: true, step: "starting", error: null } }),
             finishStatus: () => ({ kind: "update", target: STALE, running: !done, step: "merging", error: null }),
         });
-        const banner = page.locator("#snap-stale");
+        // One chip on line 1, one line, no banner between the header and the rows.
+        const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
+        // Its name in full; on a tight line 1 (Next change beside it) it says it shorter.
+        expect(await chip.getAttribute("aria-label")).toBe("Behind master: 3");
+        expect((await chip.innerText()).trim()).toMatch(/^Behind( master)?: 3$/);
+        const box = await chip.boundingBox();
+        expect(box.height).toBeLessThanOrEqual(26);
+        expect(await page.locator("#snap-stale").count()).toBe(0);
+        await chip.click();
         // trim: WebKit's innerText puts a line break around the flex box's text.
-        expect((await banner.innerText()).trim()).toMatch(
-            /^master has 3 newer baselines since this capture\.\s*Changed on master\s*Update from master\.\.\.$/,
+        expect((await page.locator(".menu").innerText()).trim()).toMatch(
+            /^master accepted 3 newer baselines after this capture\.\s*Your decisions stay valid unless master changed the same images\. If it did, updating first saves reviewing them twice: Update from master merges master in and CI captures again\.\s*See what changed on master\s*Update from master\.\.\.$/i,
         );
-        await banner.getByRole("button", { name: "Changed on master" }).click();
+        await menuItem(page, "See what changed on master").click();
         expect(await dialog(page).innerText()).toContain("graphty-element/legend--default.light.png");
         await dialog(page)
             .getByRole("button", { name: /^Close/ })
             .click();
-        await banner.getByRole("button", { name: "Update from master..." }).click();
+        await chip.click();
+        await menuItem(page, "Update from master...").click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Update #8500 from master?");
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Updating #8500: merging...");
@@ -957,7 +966,7 @@ describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
         );
         done = true;
         await expect.poll(() => message(page)).toBe("Updated #8500 from master: CI captures it again.");
-        expect(await banner.isVisible()).toBe(false);
+        expect(await chip.count()).toBe(0);
     });
 
     it("offers Update from master... in the changes row menu, for a pull request", async () => {
@@ -1028,7 +1037,7 @@ describe("on the review server", () => {
 });
 
 describe("Update from master on the review server", () => {
-    it("runs the job on the branch, shows its progress, and reloads the list with the stale banner gone", async () => {
+    it("runs the job on the branch, shows its progress, and reloads the list with the Behind master chip gone", async () => {
         // The server logs the update, and the thumbnail it cannot make of the newer baseline (text,
         // not an image): neither is this test's subject.
         const out = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -1063,9 +1072,9 @@ describe("Update from master on the review server", () => {
                 .toBe(true);
             await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await showList(page);
-            const banner = page.locator("#snap-stale");
-            await banner.waitFor();
-            expect(await banner.innerText()).toMatch(/^master has 1 newer baseline since this capture\./);
+            const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
+            await chip.waitFor();
+            expect(await chip.getAttribute("aria-label")).toBe("Behind master: 1");
             // Every message the line shows, in order.
             await page.evaluate(() => {
                 const line = globalThis.document.getElementById("msg-t");
@@ -1076,7 +1085,11 @@ describe("Update from master on the review server", () => {
                     characterData: true,
                 });
             });
-            await banner.getByRole("button", { name: "Update from master..." }).click();
+            await chip.click();
+            expect(await page.locator(".menu").innerText()).toContain(
+                "Master accepted 1 newer baseline after this capture.",
+            );
+            await menuItem(page, "Update from master...").click();
             expect(await dialog(page).locator("h3").innerText()).toBe("Update #123 from master?");
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toBe("Updated #123 from master: CI captures it again.");
@@ -1085,7 +1098,7 @@ describe("Update from master on the review server", () => {
                 said.filter((m) => /^Updating #123: .+\.\.\.$/.test(m)),
                 said.join(" / "),
             ).not.toEqual([]);
-            expect(await banner.isVisible()).toBe(false);
+            expect(await chip.count()).toBe(0);
             // The branch holds the merge of master: its first parent the old head, its second master.
             expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.head);
             expect(git(r.remote, "rev-parse", "feature^2")).toBe(masterTip);

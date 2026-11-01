@@ -367,9 +367,21 @@ export const ACTIONS = {
         title: "Capture again, so the baselines are drawn by the same renderer",
         run: (app) => app.newCapture(),
     },
+    // The notice chips on the Snapshots header's line 1 (Behind master, Newer capture, or both
+    // folded into "2 notices"): each opens its menu.
+    stalechip: {
+        label: "Notices",
+        title: (app, ctx) =>
+            ({
+                stale: `This capture is behind ${master(app)}: what that means and what to do`,
+                newer: "A newer capture is ready",
+                both: "Two notices about this capture",
+            })[ctx.which],
+        run: (app, ctx) => app.noticeMenu(ctx.which, ctx.el),
+    },
     // The stale capture: what changed on the default branch, and Update from it.
     chgonmaster: {
-        label: (app) => `Changed on ${master(app)}`,
+        label: (app) => `See what changed on ${master(app)}`,
         title: "The baselines that changed there since this capture",
         run: (app, ctx) => app.changedOnMaster(ctx.id),
     },

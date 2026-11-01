@@ -124,10 +124,13 @@ describe("with 50 changes", () => {
             "behind master",
             "pending push",
             "CI pending",
-            "Changed on master: 3 newer baselines",
         ]) {
             expect(text, words).toContain(words);
         }
+        // A stale capture: one "behind master" badge, the count in its tooltip.
+        const stale = page.locator('.chg[data-chg="3483"] .badge');
+        expect(await stale.allInnerTexts()).toEqual(["behind master"]);
+        expect(await stale.getAttribute("title")).toBe("master accepted 3 newer baselines after this capture");
         // An incomplete row says why and what to do; it has no job log to open.
         const incomplete = page.locator('.chg[data-chg="3475"]');
         expect(await incomplete.locator(".cnt").getAttribute("title")).toBe(

@@ -100,16 +100,23 @@ describe("row states", () => {
         }
     });
 
-    it("gives every badge: behind, pending push, CI pending, stale, shares", () => {
+    it("gives every badge: behind master (one for a behind branch or a stale capture), pending push, CI pending", () => {
         const text = (id) => rows.get(id).badges.map((b) => b.text);
         expect(text("3485")).toEqual(["behind master"]);
         expect(text("3481")).toEqual(["pending push"]);
         expect(text("3471")).toEqual(["CI pending"]);
-        expect(text("3483")).toEqual(["Changed on master: 3 newer baselines"]);
-        const shares = sharesOf([{ ids: ["3486", "3471"], prs: [3486, 3471], shared: Array(14).fill("x") }]);
-        expect(rowOf(fiftyChanges()[0], { shares }).badges.map((b) => b.text)).toEqual([
-            "shares 14 baselines with #3471",
-        ]);
+        expect(text("3483")).toEqual(["behind master"]);
+        expect(rows.get("3483").badges[0].title).toBe("master accepted 3 newer baselines after this capture");
+        // Both at once: still one badge.
+        const both = rowOf(target(1, { behind: "master", stale: 2, projects: [project("p", { reviewable: 4 })] }));
+        expect(both.badges.map((b) => b.text)).toEqual(["behind master"]);
+    });
+
+    it("keeps shares N baselines with #M off the row, for About this change, with separators", () => {
+        const shares = sharesOf([{ ids: ["3486", "3471"], prs: [3486, 3471], shared: Array(2188).fill("x") }]);
+        const row = rowOf(fiftyChanges()[0], { shares });
+        expect(row.badges).toEqual([]);
+        expect(row.shares).toBe("shares 2,188 baselines with #3471");
     });
 
     it("keeps a look-only change look only while a project still captures or failed", () => {

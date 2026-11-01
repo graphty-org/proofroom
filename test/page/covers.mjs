@@ -137,6 +137,7 @@ export const COVERS = {
         "endfinish",
         "endback",
         "nextchange",
+        "stalechip",
         "chgonmaster",
         "updatefrom",
         "rowmenu",
