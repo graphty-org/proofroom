@@ -53,9 +53,13 @@ Every change with captures, in sections, each with its count:
 7. **Drafts**: draft pull requests, never offered for review. A draft you already finished part of
    is listed in Needs you.
 
-Each row says what state the change is in and what it waits for. A **behind master** badge marks a
-change whose branch is behind the default branch, or whose capture is older than baselines the
-default branch accepted since (its tooltip says how many). **Find [/]** finds a change by
+Each row is two lines: the change's number and title, then what state it is in ("34 left of 1,242")
+and at most one badge; more badges fold into "+1 more", their words in its tooltip, and no word is
+ever cut. The branch, author, where it was captured and how long ago are in the row's tooltip,
+joined by " - " ("feature - by octocat - from CI - 4 min ago"), with "2 of 3 projects ready" only
+while a project is not. A **behind master** badge marks a change whose branch is behind the default
+branch, or whose capture is older than baselines the default branch accepted since (its tooltip says
+how many); "140 MB to download" one whose images opening it fetches again. **Find [/]** finds a change by
 number, title, branch or author; **Sort** orders them (Needs me first, Newest, Most undecided,
 Author); **Next change [Shift+N]** opens the next change that needs you. A row's **...** menu has
 **About this change** (its title, description and comments, as plain text, each marked when not
@@ -82,7 +86,8 @@ The open change's snapshots. Its header is three lines that never wrap:
    its menu lists Undecided (the default), All, each status the change has, Accepted earlier,
    Accepted (yours), Rejected and Excluded, each with its count on the right, a choice of 0 greyed.
    The button shows the count only while the list is filtered, "Show: Rejected (3)". Then **List**:
-   **Group by** (Component, Same change, Project, Status, None), **Pictures** (Spotlight rows, Zoom
+   **Group by** (Component, Same change, Project, Status, None), **Pictures** (**Spotlight rows**,
+   which dims what did not change, Zoom
    rows to the change Auto, Always or Never, or No pictures), Accept all shown..., Undo all
    decisions..., Download the comparison report (JUnit) and **Copy link to this list**. Last, the
    list's **Up** and **Down**, their keys printed quietly.
@@ -90,23 +95,39 @@ The open change's snapshots. Its header is three lines that never wrap:
 Keys off the look-decide-next loop are printed as quiet muted text after their label ("Next change
 Shift+N"); boxed keys are kept for the view switch, the decision bar and boxes.
 
-Each row shows the snapshot's number, story, mode and status, its decision, and a picture of the
-new image: spotlit (everything but the change dimmed) and, under Zoom Auto, zoomed to the change
+Each row shows the snapshot's number and status, its story's name (the one bold thing on the row,
+its mode after it in muted words: "graph-file, dark"), its decision, and a picture of the new
+image: spotlit (everything but the change dimmed) and, under Zoom Auto, zoomed to the change
 when that shows it at least twice as large. Nothing is ever drawn over a picture. A zoomed picture
 has a gray bar outside its left edge, and the line under the story says the size and the zoom in
 words: "26 areas, 490k px, zoomed 4x". When the changed areas are spread too far apart to zoom to
 all of them, the picture shows the largest group of areas that lie close together, and the line
 says how many: "zoomed 4x to 3 of them". When the row is too narrow, a badge's word is kept and the
 zoom words give way first; they stay in the line's tooltip. Hover a picture for "Zoomed 4x to the changed areas" or
-"Whole image". A badge **attempts disagree** marks a snapshot whose
-attempts in the run did not agree (with `run --retries`, or a runner's retries); its status is its
-last attempt's.
+"Whole image". Badges: **resized** (the new image is a different size), **unstable** (its attempts
+in the run did not agree, with `run --retries` or a runner's retries; its status is its last
+attempt's), **re-review**, and **+4 identical** (the same change as 4 other snapshots). "resized"
+and "unstable" always keep their word; the others fold, when they do not fit, into "+2 more" (their
+words in its tooltip), and a single one left over shows its own word, never a bare "+1".
 
-**Groups.** By component (the default above 10 snapshots), each group header shows its count, the
-split by status in marks and words, and **Accept 14** (with **[Shift+A]** on the group of the
-current snapshot), **Undo 14** after a decision, and a menu with Reject 14..., Exclude 14..., Select
-all and Show all. Same change groups snapshots with exactly the same change first (a fact), then
+A row's checkbox stays in its column so nothing moves under the pointer; it is drawn faintly, in
+the border color, until the row is hovered or a selection exists.
+
+**Groups.** By component (the default above 10 snapshots). Each group header is one line with
+three controls: the chevron folds and unfolds the group; the name button, "legend (14)" with its
+count muted (a component is named alone, its project in the tooltip, unless two projects share the
+name; a long name is cut in the middle, the count never), opens the group's menu: **Collapse** or **Expand**, **Reject 14...**, **Exclude 14...**, **Select all 14**,
+and **Undo 3...** while the group holds decisions to take back. Its tooltip gives the split by
+status ("14: 12 changed, 2 new"). Last, **Accept 14**: outlined on every group, and green with its
+key **Shift+A** only on the group of the current snapshot; once nothing in the group is left it
+becomes **Undo 14**. Same change groups snapshots with exactly the same change first (a fact), then
 look-alike changes (a guess, labeled so). A group of more than 50 opens folded, except the first.
+
+**Accepted earlier.** Images accepted before this capture (byte for byte an image already accepted
+for the same story and mode) sit in one folded line at the bottom of the list, "Accepted earlier
+(1,208)", under every grouping; each of their rows says "Accepted earlier (#1356)". Its chevron
+opens it, and its name's menu has **Reject 1,208...** and **Exclude 1,208...**; it has no Accept
+and no Undo.
 After a group accept, the next group's first undecided snapshot becomes current, so repeated
 Shift+A walks the change group by group. Accepting more than 20 at once asks first.
 

@@ -17,8 +17,8 @@ describe("row states", () => {
     const rows = new Map(fiftyChanges().map((t) => [t.id, rowOf(t)]));
     // [change, section, mark, words]
     const STATES = [
-        ["3484", "needs", "open", "3 undecided"],
-        ["3482", "needs", "half", "31 of 60 decided"],
+        ["3484", "needs", "open", "3 left"],
+        ["3482", "needs", "half", "29 left of 60"],
         ["3480", "decided", "full", "9 decided, not finished"],
         ["3478", "busy", "down", "Downloading: 2 of 3 projects (68 MB)"],
         ["3477", "busy", "spin", "Capturing on CI, 2 of 3 projects"],
@@ -26,7 +26,7 @@ describe("row states", () => {
         ["3475", "notready", "failed", "Incomplete: 2 of 3 projects"],
         ["3474", "nothing", "accept", "Finished, signed"],
         ["3473", "nothing", null, "No differences"],
-        ["3472", "drafts", "open", "5 undecided"],
+        ["3472", "drafts", "open", "5 left"],
         ["local", "look", "eye", "Look only: 22 to view"],
     ];
     it.each(STATES)("%s: %s, %s, %s", (id, section, mark, words) => {
@@ -41,16 +41,26 @@ describe("row states", () => {
         const some = rowOf(
             target(1, { projects: [project("graphty-element", { reviewable: 2 }), none("no capture")] }),
         );
-        expect([some.section, some.count, some.ready, some.notReady]).toEqual([
-            "needs",
-            "2 undecided",
-            "1 of 1",
-            false,
-        ]);
+        expect([some.section, some.count, some.ready, some.notReady]).toEqual(["needs", "2 left", "1 of 1", false]);
         const nothing = rowOf(target(2, { projects: [none("no capture"), none("not affected")] }));
         expect([nothing.section, nothing.count]).toEqual(["notready", "Capture failed: graphty"]);
         const skipped = rowOf(target(3, { projects: [none("not affected")] }));
         expect([skipped.section, skipped.count]).toEqual(["nothing", "No differences"]);
+    });
+
+    it("says how many projects are ready only while one is not, and an eviction as what opening downloads", () => {
+        expect(rows.get("3484").readyNote).toBeNull();
+        expect(rows.get("3477").readyNote).toBe("2 of 3 projects ready");
+        const away = rowOf(
+            target(4, {
+                projects: [project("graphty-element", { reviewable: 2 })],
+                evicted: { bytes: 68e6, deleted: false },
+            }),
+        );
+        expect(away.badges[0]).toEqual({
+            text: "68 MB to download",
+            title: "Images not on disk: opening downloads 68 MB",
+        });
     });
 
     it("tags each kind of change, and names a seed by the default branch", () => {

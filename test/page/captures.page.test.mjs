@@ -568,7 +568,8 @@ describe("the Captures screen", () => {
         await expect.poll(() => message(page)).toBe("Opened branch Capture of branch feat/x: 3 undecided.");
         expect(await page.locator("#scr-captures").isVisible()).toBe(false);
         expect(await page.locator(".chg.cur").getAttribute("data-chg")).toBe("branch-feat%2Fx");
-        expect(await page.locator(".chg.cur").innerText()).toContain("this machine");
+        // Where it was captured is in the row's tooltip, with its other details.
+        expect(await page.locator(".chg.cur").getAttribute("title")).toContain(" - from this machine");
     });
 });
 

@@ -217,10 +217,15 @@ describe("the header and the rows within their budgets", () => {
                 expect(c.nameClipped, c.snap).toBe(false);
                 expect(c.keepCut, c.snap).toBe(false);
             }
-            // Every status split entry carries its word.
+            // Every group header is one line: the chevron, the name button "name (N)", and Accept N.
             // As text: a header off screen is not painted (content-visibility), so innerText skips it.
-            for (const entry of await page.locator("#snap-list .ghead .sent").allTextContents()) {
-                expect(entry).toMatch(/^[\d,]+ [a-z]/);
+            for (const entry of await page.locator("#snap-list .ghead .gname").allTextContents()) {
+                expect(entry).toMatch(/^\S.* \([\d,]+\)$/);
+            }
+            for (const h of await page
+                .locator("#snap-list .ghead")
+                .evaluateAll((n) => n.map((x) => x.getBoundingClientRect().height))) {
+                expect(h).toBe(32);
             }
             expect(t.errors).toEqual([]);
         });
@@ -546,7 +551,7 @@ describe("projects with no capture", () => {
             rows: (id, name) => rowsAnswer(name, 2),
         });
         await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(2);
-        expect(await page.locator('.chg[data-chg="8000"]').innerText()).toContain("2 undecided");
+        expect(await page.locator('.chg[data-chg="8000"]').innerText()).toContain("2 left");
         expect(await message(page)).not.toMatch(/Nothing to review yet/);
         await currentIsShown(page);
     });
@@ -561,27 +566,26 @@ describe("groups", () => {
             expect((await listChecked(page)).group).toBe(`Group by: ${label}`);
             await currentIsShown(page);
         };
-        // Component, the default above 10; Approved before first, collapsed, with no row.
+        // Component, the default above 10; Accepted earlier last, collapsed, with no row: one quiet line.
         let h = await heads();
-        expect(h[0]).toBe("Approved before");
+        expect(h.at(-1)).toBe("Accepted earlier");
         expect(h).toContain("graphty-element > widgets");
-        expect(await page.locator('.ghead[data-group="!before"]').innerText()).toMatch(
-            /Approved before\s*2\s*\(already accepted\)/,
-        );
+        // As text: the line is off screen at the list's end (content-visibility), so innerText skips it.
+        expect((await page.locator('.ghead[data-group="!before"]').textContent()).trim()).toBe("Accepted earlier (2)");
         expect(await page.locator('.grp[data-group="!before"] .srow').count()).toBe(0);
         await pick("Same change");
         h = await heads();
-        expect(h.slice(0, 2)).toEqual(["Approved before", "Identical change"]);
+        expect(h[0]).toBe("Identical change");
         expect(h).toContain("Look alike: small changes, top left, 5,428 to 6,538 px");
-        expect(h.at(-1)).toBe("Different from the rest");
+        expect(h.slice(-2)).toEqual(["Different from the rest", "Accepted earlier"]);
         const look = page.locator('.grp[data-group^="l:"] .srow');
         // The representative, the most changed pixels of the six, first.
         expect(await look.count()).toBeGreaterThan(1);
         await pick("Project");
-        expect(await heads()).toEqual(["Approved before", "graphty-element"]);
+        expect(await heads()).toEqual(["graphty-element", "Accepted earlier"]);
         await pick("Status");
         h = await heads();
-        expect(h.slice(1)).toEqual([
+        expect(h.slice(0, -1)).toEqual([
             "failed",
             "changed",
             "moved",
@@ -594,13 +598,18 @@ describe("groups", () => {
         expect(await heads()).toEqual([]);
         const numbers = (await rowTexts(page)).map((x) => Number(x.slice(1)));
         expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
-        // Identical changes carry "same as N others" in every grouping but Same change.
+        // Identical changes carry "+7 identical" in every grouping but Same change: the badge's word,
+        // never folded into a bare count (one badge left over shows its own word).
         await pick("Component");
-        // The badge, or the "+N" chip it folds into when it does not fit, whose tooltip names it.
         const same = await page
             .locator("#snap-list .badge")
-            .evaluateAll((n) => n.filter((b) => `${b.textContent} ${b.title}`.includes("same as 7 others")).length);
+            .evaluateAll((n) => n.filter((b) => b.textContent === "+7 identical").length);
         expect(same).toBe(8);
+        expect(
+            await page
+                .locator("#snap-list .badge")
+                .evaluateAll((n) => n.filter((b) => /^\+1( more)?$/.test(b.textContent)).length),
+        ).toBe(0);
     });
 
     it("opens a group over 50 collapsed but shows its first undecided row; the chevron opens and closes", async () => {
@@ -619,11 +628,138 @@ describe("groups", () => {
         await currentIsShown(p2);
         await caret.click();
         await expect.poll(() => caret.getAttribute("aria-expanded")).toBe("true");
-        // The Approved before line opens by its Show.
-        await p2.locator('.ghead[data-group="!before"]').getByRole("button", { name: "Show" }).click();
+        // The Accepted earlier line has no Show: its chevron opens it, and so does its menu's Expand.
+        const earlier = p2.locator('.ghead[data-group="!before"]');
+        expect(await earlier.getByRole("button", { name: "Show" }).count()).toBe(0);
+        await earlier.locator(".gname").click();
+        await menuItem(p2, "Expand").click();
         await expect.poll(() => p2.locator('.grp[data-group="!before"] .srow').count()).toBe(2);
-        expect(await p2.locator('.grp[data-group="!before"] .srow').first().innerText()).toContain(
-            "Accepted (approved before #1356)",
+        expect(await p2.locator('.grp[data-group="!before"] .srow').first().textContent()).toContain(
+            "Accepted earlier (#1356)",
+        );
+        await earlier.locator(".caret").click();
+        await expect.poll(() => p2.locator('.grp[data-group="!before"] .srow').count()).toBe(0);
+    });
+
+    it("draws a header as a chevron, a name button that opens the group's menu, and Accept N", async () => {
+        const page = await openChange("3486");
+        const key = await page
+            .locator("#snap-list .srow.cur")
+            .locator("xpath=ancestor::section[1]")
+            .getAttribute("data-group");
+        const mine = page.locator(`.ghead[data-group="${key}"]`);
+        const other = page
+            .locator("#snap-list .ghead")
+            .filter({ has: page.locator('[data-act="gaccept"]:not(.mine)') })
+            .first();
+        // Three controls, nothing else that takes a click.
+        expect(await mine.locator("button").evaluateAll((n) => n.map((b) => b.dataset.act))).toEqual([
+            "gtoggle",
+            "gmenu",
+            "gaccept",
+        ]);
+        // The name, whole or cut in the middle, and its count, never cut.
+        expect(await mine.locator(".gname").textContent()).toMatch(/^.+ \(\d+\)$/);
+        // The count is muted, in the name button.
+        const weights = await mine
+            .locator(".gname")
+            .evaluate((n) =>
+                [n.querySelector(".gn"), n.querySelector(".gc")].map((x) => globalThis.getComputedStyle(x).fontWeight),
+            );
+        expect(weights).toEqual(["700", "400"]);
+        // Every Accept N is outlined; the current group's is green and prints a quiet Shift+A.
+        const look = (h) =>
+            h.locator('[data-act="gaccept"]').evaluate((n) => ({
+                mine: n.classList.contains("mine"),
+                key: n.querySelector("kbd")?.textContent ?? null,
+                quiet: n.querySelector("kbd")?.classList.contains("quiet") ?? null,
+                border: globalThis.getComputedStyle(n).borderTopColor,
+                line: globalThis.getComputedStyle(globalThis.document.documentElement).getPropertyValue("--line"),
+            }));
+        const a = await look(mine);
+        expect([a.mine, a.key, a.quiet]).toEqual([true, "Shift+A", true]);
+        const b = await look(other);
+        expect([b.mine, b.key]).toEqual([false, null]);
+        expect(b.border).not.toBe(a.border);
+        expect(b.border).not.toBe("rgba(0, 0, 0, 0)");
+        // The name opens the menu: Collapse, then the group's former [...] items.
+        await mine.locator(".gname").click();
+        expect(await page.locator(".menu .mi .ml").allInnerTexts()).toEqual([
+            "Collapse",
+            expect.stringMatching(/^Reject \d+\.\.\.$/),
+            expect.stringMatching(/^Exclude \d+\.\.\.$/),
+            expect.stringMatching(/^Select all \d+$/),
+        ]);
+        // Collapse folds the group (the current row is kept shown, so it may open again with it).
+        await menuItem(page, "Collapse").click();
+        await expect.poll(() => page.locator(".menu").count()).toBe(0);
+        expect(t.errors).toEqual([]);
+        const other2 = page
+            .locator(".ghead")
+            .filter({ has: page.locator('[data-act="gaccept"]:not(.mine)') })
+            .last();
+        const otherKey = await other2.getAttribute("data-group");
+        await other2.locator(".gname").click();
+        await menuItem(page, "Collapse").click();
+        await expect
+            .poll(() => page.locator(`.ghead[data-group="${otherKey}"] .caret`).getAttribute("aria-expanded"))
+            .toBe("false");
+        expect(t.errors).toEqual([]);
+    });
+
+    it("keeps a row's checkbox in place, muted until the row is hovered or a selection exists", async () => {
+        const page = await openChange("3486");
+        const rows = page.locator("#snap-list .srow");
+        const boxOf = (i) =>
+            rows
+                .nth(i)
+                .locator(".rcheck span")
+                .evaluate((n) => ({
+                    color: globalThis.getComputedStyle(n).borderTopColor,
+                    x: n.getBoundingClientRect().x,
+                }));
+        const colors = await page.evaluate(() => {
+            const probe = globalThis.document.createElement("i");
+            globalThis.document.body.append(probe);
+            const of = (v) => {
+                probe.style.color = `var(${v})`;
+                return globalThis.getComputedStyle(probe).color;
+            };
+            const out = { line: of("--line"), muted: of("--ink-2") };
+            probe.remove();
+            return out;
+        });
+        const rest = await boxOf(2);
+        expect(rest.color).toBe(colors.line);
+        await rows.nth(2).hover();
+        expect((await boxOf(2)).color).toBe(colors.muted);
+        expect((await boxOf(2)).x).toBe(rest.x);
+        await rows.nth(1).locator(".rcheck").click();
+        await page.mouse.move(0, 0);
+        await expect.poll(async () => (await boxOf(2)).color).toBe(colors.muted);
+        expect((await boxOf(2)).x).toBe(rest.x);
+    });
+
+    it("says a row's mode as muted words after the story's name, the name the one bold thing", async () => {
+        const page = await openChange(RICH);
+        const r = page.locator("#snap-list .srow", { has: page.locator(".mode") }).first();
+        expect(await r.locator(".mode").innerText()).toMatch(/^, (light|dark)$/);
+        expect(await r.locator(".tag").count()).toBe(0);
+        // Every piece of text on the row drawn bold: the story's name alone.
+        const bold = await r.evaluate((n) =>
+            [...n.querySelectorAll(".info *")]
+                .filter(
+                    (x) =>
+                        [...x.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim()) &&
+                        Number(globalThis.getComputedStyle(x).fontWeight) >= 600,
+                )
+                .map((x) => x.className),
+        );
+        expect(bold).toEqual([expect.stringMatching(/^nm1?$/)]);
+        // Spotlight rows, one name, with a tooltip saying what it does.
+        await listMenu(page);
+        expect(await page.locator('.menu .mi[data-act="picspot"]').getAttribute("title")).toBe(
+            "Dims what did not change",
         );
     });
 
@@ -679,7 +815,7 @@ describe("rows", () => {
         await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-auto$/);
         expect((await listChecked(page)).checked).toEqual([
             "Component",
-            "Spotlight rows (switch)",
+            "Spotlight rows",
             "Auto: when the change is small (2x Fit or more)",
         ]);
         // Line 4 in words, the full words in its tooltip when "to 1 of them" does not fit.
@@ -723,7 +859,7 @@ describe("rows", () => {
         await pics("Never", "spot");
         await whole();
         expect((await listChecked(page)).checked).toContain("Never");
-        await pics("Spotlight rows (switch)", "plain");
+        await pics("Spotlight rows", "plain");
         await pics("Always", "row-plain");
         await zoomed();
         expect(await over()).toEqual([]);
@@ -750,13 +886,13 @@ describe("rows", () => {
         for (const words of [
             "Accepted",
             "Accepted (not opened)",
-            "Accepted (approved before #1356)",
+            "Accepted earlier (#1356)",
             "Rejected: Legend overlaps the minimap at the right edge",
             "Rejected before (#5000, 2026-10-20): The label wraps under the icon",
             "Excluded: Animated: never stable",
             "Finished: it is on the branch",
             "re-review",
-            "size changed",
+            "resized",
             "image identical",
         ]) {
             expect(text, words).toContain(words);

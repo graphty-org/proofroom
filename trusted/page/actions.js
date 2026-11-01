@@ -271,7 +271,8 @@ export const ACTIONS = {
     show: { label: (app, ctx) => `Show: ${ctx.show}`, run: (app, ctx) => app.setShow(ctx.show) },
     group: { label: (app, ctx) => ctx.grouping, run: (app, ctx) => app.setGrouping(ctx.grouping) },
     picspot: {
-        label: "Spotlight rows (switch)",
+        label: "Spotlight rows",
+        title: "Dims what did not change",
         run: (app) => app.setPictures({ spot: !(app.lv.pics.spot && !app.lv.pics.none), none: false }),
     },
     piczoom: { label: (app, ctx) => ctx.zoom, run: (app, ctx) => app.setPictures({ zoom: ctx.zoom, none: false }) },
@@ -304,7 +305,11 @@ export const ACTIONS = {
         run: (app, ctx) => app.groupUndo(ctx.group),
         available: (app) => app.writeOK(),
     },
-    gmenu: { label: "...", title: "More for this group", run: (app, ctx) => app.groupMenu(ctx.group, ctx.el) },
+    gmenu: {
+        label: "Group menu",
+        title: "Opens the group's menu",
+        run: (app, ctx) => app.groupMenu(ctx.group, ctx.el),
+    },
     greject: {
         label: (app, ctx) => `Reject ${groupN(app, ctx, "all")}...`,
         run: (app, ctx) => app.groupReason("reject", ctx.group),

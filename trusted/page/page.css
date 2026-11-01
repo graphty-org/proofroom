@@ -173,7 +173,7 @@ kbd {
     border-radius: 3px;
     padding: 2px 3px;
     margin-left: 5px;
-    opacity: 0.65;
+    opacity: 0.72; /* 4.5:1 on the current row's tint (contrast.test.mjs) */
 }
 /* A quiet key: every control off the look-decide-next loop prints its key as muted text after
    its label, no box, so the boxed keys on the loop are the ones that stand out. */
@@ -595,14 +595,27 @@ body.held [data-zone="end"] kbd {
     overflow: hidden;
     color: var(--ink);
 }
-.chg .l2 > .ell.grow {
-    flex: 1 1 0;
-}
-.chg .l2 > .badge {
-    flex: 0 1 auto;
+/* A long state ("Capture failed: a, b, c") ends in "..." rather than mid-word; its tooltip has it whole. */
+.chg .cnt > span:last-child {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+/* A change row's badges: one, and "+N more". What does not fit wraps whole onto a second line
+   that is never shown (the empty first item holds line 1), so a badge is never cut mid-word. */
+.chg .l2 > .bdg {
+    min-width: 0;
+    height: 24px;
+    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    align-content: flex-start;
+    column-gap: 4px;
+}
+.chg .l2 .bdg0 {
+    width: 0;
+    height: 24px;
 }
 .empty {
     padding: 10px;
@@ -847,9 +860,15 @@ body.infind .fk {
     width: 15px;
     height: 15px;
     border-radius: 3px;
-    border: 1.5px solid var(--ink-2);
+    border: 1.5px solid var(--line);
     background: var(--surface);
     display: block;
+}
+/* The checkbox stays in its column (nothing moves), drawn in the border color until the row is
+   hovered or a selection exists. */
+.srow:hover .rcheck span,
+#snap-list:has(.srow.selx) .rcheck span {
+    border-color: var(--ink-2);
 }
 .srow.selx:not(.cur) {
     background: color-mix(in srgb, var(--sel) 60%, var(--surface));
@@ -926,7 +945,8 @@ body.infind .fk {
 }
 .srow .info {
     flex: 1;
-    min-width: 200px;
+    /* It takes the room the picture leaves, never more: its words wrap, never run off the row. */
+    min-width: 0;
     display: flex;
     flex-direction: column;
     line-height: 18px;
@@ -945,9 +965,14 @@ body.infind .fk {
 .srow .info .l .keep {
     flex: none;
 }
-.srow .info .l .tag {
-    margin-left: auto;
-    flex: none;
+/* Only the story's name is bold on a row; its mode follows it in muted words ("graph-file, dark"). */
+.srow .info .st {
+    font-weight: 400;
+}
+.srow .info .mode {
+    font-weight: 400;
+    color: var(--ink-2);
+    word-break: normal;
 }
 .srow .info .nm {
     height: 36px;
@@ -979,7 +1004,6 @@ body.infind .fk {
     white-space: normal;
     line-height: 18px;
     align-self: flex-start;
-    font-weight: 600;
 }
 .srow .info button {
     min-height: 24px;
@@ -992,7 +1016,6 @@ body.infind .fk {
 .srow .nmb {
     font-variant-numeric: tabular-nums;
     color: var(--ink-2);
-    font-weight: 600;
     flex: none;
 }
 .srow .info .l > .st.ell {
@@ -1034,7 +1057,8 @@ body.infind .fk {
     padding: 14px 12px;
 }
 
-/* Group headers: sticky, collapsible by the chevron (aria-expanded), the name never cut. */
+/* Group headers: sticky, one line: the chevron collapses, the name button (the name cut in the
+   middle first, its count muted) opens the group's menu, then Accept N. */
 .grp {
     position: relative;
 }
@@ -1045,11 +1069,10 @@ body.infind .fk {
     height: 32px;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     padding: 0 8px 0 10px;
     background: var(--ghead);
     border-bottom: 1px solid var(--line);
-    font-weight: 700;
     font-size: 12px;
     /* Its height is fixed, so a header off screen skips its contents without moving anything. */
     content-visibility: auto;
@@ -1068,21 +1091,8 @@ body.infind .fk {
     color: var(--ink-2);
     flex: none;
 }
-.ghead .gname1 {
-    white-space: nowrap;
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-}
 .ghead .gsp {
     flex: 1;
-}
-.ghead .sent {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    margin-left: 5px;
 }
 .ghead button {
     font-size: 11px;
@@ -1090,55 +1100,46 @@ body.infind .fk {
     min-height: 24px;
     height: 24px;
     font-weight: 400;
+    flex: none;
 }
-.ghead .acc {
-    border-color: var(--accept);
-    color: var(--ink);
+/* The name button reads as the group's name, not a box: its border shows on hover and focus. */
+.ghead button.gname {
+    font-size: 12px;
     font-weight: 700;
-}
-.ghead .acc .ic {
-    color: var(--accept);
-}
-.ghead .split {
-    font-weight: 400;
+    border-color: transparent;
+    background: transparent;
+    padding: 0 6px;
     display: inline-flex;
-    gap: 4px;
-    align-items: center;
-}
-.ghead .aa {
-    font-weight: 400;
-}
-.ghead.two {
-    height: 50px;
-    contain-intrinsic-size: auto 50px;
-    flex-wrap: wrap;
-    align-content: center;
-    row-gap: 2px;
-    padding-top: 1px;
-    padding-bottom: 1px;
-}
-.ghead.two .gname {
-    flex: 1 0 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    line-height: 20px;
-    display: flex;
     align-items: center;
     gap: 4px;
-}
-/* The split never wraps the buttons onto a third line: it starts at no width and takes the room
-   the buttons leave, shrinking (its title holds every word) when even the folded split is too wide. */
-.ghead.two .split {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
+}
+.ghead .gname .gn {
+    overflow: hidden;
     white-space: nowrap;
 }
-.ghead.two .split + .gsp {
-    display: none;
+.ghead .gname .gc {
+    font-weight: 400;
+    color: var(--ink-2);
+    flex: none;
 }
-.ghead.before {
-    background: color-mix(in srgb, var(--accept) 8%, var(--ghead));
+/* Every group's Accept N reads as a button (a neutral outline); the current snapshot's group's is
+   green and prints its quiet Shift+A. */
+.ghead .acc.mine {
+    border-color: var(--accept);
+    font-weight: 700;
+}
+/* Accepted earlier, at the bottom of the list: one quiet line. */
+.ghead.before .gname {
+    font-weight: 400;
+    color: var(--ink-2);
+}
+/* The Baselines screen's group headers: a name alone. */
+.ghead .gname1 {
+    font-weight: 700;
+    white-space: nowrap;
 }
 .gmore {
     height: 30px;

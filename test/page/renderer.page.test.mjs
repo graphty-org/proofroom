@@ -2,7 +2,7 @@
  * What a capture says about how it was made, on the new page, by real input in Chromium: the
  * renderer banner in place of the rows when the capture's renderer is not the baselines' (and never
  * when either is not recorded), with Show the changes anyway and Capture the baselines again...;
- * the "attempts disagree" badge; and the list menu's Download the comparison report (JUnit).
+ * the "unstable" badge; and the list menu's Download the comparison report (JUnit).
  */
 
 import { readFileSync } from "node:fs";
@@ -138,22 +138,21 @@ describe("the renderer banner", () => {
 });
 
 describe("a snapshot's attempts", () => {
-    it('show "attempts disagree" as a badge, never as a status', async () => {
+    it('show "unstable" as a badge, never as a status, and never folded away', async () => {
         const page = await open({}, (items) => {
             items[0].disagree = true;
         });
         const first = page.locator("#snap-list .srow").first();
         await first.waitFor();
-        // The row's line 4 has no room for it after the change size, so it folds into the "+1" chip,
-        // whose tip names it, as the mockup folds a badge that does not fit.
+        // "unstable" changes what Accept means, so it keeps its word on line 4 however tight.
         const chip = first.locator(".x4 .badge");
-        expect(await chip.innerText()).toBe("+1");
+        expect(await chip.innerText()).toBe("unstable");
         expect(await chip.getAttribute("title")).toBe(
-            "Its attempts in this run did not agree: Attempts in the details lists each",
+            "Unstable: its attempts in this run did not agree. Attempts in the details lists each",
         );
         expect(await first.locator(".st").first().innerText()).toBe("changed");
         await first.click();
-        expect(await page.locator(".iline .badge.other").innerText()).toBe("attempts disagree");
+        expect(await page.locator(".iline .badge.other").innerText()).toBe("unstable");
         // One snapshot's attempts disagree, so one row carries a badge.
         expect(await page.locator("#snap-list .srow .x4 .badge").count()).toBe(1);
     });
@@ -181,7 +180,9 @@ describe("the list menu", () => {
         expect(download.suggestedFilename()).toBe(`proofroom-${ID}.junit.xml`);
         expect(readFileSync(await download.path(), "utf8")).toBe(xml);
         expect(asked).toEqual([`/api/junit/${ID}?run=${1000 + Number(ID)}-1`]);
-        await expect.poll(() => message(page)).toBe(`Downloaded the comparison report of #${ID}: proofroom-${ID}.junit.xml.`);
+        await expect
+            .poll(() => message(page))
+            .toBe(`Downloaded the comparison report of #${ID}: proofroom-${ID}.junit.xml.`);
     });
 
     it("says why when the server has no report", async () => {

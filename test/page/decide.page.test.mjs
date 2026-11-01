@@ -644,7 +644,10 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             await page.keyboard.press("KeyA");
             await expect.poll(() => message(page)).toBe(`Accepted #${n}.`);
         }
-        await head(page, "component-0").locator('[data-act="gundo"]').click();
+        // Accept 3 holds the header's third place; Undo 2... is in the group's menu, opened by its name.
+        expect(await head(page, "component-0").locator('[data-act="gundo"]').count()).toBe(0);
+        await head(page, "component-0").locator('[data-act="gmenu"]').click();
+        await menuItem(page, "Undo 2...").click();
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Undone: 2 decisions in graphty-element > component-0.");
         await page.keyboard.press("KeyU");
@@ -749,16 +752,25 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         expect(posts("/api/accept-all")[0].body.files).toHaveLength(25);
     });
 
-    it("Approved before has Reject and Exclude but no Undo; Rejected before is replaced by Accept", async () => {
+    it("Accepted earlier has Reject and Exclude in its menu but no Undo; Rejected before is replaced by Accept", async () => {
         const page = await openIn(RICH);
         const before = page.locator(`.ghead[data-group="!before"]`);
-        expect((await before.innerText()).trim()).toMatch(/^Approved before\s+2\s+\(already accepted\)/);
+        // As text: the line is at the list's end, off screen (content-visibility), so innerText skips it.
+        expect((await before.textContent()).trim()).toBe("Accepted earlier (2)");
         expect(await before.locator('[data-act="gundo"]').count()).toBe(0);
-        await before.getByRole("button", { name: "Show", exact: true }).click();
-        const approved = page.locator("#snap-list .srow", { hasText: "Accepted (approved before #1356)" });
+        expect(await before.locator('[data-act="gaccept"]').count()).toBe(0);
+        await before.locator('[data-act="gtoggle"]').click();
+        const approved = page.locator("#snap-list .srow", { hasText: "Accepted earlier (#1356)" });
         await expect.poll(() => approved.count()).toBe(2);
         expect(await approved.getByRole("button", { name: "Undo" }).count()).toBe(0);
-        await before.getByRole("button", { name: "Reject 2..." }).click();
+        await before.locator('[data-act="gmenu"]').click();
+        expect(await page.locator(".menu .mi .ml").allInnerTexts()).toEqual([
+            "Collapse",
+            "Reject 2...",
+            "Exclude 2...",
+            "Select all 2",
+        ]);
+        await menuItem(page, "Reject 2...").click();
         await page.keyboard.type("Not the right theme");
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Rejected 2 snapshots.");

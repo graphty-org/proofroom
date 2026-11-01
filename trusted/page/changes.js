@@ -162,6 +162,9 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
                 ? "this machine"
                 : (words.ciName ?? "this machine"),
         ready: `${readyN} of ${projects.length}`,
+        // Said only while some project is not ready.
+        readyNote:
+            projects.length > 0 && readyN === projects.length ? null : `${readyN} of ${projects.length} projects ready`,
         readyAt,
         age: readyAt === null ? null : ageText(now - readyAt),
         total,
@@ -240,10 +243,10 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
         Object.assign(row, {
             state: "half",
             mark: ["half", "c-new"],
-            count: `${fmt(decided)} of ${fmt(total)} decided`,
+            count: `${fmt(undecided)} left of ${fmt(total)}`,
         });
     } else {
-        Object.assign(row, { state: "review", mark: ["open", "c-new"], count: `${fmt(undecided)} undecided` });
+        Object.assign(row, { state: "review", mark: ["open", "c-new"], count: `${fmt(undecided)} left` });
     }
     if (row.deleted && row.state !== "look") {
         Object.assign(row, {
@@ -254,7 +257,10 @@ export function changeOf(t, { defaultBranch, now, shares = new Map(), dismissed 
     } else if (row.evicted !== null && ["review", "half", "decided", "finished", "nothing"].includes(row.state)) {
         // Its counts as before, an open circle, and what opening it costs.
         row.mark = ["open", "c-ink2"];
-        row.badges.push({ text: `Images not on disk: opening downloads ${megabytes(row.evicted)}` });
+        row.badges.push({
+            text: `${megabytes(row.evicted)} to download`,
+            title: `Images not on disk: opening downloads ${megabytes(row.evicted)}`,
+        });
     } else {
         row.evicted = null;
     }
@@ -334,6 +340,7 @@ export function captureRowOf(c, { now, words = GITHUB_WORDS, status = true }) {
         source: onCi ? (words.ciName ?? "CI") : "this machine",
         onCi,
         ready: `0 of ${c.projects.length}`,
+        readyNote: `0 of ${c.projects.length} projects ready`,
         readyAt: c.createdAt,
         age: ageText(now - c.createdAt),
         total: 0,
@@ -466,7 +473,10 @@ export function nextNeeding(rows, sort, openId) {
 function rowOf(app, r) {
     const current = r.id === app.currentChangeId();
     const title = `${r.num}${r.title}`;
-    const details = [r.branch, r.author, r.source, `${r.ready} projects ready`, r.age].filter(Boolean).join("  ");
+    // Line 2 holds the count and one badge, never a word cut: the details are in the tooltip.
+    const details = [r.branch, r.author && `by ${r.author}`, `from ${r.source}`, r.readyNote, r.age]
+        .filter(Boolean)
+        .join(" - ");
     const acts = [];
     if (r.capId !== null) {
         // A capture from the page: its log is on the Captures screen. One on CI says how to follow
@@ -503,7 +513,7 @@ function rowOf(app, r) {
         attrs: {
             class: `chg ${current ? "cur" : ""}`,
             "data-chg": r.id,
-            title,
+            title: `${title}\n${details}`,
             role: "option",
             "aria-selected": current ? "true" : "false",
             "aria-label": `${title}: ${r.count}`,
@@ -521,13 +531,39 @@ function rowOf(app, r) {
                 { class: "l2" },
                 el(
                     "span",
-                    { class: "cnt", title: r.why ?? null },
+                    { class: "cnt", title: r.why ?? r.count },
                     r.mark ? ic(r.mark[0], r.mark[1]) : null,
                     el("span", { class: r.mark ? "" : "muted" }, r.count),
                 ),
-                el("span", { class: "ell grow" }, details),
-                r.badges.map((b) =>
-                    el("span", { class: "badge", title: b.title ?? b.text }, b.mark ? ic(b.mark[0], b.mark[1]) : null, b.text),
+                // The first badge and "+N more" (its tooltip names the rest): what does not fit
+                // wraps whole onto a line that is never shown, so no word is cut.
+                el(
+                    "span",
+                    { class: "bdg grow" },
+                    el("span", { class: "bdg0" }),
+                    r.badges
+                        .slice(0, 1)
+                        .map((b) =>
+                            el(
+                                "span",
+                                { class: "badge", title: b.title ?? b.text },
+                                b.mark ? ic(b.mark[0], b.mark[1]) : null,
+                                b.text,
+                            ),
+                        ),
+                    r.badges.length > 1
+                        ? el(
+                              "span",
+                              {
+                                  class: "badge",
+                                  title: r.badges
+                                      .slice(1)
+                                      .map((b) => b.title ?? b.text)
+                                      .join("\n"),
+                              },
+                              `+${r.badges.length - 1} more`,
+                          )
+                        : null,
                 ),
                 acts,
             ),

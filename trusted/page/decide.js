@@ -691,17 +691,21 @@ export function installDecide(app) {
     };
 
     /**
-     * A group's [...] menu: Reject N..., Exclude N..., Select all N, Show all.
+     * A group's menu, opened by its name: Collapse or Expand, Reject N..., Exclude N..., Select all
+     * N, and Undo N while it holds decisions to take back.
      * @param {string} key the group
      * @param {HTMLElement} anchor its button
      */
     app.groupMenu = (key, anchor) => {
         const sc = app.groupScope(key);
+        const ctx = { group: key };
         app.showMenu(anchor, [
-            { id: "greject", label: `Reject ${fmt(sc.all.length)}...`, ctx: { group: key } },
-            { id: "gexclude", label: `Exclude ${fmt(sc.all.length)}...`, ctx: { group: key } },
-            { id: "gselect", label: `Select all ${fmt(sc.rows.length)}`, ctx: { group: key } },
-            { id: "gshowall", label: "Show all", ctx: { group: key } },
+            { id: "gtoggle", label: app.lv.collapsed.has(key) ? "Expand" : "Collapse", ctx },
+            { sep: true },
+            { id: "greject", label: `Reject ${fmt(sc.all.length)}...`, ctx },
+            { id: "gexclude", label: `Exclude ${fmt(sc.all.length)}...`, ctx },
+            { id: "gselect", label: `Select all ${fmt(sc.rows.length)}`, ctx },
+            ...(sc.undoable.length > 0 ? [{ id: "gundo", label: `Undo ${fmt(sc.undoable.length)}...`, ctx }] : []),
         ]);
     };
 

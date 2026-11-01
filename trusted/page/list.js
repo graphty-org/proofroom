@@ -27,7 +27,7 @@ import {
     storyOf,
     undecided,
 } from "./groups.js";
-import { DECISION, ORDER, STATUS, mark, statusMark } from "./marks.js";
+import { DECISION, ORDER, STATUS, mark } from "./marks.js";
 import { ROW_ZOOM_FROM } from "./spot.js";
 import { el, fmt, fmtShort, ic, kb } from "./ui.js";
 
@@ -931,8 +931,8 @@ export function sizeText(s, count = s.areas?.count) {
 const changeLabel = (app) => app.open()?.label ?? "";
 
 /**
- * A decision's words, whole: "Accepted", "Accepted (not opened)", "Accepted (approved before
- * #1356)", "Rejected: reason", "Rejected before (#3486, 2026-10-20): reason" (the date when the
+ * A decision's words, whole: "Accepted", "Accepted (not opened)", "Accepted earlier
+ * (#1356)", "Rejected: reason", "Rejected before (#3486, 2026-10-20): reason" (the date when the
  * server recorded one), "Excluded: reason", "Finished: it is on the branch".
  * @param {any} app the page
  * @param {any} s the snapshot
@@ -950,7 +950,7 @@ export function decisionWords(app, s) {
         if (s.before) {
             const pr = d.approvedBefore.pr;
             const before = pr === null || pr === undefined ? "on the seed" : `${wordsOf(app.list).numberPrefix}${pr}`;
-            return `Accepted (approved before ${before})`;
+            return `Accepted earlier (${before})`;
         }
         return d.bulk ? "Accepted (not opened)" : "Accepted";
     }
@@ -1024,7 +1024,7 @@ function pictureOf(app, s) {
 export function badgesOf(app, s) {
     const out = [];
     if (s.status === "changed" && s.size && s.baselineSize && String(s.size) !== String(s.baselineSize)) {
-        out.push({ text: "size changed" });
+        out.push({ text: "resized", title: "Resized: the new image is a different size from the baseline" });
     }
     if (s.reReview) {
         out.push({
@@ -1034,8 +1034,8 @@ export function badgesOf(app, s) {
     }
     if (s.disagree) {
         out.push({
-            text: "attempts disagree",
-            title: "Its attempts in this run did not agree: Attempts in the details lists each",
+            text: "unstable",
+            title: "Unstable: its attempts in this run did not agree. Attempts in the details lists each",
             cls: "other",
             mark: "wavy",
         });
@@ -1043,7 +1043,11 @@ export function badgesOf(app, s) {
     // Last, as the mockup orders them: the identical change's count.
     const pair = pairOf(s);
     if (pair && app.lv.grouping !== "same" && (app.lv.pairs.get(pair) ?? 0) > 1) {
-        out.push({ text: `same as ${fmt(app.lv.pairs.get(pair) - 1)} others` });
+        const others = app.lv.pairs.get(pair) - 1;
+        out.push({
+            text: `+${fmt(others)} identical`,
+            title: `The same change as ${fmt(others)} other ${others === 1 ? "snapshot" : "snapshots"}`,
+        });
     }
     return out;
 }
@@ -1062,18 +1066,54 @@ export const badgeNode = (b) =>
         b.text,
     );
 
-// Line 4's badges: the first that fits after the change size, the rest as one "+N" chip.
+// Badges that never fold: they change what Accept means.
+const PINNED = new Set(["resized", "unstable"]);
+const badgeW = (b) => textWidth(b.text, BADGE_FONT()) + 14 + (b.mark ? 15 : 0);
+const MORE_W = () => textWidth("+99 more", BADGE_FONT()) + 20;
+
+// Line 4's badges in a width: "resized" and "unstable" always, then as many of the others as fit,
+// the rest folded into "+N more" (its tooltip names them) only when 2 or more are left: one left
+// shows its own word. Returns the badges drawn whole and the folded ones.
+function badgeFit(badges, room) {
+    const pinned = badges.filter((b) => PINNED.has(b.text));
+    const rest = badges.filter((b) => !PINNED.has(b.text));
+    let left = room - pinned.reduce((w, b) => w + badgeW(b) + 6, 0);
+    const shown = [];
+    for (const [i, b] of rest.entries()) {
+        const after = rest.length - i - 1;
+        // The last one, or room for it and the fold of the others.
+        if (badgeW(b) + (after > 1 ? MORE_W() : after === 1 ? badgeW(rest[i + 1]) + 6 : 0) > left) {
+            break;
+        }
+        shown.push(b);
+        left -= badgeW(b) + 6;
+    }
+    let folded = rest.slice(shown.length);
+    if (folded.length === 1) {
+        shown.push(folded[0]);
+        folded = [];
+    }
+    return { shown: [...pinned, ...shown], folded };
+}
+
+// The least room a row's badges take: the pinned ones and the first other, or the fold.
+const badgeNeed = (badges) => {
+    const { shown, folded } = badgeFit(badges, 0);
+    return shown.reduce((w, b) => w + badgeW(b) + 6, 0) + (folded.length > 0 ? MORE_W() : 0);
+};
+
 function badgeNodes(badges, room) {
-    if (badges.length === 0) {
-        return [];
-    }
-    const chip = (list) =>
-        el("span", { class: "badge", title: list.map((b) => b.title ?? b.text).join(", ") }, `+${list.length}`);
-    const fits = textWidth(badges[0].text, BADGE_FONT()) + 14 + (badges.length > 1 ? 30 : 0) <= room;
-    if (!fits) {
-        return [chip(badges)];
-    }
-    return [badgeNode(badges[0]), badges.length > 1 ? chip(badges.slice(1)) : null];
+    const { shown, folded } = badgeFit(badges, room);
+    return [
+        ...shown.map(badgeNode),
+        folded.length > 0
+            ? el(
+                  "span",
+                  { class: "badge more", title: folded.map((b) => b.title ?? b.text).join("\n") },
+                  `+${fmt(folded.length)} more`,
+              )
+            : null,
+    ];
 }
 
 /**
@@ -1112,24 +1152,27 @@ export function rowOf(app, s, filled = true) {
         { class: "l" },
         el("span", { class: "nmb" }, `#${s.n}`),
         el("span", { class: "st ell" }, mark(st?.shape ?? "wavy", st?.cls ?? "c-ink2"), word),
-        s.mode ? el("span", { class: "tag" }, s.mode) : null,
     );
+    // The story's name, the one bold thing on the row, and its mode as muted words after it:
+    // "graph-file, dark".
+    const mode = s.mode ? `, ${s.mode}` : "";
+    const modeW = s.mode ? textWidth(mode, `12px ${FONT()}`) : 0;
+    const named = (text) => [text, s.mode ? el("span", { class: "mode" }, mode) : null];
     let body;
     if (!s.decision) {
-        const one = textWidth(s.name, NAME_FONT()) <= textW;
+        const one = textWidth(s.name, NAME_FONT()) + modeW <= textW;
         const l23 = one
             ? [
-                  el("div", { class: "nm1" }, s.name),
+                  el("div", { class: "nm1" }, named(s.name)),
                   el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)),
               ]
-            : [el("div", { class: "nm" }, midCut(s.name, 2 * textW - 24, NAME_FONT()))];
+            : [el("div", { class: "nm" }, named(midCut(s.name, 2 * textW - 24 - modeW, NAME_FONT())))];
         // The zoom's words only with the picture they describe. When tight, "to 3 of them" goes
         // first, then the zoom (the picture's bar still marks it), before a badge's word folds;
         // the whole is in the tooltip.
         const words = rowSizeText(s, lv.pics.none ? null : pictureKind(s, lv.pics));
         const badges = badgesOf(app, s);
-        const need =
-            badges.length > 0 ? textWidth(badges[0].text, BADGE_FONT()) + 14 + (badges.length > 1 ? 30 : 0) : 0;
+        const need = badgeNeed(badges);
         const width = (x) => (x ? textWidth(x, SIZE_FONT()) + 8 : 0);
         const size = [words.full, words.short].find((x) => width(x) + need <= textW) ?? sizeText(s);
         body = [
@@ -1151,7 +1194,7 @@ export function rowOf(app, s, filled = true) {
                       ctx: { key: s.key },
                       attrs: { title: "Undo this decision" },
                   });
-        const name1 = el("div", { class: "nm1" }, midCut(s.name, textW, NAME_FONT()));
+        const name1 = el("div", { class: "nm1" }, named(midCut(s.name, textW - modeW, NAME_FONT())));
         const long = s.decision.decision !== "accept" || textWidth(words, NAME_FONT()) + 22 + (undo ? 60 : 0) > textW;
         body = long
             ? [
@@ -1188,35 +1231,10 @@ export function rowOf(app, s, filled = true) {
     ]);
 }
 
-// A group's count, or its status split with the marks and the words: "19: [diamond] 12 changed [plus] 7 new".
-function countOf(g, fold) {
-    const split = splitOf(g);
-    if (!split) {
-        return el("span", { class: "muted num" }, fmt(g.rows.length));
-    }
-    const keep = fold ? split.filter(([st]) => !["changed", "moved"].includes(st)) : split;
-    const folded = fold ? split.filter(([st]) => ["changed", "moved"].includes(st)) : [];
-    return el(
-        "span",
-        { class: "split muted num", title: `${fmt(g.rows.length)}: ${splitWords(split)}` },
-        `${fmt(g.rows.length)}: `,
-        keep.map(([st, n]) =>
-            el("span", { class: "sent" }, mark(STATUS[st].shape, STATUS[st].cls), `${fmt(n)} ${STATUS[st].word}`),
-        ),
-        folded.length > 0
-            ? el(
-                  "span",
-                  { class: "badge", title: splitWords(folded) },
-                  `+${fmt(folded.reduce((a, [, n]) => a + n, 0))} other`,
-              )
-            : null,
-    );
-}
-
 /**
  * What a group header's actions act on: the undecided rows the group shows (Accept N), how many
  * more undecided rows of the group Show and Find hide (never touched), and the decisions in it its
- * Undo N takes back. Approved before acts on all its rows: they are decided by the server.
+ * Undo N takes back. Accepted earlier acts on all its rows: they are decided by the server.
  * @param {any} app the page
  * @param {any} g the group, as layoutOf gives it
  * @returns {{ und: any[], hidden: number, undoable: any[], all: any[] }} the rows
@@ -1266,69 +1284,63 @@ function countHidden(app) {
     }
 }
 
-// A header's buttons, at their labels: Accept N (with the Shift+A box counted, so the layout never
-// depends on the current row), Undo N and [...]; for Approved before, Reject N..., Exclude N...,
-// Show and [...].
-function headButtonLabels(app, g, compact) {
+const groupName = (g) =>
+    g.key === BEFORE ? "Accepted earlier" : g.kind === "status" ? (STATUS[g.label]?.word ?? g.label) : g.label;
+
+// A header's third control: Accept N while the group holds undecided rows (a neutral outline; green,
+// with its quiet Shift+A, only on the current snapshot's group), else Undo N while it holds
+// decisions to take back. Accepted earlier has none: its Reject N... and Exclude N... are in its menu.
+function headAction(app, g, name) {
     const sc = groupScope(app, g);
     if (g.key === BEFORE) {
-        const n = fmt(g.rows.length);
-        return [...(compact ? [] : [`Reject ${n}...`, `Exclude ${n}...`]), ...(g.collapsed ? ["Show"] : []), "..."];
+        return null;
     }
-    return [
-        ...(sc.und.length ? [`${acceptLabel(sc)} Shift+A  `] : []),
-        ...(sc.undoable.length ? [`Undo ${fmt(sc.undoable.length)}`] : []),
-        "...",
-    ];
-}
-
-// How the header fits: one line, or the name over its split, the split folding changed and moved
-// into "+N other" only when its own line is still too narrow. The name is never cut. Approved
-// before stays one line: in a narrow pane its Reject and Exclude move into its [...] menu.
-function headLayout(app, g, name) {
-    const room = app.lv.listW - 28;
-    const btnsW = (compact) =>
-        headButtonLabels(app, g, compact).reduce((w, l) => w + textWidth(l, `11px ${FONT()}`) + 22, 0);
+    const zone = "rows";
+    const ctx = { group: g.key };
+    if (sc.und.length === 0) {
+        return sc.undoable.length > 0 ? control(app, "gundo", { zone, ctx, attrs: { title: "Asks first" } }) : null;
+    }
     const split = splitOf(g);
-    const font = `700 12px ${FONT()}`;
-    const nameW =
-        24 + textWidth(name, font) + (g.key === BEFORE && g.collapsed ? textWidth(" (already accepted)", font) : 0);
-    const splitW = (fold) => {
-        if (!split) {
-            return textWidth(fmt(g.rows.length), font) + 6;
-        }
-        const keep = fold ? split.filter(([st]) => !["changed", "moved"].includes(st)) : split;
-        return (
-            textWidth(`${g.rows.length}: `, font) +
-            keep.reduce((w, [st, n]) => w + 20 + textWidth(`${n} ${STATUS[st].word}`, font), 0) +
-            (fold && keep.length < split.length ? textWidth("+999 other", font) + 18 : 0)
-        );
-    };
-    if (nameW + splitW(false) + btnsW(false) <= room) {
-        return { two: false, fold: false, compact: false };
-    }
-    if (g.key === BEFORE) {
-        return { two: false, fold: false, compact: true };
-    }
-    if (!split) {
-        return { two: true, fold: false, compact: false };
-    }
-    return { two: true, fold: splitW(false) + btnsW(false) > room, compact: false };
+    const label = acceptLabel(sc);
+    // Its key only while the current snapshot is in this group: Shift+A accepts that group.
+    const mine = g.rows.some((s) => s.key === app.snap);
+    return control(app, "gaccept", {
+        zone,
+        ctx,
+        keyed: mine,
+        attrs: {
+            class: mine ? "acc mine" : "acc",
+            title: `${label} in ${name}${split ? ` (${splitWords(split)})` : ""}`,
+        },
+        children: [label, mine ? kb("Shift+A", true) : null],
+    });
 }
 
-const groupName = (g) =>
-    g.key === BEFORE ? "Approved before" : g.kind === "status" ? (STATUS[g.label]?.word ?? g.label) : g.label;
+// The width a header's third control takes, its Shift+A counted on every group, so a header's
+// layout never depends on the current row.
+function actionWidth(app, g) {
+    const sc = groupScope(app, g);
+    if (g.key === BEFORE || (sc.und.length === 0 && sc.undoable.length === 0)) {
+        return 0;
+    }
+    const font = `11px ${FONT()}`;
+    return sc.und.length > 0
+        ? textWidth(acceptLabel(sc), `700 ${font}`) + textWidth("Shift+A", font) + 22
+        : textWidth(`Undo ${fmt(sc.undoable.length)}`, font) + 22;
+}
 
 /**
- * A group's sticky header: the chevron (with `aria-expanded`), the name, the count or status split.
+ * A group's sticky header, one line: the chevron (collapses and expands, with `aria-expanded`), the
+ * name button `name (3)` that opens the group's menu (its count muted, the name cut in the middle
+ * first), and Accept N.
  * @param {any} app the page
  * @param {any} g the group
  * @returns {{ node: HTMLElement, height: number }} the header and its height
  */
 function headerOf(app, g) {
     const name = groupName(g);
-    const lay = headLayout(app, g, name);
     const open = !g.collapsed;
+    const before = g.key === BEFORE;
     const caret = control(app, "gtoggle", {
         zone: "rows",
         ctx: { group: g.key },
@@ -1340,96 +1352,45 @@ function headerOf(app, g) {
         },
         children: [mark(open ? "chevOpen" : "chevClosed")],
     });
-    const label =
-        g.key === BEFORE
-            ? el("span", { class: "st" }, mark(DECISION.before.shape, DECISION.before.cls), "Approved before")
-            : g.kind === "status"
-              ? statusMark(g.label)
-              : el("span", {}, g.label);
-    const before = g.key === BEFORE;
-    const count = before
-        ? [
-              el("span", { class: "muted num" }, fmt(g.rows.length)),
-              g.collapsed ? el("span", { class: "muted aa" }, " (already accepted)") : null,
-          ]
-        : [countOf(g, lay.fold)];
-    const buttons = headButtons(app, g, name, lay);
-    const height = lay.two ? 50 : 32;
-    const node = lay.two
-        ? el(
-              "div",
-              { class: `ghead two ${before ? "before" : ""}`, "data-group": g.key, title: name },
-              el("span", { class: "gname" }, caret, label),
-              count,
-              el("span", { class: "gsp" }),
-              buttons,
-          )
-        : el(
-              "div",
-              { class: `ghead ${before ? "before" : ""}`, "data-group": g.key, title: name },
-              caret,
-              el("span", { class: "gname1" }, label, " ", count),
-              el("span", { class: "gsp" }),
-              buttons,
-          );
-    return { node, height };
-}
-
-// A header's buttons (design 4.5), every one acting on exactly the rows the group shows.
-function headButtons(app, g, name, lay) {
-    const ctx = { group: g.key };
-    const zone = "rows";
-    const sc = groupScope(app, g);
-    const menu = control(app, "gmenu", { zone, ctx, attrs: { title: "More for this group" } });
-    const showRows =
-        g.collapsed && g.key === BEFORE
-            ? control(app, "gshowall", {
-                  zone,
-                  ctx,
-                  label: "Show",
-                  attrs: { title: `Show the ${g.rows.length} rows` },
-              })
-            : null;
-    if (g.key === BEFORE) {
-        return [
-            lay.compact
-                ? null
-                : [
-                      control(app, "greject", {
-                          zone,
-                          ctx,
-                          attrs: { title: "Reject every approved-before snapshot here, with one reason" },
-                      }),
-                      control(app, "gexclude", {
-                          zone,
-                          ctx,
-                          attrs: { title: "Exclude every approved-before snapshot here, with one reason" },
-                      }),
-                  ],
-            showRows,
-            menu,
-        ];
-    }
     const split = splitOf(g);
-    const label = acceptLabel(sc);
-    // Its key box only while the current snapshot is in this group: Shift+A accepts that group.
-    const mine = g.rows.some((s) => s.key === app.snap);
-    return [
-        sc.und.length > 0
-            ? control(app, "gaccept", {
-                  zone,
-                  ctx,
-                  keyed: mine,
-                  attrs: {
-                      class: "acc",
-                      title: `${label} in ${name}${split ? ` (${splitWords(split)})` : ""}`,
-                  },
-                  children: [ic("accept"), ` ${label}`, mine ? kb("Shift+A") : null],
-              })
-            : null,
-        sc.undoable.length > 0 ? control(app, "gundo", { zone, ctx, attrs: { title: "Asks first" } }) : null,
+    // A component group is named by its component alone ("legend (14)"), its project in the
+    // tooltip, unless another project has a component of that name.
+    const comp = g.kind === "component" ? g.rows[0].component : null;
+    const twin =
+        comp !== null &&
+        layoutOf(app.lv, app.snaps).groups.some(
+            (o) => o.key !== g.key && o.kind === "component" && o.rows[0]?.component === comp,
+        );
+    const label = comp !== null && !twin ? comp : name;
+    const count = ` (${fmt(g.rows.length)})`;
+    const shape = before ? DECISION.before : g.kind === "status" ? STATUS[g.label] : null;
+    const font = `${before ? 400 : 700} 12px ${FONT()}`;
+    // The list's width less the header's padding, the chevron, the gaps, the name button's padding,
+    // its mark, the count and the third control.
+    const room = app.lv.listW - 64 - (shape ? 16 : 0) - textWidth(count, `12px ${FONT()}`) - actionWidth(app, g);
+    const menu = control(app, "gmenu", {
+        zone: "rows",
+        ctx: { group: g.key },
+        attrs: {
+            class: "gname",
+            "aria-haspopup": "menu",
+            title: `${name}: ${fmt(g.rows.length)}${split ? ` (${splitWords(split)})` : ""}. Opens the group's menu`,
+        },
+        children: [
+            shape ? mark(shape.shape, shape.cls) : null,
+            el("span", { class: "gn" }, midCut(label, Math.max(room, 48), font)),
+            el("span", { class: "gc" }, count),
+        ],
+    });
+    const node = el(
+        "div",
+        { class: `ghead ${before ? "before" : ""}`, "data-group": g.key, title: name },
+        caret,
         menu,
-    ];
+        el("span", { class: "gsp" }),
+        headAction(app, g, name),
+    );
+    return { node, height: 32 };
 }
 
 /**
@@ -1700,7 +1661,7 @@ export const groupItems = (app) =>
 export function pictureItems(app) {
     const p = app.lv.pics;
     return [
-        { id: "picspot", label: "Spotlight rows (switch)", checked: p.spot && !p.none, check: true },
+        { id: "picspot", label: "Spotlight rows", checked: p.spot && !p.none, check: true },
         { head: "Zoom rows to the change" },
         ...Object.entries(ZOOMS).map(([k, label]) => ({
             id: "piczoom",

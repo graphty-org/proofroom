@@ -113,8 +113,8 @@ describe("with 50 changes", () => {
         // Every row state's words, as a reader sees them.
         const text = await page.locator("#chg-list").innerText();
         for (const words of [
-            "3 undecided",
-            "31 of 60 decided",
+            "3 left",
+            "29 left of 60",
             "9 decided, not finished",
             "Downloading: 2 of 3 projects (68 MB)",
             "Capturing on CI, 2 of 3 projects",
@@ -137,6 +137,30 @@ describe("with 50 changes", () => {
             "graphty-element: artifact expired: re-run the visual job",
         );
         expect(await incomplete.getByRole("button", { name: "Job log" }).count()).toBe(0);
+        // Line 2 holds the count and at most one badge, "+N more" naming the rest in its tooltip,
+        // never a word cut; the details are in the row's tooltip, joined by " - ".
+        for (const r of await page.locator(".chg").all()) {
+            // The badges drawn on line 2 (one that does not fit wraps whole onto the hidden line).
+            const shown = await r
+                .locator(".l2 .badge")
+                .evaluateAll(
+                    (n) =>
+                        n.filter((b) => b.getBoundingClientRect().top < b.parentElement.getBoundingClientRect().bottom)
+                            .length,
+                );
+            expect(shown).toBeLessThanOrEqual(2);
+        }
+        const cut = await page
+            .locator(".chg .l2 .badge")
+            .evaluateAll((n) => n.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent));
+        expect(cut).toEqual([]);
+        expect(await page.locator(".chg .l2 .ell").count()).toBe(0);
+        expect(await page.locator('.chg[data-chg="3484"]').getAttribute("title")).toMatch(
+            /^#3484 Legend overlay\n.* - by mlin - from CI - 4 min ago$/,
+        );
+        expect(await page.locator('.chg[data-chg="3477"]').getAttribute("title")).toContain(
+            " - 2 of 3 projects ready - ",
+        );
         // Kind tags: a pull request, a preview and a seed.
         const tags = await page.locator(".chg .tag").allInnerTexts();
         expect(new Set(tags)).toEqual(new Set(["PR", "preview", "seed"]));
@@ -284,7 +308,8 @@ describe("with 50 changes", () => {
         await page.keyboard.press("ArrowDown");
         await expect.poll(() => page.locator("#snap-list .summary .title").innerText()).toBe("#3484 Legend overlay");
         const text = await page.locator("#snap-list").innerText();
-        expect(text).toContain("by mlin, from CI, 1 of 1 projects ready, 4 min ago");
+        // Every project ready: not said.
+        expect(text).toContain("by mlin, from CI, 4 min ago");
         // One plain sentence of what the change holds, and what is left.
         expect(text).toContain("3 snapshots: 3 changed");
         expect(text).toContain("3 left");
@@ -580,9 +605,7 @@ describe("on the real server", () => {
             expect(await page.locator("#repo").innerText()).toBe("remote");
             await page.keyboard.press("Escape");
             await expect.poll(() => page.locator(".chg.cur").innerText()).toContain("#123 PR 123");
-            expect(await page.locator(".chg.cur").innerText()).toMatch(
-                /feature\s+octocat\s+CI\s+2 of 2 projects ready\n/,
-            );
+            expect(await page.locator(".chg.cur").getAttribute("title")).toMatch(/\nfeature - by octocat - from CI$/);
         } finally {
             await page.close();
             await s.close();

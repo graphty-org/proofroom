@@ -108,11 +108,17 @@ describe("the page on a plain git repository", () => {
         // The branch's row: named by the branch, its title and author its last commit's.
         const row = page.locator('.chg[data-chg="branch-feat%2Fx"]');
         // Ready once its one project is: the capture has ended and been read.
-        await expect.poll(() => row.innerText()).toContain("1 of 1 projects ready");
+        // Its tooltip says how many projects are ready only while one is not.
+        await expect
+            .poll(async () => {
+                const tip = (await row.count()) ? await row.getAttribute("title") : "";
+                return /by Owner/.test(tip) && !/projects ready/.test(tip);
+            })
+            .toBe(true);
         const rowText = await row.innerText();
         expect(rowText).toContain("branch");
         expect(rowText).toContain("feature");
-        expect(rowText).toContain("Owner");
+        expect(await row.getAttribute("title")).toContain("by Owner");
         // Its menu has no Open on the code host.
         await page.locator('.chg[data-chg="branch-feat%2Fx"] [data-act="rowmenu"]').click();
         const menu = page.getByRole("menu");

@@ -1407,28 +1407,29 @@ await step("Find a snapshot", async ({ check }) => {
         .catch(() => check(false, "Esc did not clear Find"));
 });
 
-// Opens up to three rows of the Approved before group, showing it first; skips without one.
+// Opens up to three rows of the Accepted earlier group, opening it first; skips without one.
 async function approvedBefore(check) {
     const head = page.locator("#snap-list .ghead.before").first();
     if (!(await head.count())) {
-        skip("the open change lists no Approved before group");
+        skip("the open change lists no Accepted earlier group");
     }
     const grp = page.locator("#snap-list .grp").filter({ has: page.locator(".ghead.before") });
-    const show = grp.locator('[data-act="gshowall"]').filter({ visible: true });
-    if (await show.count()) {
-        await show.first().click();
+    // Accepted earlier sits collapsed at the bottom of the list: its chevron opens it.
+    const caret = head.locator('[data-act="gtoggle"]');
+    if ((await caret.getAttribute("aria-expanded")) === "false") {
+        await caret.click();
     }
     const rows = grp.locator('[data-act="pickrow"]');
     await rows
         .first()
         .waitFor({ timeout: 15_000 })
-        .catch(() => check(false, "showing Approved before showed no row"));
+        .catch(() => check(false, "opening Accepted earlier showed no row"));
     const k = Math.min(3, await rows.count());
     for (let i = 0; i < k; i++) {
         await rows.nth(i).click();
         await viewerSettled();
         const e = await viewerError();
-        check(!e, `viewer error on Approved before #${await itemNumber()}: ${e}`);
+        check(!e, `viewer error on Accepted earlier #${await itemNumber()}: ${e}`);
     }
 }
 

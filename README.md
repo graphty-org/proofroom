@@ -582,7 +582,7 @@ from its own artifact, and nothing else:
 
 - **A decision is bound to the one render it was taken on.** When the story is rendered again, the
   decision is dropped, even when the new image is byte for byte the same. Nothing counts as
-  "Approved before" here, and no decision is carried to another commit or to a candidate.
+  "Accepted earlier" here, and no decision is carried to another commit or to a candidate.
 - **Finish** commits the accepts on the render commit, pushes them to `visual/approve-rolling-<sha>`
   and opens a pull request to the default branch, changing only the baselines and approvals
   directories. Its subject is `<prefix>: rolling approval of visual baselines rendered at <sha>`, so

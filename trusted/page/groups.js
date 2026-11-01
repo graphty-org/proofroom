@@ -1,6 +1,6 @@
 /*
  * The snapshot list's groupings (design 4.4): Component, Same change, Project, Status and None, and
- * the Approved before group at the top of every grouping. An identical change is a fact (the same
+ * the Accepted earlier group at the bottom of every grouping. An identical change is a fact (the same
  * baseline and new image hashes); a look-alike group is the server's guess (filters.mjs clusters()),
  * so the two are labeled differently. Pure functions over the list's snapshots.
  */
@@ -16,7 +16,7 @@ export const GROUPINGS = {
     none: "None",
 };
 
-/** The Approved before group's key. */
+/** The Accepted earlier group's key (images accepted before this capture). */
 export const BEFORE = "!before";
 
 /** A group over this many rows that holds undecided rows opens collapsed (all but the first). */
@@ -98,8 +98,9 @@ const byNumber = (a, b) => a.n - b.n;
 export const undecided = (s) => !s.decision && STATUS[s.status]?.accept !== false;
 
 /**
- * The groups the list draws, in order: Approved before first, then by name (by the status order
- * for Status; identical changes, look-alikes, then the rest for Same change). In each group the
+ * The groups the list draws, in order: by name (by the status order
+ * for Status; identical changes, look-alikes, then the rest for Same change), Accepted earlier
+ * last. In each group the
  * rows follow the status order, then the snapshot number; None is one group in number order.
  * @param {object[]} rows the snapshots shown (Show and Find applied)
  * @param {{ grouping: string, all: object[], clusters: Map<string, { name: string, files: Set<string>,
@@ -121,7 +122,7 @@ export function groupsOf(rows, { grouping, clusters, pairs }) {
     for (const s of rows) {
         // The group a row arrived in: a decision taken since never moves it.
         if (s.beforeGroup ?? s.before) {
-            add(BEFORE, "Approved before", "before", s);
+            add(BEFORE, "Accepted earlier", "before", s);
             continue;
         }
         if (grouping === "component") {
@@ -157,7 +158,7 @@ export function groupsOf(rows, { grouping, clusters, pairs }) {
     const out = [...groups.values()];
     out.sort((a, b) => {
         if (a.kind === "before" || b.kind === "before") {
-            return a.kind === "before" ? -1 : 1;
+            return a.kind === "before" ? 1 : -1;
         }
         if (grouping === "status") {
             return ORDER.indexOf(a.label) - ORDER.indexOf(b.label);
@@ -207,7 +208,7 @@ export const splitWords = (split) =>
 
 /**
  * The groups that open collapsed: every group over 50 rows that holds undecided rows, except the
- * first such; and Approved before, unless Show is All or Accepted earlier.
+ * first such; and Accepted earlier, unless Show is All or Accepted earlier.
  * @param {{ key: string, rows: object[] }[]} groups the groups
  * @param {string} show the Show choice
  * @returns {Set<string>} their keys

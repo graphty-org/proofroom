@@ -69,6 +69,54 @@ describe("text contrast", () => {
     });
 });
 
+// One color laid over another at a share, as color-mix(in srgb, a p%, b) and opacity draw it.
+const mix = (a, b, p) =>
+    `#${[1, 3, 5]
+        .map((i) =>
+            Math.round(parseInt(a.slice(i, i + 2), 16) * p + parseInt(b.slice(i, i + 2), 16) * (1 - p))
+                .toString(16)
+                .padStart(2, "0"),
+        )
+        .join("")}`;
+
+describe("text on every tint, and the keys", () => {
+    // The share of each tint, read from the rule that draws it.
+    const share = (rule, token) => {
+        const m = CSS.slice(CSS.indexOf(rule)).match(new RegExp(`color-mix\\(in srgb, var\\(--${token}\\) (\\d+)%`));
+        return Number(m[1]) / 100;
+    };
+    const boxed = Number(CSS.slice(CSS.indexOf("\nkbd {")).match(/opacity:\s*([\d.]+)/)[1]);
+    const tints = (t) => ({
+        surface: t.surface,
+        bg: t.bg,
+        rail: t.rail,
+        ghead: t.ghead,
+        hover: t.hover,
+        current: t.sel,
+        selected: mix(t.sel, t.surface, share(".srow.selx:not(.cur)", "sel")),
+        warn: mix(t.warn, t.surface, share(".warnbox", "warn")),
+    });
+    for (const [theme, tokens] of [
+        ["light", LIGHT],
+        ["dark", DARK],
+    ]) {
+        it.each(Object.keys(tints(tokens)))(`${theme}: ink, muted ink and both keys on %s are 4.5:1 or more`, (k) => {
+            const bg = tints(tokens)[k];
+            expect(contrast(tokens.ink, bg)).toBeGreaterThanOrEqual(4.5);
+            // Muted words and a quiet key (kbd.quiet: --ink-2, no box).
+            expect(contrast(tokens["ink-2"], bg)).toBeGreaterThanOrEqual(4.5);
+            // A boxed key: the ink at its opacity.
+            expect(contrast(mix(tokens.ink, bg, boxed), bg)).toBeGreaterThanOrEqual(4.5);
+        });
+    }
+
+    it("draws a quiet key in the muted ink, at full strength", () => {
+        const rule = CSS.slice(CSS.indexOf("kbd.quiet {"), CSS.indexOf("}", CSS.indexOf("kbd.quiet {")));
+        expect(rule).toMatch(/color:\s*var\(--ink-2\)/);
+        expect(rule).toMatch(/opacity:\s*1;/);
+    });
+});
+
 describe("the zoomed-thumbnail bar", () => {
     // The rule that marks a zoomed row picture.
     const rule = CSS.slice(CSS.indexOf(".pic.zoomed {"), CSS.indexOf("}", CSS.indexOf(".pic.zoomed {")));

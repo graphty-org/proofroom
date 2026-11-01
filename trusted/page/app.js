@@ -271,9 +271,7 @@ function summaryOf(c) {
         el(
             "div",
             { class: "small muted" },
-            [c.author && `by ${c.author}`, `from ${c.source}`, `${c.ready} projects ready`, c.age]
-                .filter(Boolean)
-                .join(", "),
+            [c.author && `by ${c.author}`, `from ${c.source}`, c.readyNote, c.age].filter(Boolean).join(", "),
         ),
         ready
             ? [
