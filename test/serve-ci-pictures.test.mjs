@@ -127,6 +127,9 @@ describe("serve: a capture run made", () => {
                     zoom: job.facts.zoom,
                     count: job.facts.areas,
                     shown: job.facts.shown,
+                    how: job.facts.how,
+                    cover: job.facts.cover,
+                    coverAll: job.facts.coverAll,
                 });
                 for (const kind of [...PAIR_KINDS, "auto"]) {
                     const pic = await s.get(`/api/pic/${row.pic}-${kind}`);

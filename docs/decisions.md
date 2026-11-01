@@ -265,11 +265,14 @@ twice as large as the whole image, and clamped a page-long area to the whole pag
 Now a changed row is always a crop that fills the row's shape and holds at most 400 x 156 CSS pixels
 of the page (image pixels = CSS pixels x the capture's scale), small enough that 14 px text stays
 readable at the row's size on a 2x screen. It frames every changed area when they fit; else the
-largest group of areas close together; else it puts the largest area's first changed pixel a
-quarter in from the crop's top-left, so a resized page shows where the shift begins with a little
-unchanged page above it. When the only change is the strip a size change adds or removes, the crop
+largest group of areas close together; else (since the fifth pass) the crop of that size holding
+the most changed pixels, never the blank strip a size change adds or removes. Before, it put the
+largest area's first changed pixel a quarter in from the crop's top-left, which on a resized page
+framed an unchanged-looking header while the change sat lower. When the only change is the strip a size change adds or removes, the crop
 is centered and the row reads "Only the size changed: 2 px shorter". The List menu's Pictures are
-Crop to the change (the default), Whole image and Text only, plus Spotlight small changes; a stored
+Crop to the change (the default), Whole image and Text only, plus Mark the change (named Spotlight
+small changes until the fifth pass: it now tints the changed pixels red where most of the picture
+changed, as Highlight does, instead of showing it plain); a stored
 When small or Always reads as the crop, Never as Whole image. The gray crop bar is gone: every
 changed row is a crop, so it marked nothing.
 

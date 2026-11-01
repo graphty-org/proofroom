@@ -121,6 +121,25 @@ const serverPictures = (dir, item) =>
         includeAA: item.includeAA,
     });
 
+/**
+ * Expects compare's areas to give the row what the server's picture job finds, except that a crop
+ * only the job's mask can place (`dense`) is stood in for by the window of the same size centered on
+ * the largest area (`center`) until the job runs.
+ * @param {object} item the item compare wrote
+ * @param {any} job what the job found
+ */
+const expectJobFacts = (item, job) => {
+    const facts = factsOf(item);
+    if (job.how !== "dense") {
+        expect(facts).toEqual(job);
+        return;
+    }
+    expect(facts.how).toBe("center");
+    expect(facts.crop.slice(2)).toEqual(job.crop.slice(2));
+    const rest = (f) => ({ zoom: f.zoom, shown: f.shown, coverAll: f.coverAll, areas: f.areas });
+    expect(rest(facts)).toEqual(rest(job));
+};
+
 describe("compare", () => {
     it("writes each changed pair's areas, as the server's picture job finds them, and no pictures", async () => {
         const base = png(300, 200);
@@ -147,7 +166,7 @@ describe("compare", () => {
             [10, 10, 30, 30],
         ]);
         for (const file of ["a--two.png", "a--larger.png"]) {
-            expect(factsOf(items[file])).toEqual(serverPictures(out, items[file]).facts);
+            expectJobFacts(items[file], serverPictures(out, items[file]).facts);
         }
         // Only a changed pair has areas.
         expect(items["a--same.png"].areas).toBeUndefined();
@@ -177,7 +196,7 @@ describe("compare", () => {
         });
         const item = byFile(results)["a--dots.png"];
         expect(item.areas).toHaveLength(MAX_AREAS);
-        expect(factsOf(item)).toEqual(serverPictures(out, item).facts);
+        expectJobFacts(item, serverPictures(out, item).facts);
     });
 
     it("given an encoder, writes the pictures of every item to decide, and an earlier attempt's go when it passes", async () => {

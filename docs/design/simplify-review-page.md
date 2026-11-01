@@ -784,13 +784,16 @@ differs while the List menu says the rows are spotlit.
    `ROW_MAX` (9.2 item 2, rules 1 and 2), the crop is the `ROW_MAX` window, at the row's shape and
    inside the new image, holding the most changed pixels of the raw pixelmatch mask (not the grown
    one, so a few stray pixels grown to blobs never win). Search it with a summed-area table of the
-   mask over window positions on a grid of a quarter of the window each way, then refine once at a
-   sixteenth around the best; ties go to the top-most, then left-most. Changed pixels inside the
+   mask counted per cell of a sixteenth of the window each way, trying every cell position (built:
+   that is exhaustive at the sixteenth and costs about 45 ms on a 2,400 x 15,618 page, so the
+   quarter-grid pass and its refinement were not needed); ties go to the top-most, then left-most. Changed pixels inside the
    strip a size change adds or removes at the edge do not count (the `kept` rect), so a resized row
    never frames the new blank band.
 2. **Without the mask** (`factsOf`, before the job ran) the largest area's center stands in, and
    the tooltip reads `Cropped to the change` until the job says `dense`. The drawn picture always
-   comes from the job.
+   comes from the job. (Built: pictures `run` makes in CI keep only their files in results.json, so
+   for those the server never learns `dense` and keeps the center's tooltip and cover; carrying the
+   job's crop in results.json would close that, a new optional field.)
 3. `firstChanged` and the `start` rule leave the code. Supersedes 9.2 item 2.3 and the 9.7 line
    about anchoring on the first changed pixel.
 4. Tooltip for `dense`: `Cropped to where the most pixels changed`.
@@ -808,10 +811,13 @@ differs while the List menu says the rows are spotlit.
    (default on), tooltip `Spotlights a small change; tints the changed pixels red when most of the
    picture changed`. Off shows the plain crop (`row-plain`). A stored `spot` setting reads as this
    toggle. The other Pictures choices stay (`Crop to the change`, `Whole image`, `Text only, no
-   pictures`). With `Whole image` the same mark rule applies to the whole image.
+   pictures`). With `Whole image` the same mark rule applies to the whole image (`tint`, by
+   `coverAll`; built by tinting each pixel of the shrunk picture that shows a changed pixel or one
+   within 2 of it, so a tall page is never copied whole).
 3. `shownKind("auto")`: `row-spot` under `SPOT_UNDER`, else `row-tint`; with the toggle off,
-   `row-plain`. `PAIR_KINDS` gains `row-tint`. The picture version moves to `5` (serve.mjs
-   `SPOTS_MADE_BY`, `?v=5`), so every cached row picture and `areas.jsonl` fact is made again.
+   `row-plain`. `PAIR_KINDS` gains `row-tint` (and `tint`, item 2). The picture version moves to
+   `5` (serve.mjs `SPOTS_MADE_BY`, `?v=5`), so every cached row picture and `areas.jsonl` fact is
+   made again.
 4. **The crop wording reaches every reader.** The row `img` takes the tooltip sentence as its
    `alt` (`Cropped to where the most pixels changed, changed pixels tinted`), not `alt=""`; the
    tooltip stays on the `.pic` box. Locked principle 9 then holds for keyboard and screen-reader

@@ -207,28 +207,71 @@ export const SPOT_UNDER = 1 / 3;
 export const ROW_MAX = [400, 156];
 
 /**
+ * The top-left corner of the cw x ch window, inside a w x h image, holding the most changed pixels
+ * of a raw pixelmatch mask, counting only those inside `kept`. Counted per cell of a sixteenth of
+ * the window each way, in a summed-area table of the cells, and every cell position tried; ties go
+ * to the top-most, then the left-most.
+ * @param {ArrayLike<number>} mask RGBA, a changed pixel opaque, `stride` pixels a line
+ * @param {number} stride the mask's width
+ * @param {number[]} kept [x, y, width, height]: where a changed pixel counts
+ * @param {number[]} size [w, h, cw, ch]: the image's size and the window's
+ * @returns {number[]} [x, y]
+ */
+function densest(mask, stride, [kx, ky, kw, kh], [w, h, cw, ch]) {
+    const [sw, sh] = [Math.max(1, Math.floor(cw / 16)), Math.max(1, Math.floor(ch / 16))];
+    const [cols, rows] = [Math.ceil(w / sw), Math.ceil(h / sh)];
+    const line = cols + 1;
+    const sat = new Float64Array(line * (rows + 1));
+    for (let y = Math.max(0, ky); y < Math.min(h, ky + kh); y++) {
+        for (let x = Math.max(0, kx); x < Math.min(w, kx + kw); x++) {
+            if (mask[(y * stride + x) * 4 + 3] !== 0) {
+                sat[(Math.floor(y / sh) + 1) * line + Math.floor(x / sw) + 1]++;
+            }
+        }
+    }
+    for (let r = 1; r <= rows; r++) {
+        for (let c = 1; c <= cols; c++) {
+            sat[r * line + c] += sat[r * line + c - 1] + sat[(r - 1) * line + c] - sat[(r - 1) * line + c - 1];
+        }
+    }
+    const [nx, ny] = [Math.round(cw / sw), Math.round(ch / sh)];
+    let [best, bx, by] = [-1, 0, 0];
+    for (let r = 0; r <= Math.max(0, rows - ny); r++) {
+        for (let c = 0; c <= Math.max(0, cols - nx); c++) {
+            const [c1, r1] = [Math.min(cols, c + nx), Math.min(rows, r + ny)];
+            const n = sat[r1 * line + c1] - sat[r * line + c1] - sat[r1 * line + c] + sat[r * line + c];
+            if (n > best) {
+                [best, bx, by] = [n, c, r];
+            }
+        }
+    }
+    return [Math.min(bx * sw, w - cw), Math.min(by * sh, h - ch)];
+}
+
+/**
  * The part of a w x h image a changed row shows, at the row's shape. The first that fits in
  * ROW_MAX (times `scale`) of: every changed area (`how` "all"), the largest cluster of nearby
- * areas ("cluster"; see clusters); else a ROW_MAX crop with the largest area's first changed pixel
- * (`first`, else that area's top-left corner) a quarter in from the crop's top-left ("start"). On a
- * resized page that is where the shift begins. When the only areas are the strip a size change adds
- * or removes at the image's edge, or none, a ROW_MAX crop centered on the image ("size"). Crops are
- * kept inside the image; an image smaller than ROW_MAX both ways is shown whole. Boxes are clipped
- * to the image first (a baseline larger than the new image changes pixels outside it). Also says
- * how much of the crop, and of the whole image, the areas cover: the spotlight helps only below
- * SPOT_UNDER.
+ * areas ("cluster"; see clusters); else the ROW_MAX window holding the most changed pixels of the
+ * raw `mask` ("dense"; see densest), or, without the mask, the window centered on the largest area
+ * ("center"). Changed pixels in the strip a size change adds or removes at the edge never count,
+ * so a resized row never frames the new blank band. When the only areas are that strip, or none, a
+ * ROW_MAX crop centered on the image ("size"). Crops are kept inside the image; an image smaller
+ * than ROW_MAX both ways is shown whole. Boxes are clipped to the image first (a baseline larger
+ * than the new image changes pixels outside it). Also says how much of the crop, and of the whole
+ * image, the areas cover: the spotlight helps only below SPOT_UNDER.
  * @param {number[][]} boxes what regions() returns, largest first
  * @param {number} w the new image's width
  * @param {number} h its height
- * @param {{ scale?: number, base?: number[] | null, first?: number[] | null }} [opts] the capture's
- *     scale, the baseline's [width, height], and the largest area's first changed pixel [x, y]
+ * @param {{ scale?: number, base?: number[] | null, mask?: ArrayLike<number> | null, stride?: number }} [opts]
+ *     the capture's scale, the baseline's [width, height], and pixelmatch's raw mask of the pair
+ *     padded to the larger size, `stride` pixels a line (default w)
  * @returns {{ crop: number[], zoom: number, shown: number, cover: number, coverAll: number,
- *     how: "all" | "cluster" | "start" | "size" }} the crop [x, y, width, height] (fractions
- *     allowed), how much larger it shows the image than the whole image fitted in the row, how many
- *     of the boxes it frames, the share of the crop and of the whole image the boxes cover, and
- *     which rule chose it
+ *     how: "all" | "cluster" | "dense" | "center" | "size" }} the crop [x, y, width, height]
+ *     (fractions allowed), how much larger it shows the image than the whole image fitted in the
+ *     row, how many of the boxes it frames, the share of the crop and of the whole image the boxes
+ *     cover, and which rule chose it
  */
-export function rowCrop(boxes, w, h, { scale = 1, base = null, first = null } = {}) {
+export function rowCrop(boxes, w, h, { scale = 1, base = null, mask = null, stride = w } = {}) {
     const inside = boxes
         .map(([x, y, bw, bh]) => {
             const [x0, y0] = [Math.max(0, x), Math.max(0, y)];
@@ -271,11 +314,13 @@ export function rowCrop(boxes, w, h, { scale = 1, base = null, first = null } = 
     const shape = ROW[0] / ROW[1];
     const cw = w <= max[0] && h <= max[1] ? w : Math.min(max[0], w, h * shape);
     const ch = w <= max[0] && h <= max[1] ? h : cw / shape;
-    const clamp = (v, top) => Math.min(Math.max(0, v), top);
     if (inside.length === 0 || sizeOnly) {
         return out([(w - cw) / 2, (h - ch) / 2, cw, ch], 0, "size");
     }
+    if (mask) {
+        return out([...densest(mask, stride, kept, [w, h, cw, ch]), cw, ch], 1, "dense");
+    }
     const [lx, ly, lw, lh] = inside[0];
-    const [fx, fy] = first && first[0] >= lx && first[0] < lx + lw && first[1] >= ly && first[1] < ly + lh ? first : [lx, ly];
-    return out([clamp(fx - cw / 4, w - cw), clamp(fy - ch / 4, h - ch), cw, ch], 1, "start");
+    const clamp = (v, top) => Math.min(Math.max(0, v), top);
+    return out([clamp(lx + lw / 2 - cw / 2, w - cw), clamp(ly + lh / 2 - ch / 2, h - ch), cw, ch], 1, "center");
 }

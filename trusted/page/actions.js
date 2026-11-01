@@ -272,8 +272,8 @@ export const ACTIONS = {
     show: { label: (app, ctx) => `Show: ${ctx.show}`, run: (app, ctx) => app.setShow(ctx.show) },
     group: { label: (app, ctx) => ctx.grouping, run: (app, ctx) => app.setGrouping(ctx.grouping) },
     picspot: {
-        label: "Spotlight small changes",
-        title: "Dims what did not change when the change covers less than a third of the picture",
+        label: "Mark the change",
+        title: "Spotlights a small change; tints the changed pixels red when most of the picture changed",
         run: (app) => app.setPictures({ spot: !(app.lv.pics.spot && !app.lv.pics.none), none: false }),
     },
     piczoom: { label: (app, ctx) => ctx.zoom, run: (app, ctx) => app.setPictures({ zoom: ctx.zoom, none: false }) },

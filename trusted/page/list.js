@@ -28,6 +28,7 @@ import {
     undecided,
 } from "./groups.js";
 import { DECISION, ORDER, STATUS, mark } from "./marks.js";
+import { SPOT_UNDER } from "./spot.js";
 import { el, fmt, fmtShort, ic, kb } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -252,13 +253,13 @@ function computeLayout(lv, snaps) {
 
 /**
  * The picture a row asks for under the Row pictures choices, and how it is cropped: one request
- * per row. A changed pair is spotlit or plain (the server shows it plain when its change covers a
- * third or more), cropped to its change (rowCrop, spot.js) or whole. A snapshot of one image has
- * only its plain picture.
+ * per row. A changed pair is marked (spotlit; the server tints it instead when its change covers a
+ * third or more) or plain, cropped to its change (rowCrop, spot.js)
+ * or whole. A snapshot of one image has only its plain picture.
  * @param {any} s the snapshot
  * @param {{ spot: boolean, zoom: "crop" | "whole" }} pics the choices
  * @returns {{ kind: string, how: string | null, shown: number | null } | null} the kind, which
- *     rule cropped it ("all", "cluster", "start" or "size"; null when whole) and how many of the
+ *     rule cropped it ("all", "cluster", "dense", "center" or "size"; null when whole) and how many of the
  *     changed areas the crop frames, or null for no picture
  */
 export function pictureKind(s, pics) {
@@ -990,7 +991,8 @@ function pictureTitle(s, pk) {
         {
             all: "Cropped to the changed areas",
             cluster: "Cropped to the changed areas",
-            start: "Cropped to where the largest change starts",
+            dense: "Cropped to where the most pixels changed",
+            center: "Cropped to the change",
             size: "Centered: only the size changed",
             crop: "Cropped to the change",
         }[pk.how] ?? "Whole image"
@@ -1009,14 +1011,20 @@ function pictureOf(app, s) {
     }
     // Nothing is drawn over the picture: how it is cropped is said in this tooltip (and chosen in
     // the List menu).
-    const box = el("div", { class: "pic", title: pictureTitle(s, pk) }, chip("Making picture..."));
+    const title = pictureTitle(s, pk);
+    const box = el("div", { class: "pic", title }, chip("Making picture..."));
+    // The tooltip's words reach a keyboard or screen-reader reader too, with the tint when the
+    // server tints this crop (shownKind, thumbs.mjs).
+    const tint =
+        (pk.kind === "row-spot" && s.areas?.cover >= SPOT_UNDER) ||
+        (pk.kind === "spot" && s.areas?.coverAll >= SPOT_UNDER);
     const img = el("img", {
-        alt: "",
+        alt: tint ? `${title}, changed pixels tinted` : title,
         loading: "lazy",
         decoding: "async",
         // `v` names how the server makes pictures (serve.mjs SPOTS_MADE_BY): the browser keeps a
         // picture for good, so one made the older way is fetched again.
-        src: `/api/pic/${s.pic}-${pk.kind}?v=4${s.retried ? `&try=${s.retried}` : ""}`,
+        src: `/api/pic/${s.pic}-${pk.kind}?v=5${s.retried ? `&try=${s.retried}` : ""}`,
         "data-kind": pk.kind,
     });
     img.addEventListener("load", () => box.classList.add("ready"));
@@ -1690,7 +1698,7 @@ export function pictureItems(app) {
             checked: p.zoom === k && !p.none,
         })),
         { id: "picnone", label: "Text only, no pictures", checked: p.none },
-        { id: "picspot", label: "Spotlight small changes", checked: p.spot && !p.none, check: true },
+        { id: "picspot", label: "Mark the change", checked: p.spot && !p.none, check: true },
     ];
 }
 

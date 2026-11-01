@@ -37,6 +37,19 @@ export function thumbnail(bytes, width = THUMB_WIDTH) {
 const plainOf = (src, width = THUMB_WIDTH) => shrink(src, [0, 0, src.width, src.height], Math.min(width, src.width));
 
 /**
+ * The source pixels [from, to) under output pixel i of n, along one side.
+ * @param {number} i the output pixel
+ * @param {number} n how many output pixels
+ * @param {number} start where the side starts in the source
+ * @param {number} length its length in the source
+ * @returns {[number, number]} [from, to]
+ */
+const span = (i, n, start, length) => {
+    const from = Math.floor(start + (i * length) / n);
+    return [from, Math.max(Math.floor(start + ((i + 1) * length) / n), from + 1)];
+};
+
+/**
  * The part `[x, y, width, height]` (fractions allowed) of decoded RGBA pixels, scaled to `w` pixels
  * across with its shape kept (or `height` pixels high), each output pixel the average of the source
  * pixels under it.
@@ -49,11 +62,6 @@ const plainOf = (src, width = THUMB_WIDTH) => shrink(src, [0, 0, src.width, src.
 function shrink(src, [rx, ry, rw, rh], w, height) {
     const h = height ?? Math.max(1, Math.round((rh * w) / rw));
     const out = new PNG({ width: w, height: h });
-    // The source pixels [from, to) under output pixel i of n, along one side.
-    const span = (i, n, start, length) => {
-        const from = Math.floor(start + (i * length) / n);
-        return [from, Math.max(Math.floor(start + ((i + 1) * length) / n), from + 1)];
-    };
     for (let y = 0; y < h; y++) {
         const ys = span(y, h, ry, rh);
         for (let x = 0; x < w; x++) {
@@ -93,18 +101,20 @@ function average(src, [x0, x1], [y0, y1], out, o) {
 
 /**
  * What a changed pair's job makes, the first one naming the job: the spotlit picture, the row's
- * zoomed pictures plain and spotlit, and the capture's plain thumbnail. A snapshot with one image (new, no baseline yet, removed, moved) has
- * no spotlight and makes only `plain`.
+ * zoomed pictures plain, spotlit and tinted, and the capture's plain thumbnail. A snapshot with one
+ * image (new, no baseline yet, removed, moved) has no spotlight and makes only `plain`.
  */
-export const PAIR_KINDS = ["spot", "row-plain", "row-spot", "plain"];
+export const PAIR_KINDS = ["spot", "tint", "row-plain", "row-spot", "row-tint", "plain"];
 
 /** The kinds the picture route answers: PAIR_KINDS, and `auto`, which autoKind resolves. */
 export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 
 /**
  * The picture a row shows for a kind it asks for, from what the pair's job (or compare) found.
- * `auto` is the row's crop, spotlit (`row-spot`): every changed row is cropped to its change. A spotlit kind is shown plain when the changed areas cover a third or
- * more of what it shows: dimming the rest would hide what changed, not point at it.
+ * `auto` is the row's crop with its change marked (`row-spot`): every changed row is cropped to its
+ * change. When the changed areas cover a third or more of what it shows, dimming the rest would
+ * hide what changed, not point at it: the picture is tinted instead (`row-tint` for the row's crop,
+ * `tint` for the whole image).
  * @param {string} kind the kind asked for, one of PICTURE_KINDS
  * @param {{ zoom: number, areas: number, cover?: number, coverAll?: number }} facts what was found
  * @returns {string} the kind to show
@@ -112,9 +122,9 @@ export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 export function shownKind(kind, facts) {
     const want = kind === "auto" ? "row-spot" : kind;
     if (want === "row-spot" && facts.cover >= SPOT_UNDER) {
-        return "row-plain";
+        return "row-tint";
     }
-    return want === "spot" && facts.coverAll >= SPOT_UNDER ? "plain" : want;
+    return want === "spot" && facts.coverAll >= SPOT_UNDER ? "tint" : want;
 }
 
 /**
@@ -152,45 +162,115 @@ export function pictureParts(job) {
     const { crop, zoom, shown, cover, coverAll, how } = rowCrop(boxes, b.width, b.height, {
         scale,
         base: [a.width, a.height],
-        first: firstChanged(mask, width, boxes[0]),
+        mask,
+        stride: width,
     });
     const plain = { width, height, data: pb };
     const lit = { width, height, data: dimmed(pb, grown) };
     // A row crop fitted in the row's shape: one narrower than it is centered by the page, its band
     // the row's own background.
     const fit = Math.min(ROW[0] / crop[2], ROW[1] / crop[3]);
-    const row = (src) =>
-        shrink(src, crop, Math.max(1, Math.round(crop[2] * fit)), Math.max(1, Math.round(crop[3] * fit)));
+    const [rw, rh] = [Math.max(1, Math.round(crop[2] * fit)), Math.max(1, Math.round(crop[3] * fit))];
+    const row = (src) => shrink(src, crop, rw, rh);
+    const shrinkTo = (part) => shrink(part, part.at, rw, rh);
+    const thumb = plainOf(b);
     return {
         images: {
             spot: shrink(lit, [0, 0, b.width, b.height], THUMB_WIDTH),
+            tint: tintedThumb(thumb, mask, width, height, [0, 0, b.width, b.height]),
             "row-plain": row(plain),
             "row-spot": row(lit),
+            "row-tint": shrinkTo(tinted(pb, mask, width, height, crop)),
             // The capture's own thumbnail, unpadded: the same file a thumbnail of it alone would be.
-            plain: plainOf(b),
+            plain: thumb,
         },
         facts: { crop, zoom, areas: boxes.length, shown, cover, coverAll, how },
     };
 }
 
+// The tint: the Highlight view's red (page.css --highlight), how far toward it a changed pixel is
+// blended, and how many image pixels each changed pixel grows by, so it survives the shrink.
+const TINT = [255, 0, 0];
+export const TINT_MIX = 0.55;
+export const TINT_GROW = 2;
+
 /**
- * The first changed pixel inside a box of a pixelmatch mask: its top-most changed row, the
- * leftmost changed pixel on it.
- * @param {Uint8Array} mask RGBA, a changed pixel opaque
- * @param {number} w the mask's width
- * @param {number[] | undefined} box [x, y, width, height]
- * @returns {number[] | null} [x, y], or null
+ * The part `rect` of an image (the whole pixels around it) with every pixel within TINT_GROW of a
+ * changed pixel of the raw mask blended TINT_MIX toward the Highlight red, every other pixel as it
+ * is. Only the part is tinted, so a tall page costs no more than its crop.
+ * @param {ArrayLike<number>} px the image, RGBA, `width` x `height`
+ * @param {ArrayLike<number>} mask pixelmatch's mask of the same size, a changed pixel opaque
+ * @param {number} width the width of both
+ * @param {number} height the height of both
+ * @param {number[]} rect [x, y, width, height], fractions allowed
+ * @returns {{ width: number, height: number, data: Uint8ClampedArray, at: number[] }} the pixels,
+ *     and `at`, the rect in their coordinates
  */
-export function firstChanged(mask, w, box) {
-    const [bx, by, bw, bh] = box ?? [0, 0, 0, 0];
-    for (let y = by; y < by + bh; y++) {
-        for (let x = bx; x < bx + bw; x++) {
-            if (mask[(y * w + x) * 4 + 3] !== 0) {
-                return [x, y];
+export function tinted(px, mask, width, height, [rx, ry, rw, rh]) {
+    const [x0, y0] = [Math.max(0, Math.floor(rx)), Math.max(0, Math.floor(ry))];
+    const [x1, y1] = [Math.min(width, Math.ceil(rx + rw)), Math.min(height, Math.ceil(ry + rh))];
+    const [w, h] = [x1 - x0, y1 - y0];
+    const data = new Uint8ClampedArray(w * h * 4);
+    const near = (x, y) => {
+        for (let yy = Math.max(0, y - TINT_GROW); yy <= Math.min(height - 1, y + TINT_GROW); yy++) {
+            for (let xx = Math.max(0, x - TINT_GROW); xx <= Math.min(width - 1, x + TINT_GROW); xx++) {
+                if (mask[(yy * width + xx) * 4 + 3] !== 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const [i, o] = [((y + y0) * width + x + x0) * 4, (y * w + x) * 4];
+            const mix = near(x + x0, y + y0) ? TINT_MIX : 0;
+            for (let c = 0; c < 3; c++) {
+                data[o + c] = px[i + c] + (TINT[c] - px[i + c]) * mix;
+            }
+            data[o + 3] = mix > 0 ? 255 : px[i + 3];
+        }
+    }
+    return { width: w, height: h, data, at: [rx - x0, ry - y0, rw, rh] };
+}
+
+/**
+ * A copy of a picture shrunk from the part `rect` of an image (`shrink`) with each of its pixels
+ * that shows a changed pixel of the raw mask, or one within TINT_GROW of it, blended TINT_MIX
+ * toward the Highlight red. Tinted after the shrink, so the whole image is never copied.
+ * @param {{ width: number, height: number, data: Uint8Array }} img the shrunk picture
+ * @param {ArrayLike<number>} mask pixelmatch's mask, `width` x `height`, a changed pixel opaque
+ * @param {number} width the mask's width
+ * @param {number} height its height
+ * @param {number[]} rect the part `img` was shrunk from
+ * @returns {PNG} the tinted copy
+ */
+export function tintedThumb(img, mask, width, height, [rx, ry, rw, rh]) {
+    const out = new PNG({ width: img.width, height: img.height });
+    out.data.set(img.data);
+    const changedIn = ([x0, x1], [y0, y1]) => {
+        for (let y = Math.max(0, y0 - TINT_GROW); y < Math.min(height, y1 + TINT_GROW); y++) {
+            for (let x = Math.max(0, x0 - TINT_GROW); x < Math.min(width, x1 + TINT_GROW); x++) {
+                if (mask[(y * width + x) * 4 + 3] !== 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    for (let y = 0; y < img.height; y++) {
+        const ys = span(y, img.height, ry, rh);
+        for (let x = 0; x < img.width; x++) {
+            if (changedIn(span(x, img.width, rx, rw), ys)) {
+                const o = (y * img.width + x) * 4;
+                for (let c = 0; c < 3; c++) {
+                    out.data[o + c] = Math.round(out.data[o + c] + (TINT[c] - out.data[o + c]) * TINT_MIX);
+                }
+                out.data[o + 3] = 255;
             }
         }
     }
-    return null;
+    return out;
 }
 
 /**

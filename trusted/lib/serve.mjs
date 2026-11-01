@@ -63,8 +63,8 @@
  * 202 and moves its download to the front of the queue. What GitHub says about a finished run
  * (its jobs and artifacts) is asked once and kept beside its downloads. The page loads each image
  * (`GET /api/blob/<hash>`) and each picture of an item (`GET /api/pic/<name>`, its kind `spot`,
- * `row-plain`, `row-spot`, `plain` or `auto`), made in child processes as soon as a capture lands
- * and kept on disk: one job per item, every kind of a changed pair from one decode, queued in list
+ * `tint`, `row-plain`, `row-spot`, `row-tint`, `plain` or `auto`), made in child processes as soon
+ * as a capture lands and kept on disk: one job per item, every kind of a changed pair from one decode, queued in list
  * order (component, then number), the change just opened first. Each pair's row crop, zoom and
  * area count are kept in memory and appended to one file, `<tmp>/spots/areas.jsonl`, read once at
  * start. A capture `run` made arrives with each item's
@@ -148,8 +148,11 @@ const PAGE_DIR = "../page";
 // The version of the changed pairs' pictures kept in <tmp>/spots: 2 dims less (SPOT_ALPHA 110) and
 // frames every area or the largest cluster of them; 3 shows the new image only, keeps a narrow
 // image's crop at its own width, and knows how much of a picture the areas cover (shownKind); 4
-// crops every changed row onto its change, at most ROW_MAX CSS pixels of the page. The page asks for pictures with the same `v` (list.js), so a browser's kept picture is not reused.
-const SPOTS_MADE_BY = "4";
+// crops every changed row onto its change, at most ROW_MAX CSS pixels of the page; 5 crops a large
+// change where the most pixels changed and tints a mostly-changed picture's changed pixels
+// (`row-tint`, `tint`). The page asks for pictures with the same `v` (list.js), so a browser's kept
+// picture is not reused.
+const SPOTS_MADE_BY = "5";
 const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
 const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
@@ -4055,6 +4058,8 @@ export function createApp({
                       count: found.areas,
                       shown: found.shown ?? found.areas,
                       how: found.how,
+                      cover: found.cover,
+                      coverAll: found.coverAll,
                   }
                 : null,
             ...(disagree && { disagree: true }),

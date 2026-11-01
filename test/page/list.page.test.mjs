@@ -785,10 +785,10 @@ describe("groups", () => {
                 .map((x) => x.className),
         );
         expect(bold).toEqual([expect.stringMatching(/^nm1?$/)]);
-        // Spotlight small changes, one name, with a tooltip saying what it does and when.
+        // Mark the change, one name, with a tooltip saying what it does and when.
         await listMenu(page);
         expect(await page.locator('.menu .mi[data-act="picspot"]').getAttribute("title")).toBe(
-            "Dims what did not change when the change covers less than a third of the picture",
+            "Spotlights a small change; tints the changed pixels red when most of the picture changed",
         );
     });
 
@@ -833,17 +833,36 @@ describe("rows", () => {
             .filter((p) => p.startsWith("/api/pic/"))
             .map((p) => p.split("-").slice(4).join("-").split("?")[0]);
 
+    it("gives each row picture its tooltip as its alt, saying the tint when the server tints the crop", async () => {
+        const page = await openChange(RICH);
+        // The fixture's rows 10-19, 30-39 and so on cover half their crop, so the server tints them.
+        const alts = () =>
+            page
+                .locator('#snap-list .pic img[data-kind="row-spot"]')
+                .evaluateAll((imgs) =>
+                    imgs.map((i) => [i.closest(".srow").dataset.snap, i.closest(".pic").title, i.alt]),
+                );
+        await expect.poll(async () => (await alts()).length).toBeGreaterThan(4);
+        const seen = new Set();
+        for (const [snap, title, alt] of await alts()) {
+            const tint = Math.floor(Number(/story-(\d+)\./.exec(snap)[1]) / 10) % 2 === 1;
+            seen.add(tint);
+            expect([snap, alt]).toEqual([snap, tint ? `${title}, changed pixels tinted` : title]);
+        }
+        expect([...seen].sort()).toEqual([false, true]);
+    });
+
     it("asks for the picture the Row pictures choices name, says its crop only in its tooltip, and its areas under the name", async () => {
         const page = await openChange(RICH);
-        // A changed row: Crop to the change and Spotlight small changes, so the row's spotlit crop.
+        // A changed row: Crop to the change and Mark the change, so the row's marked crop.
         // Its crop frames one of its three areas (the fixture's largest cluster).
         const r = page.locator('#snap-list .srow[data-snap="graphty-element/component-22--story-114.light.png"]');
         await page.locator("#snap-find").click();
         await page.keyboard.type("115");
         await r.waitFor();
-        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-row-spot\?v=4$/);
-        expect((await listChecked(page)).checked).toEqual(["Component", "Crop to the change", "Spotlight small changes"]);
-        // The Pictures section: three choices, then the Spotlight toggle with its rule in its tooltip.
+        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-row-spot\?v=5$/);
+        expect((await listChecked(page)).checked).toEqual(["Component", "Crop to the change", "Mark the change"]);
+        // The Pictures section: three choices, then the Mark the change toggle with its rule in its tooltip.
         await listMenu(page);
         const items = await page.getByRole("menu").locator(".mi").allInnerTexts();
         const at = items.indexOf("Crop to the change");
@@ -851,10 +870,10 @@ describe("rows", () => {
             "Crop to the change",
             "Whole image",
             "Text only, no pictures",
-            "Spotlight small changes",
+            "Mark the change",
         ]);
         expect(await page.locator('.menu .mi[data-act="picspot"]').getAttribute("title")).toBe(
-            "Dims what did not change when the change covers less than a third of the picture",
+            "Spotlights a small change; tints the changed pixels red when most of the picture changed",
         );
         await page.keyboard.press("Escape");
         // The row says how many areas changed, right under the story's name (grouped by component,
@@ -903,7 +922,7 @@ describe("rows", () => {
         await pics("Whole image", "spot");
         await whole();
         expect((await listChecked(page)).checked).toContain("Whole image");
-        await pics("Spotlight small changes", "plain");
+        await pics("Mark the change", "plain");
         await pics("Crop to the change", "row-plain");
         await cropped();
         expect(await over()).toEqual([]);
