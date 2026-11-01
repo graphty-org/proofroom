@@ -91,9 +91,9 @@ describe("the 800 px floor", () => {
     });
 
     it("narrows a lone pane toward its minimum in a 1180 px window", () => {
-        expect(paneWidths([false, true], { width: 1180, open: true, holds: true })).toEqual([44, 336]);
-        expect(paneWidths([true, false], { width: 1180, open: true, holds: true })).toEqual([320, 44]);
-        expect(paneWidths([false, true], { width: 1280, open: true, holds: true })).toEqual([44, 420]);
+        expect(paneWidths([false, true], { width: 1180, open: true, holds: true })).toEqual([56, 324]);
+        expect(paneWidths([true, false], { width: 1180, open: true, holds: true })).toEqual([320, 56]);
+        expect(paneWidths([false, true], { width: 1280, open: true, holds: true })).toEqual([56, 420]);
         // With no snapshot in the viewer, nothing narrows: Changes is 480 while no change is open.
         expect(paneWidths([true, true], { width: 1180, open: false, holds: false })).toEqual([480, 420]);
     });

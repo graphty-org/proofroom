@@ -596,7 +596,11 @@ export const ACTIONS = {
         run: (app) => app.finishGo(),
         available: (app) => app.finishGoOK(),
     },
-    gofirst: { label: "Go to the first", title: "Closes this sheet at the first undecided snapshot", run: (app) => app.goFirstUndecided() },
+    gofirst: {
+        label: "Go to the first",
+        title: "Closes this sheet at the first undecided snapshot",
+        run: (app) => app.goFirstUndecided(),
+    },
     finishregister: {
         label: "Register passkey...",
         title: "Opens Settings; closing it brings this sheet back",

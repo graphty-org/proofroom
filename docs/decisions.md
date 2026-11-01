@@ -135,7 +135,8 @@ The top bar keeps what you need at any moment: the tabs, **Next change Shift+N**
 left of Finish, instead of the Changes header and the Snapshots title line), Keys, Settings and
 Finish. **New capture...** moved to the Captures screen, where captures are. The data's age and
 **Refresh** show only when the data is more than 5 minutes old or the server is not answering:
-"Updated 40 s ago" said nothing worth reading. **Finish #4455...** names the change and no count;
+"Updated 40 s ago" said nothing worth reading. **Finish review...** carries no number (the
+Snapshots title already names the change) and no count;
 it is outlined in the primary color while snapshots are left and filled once none is, never the
 grey of an unavailable button, so it reads as the way out from the first minute.
 
@@ -161,3 +162,19 @@ Settings lists what you choose, in the order you are likely to want it: Theme, H
 Single-letter keys, Passkeys and Picture storage. The adapters table, which only says how the
 repository is set up, is under a closed **Repository setup**, whose summary says "Repository setup:
 1 problem" when CI takes no capture requests.
+
+## Each count said once in the list
+
+A group header used to say its size twice, "legend (14)" and **Accept 14**, on every group at
+once, so a list of twenty groups showed forty numbers. Now the header names the group and the count
+is said once, in **Accept 14**, which shows always on the current snapshot's group (green, with
+Shift+A) and on the other groups only while their header is hovered or focused. Hiding it there
+costs no capability: it is also the first item of the group's actions menu, opened by the name,
+which draws a small caret and underlines on hover so it reads as a button. Group names are cut
+keeping their end, because sibling groups usually share their start and differ at the end.
+
+## Rails read across
+
+The rails used to print the pane's name turned on its side and the key stacked "Shift" over "1".
+At 56 px wide a rail now reads top down without turning the head: the badge ("7 / left"), the name
+at 11 px ("Changes", "Snaps") and the key on one quiet line ("Shift+1").

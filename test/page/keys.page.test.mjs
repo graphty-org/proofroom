@@ -10,7 +10,16 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { COVERS } from "./covers.mjs";
-import { BROWSERS, TOKEN, fiftyChanges, message, openNext, visibleKeys, webkitRuns } from "./page-kit.mjs";
+import {
+    BROWSERS,
+    TOKEN,
+    fiftyChanges,
+    message,
+    openNext,
+    visibleKeys,
+    webkitRuns,
+    openedChange,
+} from "./page-kit.mjs";
 
 const pressed = new Set();
 const runWebkit = await webkitRuns();
@@ -169,7 +178,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             }
             await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe("3486");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toBe("Opened #3486: 300 left.");
+            await expect.poll(() => message(page)).toBe("Opened: 300 left.");
+            expect(await openedChange(page)).toBe("3486");
             expect(await rails()).toEqual([true, false]);
             await page.keyboard.press("Enter");
             await expect.poll(rails).toEqual([true, true]);
@@ -240,7 +250,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => message(page)).toBe("Back to the changes. Enter opens #3486 again.");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toMatch(/^Opened #3486: /);
+            await expect.poll(() => message(page)).toMatch(/^Opened: /);
+            expect(await openedChange(page)).toBe("3486");
             // Any other key in between ends the guard: a menu closed, then a letter, then Esc goes back.
             await page.getByRole("button", { name: "List", exact: true }).click();
             await page.getByRole("menu").waitFor();
@@ -318,7 +329,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("ArrowDown");
             await page.keyboard.press("ArrowDown");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toBe("Opened #3484: 3 left.");
+            await expect.poll(() => message(page)).toBe("Opened: 3 left.");
+            expect(await openedChange(page)).toBe("3484");
             // The viewer's boxes keep only their arrow and Space halves.
             expect(await visibleKeys(page)).toEqual([
                 { act: "view-flash", key: "hold Space" },

@@ -15,7 +15,7 @@ age in muted words ("Updated 12 min ago", "Offline since 14:02", "Server not ans
 **Refresh**; while the data is fresh neither shows. On the Review screen, **Next change Shift+N**
 (it opens the next change that needs you; this is its one home besides the end card); **Keys ?**;
 **Settings** (see [Settings](settings.md)); and, on the Review screen with a change open,
-**Finish #3486...**, which opens the Finish sheet (see [Finish](finish.md)). Finish is always in
+**Finish review...** (the title already names the change), which opens the Finish sheet (see [Finish](finish.md)). Finish is always in
 that place: outlined in the primary color while snapshots are left, filled once none is. On a
 narrow window (1024 px) the repository's name goes first, then the age words, which stay in
 Refresh's tooltip; Finish never leaves the screen. **New capture...** is on the Captures screen
@@ -26,7 +26,7 @@ did, why a key did nothing, a failure and its Retry). A plain message clears on 
 message with a button (Undo, Retry, Load it) stays until you use the button, press **Dismiss**, or
 a newer message replaces it; so does the one a bulk decision leaves ("Accepted 34 snapshots.",
 with Undo), until your next decision. **Messages** opens the last 20. Opening a change says how
-many are left: "Opened #4455: 34 left."
+many are left: "Opened: 34 left."
 
 ## Review
 
@@ -42,10 +42,11 @@ With a change open, three panes side by side: **Changes**, **Snapshots** and the
 ### Panes and levels
 
 **Hide Shift+1** and **< Shift+2** fold the Changes and Snapshots panes into narrow rails; the
-rail, or the same key again, brings the pane back. A rail prints its key stacked ("Shift" over
-"1") and a badge of what is left, the number over the word: "7 / left" on Changes (its tooltip "7
-changes need you"), "34 / left" on Snapshots ("34 snapshots left to decide"); with nothing left
-it has no badge. Opening a change folds the panes the review
+rail, or the same key again, brings the pane back. A rail is 56 px wide and reads top down,
+nothing turned on its side: a badge of what is left, the number over the word ("7 / left" on
+Changes, its tooltip "7 changes need you"; "34 / left" on Snapshots, "34 snapshots left to
+decide"; no badge with nothing left), the pane's name ("Changes", "Snaps") and its key quietly on
+one line ("Shift+1"). Opening a change folds the panes the review
 does not need: a small change (10 snapshots or fewer) opens with both side panes as rails, so the
 image gets the width at once. The viewer is never narrower than 800 px. **Image only [Shift+3]**
 folds both side panes, and pressed again gives back exactly the panes it folded ("Image only off:
@@ -79,7 +80,7 @@ ever cut. The branch, author, where it was captured and how long ago are in the 
 joined by " - " ("feature - by octocat - from CI - 4 min ago"), with "2 of 3 projects ready" only
 while a project is not. A **behind master** badge marks a change whose branch is behind the default
 branch, or whose capture is older than baselines the default branch accepted since (its tooltip says
-how many); "140 MB to download" one whose images opening it fetches again. **Find [/]** finds a change by
+how many); "140 MB to download" (or "1.9 GB to download") one whose images opening it fetches again. **Find [/]** finds a change by
 number, title, branch or author; **Sort** orders them (Needs me first, Newest, Most undecided,
 Author); **Next change Shift+N** in the top bar opens the next change that needs you. A row's **...** menu has
 **About this change** (its title, description and comments, as plain text, each marked when not
@@ -102,21 +103,23 @@ The open change's snapshots. Its header is three lines that never wrap:
    When the line is tight, "accepted earlier" goes first, then "decided"; "N left" always stays.
 3. **Find** (its placeholder "Find, or #number /"): filters the rows by story; a number ("47" or
    "#47") jumps to that snapshot instead. Esc clears the box first, then leaves it. When the line is
-   tight the placeholder shortens to "Find /", then "/". Then **Show: Undecided**, the one filter:
+   tight the placeholder shortens to "Find /", never less. Then **Show: Undecided**, the one filter:
    its menu lists Undecided (the default), All, each status the change has, Accepted earlier,
    Accepted (yours), Rejected and Excluded, each with its count on the right, a choice of 0 greyed.
    The button shows the count only while the list is filtered, "Show: Rejected (3)". Then **List**:
    **Group by** (Component, Same change, Project, Status, None), **Pictures** (**Spotlight rows**,
    which dims what did not change, Zoom
-   rows to the change Auto, Always or Never, or No pictures), Accept all shown..., Undo all
-   decisions..., Download the comparison report (JUnit) and **Copy link to this list**. Last, the
+   rows to the change Auto, Always or Never, or No pictures), **Select** (**Extend selection up
+   Shift+Up**, **Extend selection down Shift+Down**, both acting with the menu closed, and **Select
+   all shown**), Accept all shown..., Undo all decisions..., Download the comparison report (JUnit)
+   and **Copy link to this list**. Last, the
    list's **Up** and **Down**, their keys printed quietly.
 
 Keys off the look-decide-next loop are printed as quiet muted text after their label ("Next change
 Shift+N"); boxed keys are kept for the view switch, the decision bar and boxes.
 
 Each row shows the snapshot's number and status, its story's name (the one bold thing on the row,
-its mode after it in muted words: "graph-file, dark"), its decision, and a picture of the new
+its mode and "resized" after it in muted words: "graph-file, dark, resized"), its decision, and a picture of the new
 image: spotlit (everything but the change dimmed) and, under Zoom Auto, zoomed to the change
 when that shows it at least twice as large. Nothing is ever drawn over a picture. A zoomed picture
 has a gray bar outside its left edge, and the line under the story says the size and the zoom in
@@ -124,28 +127,31 @@ words: "26 areas, 490k px, zoomed 4x". When the changed areas are spread too far
 all of them, the picture shows the largest group of areas that lie close together, and the line
 says how many: "zoomed 4x to 3 of them". When the row is too narrow, a badge's word is kept and the
 zoom words give way first; they stay in the line's tooltip. Hover a picture for "Zoomed 4x to the changed areas" or
-"Whole image". Badges: **resized** (the new image is a different size), **unstable** (its attempts
-in the run did not agree, with `run --retries` or a runner's retries; its status is its last
-attempt's), **re-review**, and **+4 identical** (the same change as 4 other snapshots). "resized"
-and "unstable" always keep their word; the others fold, when they do not fit, into "+2 more" (their
+"Whole image". "resized" (the new image is a different size) is a muted word after the name, not a
+badge. Badges: **unstable** (its attempts in the run did not agree, with `run --retries` or a
+runner's retries; its status is its last attempt's), **re-review**, and **+4 identical** (the same
+change as 4 other snapshots). A badge never shrinks; "unstable" always keeps its word; the others fold, when they do not fit, into "+2 more" (their
 words in its tooltip), and a single one left over shows its own word, never a bare "+1".
 
 A row's checkbox stays in its column so nothing moves under the pointer; it is drawn faintly, in
 the border color, until the row is hovered or a selection exists.
 
-**Groups.** By component (the default above 10 snapshots). Each group header is one line with
-three controls: the chevron folds and unfolds the group; the name button, "legend (14)" with its
-count muted (a component is named alone, its project in the tooltip, unless two projects share the
-name; a long name is cut in the middle, the count never), opens the group's menu: **Collapse** or **Expand**, **Reject 14...**, **Exclude 14...**, **Select all 14**,
-and **Undo 3...** while the group holds decisions to take back. Its tooltip gives the split by
-status ("14: 12 changed, 2 new"). Last, **Accept 14**: outlined on every group, and green with its
-key **Shift+A** only on the group of the current snapshot; once nothing in the group is left it
-becomes **Undo 14**. Same change groups snapshots with exactly the same change first (a fact), then
+**Groups.** By component (the default above 10 snapshots). Each group header is one line: the
+chevron folds and unfolds the group; the name button, "legend" with a small caret after it (a
+component is named alone, its project in the tooltip, unless two projects share the name; a long
+name is cut keeping its end, "...fidelity-cx-specimens", so groups that share a start stay apart,
+the whole name in the header's tooltip), underlines on hover and opens the group's actions:
+**Accept 14** (printing **Shift+A** on the current snapshot's group), **Collapse** or **Expand**,
+**Reject 14...**, **Exclude 14...**, **Select all 14**, and **Undo 3...** while the group holds
+decisions to take back. The header carries no count: it is said once, in **Accept 14**, at the
+end of the line. That button shows always on the group of the current snapshot (green, with its key
+**Shift+A**) and on the other groups only while their header is hovered or focused; once nothing in
+the group is left it becomes **Undo 14**. Same change groups snapshots with exactly the same change first (a fact), then
 look-alike changes (a guess, labeled so). A group of more than 50 opens folded, except the first.
 
 **Accepted earlier.** Images accepted before this capture (byte for byte an image already accepted
-for the same story and mode) sit in one folded line at the bottom of the list, "Accepted earlier
-(1,208)", under every grouping; each of their rows says "Accepted earlier (#1356)". Its chevron
+for the same story and mode) sit in one folded line at the bottom of the list, "Accepted earlier",
+under every grouping; each of their rows says "Accepted earlier (#1356)". Its chevron
 opens it, and its name's menu has **Reject 1,208...** and **Exclude 1,208...**; it has no Accept
 and no Undo.
 After a group accept, the next group's first undecided snapshot becomes current, so repeated
@@ -153,8 +159,8 @@ Shift+A walks the change group by group. Accepting more than 20 at once asks fir
 
 **Selection.** A click makes a row current (the viewer shows it). **Select [X]**, a row's checkbox,
 a shift-click (a range) or **Shift+Up / Shift+Down** add rows to the selection; the selection bar
-then appears under the header's third line: **12 selected**, **Clear [Esc]** and `...` (Extend up,
-Extend down, Select all shown). The decision bar decides the selection when the current row is in
+then appears under the header's third line: **12 selected**, **Clear [Esc]** and **More** (Extend
+selection up, Extend selection down, Select all shown; the same three are in the List menu). The decision bar decides the selection when the current row is in
 it, and says so: **Accept 12**, **Reject 12...**, **Exclude 12...**; otherwise A, R and E act on
 the current row. Every bulk decision is one request per project and one step for Undo.
 
@@ -210,6 +216,8 @@ row they read **Accept 3**, **Reject 3...** and **Exclude 3...**. Every word sta
 `<-` and `->`, then the bar takes a compact size. Accept moves on to the next
 undecided snapshot; Left and Right step through every row. Reject and Exclude ask for a reason in a
 small box above the bar (the author reads a reject's reason); recent reasons are one press away.
+The box's heading is one line, "Reject #1028 legend / graph-f...-dark": a long story name is cut in
+the middle, the whole in its tooltip.
 See [What each decision does](decisions.md).
 
 A decision is never taken on an image you have not seen: a key pressed within a quarter second of

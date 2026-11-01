@@ -39,6 +39,7 @@ import {
     target,
     visibleKeys,
     webkitRuns,
+    openedChange,
 } from "./page-kit.mjs";
 
 const browsers = {};
@@ -466,12 +467,15 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         expect(await currentN(page)).toBe("#2");
         // Extend down and Extend up, from the bar's menu, do what the keys do.
         await selBar(page).locator('[data-act="selmenu"]').click();
-        expect((await menuItem(page, "Extend down").innerText()).trim()).toMatch(/^Extend down\s*Shift\+Down$/);
-        await menuItem(page, "Extend down").click();
+        expect((await selBar(page).locator('[data-act="selmenu"]').innerText()).trim()).toBe("More");
+        expect((await menuItem(page, "Extend selection down").innerText()).trim()).toMatch(
+            /^Extend selection down\s*Shift\+Down$/,
+        );
+        await menuItem(page, "Extend selection down").click();
         await expect.poll(() => selBar(page).locator(".selcount").innerText()).toBe("3 selected");
         expect(await currentN(page)).toBe("#3");
         await selBar(page).locator('[data-act="selmenu"]').click();
-        await menuItem(page, "Extend up").click();
+        await menuItem(page, "Extend selection up").click();
         await expect.poll(() => currentN(page)).toBe("#2");
         await page.keyboard.press("Shift+ArrowUp");
         await expect.poll(() => currentN(page)).toBe("#1");
@@ -663,6 +667,8 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         const page = await openIn(MAIN);
         await head(page, "component-0").locator('[data-act="gaccept"]').click();
         await expect.poll(() => shows(head(page, "component-0").locator('[data-act="gundo"]'))).toBe("Undo 5");
+        // No longer the current group: its Undo 5 shows while its header is hovered.
+        await head(page, "component-0").hover();
         await head(page, "component-0").locator('[data-act="gundo"]').click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Undo 5 decisions in graphty-element > component-0?");
         await page.keyboard.press("Enter");
@@ -756,7 +762,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         const page = await openIn(RICH);
         const before = page.locator(`.ghead[data-group="!before"]`);
         // As text: the line is at the list's end, off screen (content-visibility), so innerText skips it.
-        expect((await before.textContent()).trim()).toBe("Accepted earlier (2)");
+        expect((await before.textContent()).trim()).toBe("Accepted earlier");
         expect(await before.locator('[data-act="gundo"]').count()).toBe(0);
         expect(await before.locator('[data-act="gaccept"]').count()).toBe(0);
         await before.locator('[data-act="gtoggle"]').click();
@@ -881,8 +887,8 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         const page = await toEndCard();
         const next = await page.locator('.endcard [data-act="nextchange"]').innerText();
         await page.keyboard.press("Shift+KeyN");
-        await expect.poll(() => message(page)).toMatch(/^Opened #\d+: /);
-        expect(next).toContain((await message(page)).match(/^Opened (#\d+): /)[1]);
+        await expect.poll(() => message(page)).toMatch(/^Opened: /);
+        expect(next).toContain(`#${await openedChange(page)}`);
     });
 
     it("opens this change's Finish summary sheet from the end card by Enter", async () => {

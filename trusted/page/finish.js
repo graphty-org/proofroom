@@ -173,9 +173,9 @@ export function installFinish(app) {
         app.snaps.length > 0
             ? app.snaps.filter((s) => s.decision && !s.finished && !s.rejectedBefore).length
             : (targetOf(app.openId)?.unpublished ?? 0);
-    // The top bar's Finish names the change and opens its sheet ("Finish #4455..."); the end card's
-    // says how many decisions it publishes.
-    app.finishLabel = () => `Finish ${app.open()?.label ?? ""}...`;
+    // The top bar's Finish opens the sheet ("Finish review...": the title already names the
+    // change); the end card's says how many decisions it publishes.
+    app.finishLabel = () => "Finish review...";
     app.finishCountLabel = () => `Finish ${app.open()?.label ?? ""} (${fmt(app.finishCount())})`;
     app.finishOK = () => {
         if (app.finishing()) {
@@ -413,7 +413,13 @@ export function installFinish(app) {
                       id === app.openId ? [" ", control(app, "gofirst", { zone: "box" })] : null,
                   )
                 : null,
-            toFile(t) ? null : el("p", { class: "check" }, `${wordsOf(app.list).hostName} check: ${f.status.description.split(":")[0]}`),
+            toFile(t)
+                ? null
+                : el(
+                      "p",
+                      { class: "check" },
+                      `${wordsOf(app.list).hostName} check: ${f.status.description.split(":")[0]}`,
+                  ),
             signsShown ? signs : null,
             el(
                 "details",

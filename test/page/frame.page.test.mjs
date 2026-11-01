@@ -27,6 +27,7 @@ import {
     target,
     visibleKeys,
     webkitRuns,
+    openedChange,
 } from "./page-kit.mjs";
 
 const pressed = new Set();
@@ -213,7 +214,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 });
                 await page.locator("#chg-list").focus();
                 await page.keyboard.press("Shift+KeyN");
-                await expect.poll(() => message(page)).toMatch(/^Opened #\d+: \d+ left\.$/);
+                await expect.poll(() => message(page)).toMatch(/^Opened: \d+ left\.$/);
                 expect(await shown(page, "#repo")).toBe(false);
                 expect(await shown(page, "#srvage")).toBe(false);
                 expect(await page.locator("#srvstatus").getAttribute("aria-label")).toBe(
@@ -231,7 +232,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 expect(out).toEqual([]);
                 const fin = await page.locator("#finish").boundingBox();
                 expect(fin.x + fin.width).toBeLessThanOrEqual(1024);
-                expect(await page.locator("#finish").innerText()).toMatch(/^Finish #\d+\.\.\.$/);
+                expect(await page.locator("#finish").innerText()).toBe("Finish review...");
             });
         });
 
@@ -253,7 +254,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 expect(await visibleKeys(page)).toContainEqual({ act: "summaryopen", key: "Enter" });
                 await page.locator("#chg-list").focus();
                 await page.keyboard.press("Enter");
-                await expect.poll(() => message(page)).toMatch(new RegExp(`^Opened #${cur}: \\d+ left\\.$`));
+                await expect.poll(() => message(page)).toMatch(/^Opened: \d+ left\.$/);
+                expect(await openedChange(page)).toBe(String(cur));
             });
         });
 
@@ -302,7 +304,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.keyboard.press("ArrowDown");
                 await page.keyboard.press("ArrowDown");
                 await page.keyboard.press("Enter");
-                await expect.poll(() => message(page)).toMatch(/^Opened #\d+: /);
+                await expect.poll(() => message(page)).toMatch(/^Opened: /);
                 // In the viewer the zoom digits and view letters do nothing either.
                 const inViewer = t.actions.length;
                 for (const k of ["Digit2", "KeyH", "KeyZ"]) {

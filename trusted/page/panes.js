@@ -8,7 +8,7 @@
  */
 
 export const FLOOR = 800;
-export const RAIL = 44;
+export const RAIL = 56;
 export const SMALL = 10; // a change of this many snapshots or fewer is small
 export const ONE_LEVEL_WIDTH = 1400; // a large change in a window this wide or wider has one level
 

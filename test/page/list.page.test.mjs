@@ -217,10 +217,12 @@ describe("the header and the rows within their budgets", () => {
                 expect(c.nameClipped, c.snap).toBe(false);
                 expect(c.keepCut, c.snap).toBe(false);
             }
-            // Every group header is one line: the chevron, the name button "name (N)", and Accept N.
+            // Every group header is one line: the chevron, the name button (no count: it is said
+            // once, in Accept N), and Accept N.
             // As text: a header off screen is not painted (content-visibility), so innerText skips it.
             for (const entry of await page.locator("#snap-list .ghead .gname").allTextContents()) {
-                expect(entry).toMatch(/^\S.* \([\d,]+\)$/);
+                expect(entry).toMatch(/^\S/);
+                expect(entry).not.toMatch(/\(\d[\d,]*\)$/);
             }
             for (const h of await page
                 .locator("#snap-list .ghead")
@@ -459,8 +461,8 @@ describe("Show, Find and the progress line", () => {
         await page.locator("#snap-list").focus();
         await page.keyboard.press("Slash");
         await expect.poll(() => page.evaluate(() => globalThis.document.activeElement?.id)).toBe("snap-find");
-        // At 1280 the pane is narrow: the placeholder has given way to "Find  /".
-        expect(await find.getAttribute("placeholder")).toBe("Find  /");
+        // At 1280 the whole placeholder fits; at 1024 it gives way to "Find  /" (tested there).
+        expect(await find.getAttribute("placeholder")).toBe("Find, or #number  /");
         // Text filters across every group; the big group, collapsed, opens while Find holds text.
         await page.keyboard.type("story-1");
         await expect
@@ -571,7 +573,7 @@ describe("groups", () => {
         expect(h.at(-1)).toBe("Accepted earlier");
         expect(h).toContain("graphty-element > widgets");
         // As text: the line is off screen at the list's end (content-visibility), so innerText skips it.
-        expect((await page.locator('.ghead[data-group="!before"]').textContent()).trim()).toBe("Accepted earlier (2)");
+        expect((await page.locator('.ghead[data-group="!before"]').textContent()).trim()).toBe("Accepted earlier");
         expect(await page.locator('.grp[data-group="!before"] .srow').count()).toBe(0);
         await pick("Same change");
         h = await heads();
@@ -641,7 +643,7 @@ describe("groups", () => {
         await expect.poll(() => p2.locator('.grp[data-group="!before"] .srow').count()).toBe(0);
     });
 
-    it("draws a header as a chevron, a name button that opens the group's menu, and Accept N", async () => {
+    it("draws a header as a chevron, a name button with a caret that opens the group's actions, and Accept N", async () => {
         const page = await openChange("3486");
         const key = await page
             .locator("#snap-list .srow.cur")
@@ -658,15 +660,19 @@ describe("groups", () => {
             "gmenu",
             "gaccept",
         ]);
-        // The name, whole or cut in the middle, and its count, never cut.
-        expect(await mine.locator(".gname").textContent()).toMatch(/^.+ \(\d+\)$/);
-        // The count is muted, in the name button.
-        const weights = await mine
-            .locator(".gname")
-            .evaluate((n) =>
-                [n.querySelector(".gn"), n.querySelector(".gc")].map((x) => globalThis.getComputedStyle(x).fontWeight),
-            );
-        expect(weights).toEqual(["700", "400"]);
+        // The name alone, no count (Accept N says it), then a drawn caret: a bordered triangle,
+        // no glyph. The name underlines on hover; its tooltip says what it opens.
+        expect(await mine.locator(".gname").textContent()).not.toMatch(/\(\d+\)/);
+        const caretLook = await mine.locator(".gname .gcaret").evaluate((n) => {
+            const cs = globalThis.getComputedStyle(n);
+            return { text: n.textContent, top: cs.borderTopStyle, left: cs.borderLeftColor };
+        });
+        expect(caretLook).toEqual({ text: "", top: "solid", left: "rgba(0, 0, 0, 0)" });
+        expect(await mine.locator(".gname").getAttribute("title")).toMatch(/^Group actions: /);
+        await mine.locator(".gname").hover();
+        expect(
+            await mine.locator(".gname .gn").evaluate((n) => globalThis.getComputedStyle(n).textDecorationLine),
+        ).toBe("underline");
         // Every Accept N is outlined; the current group's is green and prints a quiet Shift+A.
         const look = (h) =>
             h.locator('[data-act="gaccept"]').evaluate((n) => ({
@@ -682,9 +688,31 @@ describe("groups", () => {
         expect([b.mine, b.key]).toEqual([false, null]);
         expect(b.border).not.toBe(a.border);
         expect(b.border).not.toBe("rgba(0, 0, 0, 0)");
-        // The name opens the menu: Collapse, then the group's former [...] items.
+        // Another group's Accept N shows only while its header is hovered or focused.
+        const shown = (h) =>
+            h.locator('[data-act="gaccept"]').evaluate((n) => {
+                const cs = globalThis.getComputedStyle(n);
+                return cs.opacity === "1" && cs.pointerEvents !== "none";
+            });
+        expect(await shown(mine)).toBe(true);
+        await mine.locator(".gname").hover();
+        expect(await shown(other)).toBe(false);
+        await other.hover();
+        expect(await shown(other)).toBe(true);
+        await other.locator(".gname").focus();
+        await page.mouse.move(0, 0);
+        expect(await shown(other)).toBe(true);
+        // The name opens the group's actions: Accept N (Shift+A on the current group only),
+        // Collapse, then the group's former [...] items.
+        await other.locator(".gname").click();
+        expect(await page.locator(".menu .mi").first().innerText()).toMatch(/^Accept \d+$/);
+        await page.keyboard.press("Escape");
         await mine.locator(".gname").click();
+        expect((await page.locator(".menu .mi").first().innerText()).replaceAll(/\s+/g, " ")).toMatch(
+            /^Accept \d+ Shift\+A$/,
+        );
         expect(await page.locator(".menu .mi .ml").allInnerTexts()).toEqual([
+            expect.stringMatching(/^Accept \d+$/),
             "Collapse",
             expect.stringMatching(/^Reject \d+\.\.\.$/),
             expect.stringMatching(/^Exclude \d+\.\.\.$/),
@@ -1100,6 +1128,121 @@ describe("the notice chips", () => {
             expect(menu).toContain("Master accepted 5 newer baselines after this capture.");
         }
         expect(menu).toContain("A newer capture (7abc123) is ready.");
+    });
+});
+
+describe("at 1024 x 768", () => {
+    const LAPTOP = { viewport: { width: 1024, height: 768 } };
+    // Every visible control outside the scrolled lists (whose rows scroll out of view by design)
+    // wholly inside the window.
+    const outside = (page) =>
+        page.evaluate(() =>
+            [...globalThis.document.querySelectorAll("[data-act]")]
+                .filter((n) => n.getClientRects().length > 0 && !n.closest(".list, dialog, .menu"))
+                .filter((n) => {
+                    const r = n.getBoundingClientRect();
+                    return (
+                        r.left < 0 ||
+                        r.top < 0 ||
+                        r.right > globalThis.innerWidth + 0.5 ||
+                        r.bottom > globalThis.innerHeight + 0.5
+                    );
+                })
+                .map((n) => n.dataset.act),
+        );
+
+    it("keeps every visible control inside the window with three rows selected, Find keeping its word", async () => {
+        const page = await openChange("3486", LAPTOP);
+        expect(await outside(page)).toEqual([]);
+        expect(await page.locator("#snap-find").getAttribute("data-find")).toBe("Find");
+        expect(await page.locator("#snap-find").getAttribute("placeholder")).toBe("Find  /");
+        await page.locator("#snap-list").focus();
+        await page.keyboard.press("KeyX");
+        await page.keyboard.press("Shift+ArrowDown");
+        await page.keyboard.press("Shift+ArrowDown");
+        await expect.poll(() => page.locator("#snaps-head .lselbar .selcount").innerText()).toBe("3 selected");
+        expect(await outside(page)).toEqual([]);
+        // The selection bar's menu button says what it is.
+        expect((await page.locator('#snaps-head .lselbar [data-act="selmenu"]').innerText()).trim()).toBe("More");
+        // Shift+Up and Shift+Down are printed in the List menu, which stays on line 3.
+        const keys = JSON.parse(
+            await page.locator('#snaps-head > .h3 [data-act="listmenu"]').getAttribute("data-menukeys"),
+        );
+        expect(keys).toEqual({ "Shift+Up": "extendup", "Shift+Down": "extenddown" });
+        expect(t.errors).toEqual([]);
+    });
+
+    it("keeps every visible control inside the window with both notice chips", async () => {
+        const page = await openChange("3486", { ...LAPTOP, clock: true });
+        const list = targets();
+        const t3486 = list.find((x) => x.id === "3486");
+        t3486.runId += 1;
+        t3486.headSha = "7abc1234ff";
+        t3486.stale = 1242;
+        t.setList(listAnswer(list));
+        await page.clock.fastForward(16000);
+        await expect.poll(() => page.locator('#snaps-head > .h1 [data-act="stalechip"]').count()).toBeGreaterThan(0);
+        expect(await outside(page)).toEqual([]);
+        expect((await page.locator("#snaps-head > .h1").boundingBox()).height).toBeLessThanOrEqual(28);
+    });
+
+    it("cuts group names keeping their end, so no two visible headers read the same", async () => {
+        const comps = ["high-fidelity-cx-specimens", "high-fidelity-cy-specimens", "high-fidelity-cz-specimens"].map(
+            (x) => `graphty-element-very-long-shared-prefix-for-${x}`,
+        );
+        const page = await openChange("8000", {
+            ...LAPTOP,
+            targets: [
+                ...targets(),
+                target(8000, { title: "Long names", projects: [project("graphty-element", { reviewable: 15 })] }),
+            ],
+            rows: (id, name) =>
+                id === "8000"
+                    ? {
+                          project: name,
+                          items: Array.from({ length: 15 }, (_, i) =>
+                              row(i, "changed", { component: comps[Math.floor(i / 5)] }),
+                          ),
+                          decisions: {},
+                          clusters: [],
+                      }
+                    : rows(id, name),
+        });
+        const names = await page.locator("#snap-list .ghead .gname .gn").allTextContents();
+        expect(names).toHaveLength(3);
+        expect(new Set(names).size).toBe(3);
+        for (const [i, n] of names.entries()) {
+            expect(n.startsWith("...") ? comps[i].endsWith(n.slice(3)) : n === comps[i]).toBe(true);
+        }
+        expect(names.some((n) => n.startsWith("..."))).toBe(true);
+        expect(await page.locator("#snap-list .ghead").first().getAttribute("title")).toBe(
+            `graphty-element > ${comps[0]}`,
+        );
+    });
+
+    it("prints a resized row's word after its name, not as a pill, and pills never shrink", async () => {
+        const page = await openChange("8001", {
+            ...LAPTOP,
+            targets: [
+                ...targets(),
+                target(8001, { title: "Resized", projects: [project("graphty-element", { reviewable: 3 })] }),
+            ],
+            rows: (id, name) =>
+                id === "8001"
+                    ? {
+                          project: name,
+                          items: [0, 1, 2].map((i) =>
+                              row(i, "changed", i === 1 ? { size: [1000, 760], disagree: true } : {}),
+                          ),
+                          decisions: {},
+                          clusters: [],
+                      }
+                    : rows(id, name),
+        });
+        const r = page.locator('#snap-list .srow[data-snap$="story-1.dark.png"]');
+        expect(await r.locator(".mode").textContent()).toBe(", dark, resized");
+        expect(await r.locator(".badge").allTextContents()).toEqual(["unstable"]);
+        expect(await r.locator(".badge").evaluate((n) => globalThis.getComputedStyle(n).flexShrink)).toBe("0");
     });
 });
 

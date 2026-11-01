@@ -13,7 +13,17 @@ import { onePrFakes } from "../fakes/adapters.mjs";
 import { makeRepo } from "../helpers.mjs";
 import { COVERS } from "./covers.mjs";
 import { NOW } from "./fixtures.mjs";
-import { TOKEN, fiftyChanges, listAnswer, message, openNext, project, rowsAnswer, target } from "./page-kit.mjs";
+import {
+    TOKEN,
+    fiftyChanges,
+    listAnswer,
+    message,
+    openNext,
+    project,
+    rowsAnswer,
+    target,
+    openedChange,
+} from "./page-kit.mjs";
 
 let browser;
 let t = null;
@@ -76,7 +86,8 @@ describe("with no changes", () => {
 describe("with one change", () => {
     it("opens it by itself, Changes on its rail still counting it", async () => {
         const page = await open({ targets: [target(3486, { title: "Storybook 9 upgrade" })] });
-        await expect.poll(() => message(page)).toBe("Opened #3486: 3 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 3 left.");
+        expect(await openedChange(page)).toBe("3486");
         expect(await page.locator("#changes").getAttribute("class")).toContain("rail");
         // The rail's badge is the number over a word, its meaning in the tooltip.
         expect(await page.locator("#rail-c .count").innerText()).toBe("1\nleft");
@@ -242,11 +253,13 @@ describe("with 50 changes", () => {
         expect(await page.locator('.chg [data-act="openchg"]').count()).toBe(1);
         expect(await page.locator('#viewer [data-act="summaryopen"]').innerText()).toBe("OpenEnter");
         await page.keyboard.press("Enter");
-        await expect.poll(() => message(page)).toBe("Opened #3481: 7 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 7 left.");
+        expect(await openedChange(page)).toBe("3481");
         await page.keyboard.press("Escape");
         await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         await page.locator('.chg.cur [data-act="openchg"]').click();
-        await expect.poll(() => message(page)).toBe("Opened #3481: 7 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 7 left.");
+        expect(await openedChange(page)).toBe("3481");
     });
 
     it("opens a change by a click on its row, and the next that needs you with Next change", async () => {
@@ -254,18 +267,20 @@ describe("with 50 changes", () => {
         // Needs you, fewest snapshots first: 3484 (3), 3481 (7), 3485 (12), the seed (12), 3483 (18),
         // 3471 (26), 3482 (60), 3486 (300).
         await page.locator('.chg[data-chg="3485"]').click();
-        await expect.poll(() => message(page)).toBe("Opened #3485: 12 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 12 left.");
+        expect(await openedChange(page)).toBe("3485");
         // Next change Shift+N has one home: the top bar.
         expect(await page.locator('[data-act="nextchange"]').count()).toBe(1);
         expect(await page.locator('#top [data-act="nextchange"]').innerText()).toBe("Next changeShift+N");
         await page.keyboard.press("Shift+KeyN");
-        await expect.poll(() => message(page)).toBe("Opened seed: 12 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 12 left.");
         await page.keyboard.press("Escape");
         await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         // Back at the changes, still in the top bar.
         expect(await page.locator('#snaps-head [data-act="nextchange"]').count()).toBe(0);
         await page.locator('#top [data-act="nextchange"]').click();
-        await expect.poll(() => message(page)).toBe("Opened #3483: 18 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 18 left.");
+        expect(await openedChange(page)).toBe("3483");
         expect(await page.title()).toBe("(10) Visual review");
         // Walking every change that needs you (the two decided, not finished too), by key from the
         // changes, never reaches the look-only preview, and comes round to the start.
@@ -275,7 +290,7 @@ describe("with 50 changes", () => {
             await expect.poll(() => page.locator('#top [data-act="nextchange"]').isVisible()).toBe(true);
             await page.keyboard.press("Shift+KeyN");
             await expect.poll(() => t.actions.filter((a) => a.a === "nextchange").length).toBe(i + 3);
-            await expect.poll(() => message(page)).toMatch(/^Opened /);
+            await expect.poll(() => message(page)).toMatch(/^Opened: /);
             seen.add(await page.evaluate(() => new URLSearchParams(globalThis.location.hash.slice(1)).get("change")));
         }
         expect(seen.has("local")).toBe(false);
@@ -302,7 +317,8 @@ describe("with 50 changes", () => {
         expect(await page.locator('#viewer [data-act="summaryopen"]').innerText()).toBe("OpenEnter");
         await page.keyboard.press("Enter");
         release();
-        await expect.poll(() => message(page)).toBe("Opened #3486: 300 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 300 left.");
+        expect(await openedChange(page)).toBe("3486");
         expect(await page.evaluate(() => globalThis.location.hash)).toContain("change=3486");
     });
 
@@ -321,7 +337,8 @@ describe("with 50 changes", () => {
         expect(text).toContain("3 snapshots: 3 changed");
         expect(text).toContain("3 left");
         await page.locator("#viewer").getByRole("button", { name: "Open" }).click();
-        await expect.poll(() => message(page)).toBe("Opened #3484: 3 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 3 left.");
+        expect(await openedChange(page)).toBe("3484");
     });
 
     it("says nothing needs you when nothing does, with the sections below", async () => {
@@ -608,7 +625,8 @@ describe("on the real server", () => {
             page.setDefaultTimeout(0);
             await page.goto(`${s.origin}/#token=${TOKEN}`);
             // One change: it opens by itself, its first undecided snapshot on the item line.
-            await expect.poll(() => message(page)).toMatch(/^Opened #123: \d+ left\.$/);
+            await expect.poll(() => message(page)).toMatch(/^Opened: \d+ left\.$/);
+            expect(await openedChange(page)).toBe("123");
             expect(await page.locator(".iline").innerText()).toContain("#1");
             // The repository is named after origin (remote.git), not the checkout's folder.
             expect(await page.locator("#repo").innerText()).toBe("remote");

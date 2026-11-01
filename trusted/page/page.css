@@ -311,6 +311,7 @@ body.held [data-zone="end"] kbd {
     white-space: nowrap;
 }
 .badge {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 3px;
@@ -500,7 +501,7 @@ body.held [data-zone="end"] kbd {
     background: var(--surface);
 }
 .pane.rail {
-    width: 44px !important;
+    width: 56px !important;
     cursor: pointer;
 }
 .pane.rail > :not(.railbar) {
@@ -509,11 +510,13 @@ body.held [data-zone="end"] kbd {
 .railbar {
     display: none;
 }
+/* A rail reads horizontally, top down: the badge, the pane's name at 11 px and its key on one
+   quiet line. No rotated text. */
 .pane.rail .railbar {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     padding: 10px 0;
     height: 100%;
     width: 100%;
@@ -523,9 +526,10 @@ body.held [data-zone="end"] kbd {
     background: transparent;
 }
 .railbar .vt {
-    writing-mode: vertical-rl;
+    font-size: 11px;
     font-weight: 700;
     color: var(--ink);
+    white-space: nowrap;
 }
 /* A rail's badge: the number over a short word, each line under 40 px. */
 .railbar .count {
@@ -543,24 +547,10 @@ body.held [data-zone="end"] kbd {
 .railbar .count span {
     font-size: 10px;
 }
-/* A rail's key, quiet, stacked: "Shift" over "1". The box's own text is the printed key, drawn
-   at no size; the two lines come from its attributes. */
-.railbar kbd.stack {
+.railbar kbd {
     margin: 0;
-    font-size: 0;
-    line-height: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-}
-.railbar kbd.stack::before,
-.railbar kbd.stack::after {
-    content: attr(data-top);
     font-size: 10px;
-    line-height: 12px;
-}
-.railbar kbd.stack::after {
-    content: attr(data-bottom);
+    white-space: nowrap;
 }
 
 /* changes rows */
@@ -839,13 +829,13 @@ body[data-open="false"] #snaps {
 }
 #snaps-head > .h3 {
     height: 31px;
-    gap: 4px;
+    gap: 3px;
 }
 #snaps-head > .h3 button,
 #snaps-head > .h4 button {
     min-height: 24px;
     height: 26px;
-    padding: 0 6px;
+    padding: 0 5px;
     flex: none;
 }
 /* The selection bar, a fourth line only while rows are selected (design 4.6). */
@@ -868,10 +858,17 @@ body[data-open="false"] #snaps {
 #snaps-head > .h4.lselbar.tight button .ic {
     display: none;
 }
+/* The Find box never narrower than its placeholder "Find  /": the word stays at 1024 px. */
 .findwrap input {
     flex: 1;
     height: 26px;
-    min-width: 30px;
+    min-width: 56px;
+    padding: 4px 5px;
+}
+/* The browser's own clear cross takes room from the placeholder even while the box is empty;
+   Clear [Esc] beside the box does its job. */
+.findwrap input::-webkit-search-cancel-button {
+    display: none;
 }
 .findwrap button {
     min-height: 24px;
@@ -1207,16 +1204,37 @@ body.infind .fk {
     overflow: hidden;
     white-space: nowrap;
 }
-.ghead .gname .gc {
-    font-weight: 400;
-    color: var(--ink-2);
+/* The name is a button: a small drawn caret after it (a bordered triangle, no glyph), and an
+   underline on hover. */
+.ghead .gname .gcaret {
     flex: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--ink-2);
+}
+.ghead button.gname:hover .gn {
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 /* Every group's Accept N reads as a button (a neutral outline); the current snapshot's group's is
-   green and prints its quiet Shift+A. */
+   green, prints its quiet Shift+A and always shows. The other groups' show only while their header
+   is hovered or focused: the count is said once, where the reader is. */
 .ghead .acc.mine {
     border-color: var(--accept);
     font-weight: 700;
+}
+/* Hidden by opacity, not visibility, so Tab still reaches it (WebKit drops focus out of the page
+   on a visibility-hidden button) and shows it; no pointer reaches it while it is unseen. */
+.ghead:not(.mine) > .gsp ~ button {
+    opacity: 0;
+    pointer-events: none;
+}
+.ghead:not(.mine):hover > .gsp ~ button,
+.ghead:not(.mine):focus-within > .gsp ~ button {
+    opacity: 1;
+    pointer-events: auto;
 }
 /* Accepted earlier, at the bottom of the list: one quiet line. */
 .ghead.before .gname {
@@ -1444,6 +1462,7 @@ button.quietbtn[aria-expanded="true"] {
     color: var(--ink);
 }
 .badge {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     font-size: 11px;
@@ -2210,4 +2229,10 @@ dialog.finish .warnbox {
 .jobs td {
     padding: 4px 12px 4px 0;
     border-bottom: 1px solid var(--line);
+}
+/* The reason box's heading: one line, the story name cut in the middle by the page. */
+.popbox .phead {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }

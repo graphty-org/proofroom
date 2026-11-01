@@ -29,6 +29,7 @@ import {
     rowsAnswer,
     target,
     webkitRuns,
+    openedChange,
 } from "./page-kit.mjs";
 
 const browsers = {};
@@ -193,8 +194,8 @@ describe("the summary sheet", () => {
             expect(await slot.innerText()).not.toContain("null");
             await openChange(page, OPEN);
             const finish = page.locator('#top [data-act="finish"]');
-            // Named, no count; outlined in the primary color while snapshots are left.
-            expect(await shows(finish)).toBe(`Finish #${OPEN}...`);
+            // No number (the title names the change), no count; outlined in the primary color while snapshots are left.
+            expect(await shows(finish)).toBe("Finish review...");
             expect(await finish.getAttribute("class")).toBe("outline");
             await finish.click();
             const s = sheet(page);
@@ -210,9 +211,7 @@ describe("the summary sheet", () => {
             expect(await s.innerText()).not.toContain("Will set:");
             await plumbing.locator("summary").click();
             const text = await s.innerText();
-            expect(text).toContain(
-                `Saves 2 you accepted to branch feat/${OPEN}-change, as Ada Owner.`,
-            );
+            expect(text).toContain(`Saves 2 you accepted to branch feat/${OPEN}-change, as Ada Owner.`);
             // The commit status in the server's own words (commitStatus), never "approved" with
             // snapshots undecided, under Details.
             expect(text).toContain(
@@ -467,12 +466,14 @@ describe("a change whose last snapshot was just decided (issue #1)", () => {
 
         // Next change [Shift+N] from the other change reaches it.
         await rowOf(page, NEW).click();
-        await expect.poll(() => message(page)).toBe(`Opened #${NEW}: 3 left.`);
+        await expect.poll(() => message(page)).toBe("Opened: 3 left.");
+        expect(await openedChange(page)).toBe(String(NEW));
         await page.keyboard.press("Escape");
         await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         await page.keyboard.press("Shift+KeyN");
         // (The fake's rows keep only their first two decisions: the count after the colon is the fake's.)
-        await expect.poll(() => message(page)).toMatch(new RegExp(`^Opened #${OPEN}: `));
+        await expect.poll(() => message(page)).toMatch(/^Opened: \d+ left\.$/);
+        expect(await openedChange(page)).toBe(String(OPEN));
         await page.keyboard.press("Escape");
         await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
 
@@ -639,16 +640,22 @@ describe("Finish... and Finish all", () => {
         const lines = await said(page);
         expect(lines).toContainEqual(
             expect.stringMatching(
-                new RegExp(`^Finished #${A} at \\d\\d:\\d\\d\\. The comment was not posted: HTTP 502\\. Commit is linked on its row\\.`),
+                new RegExp(
+                    `^Finished #${A} at \\d\\d:\\d\\d\\. The comment was not posted: HTTP 502\\. Commit is linked on its row\\.`,
+                ),
             ),
         );
         expect(lines).toContainEqual(
             expect.stringMatching(
-                new RegExp(`^Finished #${B} at \\d\\d:\\d\\d\\. The commit status was not set: HTTP 500\\. Commit is linked on its row\\.`),
+                new RegExp(
+                    `^Finished #${B} at \\d\\d:\\d\\d\\. The commit status was not set: HTTP 500\\. Commit is linked on its row\\.`,
+                ),
             ),
         );
         expect(lines).toContainEqual(
-            expect.stringMatching(new RegExp(`^Finished #${C} at \\d\\d:\\d\\d\\. Commit and comment are linked on its row\\.`)),
+            expect.stringMatching(
+                new RegExp(`^Finished #${C} at \\d\\d:\\d\\d\\. Commit and comment are linked on its row\\.`),
+            ),
         );
     });
 
@@ -783,7 +790,7 @@ describe("on the review server", () => {
             await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await page.locator("#snap-list .srow.cur").waitFor({ state: "attached" });
             const finish = page.locator('#top [data-act="finish"]');
-            await expect.poll(() => shows(finish)).toBe("Finish #123...");
+            await expect.poll(() => shows(finish)).toBe("Finish review...");
             await finish.click();
             await sheet(page).getByRole("button", { name: "Register passkey..." }).click();
             const settings = page.locator("dialog.settings[open]");
@@ -848,7 +855,7 @@ describe("on the review server", () => {
             await page.goto(`${s.origin}/#token=${TOKEN}&change=master`);
             await page.locator("#snap-list .srow.cur").waitFor({ state: "attached" });
             const finish = page.locator('#top [data-act="finish"]');
-            await expect.poll(() => shows(finish)).toBe("Finish seed...");
+            await expect.poll(() => shows(finish)).toBe("Finish review...");
             await finish.click();
             const sh = sheet(page);
             await sh.waitFor();

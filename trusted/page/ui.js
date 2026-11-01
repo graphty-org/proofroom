@@ -135,8 +135,12 @@ export function ageText(ms) {
 }
 
 /**
- * Megabytes, one decimal under 10 MB.
+ * A size in bytes, the one formatter for every size the page prints: megabytes, gigabytes from
+ * 1 GB on, one decimal under 10 of either.
  * @param {number} b bytes
- * @returns {string} "6.8 MB", "68 MB"
+ * @returns {string} "6.8 MB", "68 MB", "1.9 GB"
  */
-export const megabytes = (b) => `${b < 1e7 ? (b / 1e6).toFixed(1) : Math.round(b / 1e6)} MB`;
+export const megabytes = (b) =>
+    b >= 1e9
+        ? `${b < 1e10 ? (b / 1e9).toFixed(1) : Math.round(b / 1e9)} GB`
+        : `${b < 1e7 ? (b / 1e6).toFixed(1) : Math.round(b / 1e6)} MB`;

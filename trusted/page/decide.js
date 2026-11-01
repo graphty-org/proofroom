@@ -15,7 +15,7 @@ import { control } from "./actions.js";
 import { api } from "./api.js";
 import { nextNeeding } from "./changes.js";
 import { BEFORE, splitOf, splitWords, undecided } from "./groups.js";
-import { acceptLabel, groupScope, layoutOf, shownUndecided, undoable } from "./list.js";
+import { FONT, acceptLabel, groupScope, layoutOf, midCut, shownUndecided, textWidth, undoable } from "./list.js";
 import { STATUS } from "./marks.js";
 import { wordsOf } from "./messages.js";
 import { shownNow } from "./panes.js";
@@ -377,6 +377,23 @@ export function installDecide(app) {
 
     // ------------------------------------------------------------ the reason box
 
+    // The box's heading on one line: "Reject #1028 legend / graph-f...-dark", the story name cut in
+    // the middle to the box's 376 px, the whole in the tooltip.
+    const heading = (title, one) => {
+        if (!one) {
+            return el("b", { class: "phead" }, title);
+        }
+        const head = `${title} #${one.n} ${one.component} / `;
+        const font = `700 13px ${FONT()}`;
+        const room = 376 - textWidth(head, font);
+        return el(
+            "b",
+            { class: "phead", title: `${head}${one.name}` },
+            head,
+            midCut(one.name, Math.max(room, 80), font),
+        );
+    };
+
     /**
      * The box Reject and Exclude ask their reason in, anchored above the decision bar: the field,
      * up to five recent reasons, Cancel [Esc] and Reject [Enter] (Exclude has a second step).
@@ -415,7 +432,7 @@ export function installDecide(app) {
             }
         };
         form.append(
-            el("b", {}, `${title}${one ? ` #${one.n} ${one.component} / ${one.name}` : ""}`),
+            heading(title, one),
             el(
                 "span",
                 { class: "small muted" },
@@ -691,15 +708,20 @@ export function installDecide(app) {
     };
 
     /**
-     * A group's menu, opened by its name: Collapse or Expand, Reject N..., Exclude N..., Select all
-     * N, and Undo N while it holds decisions to take back.
+     * A group's actions, opened by its name: Accept N (printing Shift+A on the current snapshot's
+     * group, the one that key accepts), Collapse or Expand, Reject N..., Exclude N..., Select all N,
+     * and Undo N while it holds decisions to take back.
      * @param {string} key the group
      * @param {HTMLElement} anchor its button
      */
     app.groupMenu = (key, anchor) => {
         const sc = app.groupScope(key);
         const ctx = { group: key };
+        const mine = sc.rows.some((s) => s.key === app.snap);
         app.showMenu(anchor, [
+            ...(key !== BEFORE && sc.und.length > 0
+                ? [{ id: "gaccept", label: acceptLabel(sc), ctx, key: mine ? "Shift+A" : "" }]
+                : []),
             { id: "gtoggle", label: app.lv.collapsed.has(key) ? "Expand" : "Collapse", ctx },
             { sep: true },
             { id: "greject", label: `Reject ${fmt(sc.all.length)}...`, ctx },
@@ -724,12 +746,18 @@ export function installDecide(app) {
 
     // ------------------------------------------------------------ the selection bar's menu and the list menu
 
-    app.selMenu = (anchor) =>
-        app.showMenu(anchor, [
-            { id: "extendup", label: "Extend up" },
-            { id: "extenddown", label: "Extend down" },
-            { id: "selshown", label: `Select all shown (${fmt(walk().length)})` },
-        ]);
+    app.selMenu = (anchor) => app.showMenu(anchor, app.selectItems());
+
+    /**
+     * The Select items of the selection bar's More menu and of the List menu: Extend selection up
+     * and down (Shift+Up / Shift+Down, which act with the menu closed) and Select all shown.
+     * @returns {any[]} the items
+     */
+    app.selectItems = () => [
+        { id: "extendup", label: "Extend selection up" },
+        { id: "extenddown", label: "Extend selection down" },
+        { id: "selshown", label: `Select all shown (${fmt(walk().length)})` },
+    ];
 
     /** Accept all shown (N)...: every undecided row Show and Find keep; always asks. */
     app.acceptShown = () => {

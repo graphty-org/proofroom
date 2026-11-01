@@ -52,32 +52,43 @@ async function openLarge() {
 const current = (page, sel, attr) => page.locator(`${sel}.cur`).first().getAttribute(attr);
 
 describe("the rails", () => {
-    it("print their key quiet and stacked, and a badge of the number over its word, each line under 40 px", async () => {
+    it("read horizontally: a badge of the number over its word, the pane's name at 11 px, and its key quiet on one line", async () => {
         const page = await openLarge();
         await page.keyboard.press("Shift+Digit2");
         await expect.poll(() => shown(page)).toEqual([false, false]);
-        for (const [rail, key, title] of [
-            ["#rail-c", "Shift+1", /^\d+ changes? needs? you$/],
-            ["#rail-s", "Shift+2", /^\d+ snapshots? left to decide$/],
+        for (const [rail, key, name, title] of [
+            ["#rail-c", "Shift+1", "Changes", /^\d+ changes? needs? you$/],
+            ["#rail-s", "Shift+2", "Snaps", /^\d+ snapshots? left to decide$/],
         ]) {
             const look = await page.locator(rail).evaluate((n) => {
                 const kbd = n.querySelector(":scope > kbd");
                 const count = n.querySelector(".count");
-                const css = (pseudo) => globalThis.getComputedStyle(kbd, pseudo).content;
+                const vt = n.querySelector(".vt");
+                const kcs = globalThis.getComputedStyle(kbd);
                 return {
-                    key: kbd.textContent,
+                    width: n.parentElement.getBoundingClientRect().width,
+                    key: kbd.innerText,
                     quiet: kbd.classList.contains("quiet"),
-                    lines: [css("::before"), css("::after")],
-                    keyWidth: kbd.getBoundingClientRect().width,
+                    keyBorder: kcs.borderTopStyle,
+                    keyHeight: kbd.getBoundingClientRect().height,
+                    keyLine: parseFloat(kcs.lineHeight) || parseFloat(kcs.fontSize) * 1.5,
+                    keyRight: kbd.getBoundingClientRect().right,
+                    railRight: n.getBoundingClientRect().right,
+                    name: vt.innerText,
+                    nameSize: globalThis.getComputedStyle(vt).fontSize,
+                    nameMode: globalThis.getComputedStyle(vt).writingMode,
                     badge: count.innerText,
                     badgeWidth: count.getBoundingClientRect().width,
                     title: count.title,
                 };
             });
+            expect(look.width).toBe(56);
             expect(look.key).toBe(key);
             expect(look.quiet).toBe(true);
-            expect(look.lines).toEqual(['"Shift"', `"${key.slice(-1)}"`]);
-            expect(look.keyWidth).toBeLessThan(40);
+            expect(look.keyBorder).toBe("none");
+            expect(look.keyHeight).toBeLessThan(2 * look.keyLine);
+            expect(look.keyRight).toBeLessThanOrEqual(look.railRight);
+            expect([look.name, look.nameSize, look.nameMode]).toEqual([name, "11px", "horizontal-tb"]);
             expect(look.badge).toMatch(/^[\d,]+\nleft$/);
             expect(look.badgeWidth).toBeLessThan(40);
             expect(look.title).toMatch(title);

@@ -575,7 +575,7 @@ describe("the Captures screen", () => {
         );
         await page.locator("#cap-rows").focus();
         await page.keyboard.press("Enter");
-        await expect.poll(() => message(page)).toBe("Opened branch: 3 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 3 left.");
         expect(await page.locator("#scr-captures").isVisible()).toBe(false);
         expect(await page.locator(".chg.cur").getAttribute("data-chg")).toBe("branch-feat%2Fx");
         // Where it was captured is in the row's tooltip, with its other details.

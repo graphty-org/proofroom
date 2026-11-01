@@ -1509,10 +1509,10 @@ await step(
         check(
             await page
                 .waitForFunction(
-                    (t) =>
-                        document.querySelector("#msg-t").innerText.startsWith("Opened ") &&
-                        document.querySelector("#msg-t").innerText.includes(t),
-                    second.title,
+                    (id) =>
+                        document.querySelector("#msg-t").innerText.startsWith("Opened: ") &&
+                        new URLSearchParams(location.hash.slice(1)).get("change") === id,
+                    String(second.id),
                     { timeout: 15_000 },
                 )
                 .then(

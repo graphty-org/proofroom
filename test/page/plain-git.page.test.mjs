@@ -129,7 +129,7 @@ describe("the page on a plain git repository", () => {
         await page.keyboard.press("Escape");
         await expect.poll(() => menu.count()).toBe(0);
         await row.click();
-        await expect.poll(() => message(page)).toBe("Opened feat/x: 3 left.");
+        await expect.poll(() => message(page)).toBe("Opened: 3 left.");
 
         // Settings, Repository setup: what plain git lacks and what that hides.
         await page.getByRole("button", { name: "Settings" }).click();
@@ -167,7 +167,7 @@ describe("the page on a plain git repository", () => {
 
         // Finish: the reject goes to a file on the branch, and no status is set.
         const finish = page.locator('#top [data-act="finish"]');
-        await expect.poll(() => finish.innerText()).toBe("Finish feat/x...");
+        await expect.poll(() => finish.innerText()).toBe("Finish review...");
         await finish.click();
         const box = page.locator("dialog.finish[open]:not([aria-busy])");
         await box.waitFor();

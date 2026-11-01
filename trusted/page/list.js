@@ -590,8 +590,8 @@ export function findBox() {
 const measure = document.createElement("canvas").getContext("2d");
 // The body's font family, read once: getComputedStyle per row would recompute styles per row.
 let family = null;
-const FONT = () => (family ??= getComputedStyle(document.body).fontFamily);
-const textWidth = (t, font) => {
+export const FONT = () => (family ??= getComputedStyle(document.body).fontFamily);
+export const textWidth = (t, font) => {
     measure.font = font;
     return measure.measureText(String(t)).width;
 };
@@ -603,7 +603,7 @@ const textWidth = (t, font) => {
  * @param {string} font the font
  * @returns {string} the name, whole or cut
  */
-function midCut(t, w, font) {
+export function midCut(t, w, font) {
     if (textWidth(t, font) <= w) {
         return t;
     }
@@ -621,6 +621,24 @@ function midCut(t, w, font) {
     return cut(lo);
 }
 
+/**
+ * A name cut keeping its end ("...fidelity-cx-specimens"), so names that share a start stay apart.
+ * @param {string} t the name
+ * @param {number} w the width
+ * @param {string} font the font
+ * @returns {string} the name, whole or cut
+ */
+function endCut(t, w, font) {
+    if (textWidth(t, font) <= w) {
+        return t;
+    }
+    let k = t.length - 1;
+    while (k > 4 && textWidth(`...${t.slice(t.length - k)}`, font) > w) {
+        k--;
+    }
+    return `...${t.slice(t.length - k)}`;
+}
+
 const lines = {};
 const line = (cls) => {
     lines[cls] ??= el("div", { class: `hl ${cls}` });
@@ -631,12 +649,13 @@ const line = (cls) => {
 const over = (n) => n.scrollWidth > n.clientWidth + 1;
 
 // The Find box's placeholder words, longest first (the box prints its key "/" after them).
-const FIND_WORDS = ["Find, or #number", "Find", ""];
+const FIND_WORDS = ["Find, or #number", "Find"];
 
 // Shortens the Find box's placeholder to what its box holds: "Find, or #number  /", then
-// "Find  /", then "/". The box gives way first on line 3, so this is all that is ever cut there.
+// "Find  /", never less: the word stays at 1024 px.
 function fitFind(box) {
-    const w = box.clientWidth - 18;
+    // Less its 5 px padding each side and a little air.
+    const w = box.clientWidth - 12;
     if (box.clientWidth === 0) {
         return;
     }
@@ -701,7 +720,15 @@ export function drawHead(app, h1) {
             label: showLabel,
             attrs: { "aria-label": showLabel, "aria-haspopup": "menu" },
         }),
-        control(app, "listmenu", { zone: "snaps-head", attrs: { "aria-haspopup": "menu" } }),
+        // Its Select section's keys act with the menu closed: Shift+Up and Shift+Down are printed here
+        // at every width.
+        control(app, "listmenu", {
+            zone: "snaps-head",
+            attrs: {
+                "aria-haspopup": "menu",
+                "data-menukeys": JSON.stringify({ "Shift+Up": "extendup", "Shift+Down": "extenddown" }),
+            },
+        }),
         ...rowButtons(app, "snaps", "snaps-head"),
     );
     h3.classList.add("findwrap");
@@ -766,7 +793,7 @@ function selectionBar(app) {
             el("span", { class: "nsh" }, hid ? ` (${fmt(hid)} not shown)` : ""),
         ),
         control(app, "clearsel", { zone, attrs: { class: "clearsel" } }),
-        control(app, "selmenu", { zone }),
+        control(app, "selmenu", { zone, label: "More" }),
     ];
 }
 
@@ -1153,11 +1180,14 @@ export function rowOf(app, s, filled = true) {
         el("span", { class: "nmb" }, `#${s.n}`),
         el("span", { class: "st ell" }, mark(st?.shape ?? "wavy", st?.cls ?? "c-ink2"), word),
     );
-    // The story's name, the one bold thing on the row, and its mode as muted words after it:
-    // "graph-file, dark".
-    const mode = s.mode ? `, ${s.mode}` : "";
-    const modeW = s.mode ? textWidth(mode, `12px ${FONT()}`) : 0;
-    const named = (text) => [text, s.mode ? el("span", { class: "mode" }, mode) : null];
+    // The story's name, the one bold thing on the row, and its mode and "resized" as muted words
+    // after it: "graph-file, dark, resized". The other badges are pills on line 4.
+    const all = badgesOf(app, s);
+    const resized = all.find((b) => b.text === "resized");
+    const tail = [s.mode, resized?.text].filter(Boolean);
+    const mode = tail.length > 0 ? `, ${tail.join(", ")}` : "";
+    const modeW = mode ? textWidth(mode, `12px ${FONT()}`) : 0;
+    const named = (text) => [text, mode ? el("span", { class: "mode", title: resized?.title ?? null }, mode) : null];
     let body;
     if (!s.decision) {
         const one = textWidth(s.name, NAME_FONT()) + modeW <= textW;
@@ -1171,7 +1201,7 @@ export function rowOf(app, s, filled = true) {
         // first, then the zoom (the picture's bar still marks it), before a badge's word folds;
         // the whole is in the tooltip.
         const words = rowSizeText(s, lv.pics.none ? null : pictureKind(s, lv.pics));
-        const badges = badgesOf(app, s);
+        const badges = all.filter((b) => b !== resized);
         const need = badgeNeed(badges);
         const width = (x) => (x ? textWidth(x, SIZE_FONT()) + 8 : 0);
         const size = [words.full, words.short].find((x) => width(x) + need <= textW) ?? sizeText(s);
@@ -1316,23 +1346,27 @@ function headAction(app, g, name) {
     });
 }
 
-// The width a header's third control takes, its Shift+A counted on every group, so a header's
-// layout never depends on the current row.
-function actionWidth(app, g) {
+// The width a header's third control takes: Accept N, with its bold label and Shift+A only on the
+// current snapshot's group (the header is drawn again when the current group changes), so the
+// other groups' names get the room the key would take.
+function actionWidth(app, g, mine) {
     const sc = groupScope(app, g);
     if (g.key === BEFORE || (sc.und.length === 0 && sc.undoable.length === 0)) {
         return 0;
     }
     const font = `11px ${FONT()}`;
     return sc.und.length > 0
-        ? textWidth(acceptLabel(sc), `700 ${font}`) + textWidth("Shift+A", font) + 22
+        ? mine
+            ? textWidth(acceptLabel(sc), `700 ${font}`) + textWidth("Shift+A", font) + 22
+            : textWidth(acceptLabel(sc), font) + 18
         : textWidth(`Undo ${fmt(sc.undoable.length)}`, font) + 22;
 }
 
 /**
  * A group's sticky header, one line: the chevron (collapses and expands, with `aria-expanded`), the
- * name button `name (3)` that opens the group's menu (its count muted, the name cut in the middle
- * first), and Accept N.
+ * name button (cut keeping its end, a drawn caret after it) that opens the group's actions, and
+ * Accept N: always on the current snapshot's group, on the others only while the header is hovered
+ * or focused. The count is said once, in Accept N; it is also the first item of the name's menu.
  * @param {any} app the page
  * @param {any} g the group
  * @returns {{ node: HTMLElement, height: number }} the header and its height
@@ -1352,9 +1386,8 @@ function headerOf(app, g) {
         },
         children: [mark(open ? "chevOpen" : "chevClosed")],
     });
-    const split = splitOf(g);
-    // A component group is named by its component alone ("legend (14)"), its project in the
-    // tooltip, unless another project has a component of that name.
+    // A component group is named by its component alone ("legend"), its project in the tooltip,
+    // unless another project has a component of that name.
     const comp = g.kind === "component" ? g.rows[0].component : null;
     const twin =
         comp !== null &&
@@ -1362,29 +1395,30 @@ function headerOf(app, g) {
             (o) => o.key !== g.key && o.kind === "component" && o.rows[0]?.component === comp,
         );
     const label = comp !== null && !twin ? comp : name;
-    const count = ` (${fmt(g.rows.length)})`;
     const shape = before ? DECISION.before : g.kind === "status" ? STATUS[g.label] : null;
     const font = `${before ? 400 : 700} 12px ${FONT()}`;
     // The list's width less the header's padding, the chevron, the gaps, the name button's padding,
-    // its mark, the count and the third control.
-    const room = app.lv.listW - 64 - (shape ? 16 : 0) - textWidth(count, `12px ${FONT()}`) - actionWidth(app, g);
+    // its mark, its caret and the third control.
+    const mine = g.rows.some((s) => s.key === app.snap);
+    const room = app.lv.listW - 74 - (shape ? 16 : 0) - actionWidth(app, g, mine);
     const menu = control(app, "gmenu", {
         zone: "rows",
         ctx: { group: g.key },
         attrs: {
             class: "gname",
             "aria-haspopup": "menu",
-            title: `${name}: ${fmt(g.rows.length)}${split ? ` (${splitWords(split)})` : ""}. Opens the group's menu`,
+            "aria-label": `${name}: group actions`,
+            title: `Group actions: ${name}`,
         },
         children: [
             shape ? mark(shape.shape, shape.cls) : null,
-            el("span", { class: "gn" }, midCut(label, Math.max(room, 48), font)),
-            el("span", { class: "gc" }, count),
+            el("span", { class: "gn" }, endCut(label, Math.max(room, 48), font)),
+            el("span", { class: "gcaret", "aria-hidden": "true" }),
         ],
     });
     const node = el(
         "div",
-        { class: `ghead ${before ? "before" : ""}`, "data-group": g.key, title: name },
+        { class: `ghead ${before ? "before" : ""} ${mine ? "mine" : ""}`, "data-group": g.key, title: name },
         caret,
         menu,
         el("span", { class: "gsp" }),
@@ -1674,7 +1708,8 @@ export function pictureItems(app) {
 }
 
 /**
- * The List menu's items: Group by, Pictures, then Accept all shown (N)..., Undo all decisions...,
+ * The List menu's items: Group by, Pictures, Select (Extend selection up and down, whose keys act
+ * with the menu closed, and Select all shown), then Accept all shown (N)..., Undo all decisions...,
  * Download the comparison report (JUnit) and Copy link to this list.
  * @param {any} app the page
  * @returns {any[]} the items
@@ -1685,6 +1720,9 @@ export const listItems = (app) => [
     { sep: true },
     { head: "Pictures" },
     ...pictureItems(app),
+    { sep: true },
+    { head: "Select" },
+    ...app.selectItems(),
     { sep: true },
     { id: "acceptshown", label: `Accept all shown (${fmt(shownUndecided(app).length)})...` },
     { id: "undoall", label: "Undo all decisions..." },

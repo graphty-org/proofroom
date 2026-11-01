@@ -271,16 +271,8 @@ app.statusText = () => {
 const railCount = (n, title) =>
     n > 0 ? el("span", { class: "count", title }, el("b", {}, fmt(n)), el("span", {}, "left")) : null;
 
-// A rail's key, quiet and stacked ("Shift" over "1") to fit the 44 px rail. Its text stays the
-// printed key; the two lines are drawn from its attributes.
-const railKey = (k) =>
-    kb(k, true).map((box) => {
-        const [top, bottom] = k.split("+");
-        box.classList.add("stack");
-        box.dataset.top = top;
-        box.dataset.bottom = bottom;
-        return box;
-    });
+// A rail's key, quiet, on one line ("Shift+1").
+const railKey = (k) => kb(k, true);
 
 function drawChangesPane() {
     const needs = app.changes.length === 1 ? 1 : app.changes.filter(needsYou).length;
@@ -374,7 +366,7 @@ function drawSnaps() {
             attrs: { id: "rail-s", class: "railbar", title: "Show Snapshots (Shift+2)" },
             children: [
                 c ? railCount(left, `${plural(left, "snapshot")} left to decide`) : null,
-                el("span", { class: "vt" }, "Snapshots"),
+                el("span", { class: "vt" }, "Snaps"),
                 railKey("Shift+2"),
             ],
         }),
@@ -799,7 +791,7 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
         const parts = snapParts(snap);
         say(`${parts?.file ?? snap} is not in this capture any more: showing the first undecided snapshot.`);
     } else if (!quiet) {
-        say(`Opened ${c.label}: ${fmt(snaps.filter((s) => !s.decision).length)} left.`);
+        say(`Opened: ${fmt(snaps.filter((s) => !s.decision).length)} left.`);
     }
 };
 

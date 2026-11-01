@@ -21,7 +21,7 @@ Where each key is printed:
   Image only, Layout, Outline changed areas, Start zoomed on the change).
 - **Shift+N**: **Next change** in the top bar (and on the end card). **Shift+1**, **Shift+2**:
   the Changes pane's **Hide** and the Snapshots pane's fold button, and each pane's rail, where the
-  key is stacked ("Shift" over "1"). **?**: **Keys** in the top bar. **/**: the Find box's
+  key is printed quietly on one line under the pane's name. **?**: **Keys** in the top bar. **/**: the Find box's
   placeholder.
 - **N**: **Next area** on the item line, when the snapshot has more than one changed area. **X**:
   **Select X** on the item line. **Esc**: **Back** on the item line, and Clear,

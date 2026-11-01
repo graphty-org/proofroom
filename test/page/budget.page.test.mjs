@@ -9,7 +9,17 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { NOW } from "./fixtures.mjs";
-import { BROWSERS, listAnswer, message, openNext, project, rowsAnswer, target, webkitRuns } from "./page-kit.mjs";
+import {
+    BROWSERS,
+    listAnswer,
+    message,
+    openNext,
+    project,
+    rowsAnswer,
+    target,
+    webkitRuns,
+    openedChange,
+} from "./page-kit.mjs";
 
 // Data old enough that the top bar shows its age and Refresh.
 const OLD = { updatedAt: NOW - 6 * 60000 };
@@ -114,7 +124,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 listAnswer([target(10, { projects: [project("graphty-element", { reviewable: 3 })] }), deleted], OLD),
             );
             await page.locator('[data-act="refresh"]').click();
-            await expect.poll(() => message(page)).toMatch(/^Opened #10: 3 left\.$/);
+            await expect.poll(() => message(page)).toMatch(/^Opened: 3 left\.$/);
+            expect(await openedChange(page)).toBe("10");
             expect(await l2()).not.toContain("Downloading");
             expect(await l2()).not.toContain("to download");
             expect(asked).toBe(2);

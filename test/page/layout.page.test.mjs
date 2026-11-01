@@ -2,7 +2,7 @@
  * The new page's layout in Chromium at 1280 x 800, 1440 x 900 and an iPad-like 1180 x 820: the
  * viewer is never narrower than 800 px while it shows a snapshot, in every level and after every
  * pane key, with 3 and 300 snapshots; the levels move by clicks on the rows, Open, Back and the
- * viewer as they do by keys; and the top bar's 36 px, the message line's 24 px and the rails' 44 px.
+ * viewer as they do by keys; and the top bar's 36 px, the message line's 24 px and the rails' 56 px.
  * The Baselines screen too: its viewer at 800 px or more after every pane key, and its toolbar in
  * one row with its seven controls showing. At 1024 x 768, with a change open and with three rows
  * selected, every keyed control is wholly inside the window and the decision bar is one line.
@@ -134,8 +134,8 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
         expect((await box(page, "#viewer")).width).toBe(width - 480);
         await page.locator('.chg[data-chg="3484"]').click();
         await page.locator(".iline").waitFor({ state: "attached" });
-        expect((await box(page, "#changes")).width).toBe(44);
-        expect((await box(page, "#snaps")).width).toBe(44);
+        expect((await box(page, "#changes")).width).toBe(56);
+        expect((await box(page, "#snaps")).width).toBe(56);
     });
 
     it("draws a focused button's Enter hint outside it: the button and its neighbors keep their place", async () => {
