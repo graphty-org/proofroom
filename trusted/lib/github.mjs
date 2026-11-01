@@ -337,6 +337,26 @@ export async function newestCiRun(gh, sha, { workflow }) {
 export const getRun = async (gh, id) => toRun(await api(gh, `repos/{owner}/{repo}/actions/runs/${id}`));
 
 /**
+ * Every artifact of a run, all pages: a full run that calls the workflow beside other lanes keeps
+ * more than 100, and a project's capture past the first page would never load.
+ * @param {Function} gh the gh runner
+ * @param {{ id: number }} run the run
+ * @returns {Promise<object[]>} the artifacts
+ */
+export async function runArtifacts(gh, run) {
+    const artifacts = [];
+    for (let page = 1; ; page++) {
+        // The first page's path stays the one recorded replays hold.
+        const more = page > 1 ? `&page=${page}` : "";
+        const got = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100${more}`);
+        artifacts.push(...got.artifacts);
+        if (got.artifacts.length < 100 || artifacts.length >= (got.total_count ?? 0)) {
+            return artifacts;
+        }
+    }
+}
+
+/**
  * The `visual` matrix job of each project in one attempt of a run.
  * @param {Function} gh the gh runner
  * @param {{ id: number }} run the run
@@ -513,9 +533,9 @@ export async function downloadCaptures(
     planned = () => {},
     again = false,
 ) {
-    const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
+    const artifacts = await runArtifacts(gh, run);
     for (const a of artifacts) {
-        const p = /^visual-(.+)-\d+$/.exec(a.name)?.[1];
+        const p = /^visual-(?:final-)?(.+)-\d+$/.exec(a.name)?.[1];
         if (p && !projects.includes(p) && !others.includes(p)) {
             others.push(p);
         }
@@ -529,11 +549,15 @@ export async function downloadCaptures(
                 expired: x.expired || Date.parse(x.expires_at) <= Date.now(),
                 bytes: x.size_in_bytes ?? 0,
                 attempt: Number(pattern.exec(x.name)[1]),
+                final: false,
             }))
             .sort((x, y) => y.attempt - x.attempt)[0];
     const newest = Object.fromEntries(
         projects.map((project) => {
-            const a = newestOf(new RegExp(String.raw`^visual-${project}-(\d+)$`));
+            // A run that re-shoots stories uploads the set its gate judged as visual-final-<project>-<n>:
+            // review that one, never the first capture the re-shoot overturned.
+            const final = newestOf(new RegExp(String.raw`^visual-final-${project}-(\d+)$`));
+            const a = final ? { ...final, final: true } : newestOf(new RegExp(String.raw`^visual-${project}-(\d+)$`));
             return [project, a ?? null];
         }),
     );
@@ -547,7 +571,7 @@ export async function downloadCaptures(
             if (!a) {
                 out[project] = null;
             } else {
-                const dir = join(tmp, `${run.id}-${a.attempt}`, project);
+                const dir = join(tmp, `${run.id}-${a.final ? "final-" : ""}${a.attempt}`, project);
                 const got = { attempt: a.attempt, bytes: a.bytes };
                 if (a.expired) {
                     out[project] = whole(dir)
@@ -681,7 +705,7 @@ function tokenReader() {
  *     project (no artifact, or one without a valid, complete results.json); null when it cannot be read this way
  */
 export async function referenceSubset(gh, run, project, tmp, reader) {
-    const { artifacts } = await api(gh, `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`);
+    const artifacts = await runArtifacts(gh, run);
     const pick = (re) =>
         artifacts
             .filter((x) => re.test(x.name) && !x.expired)

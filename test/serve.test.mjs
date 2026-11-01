@@ -1029,7 +1029,10 @@ describe("serve: images", () => {
         }
         const raw = await new Promise((resolve) => {
             const port = new URL(s.origin).port;
-            request({ port, path: "/api/blob/../../../etc/passwd", headers: { "x-review-token": TOKEN } }, resolve).end();
+            request(
+                { port, path: "/api/blob/../../../etc/passwd", headers: { "x-review-token": TOKEN } },
+                resolve,
+            ).end();
         });
         expect(raw.statusCode).toBe(404);
     });
@@ -2922,6 +2925,24 @@ describe("downloadCaptures", () => {
         expect(existsSync(join(out["compact-mantine"].dir, "results.json"))).toBe(true);
     });
 
+    it("loads the run's gated final capture, not the first one, and lists no final-<project>", async () => {
+        const { r } = setup();
+        const inner = fakeGh({ artifacts: { 1000: ["visual-compact-mantine-1", "visual-final-compact-mantine-2"] } });
+        const asked = [];
+        const gh = (args, input) => {
+            if (args[0] === "run") {
+                asked.push(args[4]);
+            }
+            return inner(args, input);
+        };
+        const others = [];
+        const tmp = join(r.dir, "downloads");
+        const out = await downloadCaptures(gh, { id: 1000 }, ["compact-mantine"], tmp, others);
+        expect(asked).toEqual(["visual-final-compact-mantine-2"]);
+        expect(out["compact-mantine"]).toMatchObject({ dir: join(tmp, "1000-final-2", "compact-mantine"), attempt: 2 });
+        expect(others).toEqual([]);
+    });
+
     it("replaces a leftover directory that has no results.json", async () => {
         const { inner, tmp, run } = setup();
         const dir = join(tmp, "1000-1", "compact-mantine");
@@ -3151,22 +3172,82 @@ describe("serve: passkeys", () => {
     const decide = (s, file, decision = "accept", reason = null) =>
         s.api("POST", "/api/decide", { id: "123", project: "compact-mantine", file, decision, reason });
 
-    // Decides every image of #123: accepts what can be accepted, excludes the rest.
-    async function decideAll(s) {
-        for (const project of ["compact-mantine", "graphty-element"]) {
-            const { body } = await s.api("GET", `/api/pr/123/${project}`);
+    // Decides every image of #123 (or another target): accepts what can be accepted, excludes the rest.
+    async function decideAll(s, id = "123", projects = ["compact-mantine", "graphty-element"]) {
+        for (const project of projects) {
+            const { body } = await s.api("GET", `/api/pr/${id}/${project}`);
             for (const { file, status } of body.items) {
                 const exclude = ["unstable", "failed"].includes(status);
                 if (exclude || ["changed", "moved", "new", "unseeded", "removed"].includes(status)) {
                     const decision = exclude ? "exclude" : "accept";
                     const reason = exclude ? "noisy" : null;
-                    expect(
-                        (await s.api("POST", "/api/decide", { id: "123", project, file, decision, reason })).status,
-                    ).toBe(200);
+                    expect((await s.api("POST", "/api/decide", { id, project, file, decision, reason })).status).toBe(
+                        200,
+                    );
                 }
             }
         }
     }
+
+    /**
+     * A candidate of master's full run 2000, served over https, with a passkey registered.
+     * @param {string[]} artifacts the run's artifacts, in GitHub's order
+     * @returns {Promise<object>} the started app
+     */
+    async function startCandidate(artifacts) {
+        const r = makeRepo();
+        const visual = (p) => ({ ...job(p), name: `CI / visual (${p})` });
+        const gh = fakeGh({
+            runsById: { 2000: { id: 2000, head: r.master, attempt: 1 } },
+            jobs: { 2000: [visual("compact-mantine"), visual("graphty-element")] },
+            artifacts: { 2000: artifacts },
+            results: {
+                "visual-compact-mantine-1": { commit: r.master, headSha: null, pr: null, runId: 2000 },
+                "visual-graphty-element-1": { commit: r.master, headSha: null, pr: null, runId: 2000 },
+            },
+        });
+        const s = await start({
+            ...r,
+            origin: HTTPS,
+            gh: () => gh,
+            candidates: async () => [{ commit: r.master, runId: 2000, waiting: true, at: 1 }],
+        });
+        const api = s.api;
+        s.api = (method, path, body, headers = {}) => api(method, path, body, { origin: HTTPS, ...headers });
+        s.origin = HTTPS;
+        await s.api("GET", "/api/prs");
+        expect((await registerKey(s)).status).toBe(200);
+        return s;
+    }
+    const projectsOf = async (s) =>
+        Object.fromEntries(
+            (await s.api("GET", "/api/prs")).body.targets
+                .find((t) => t.id === "master")
+                .projects.map((p) => [p.project, p.problem]),
+        );
+
+    it("never signs a candidate's tree while a project is not loaded, and says so on the sheet", async () => {
+        quiet();
+        const err = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => err.mockRestore());
+        const s = await startCandidate(["visual-compact-mantine-1"]);
+        expect((await projectsOf(s))["graphty-element"]).not.toBeNull();
+        await decideAll(s, "master", ["compact-mantine"]);
+        expect((await s.api("GET", "/api/target/master?finish=1")).body.finish.unloaded).toEqual(["graphty-element"]);
+        expect((await s.api("POST", "/api/finish-prepare", { id: "master" })).body).toMatchObject({
+            tree: false,
+            unsigned: "unloaded",
+        });
+        expect(err.mock.calls.flat().join("\n")).toMatch(/master: graphty-element not loaded from run 2000/);
+    });
+
+    it("loads a candidate's project whose artifact is past the run's first 100", async () => {
+        quiet();
+        const filler = Array.from({ length: 110 }, (_, i) => `other-${i}`);
+        const s = await startCandidate([...filler, "visual-compact-mantine-1", "visual-graphty-element-1"]);
+        expect(await projectsOf(s)).toMatchObject({ "compact-mantine": null, "graphty-element": null });
+    });
+
     const filesOf = (s, ref = "feature") => git(s.remote, "show", "--name-only", "--format=", ref).split("\n");
 
     it("takes the session token and the served origin on every passkey route", async () => {

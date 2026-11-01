@@ -125,8 +125,8 @@ Every command has `--help`; `proofroom --help` lists them.
 | `fontconfig`     | none (host fonts)         | A `fonts.conf` in the repository that every capture draws with, locally and in CI (see "Pinned fonts")                  |
 | `updateCheck`    | none                      | A shell command `update` runs on its merge before it pushes (see "Update from the default branch")                      |
 | `candidates`     | none                      | A shell command `serve --candidate next` runs to list the default branch's full runs (see "Candidates")                 |
-| `rolling`        | none                      | A shell command `serve --candidate next` runs to list the default branch's rolling renders (see "Rolling renders")       |
-| `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see [Usage events](docs/usage-events.md))                              |
+| `rolling`        | none                      | A shell command `serve --candidate next` runs to list the default branch's rolling renders (see "Rolling renders")      |
+| `usage`          | `false`                   | `true`: the review page records how you review, on this computer only (see [Usage events](docs/usage-events.md))        |
 | `ignoreBranches` | `[]`                      | Branch-name prefixes whose pull requests the review page never lists, e.g. `["dependabot/"]`                            |
 | `diskBudget`     | `10`                      | How many GB `serve` may keep in `workDir`; beyond it, it removes images (see "Troubleshooting")                         |
 | `codeHost`       | `github`                  | Where your changes are: `github` (pull requests) or `plain-git` (your branches; see "Using it without GitHub")          |
@@ -219,7 +219,9 @@ capture](docs/capturing-from-the-page.md#asking-ci-for-a-capture). A workflow wr
 `init` lacks them: `npx proofroom init --force` writes the new one.
 
 The review page finds captures by the workflow's file name (the config's `workflow`), the jobs by
-their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. If you would
+their names, `visual (<project>)`, and the artifacts by `visual-<project>-<attempt>`. A workflow
+that re-shoots stories after the first capture and gates on the corrected set can upload that set as
+`visual-final-<project>-<attempt>`; when a run has one, the page reviews it instead. If you would
 rather capture inside an existing CI workflow (to reuse a Storybook your build job already made),
 copy the `visual` job and the gate's steps into it, keep those names, and set `workflow` to that
 file.

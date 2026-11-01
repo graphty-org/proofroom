@@ -369,6 +369,12 @@ export function installFinish(app) {
         return progress.step.replace(/ done\)$/, ")").replaceAll(/\d+/g, (n) => fmt(Number(n)));
     }
 
+    const UNSIGNED = {
+        rejects: "something is rejected",
+        unloaded: "a project is not loaded",
+        undecided: "snapshots are still undecided",
+    };
+
     // One change's sheet: its number as the title and its title muted below; then three lines (what
     // it saves, what is still left, the check it sets) and the plumbing under one closed Details.
     function oneBody({ id, t, prepared }, notice) {
@@ -404,6 +410,17 @@ export function installFinish(app) {
             c?.title ? el("p", { class: "ptitle muted" }, c.title) : null,
             notice ? el("p", { class: "c-failed" }, notice) : null,
             el("p", { class: "saves" }, commitLine(t)),
+            f.unloaded.length > 0
+                ? el(
+                      "p",
+                      { class: "left" },
+                      el(
+                          "b",
+                          {},
+                          `Not loaded: ${f.unloaded.join(", ")}. Finish will not sign the approval until ${f.unloaded.length === 1 ? "it loads" : "they load"}.`,
+                      ),
+                  )
+                : null,
             undecided > 0
                 ? el(
                       "p",
@@ -517,9 +534,7 @@ export function installFinish(app) {
             return line(` Passkey ${names.join(" or ") || "registered here"}${many ? "." : ""}`);
         }
         if (prepared?.unsigned) {
-            return line(
-                ` nothing, because ${prepared.unsigned === "rejects" ? "something is rejected" : "snapshots are still undecided"}.`,
-            );
+            return line(` nothing, because ${UNSIGNED[prepared.unsigned] ?? "snapshots are still undecided"}.`);
         }
         return line(" nothing: a Finish of rejects alone signs nothing.");
     }

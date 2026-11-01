@@ -1533,6 +1533,8 @@ export function createApp({
      * @param {boolean} [again] download the projects the disk budget evicted again
      * @returns {Promise<object>} the target
      */
+    /** The projects whose failure to load was logged, by target, project and run: logged once each. */
+    const toldUnloaded = new Set();
     async function build(info, run, again = false) {
         const jobs = await store.jobs(run, names);
         // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
@@ -1636,6 +1638,17 @@ export function createApp({
             p.logUrl = jobs[name]?.url ?? run.url;
             p.ci = ciOf(name);
             markDeleted(p, downloaded[name]);
+            const key = `${info.id} ${name} ${run.id}-${run.attempt}`;
+            if (
+                !p.results &&
+                p.problem &&
+                p.problem !== NOT_AFFECTED &&
+                run.status === "completed" &&
+                !toldUnloaded.has(key)
+            ) {
+                toldUnloaded.add(key);
+                console.error(`proofroom: ${info.id}: ${name} not loaded from run ${run.id}: ${p.problem}`);
+            }
             list.push(p);
         }
         const warnings = others.map(
@@ -2772,7 +2785,7 @@ export function createApp({
             all.flatMap((t) => (t.rolling ? t.projects.map((p) => p.dir && basename(dirname(p.dir))) : [])),
         );
         for (const d of readdirSync(tmp)) {
-            const run = /^(\d+)-\d+$/.exec(d)?.[1];
+            const run = /^(\d+)-(?:final-)?\d+$/.exec(d)?.[1];
             if ((run && !runs.has(Number(run))) || (d.startsWith("rolling-") && !rolled.has(d))) {
                 rmSync(join(tmp, d), { recursive: true, force: true });
                 forgetImages(join(tmp, d));
@@ -2812,9 +2825,12 @@ export function createApp({
             }
         }
     };
-    // A capture directory this server downloaded from CI: `<tmp>/<run>-<attempt>/<project>`.
+    // A capture directory this server downloaded from CI: `<tmp>/<run>-[final-]<attempt>/<project>`.
     const downloaded = (p) =>
-        Boolean(p.dir) && !p.preview && dirname(dirname(p.dir)) === tmp && /^\d+-\d+$/.test(basename(dirname(p.dir)));
+        Boolean(p.dir) &&
+        !p.preview &&
+        dirname(dirname(p.dir)) === tmp &&
+        /^\d+-(?:final-)?\d+$/.test(basename(dirname(p.dir)));
     const keepBudget = () => {
         if (results || budgeting) {
             return;
@@ -2834,7 +2850,7 @@ export function createApp({
         // change has no run (waiting for CI, or not loaded): nothing shows them.
         const runs = new Set([...targets.values(), ...held.values()].map((t) => t.runId));
         for (const d of readdirSync(tmp)) {
-            const run = /^(\d+)-\d+$/.exec(d)?.[1];
+            const run = /^(\d+)-(?:final-)?\d+$/.exec(d)?.[1];
             const dir = join(tmp, d);
             // Not while a refresh may be downloading a run it has not listed yet.
             if (used <= budget || refreshing || !run || runs.has(Number(run))) {
@@ -3714,19 +3730,24 @@ export function createApp({
 
     /**
      * Why a Finish of this work signs nothing, or null when it signs the baselines tree it leaves.
-     * A reject means the owner did not approve what the branch shows. On a pull request an image
-     * left undecided, or a project not loaded, may be a baseline the branch already changed, which
+     * A reject means the owner did not approve what the branch shows. A project not loaded, or on a
+     * pull request or a candidate an image left undecided, may be a baseline already changed, which
      * the signature would cover unseen. A seed's tree holds only what it accepts. A reject an
      * earlier Finish posted counts while its image is still the one captured.
      * @param {object} t the target
      * @param {{ undecided: number, unloaded: string[] }} work as finishWork returns
-     * @returns {"rejects" | "undecided" | null} why not
+     * @returns {"rejects" | "unloaded" | "undecided" | null} why not
      */
     const signingProblem = (t, work) => {
         if ([...decisionsOf(t).values()].some((d) => d.decision === "reject")) {
             return "rejects";
         }
-        if (t.pr !== null && (work.undecided > 0 || work.unloaded.length > 0)) {
+        // A project not loaded may hold changed pictures nobody saw: no target signs over it.
+        if (work.unloaded.length > 0) {
+            return "unloaded";
+        }
+        // A candidate's tree holds every image it captured, as a pull request's does.
+        if ((t.pr !== null || t.candidate) && work.undecided > 0) {
             return "undecided";
         }
         return null;

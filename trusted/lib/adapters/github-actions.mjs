@@ -1,6 +1,8 @@
 /**
  * The GitHub Actions capture store: CI runs of the capturing workflow, their `visual (<project>)`
- * jobs, and the `visual-<project>-<attempt>` artifacts that hold each project's capture set,
+ * jobs, and the `visual-<project>-<attempt>` artifacts that hold each project's capture set (a
+ * run that re-shoots stories may also upload `visual-final-<project>-<attempt>`, the set its gate
+ * judged, which wins),
  * through the `gh` CLI (github.mjs). It also asks CI for a capture: a `workflow_dispatch` of the
  * capturing workflow on the change's branch, whose `request` input (a fresh id) the workflow echoes
  * in its run name, so the run it started is found again among the branch's runs.
@@ -12,7 +14,16 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { sha256 } from "../compare.mjs";
-import { download, downloadCaptures, getRun, hurry, newestCiRun, newestMasterCapture, visualJobs } from "../github.mjs";
+import {
+    download,
+    downloadCaptures,
+    getRun,
+    hurry,
+    newestCiRun,
+    newestMasterCapture,
+    runArtifacts,
+    visualJobs,
+} from "../github.mjs";
 
 /**
  * A capture job's state as the Captures screen says it, from GitHub's job and, once it ended, the
@@ -102,16 +113,15 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
     };
     const forRun = (run) => (keep && run.status === "completed" ? kept(run) : gh);
     const list = async (run) => {
-        const { artifacts } = JSON.parse(
-            await forRun(run)(["api", `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`]),
-        );
+        const artifacts = await runArtifacts(forRun(run), run);
         return artifacts.flatMap((a) => {
-            const m = /^visual-(.+)-(\d+)$/.exec(a.name);
+            const m = /^visual-(final-)?(.+)-(\d+)$/.exec(a.name);
             return m
                 ? [
                       {
-                          project: m[1],
-                          attempt: Number(m[2]),
+                          project: m[2],
+                          attempt: Number(m[3]),
+                          final: Boolean(m[1]),
                           bytes: a.size_in_bytes ?? 0,
                           expired: a.expired === true,
                           expiresAt: a.expires_at ?? null,
@@ -131,7 +141,9 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
             downloadCaptures(forRun(run), run, projects, dir, others, landed, planned, again),
         // When GitHub deletes a project's newest capture of a run; null when it has none.
         async expiresAt(run, project) {
-            const sets = (await list(run)).filter((s) => s.project === project).sort((a, b) => b.attempt - a.attempt);
+            const sets = (await list(run))
+                .filter((s) => s.project === project)
+                .sort((a, b) => Number(b.final) - Number(a.final) || b.attempt - a.attempt);
             return sets[0]?.expiresAt ?? null;
         },
         newestDefault: (project, dir, config) => newestMasterCapture(gh, project, dir, config),

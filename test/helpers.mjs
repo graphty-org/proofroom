@@ -373,8 +373,14 @@ export function fakeGh({
             return JSON.stringify({ jobs: jobs[m[1]] ?? [] });
         }
         if ((m = /actions\/runs\/(\d+)\/artifacts/.exec(path))) {
+            // Paged as GitHub pages it: 100 at most per page.
+            const all = artifacts[m[1]] ?? [];
+            const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? 1);
             return JSON.stringify({
-                artifacts: (artifacts[m[1]] ?? []).map((name) => ({ name, expired: false, size_in_bytes: 1000000 })),
+                total_count: all.length,
+                artifacts: all
+                    .slice((page - 1) * 100, page * 100)
+                    .map((name) => ({ name, expired: false, size_in_bytes: 1000000 })),
             });
         }
         if ((m = /actions\/runs\/(\d+)$/.exec(path))) {
@@ -390,7 +396,7 @@ export function fakeGh({
         }
         if (args[0] === "run" && args[1] === "download") {
             const name = args[4];
-            const project = /^visual-(.+)-\d+$/.exec(name)[1];
+            const project = /^visual-(?:final-)?(.+)-\d+$/.exec(name)[1];
             copyFixture(project, args[6], results[name] ?? {});
             return "";
         }
