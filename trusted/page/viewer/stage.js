@@ -8,7 +8,7 @@
  */
 
 import { diffable, keptDiffs, targetsOf } from "./prefetch.js";
-import { dimmed } from "/spot.js";
+import { covered, dimmed } from "/spot.js";
 
 const FLASH_MS = 333; // one image each third of a second: about 1.5 full cycles a second
 const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
@@ -17,6 +17,10 @@ const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
 // (event.timeStamp), so a page that runs the press late does not lengthen it.
 export const GUARD_MS = 250;
 const SKIM_MS = 120;
+// A first draw shows its panes' "Loading ..." only after this long: images in the browser's cache
+// arrive sooner, and then nothing flickers.
+const WAIT_SHOWN_MS = 300;
+const VIEW_NAMES = { highlight: "Highlight", flash: "Flash", spotlight: "Spotlight" };
 // Each item's focus point, as the box [x, y, width, height] in image pixels to center on: a few
 // numbers each, kept for the items of a long session.
 const FOCUS_KEPT = 2000;
@@ -168,6 +172,8 @@ export async function diffImages(a, b, { threshold, includeAA }) {
  * @param {(item: object) => void} host.drawn told when a snapshot's images are on the stage
  * @param {(item: object, at: number) => void} host.appeared told when they have been painted
  * @param {(text: string, count: number) => void} host.boxCount shows which changed area Next change is on, or that there is none
+ * @param {(item: object, share: number) => void} [host.covers] told, once a pair's changed areas are
+ *   known, what share of the image (0 to 1) they cover
  * @param {(item: object, view: string) => { leftLabel?: string, rightLabel?: string, flash?: [string, string], note?: string | null, wait?: [string, string] }} [host.labels]
  *   the frames' labels in place of the stage's own: each frame's, the two a flashing frame takes
  *   turns with, a note beside them, and what each frame says it is loading
@@ -185,6 +191,7 @@ export function createStage(host) {
     const dropped = new Set(); // keys prefetch no longer wants, dropped once their diff is answered
     const focusBoxes = new Map();
     let stageRender = 0; // the newest render: an older one finishing late writes nothing
+    let painted = 0; // the newest render whose panes are on the stage
     let lastStageAt = 0; // when the last render began
     let lastStageFile = null; // and for which item
     let lastShown = null; // the last item whose images were shown (never reset by a move)
@@ -242,18 +249,46 @@ export function createStage(host) {
         }
     }
 
-    // A frame and its label; with a note (host.labels), the label's text is its own span beside it.
-    const pane = (text, content, empty = false, note = null) =>
+    // A frame and its label strip: the label's text in its own span, then a note (host.labels).
+    // The strip, never the image, says what the frame holds: "New (loading)", "Baseline (missing)".
+    const pane = (text, content, empty = false, note = null, state = null) =>
         el(
             "figure",
             {},
             el(
                 "div",
                 { class: "label" },
-                note === null ? text : [el("span", { class: "lt" }, text), el("span", { class: "note" }, note)],
+                el("span", { class: "lt" }, text, state ? el("span", { class: "state" }, ` (${state})`) : null),
+                note ? el("span", { class: "note" }, note) : null,
             ),
             el("div", { class: empty ? "frame empty" : "frame" }, content),
         );
+    // Sets or clears a pane's state in its label strip.
+    const stateOf = (figure, state) => {
+        const lt = figure.querySelector(".label .lt");
+        lt?.querySelector(".state")?.remove();
+        if (lt && state) {
+            lt.append(el("span", { class: "state" }, ` (${state})`));
+        }
+    };
+    // True when every pixel is the same: a story that drew nothing.
+    const samePixels = (px) => {
+        for (let i = 4; i < px.length; i++) {
+            if (px[i] !== px[i % 4]) {
+                return false;
+            }
+        }
+        return true;
+    };
+    // ponytail: judged on a 32 x 32 scale-down; a speck that averages out reads as drawn, never blank.
+    const blankImage = (img) => {
+        const c = document.createElement("canvas");
+        c.width = 32;
+        c.height = 32;
+        const g = c.getContext("2d");
+        g.drawImage(img, 0, 0, 32, 32);
+        return samePixels(g.getImageData(0, 0, 32, 32).data);
+    };
     const paneWait = (what) => el("p", { class: "wait" }, spinner(), `Loading ${what}...`);
     const paneError = (message) =>
         el(
@@ -278,14 +313,40 @@ export function createStage(host) {
         return item.capture || item.status === "failed" ? "right" : "left";
     }
 
+    // Draws an item on the stage. Pictures already on the stage stay there until the new ones are
+    // ready (`hold`), so a redraw never blanks the stage; a first draw shows its waiting panes only
+    // after WAIT_SHOWN_MS. `keep`: the scroll to give the new frames.
     async function renderStage(stage, item, viewName, keep) {
         const seq = ++stageRender;
         const only = onlyPane(item);
         const panes = (l, r) => ({ right: [r], left: [l] })[only] ?? [l, r];
         const labels = stageLabels(item, viewName);
         const { left, right } = waitingPanes(item, labels);
-        if (!keep) {
-            stage.replaceChildren(...panes(left, right));
+        const hold = keep || stage.querySelector(".sheet") !== null;
+        // The same item's held pictures take the new zoom at once, centered on the current area,
+        // so the toolbar's zoom and the drawn pixels agree while the new pictures are made.
+        if (hold && view.shownFile === item.file && !keep) {
+            fit(stage);
+            showBox(stage, shownBoxes, false, true);
+        }
+        if (!hold) {
+            setTimeout(() => {
+                if (seq === stageRender && !left.isConnected && !right.isConnected && painted !== seq) {
+                    stage.replaceChildren(...panes(left, right));
+                }
+            }, WAIT_SHOWN_MS);
+        } else if (viewName !== "side" && view.shownFile === item.file) {
+            // The same snapshot's pictures stay while a compared view's are made; past
+            // WAIT_SHOWN_MS both strips say which view is being drawn, so the filled button never
+            // sits over the old view's pictures without a word.
+            const name = viewName === "highlight" && opt().blink ? "Blink" : VIEW_NAMES[viewName];
+            setTimeout(() => {
+                if (seq === stageRender && painted !== seq) {
+                    for (const figure of stage.querySelectorAll("figure")) {
+                        stateOf(figure, `drawing ${name}...`);
+                    }
+                }
+            }, WAIT_SHOWN_MS);
         }
         if (await skimmed(item, seq)) {
             return;
@@ -301,6 +362,7 @@ export function createStage(host) {
         if (!drawn) {
             return;
         }
+        painted = seq;
         shown(stage, item);
         const frames = [...stage.querySelectorAll(".frame")];
         scrollTogether(frames);
@@ -350,20 +412,20 @@ export function createStage(host) {
     // The two panes as they wait for their pictures. A failed capture's artifact holds no copy of
     // its baseline, so none is fetched.
     function waitingPanes(item, { leftLabel, rightLabel, note, wait }) {
-        let left = pane("No baseline", null, true);
+        let left = pane("Baseline", null, true, null, "missing");
         if (item.status === "failed") {
             left = pane("Baseline not shown: the capture failed", null, true);
         } else if (item.baseline) {
-            left = pane(leftLabel, paneWait(wait[0]), false, note);
+            left = pane(leftLabel, paneWait(wait[0]), false, note, "loading");
         }
-        const right = item.capture ? pane(rightLabel, paneWait(wait[1]), false, note) : noCapturePane(item);
+        const right = item.capture ? pane(rightLabel, paneWait(wait[1]), false, note, "loading") : noCapturePane(item);
         return { left, right };
     }
 
     // The right pane of an item with no capture: a failed one shows why.
     function noCapturePane(item) {
         if (item.status !== "failed") {
-            return pane("No capture", null, true);
+            return pane("New", null, true, null, "missing");
         }
         return pane(
             "No capture: it failed",
@@ -394,13 +456,15 @@ export function createStage(host) {
         const what = kind === "capture" ? "new image" : "baseline";
         const img = await host.load(host.imageUrl(item[kind]), `${what} of ${item.file}`);
         img.alt = `${what} of ${host.itemName(item)}`;
+        // Decoded before it goes on the stage, so the pictures it replaces never give way to white.
+        await img.decode?.().catch(() => {});
         return img;
     }
 
     // Side by side: each image as soon as it arrives; the changed areas fill in afterwards. Null
     // when the stage moved on meanwhile.
     async function drawSide(s) {
-        const { item, keep, seq, stage, only, panes, left, right } = s;
+        const { item, seq, stage, only, panes, left, right } = s;
         const failed = item.status === "failed";
         await Promise.all([
             item.baseline && !failed && only !== "right" && fillPane(s, "baseline", left),
@@ -409,13 +473,19 @@ export function createStage(host) {
         if (seq !== stageRender) {
             return null;
         }
-        if (keep) {
-            stage.replaceChildren(...panes(left, right));
-        }
+        attach(stage, panes(left, right));
         return { diff: null };
     }
 
-    // Puts one image in its pane, or the error that kept it out.
+    // Puts the panes on the stage, unless they are on it already (moving a frame loses its scroll).
+    const attach = (stage, figures) => {
+        if (!figures.every((f) => f.parentElement === stage)) {
+            stage.replaceChildren(...figures);
+        }
+    };
+
+    // Puts one image in its pane, or the error that kept it out. A pane not on the stage yet (the
+    // pictures before it are held) is fitted and centered once it is.
     async function fillPane({ item, keep, seq, stage }, kind, figure) {
         const frame = figure.querySelector(".frame");
         try {
@@ -426,6 +496,10 @@ export function createStage(host) {
             const at = opt().focus && !keep ? await focusBox(item).catch(() => null) : null;
             if (seq === stageRender) {
                 frame.replaceChildren(el("div", { class: "sheet" }, img));
+                stateOf(figure, blankImage(img) ? "blank image" : null);
+                if (!figure.isConnected) {
+                    return;
+                }
                 fit(stage);
                 if (at) {
                     center(stage, at);
@@ -460,8 +534,9 @@ export function createStage(host) {
         if (seq !== stageRender) {
             return null;
         }
-        const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics), false, note);
-        const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics), false, note);
+        const blank = (px) => (samePixels(px) ? "blank image" : null);
+        const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics), false, note, blank(diff.a));
+        const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics), false, note, blank(diff.b));
         stage.replaceChildren(...panes(l, r));
         if (flashing) {
             startFlash(r, rightPics, viewName, labels.flash);
@@ -504,8 +579,8 @@ export function createStage(host) {
     }
 
     // An image or the diff failed to load: the compared views show the error in both panes; side
-    // by side already shows it in its pane, and a kept stage gets its panes back.
-    function stageFailed({ view: viewName, keep, seq, stage, panes, labels, left, right }, err) {
+    // by side shows it in its pane, put on the stage if it was not yet.
+    function stageFailed({ view: viewName, seq, stage, panes, labels, left, right }, err) {
         if (seq !== stageRender) {
             return;
         }
@@ -516,8 +591,8 @@ export function createStage(host) {
                     pane(labels.rightLabel, paneError(err.message)),
                 ),
             );
-        } else if (keep) {
-            stage.replaceChildren(...panes(left, right));
+        } else {
+            attach(stage, panes(left, right));
         }
     }
 
@@ -558,6 +633,7 @@ export function createStage(host) {
             return;
         }
         shownBoxes = diff.boxes;
+        host.covers?.(item, covered(diff.boxes, [0, 0, diff.w, diff.h]));
         host.boxCount(
             diff.boxes.length === 0
                 ? "No changed area at this threshold"
@@ -644,6 +720,7 @@ export function createStage(host) {
             if (!sheet) {
                 continue;
             }
+            outside(frame, sheet, [x + w / 2, y + h / 2]);
             const [sw, sh] = [sheet.offsetWidth, sheet.offsetHeight];
             // The outline is drawn inside the image, so an area at an edge keeps all four sides.
             const [left, top] = [Math.max(0, x * factor - 2), Math.max(0, y * factor - 2)];
@@ -673,6 +750,21 @@ export function createStage(host) {
             const [ox, oy] = [sheet.offsetLeft, sheet.offsetTop];
             frame.scrollLeft = reveal(ox + left, ox + right, frame.scrollLeft, frame.clientWidth);
             frame.scrollTop = reveal(oy + top, oy + bottom, frame.scrollTop, frame.clientHeight);
+        }
+    }
+
+    // Zoomed, a pane whose image does not reach the area's middle (a resized snapshot's smaller
+    // image) says so in its label strip, in place of showing grey without a word.
+    function outside(frame, sheet, [cx, cy]) {
+        const figure = frame.parentElement;
+        const pic = sheet.querySelector("img, canvas");
+        const said = figure.querySelector(".label .state")?.textContent === " (outside this image)";
+        const out =
+            Boolean(pic) &&
+            opt().zoom !== "fit" &&
+            (cx > (pic.naturalWidth ?? pic.width) || cy > (pic.naturalHeight ?? pic.height));
+        if (out !== said) {
+            stateOf(figure, out ? "outside this image" : null);
         }
     }
 

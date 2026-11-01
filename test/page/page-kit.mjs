@@ -239,6 +239,14 @@ export async function openNext(browser, options = {}) {
 }
 
 /**
+ * The change the page has open, from its address (the open message says only how many are left).
+ * @param {import("playwright").Page} page the tab
+ * @returns {Promise<string | null>} its id
+ */
+export const openedChange = (page) =>
+    page.evaluate(() => new URLSearchParams(globalThis.location.hash.slice(1)).get("change"));
+
+/**
  * The message line's text.
  * @param {import("playwright").Page} page the tab
  * @returns {Promise<string>} the text
@@ -262,7 +270,7 @@ export const visibleKeys = (page, { unavailable = false } = {}) =>
                 .filter((n) => n.getClientRects().length > 0 && (all || n.getAttribute("aria-disabled") !== "true"))
                 .flatMap((n) =>
                     n instanceof globalThis.HTMLInputElement
-                        ? n.placeholder.endsWith(`[${n.dataset.key}]`)
+                        ? n.placeholder.endsWith(n.dataset.key)
                             ? [{ act: n.dataset.act, key: n.dataset.key }]
                             : []
                         : [

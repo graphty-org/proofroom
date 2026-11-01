@@ -82,13 +82,15 @@ describe("the Baselines screen", () => {
         expect(routes.asked).toEqual(["list ", `history ${BL_THREE}`]);
     });
 
-    it("compares two versions in each of the four views, which need two until they are ticked", async () => {
+    it("compares two versions in each of the four views, drawn only once two are ticked", async () => {
         const { page } = await open();
+        // No view button is drawn that cannot act; a view key says why.
+        expect(await page.locator('#bl-viewer [data-act^="view-"]').count()).toBe(0);
         await page.keyboard.press("KeyF");
-        await expect.poll(() => message(page)).toBe("Flash: Flash needs two versions: tick two in the history below.");
-        expect(await tool(page, "view-highlight").getAttribute("aria-disabled")).toBe("true");
+        await expect.poll(() => message(page)).toBe("The views compare two versions: tick two in the history below.");
         await page.locator('#bl-hist [data-version="0"] input').click();
         await page.locator('#bl-hist [data-version="1"] input').click();
+        await expect.poll(() => page.locator('#bl-viewer [data-act^="view-"]:visible').count()).toBe(4);
         await expect
             .poll(() => page.locator("#bl-viewer .iline").innerText())
             .toContain("Comparing the previous version (left) with the current version (right)");
@@ -128,48 +130,58 @@ describe("the Baselines screen", () => {
         expect(await message(page)).toBe("Projects hidden: its rail or Shift+1 brings it back.");
         await page.keyboard.press("Shift+Digit2");
         await expect.poll(() => page.locator("#bl-list-pane").getAttribute("class")).toContain("rail");
-        expect(await tool(page, "imageonly").getAttribute("aria-pressed")).toBe("true");
+        expect(await page.locator("#bl-proj").getAttribute("class")).toContain("rail");
+        // Both folded by hand is not Image only: Shift+3 hides the rest, and gives back both rails.
         await page.keyboard.press("Shift+Digit3");
+        await expect.poll(() => page.locator("#top").isVisible()).toBe(false);
+        expect(await page.locator("#bl-proj").isVisible()).toBe(false);
+        await tool(page, "imageonly").click();
+        await expect.poll(() => page.locator("#top").isVisible()).toBe(true);
+        expect(await page.locator("#bl-list-pane").getAttribute("class")).toContain("rail");
+        await page.locator("#rail-b").click();
         await expect.poll(() => page.locator("#bl-list-pane").getAttribute("class")).not.toContain("rail");
         await page.locator("#rail-p").click();
         await expect.poll(() => page.locator("#bl-proj").getAttribute("class")).not.toContain("rail");
         await page.keyboard.press("Shift+Digit3");
-        await expect.poll(() => tool(page, "imageonly").getAttribute("aria-pressed")).toBe("true");
+        await expect.poll(() => page.locator("#bl-list-pane").getAttribute("class")).toContain("rail");
         await page.keyboard.press("Shift+Digit3");
-        for (const [key, zoom] of [
-            ["Digit2", "zoom-2"],
-            ["Digit4", "zoom-4"],
-            ["Digit8", "zoom-8"],
-            ["Digit1", "zoom-1"],
-            ["Digit0", "zoom-fit"],
+        const zoom = () => tool(page, "zoomcycle").evaluate((n) => n.firstChild.textContent);
+        for (const [key, name] of [
+            ["Digit2", "2x"],
+            ["Digit4", "4x"],
+            ["Digit8", "8x"],
+            ["Digit1", "1x"],
+            ["Digit0", "Fit"],
         ]) {
             await page.keyboard.press(key);
-            await expect.poll(() => tool(page, zoom).getAttribute("class")).toContain("on");
-            expect(await tool(page, zoom).isVisible()).toBe(true);
+            await expect.poll(zoom).toBe(`Zoom: ${name}`);
         }
         await page.keyboard.press("KeyZ");
-        await expect.poll(() => tool(page, "zoom-1").getAttribute("class")).toContain("on");
-        await tool(page, "zoom-fit").click();
+        await expect.poll(zoom).toBe("Zoom: 1x");
+        await tool(page, "zoomcycle").click();
+        await page.getByRole("menu").getByText("Fit", { exact: true }).click();
+        await expect.poll(zoom).toBe("Zoom: Fit");
         await page.keyboard.press("KeyP");
         expect(await message(page)).toBe(
             "Baseline [P] is for reviews: here, tick two versions in the history to compare them.",
         );
-        // In a viewer under 1100 px More holds Image only and Layout, and Y opens it.
-        expect(await tool(page, "more").isVisible()).toBe(true);
-        expect(await tool(page, "layoutmenu").isVisible()).toBe(false);
-        await page.keyboard.press("KeyY");
+        // Display holds Image only and Layout; Y steps the layout with the menu closed.
+        await tool(page, "displaymenu").click();
         expect(await page.getByRole("menu").locator(".mi").allInnerTexts()).toEqual([
             "Image only\nShift+3",
             "Layout: Auto\nY",
-            "Layout: Side by side\nY",
-            "Layout: Over and under\nY",
         ]);
-        await page.getByRole("menuitemradio", { name: "Layout: Over and under" }).click();
-        await tool(page, "more").click();
-        expect(
-            await page.getByRole("menuitemradio", { name: "Layout: Over and under" }).getAttribute("aria-checked"),
-        ).toBe("true");
-        await page.getByRole("menuitemradio", { name: "Layout: Auto" }).click();
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("KeyY");
+        await expect.poll(() => message(page)).toBe("Layout: Side by side.");
+        await page.keyboard.press("KeyY");
+        await expect.poll(() => message(page)).toBe("Layout: Over and under.");
+        await tool(page, "displaymenu").click();
+        await page.getByRole("menu").getByText("Layout: Over and under", { exact: true }).click();
+        await page.getByRole("menuitemradio", { name: "Auto" }).click();
+        await tool(page, "displaymenu").click();
+        expect(await page.getByRole("menu").locator(".mi").allInnerTexts()).toContain("Layout: Auto\nY");
+        await page.keyboard.press("Escape");
     });
 
     it("moves through the baselines with Previous and Next, their keys and the rows, and finds and groups them", async () => {

@@ -3,7 +3,10 @@
  * User acceptance test of a running review page: walks a reviewer's journey in Chromium against
  * whatever the page lists, on its real screenshots.
  *
- *   npm run uat -- '<page URL with #token=...>' [--shots <dir>]
+ *   npm run uat -- '<page URL with #token=...>' [--shots <dir>] [--repeat-decide <N>]
+ *
+ * --repeat-decide N runs the second change's Accept-and-Reject step N times in a row (each its own
+ * step line), to show the decide wait never races the viewer (design 11.3).
  *
  * Prints one PASS, FAIL or SKIP line per step (SKIP with the reason, when the page has nothing for
  * the step), records each failure and carries on, saves a screenshot per step to --shots (default
@@ -22,7 +25,10 @@ import { chromium } from "playwright";
 
 const { values: opts, positionals } = parseArgs({
     allowPositionals: true,
-    options: { shots: { type: "string", default: "tmp/uat-shots" } },
+    options: {
+        shots: { type: "string", default: "tmp/uat-shots" },
+        "repeat-decide": { type: "string", default: "1" },
+    },
 });
 const url = positionals[0];
 if (!url || !url.includes("#token=")) {
@@ -35,7 +41,7 @@ mkdirSync(SHOTS, { recursive: true });
 
 // Every key the Keys sheet lists that acts through a control (trusted/page/key-map.js), as printed
 // tokens, with a snapshot open and Snapshots shown. hold Space has no control; at the viewing level
-// (both panes rails) Up and Down have no button, and Previous [Left / J] / Next [Right / K] do the same.
+// (both panes rails) Up and Down have no button, and Previous [J] Left / Next [K] Right do the same.
 const SNAPSHOT_KEYS = [
     "Left",
     "J",
@@ -76,7 +82,7 @@ const SNAPSHOT_KEYS = [
 // Text a reviewer should never see unless the step expects it.
 const BAD_TEXT = /could not be shown|could not be loaded|damaged|\berrors?\b|\bfailed\b/i;
 // A change's row that has snapshots to decide: its count says so.
-const READY_COUNT = /: [\d,]+ undecided$|: [\d,]+ of [\d,]+ decided$/;
+const READY_COUNT = /: [\d,]+ left( of [\d,]+)?$/;
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: true });
@@ -140,8 +146,13 @@ async function step(name, fn, opt = {}) {
             fails.push(`picture did not load: ${m}`);
         }
         for (const line of await badText()) {
-            // A change whose CI capture failed says so in its row: data, not a page fault.
-            if (!(opt.allowText && opt.allowText.test(line)) && !/^Capture failed: /.test(line)) {
+            // A change whose CI capture failed says so in its row, and a story may be named
+            // like "failed-model-placeholder": data, not a page fault.
+            if (
+                !(opt.allowText && opt.allowText.test(line)) &&
+                !/^Capture failed: /.test(line) &&
+                !/^[a-z0-9]+(-[a-z0-9]+)+$/.test(line)
+            ) {
                 fails.push(`on screen: "${line}"`);
             }
         }
@@ -234,7 +245,7 @@ async function badText() {
 }
 
 // The key tokens a reader sees printed on a visible control now: a control's visible key boxes,
-// a Find box's [/] placeholder, and the keys a visible menu button names for its closed menu.
+// a Find box's quiet / at the end of its placeholder, and the keys a visible menu button names for its closed menu.
 async function shownKeys() {
     return new Set(
         await page.evaluate(() => {
@@ -245,7 +256,7 @@ async function shownKeys() {
                     continue;
                 }
                 if (n instanceof HTMLInputElement) {
-                    if (n.placeholder.endsWith(`[${n.dataset.key}]`)) {
+                    if (n.placeholder.endsWith(n.dataset.key)) {
                         out.push(n.dataset.key);
                     }
                     continue;
@@ -283,16 +294,17 @@ async function press(key, check) {
 
 const act = (a, extra = "") => page.locator(`[data-act="${a}"]${extra}`).filter({ visible: true }).first();
 const itemNumber = async () => (await page.locator("#viewer").innerText()).match(/#(\d+)/)?.[1] ?? null;
-// "12 of 720 decided" in the snapshot pane's head.
+// The progress line's "34 left" in the snapshot pane's head, as minus the count left, so deciding N
+// snapshots raises it by N (the "decided" part of the line may give way when the line is tight).
 const decided = async () => {
-    const m = (await page.locator("#snaps-head").innerText()).match(/([\d,]+) of ([\d,]+) decided/);
-    return m ? Number(m[1].replace(/,/g, "")) : null;
+    const m = (await page.locator("#snaps-head").innerText()).match(/([\d,]+) left/);
+    return m ? -Number(m[1].replace(/,/g, "")) : null;
 };
 const waitDecided = (want) =>
     page.waitForFunction(
         (w) => {
-            const m = document.querySelector("#snaps-head")?.innerText.match(/([\d,]+) of ([\d,]+) decided/);
-            return m && Number(m[1].replace(/,/g, "")) === w;
+            const m = document.querySelector("#snaps-head")?.innerText.match(/([\d,]+) left/);
+            return m && -Number(m[1].replace(/,/g, "")) === w;
         },
         want,
         { timeout: 20_000 },
@@ -338,12 +350,15 @@ const waitDialog = (text) =>
             () => false,
         );
 // The page ignores a decision on an image shown less than a quarter second (a guard against
-// deciding on a picture not seen): wait until the current one has been on screen 400 ms.
+// deciding on a picture not seen): wait until the current one has been on screen 400 ms. Only a
+// "viewer-drawn" newer than the newest "viewer-drawing" counts: one from before the snapshot on
+// screen changed would let Accept in while its images still load (design 11.3).
 const seen = () =>
     page.waitForFunction(
         () => {
             const m = performance.getEntriesByName("viewer-drawn").at(-1);
-            return m && performance.now() - m.startTime > 400;
+            const start = performance.getEntriesByName("viewer-drawing").at(-1);
+            return m && (!start || m.startTime > start.startTime) && performance.now() - m.startTime > 400;
         },
         null,
         { timeout: 30_000, polling: 100 },
@@ -376,10 +391,10 @@ const curSnapIsChanged = () =>
             : false;
     });
 
-// Decides on the current snapshot then undoes it, checking the decided count both ways.
+// Decides on the current snapshot then undoes it, checking the count left both ways.
 async function decideAndUndo(check, how) {
     const before = await decided();
-    check(before !== null, "no 'N of M decided' in the snapshot pane");
+    check(before !== null, "no 'N left' in the snapshot pane");
     await seen();
     const post = decisionPost();
     await how.decide();
@@ -389,7 +404,7 @@ async function decideAndUndo(check, how) {
     }
     check(r.ok(), `decision POST answered ${r.status()}`);
     await waitDecided(before + how.count).catch(async () =>
-        check(false, `decided count is ${await decided()}, expected ${before + how.count}`),
+        check(false, `${-(await decided())} left, expected ${-(before + how.count)}`),
     );
     const undoPost = decisionPost();
     await how.undo();
@@ -399,7 +414,7 @@ async function decideAndUndo(check, how) {
     }
     check(u.ok(), `undo POST answered ${u.status()}`);
     await waitDecided(before).catch(async () =>
-        check(false, `after Undo decided count is ${await decided()}, expected ${before}`),
+        check(false, `after Undo ${-(await decided())} left, expected ${-before}`),
     );
 }
 
@@ -583,9 +598,16 @@ await step(
     "Settings sheet",
     async ({ check }) => {
         await act("settings").click();
-        check(await waitDialog("Disk budget"), "Settings opened no sheet");
+        check(await waitDialog("Picture storage"), "Settings opened no sheet");
         const t = await page.locator("dialog#dlg").innerText();
-        for (const w of ["Passkeys", "Theme", "Highlight color", "Disk budget"]) {
+        for (const w of [
+            "Passkeys",
+            "Theme",
+            "Highlight color",
+            "Single-letter keys",
+            "Picture storage",
+            "Repository setup",
+        ]) {
             check(t.includes(w), `Settings does not show "${w}"`);
         }
         check(
@@ -608,7 +630,9 @@ await step(
 await step(
     "New capture dialog: open and cancel",
     async ({ check }) => {
-        await act("newcap", '[data-zone="top"]').click();
+        // New capture... is on the Captures screen.
+        await act("screen-captures").click();
+        await act("newcap").click();
         check(await waitDialog("Where"), "New capture... opened no dialog");
         const t = await page.locator("dialog#dlg").innerText();
         for (const w of ["What", "Against which baselines", "Which projects", "Where"]) {
@@ -624,10 +648,11 @@ await step(
         );
         await page.locator('dialog#dlg [data-act="confirmcancel"]').click();
         check(!(await dialogOpen()), "Cancel did not close New capture");
-        await act("newcap", '[data-zone="top"]').click();
+        await act("newcap").click();
         check(await waitDialog("Where"), "New capture... opened no dialog the second time");
         await page.keyboard.press("Escape");
         check(!(await dialogOpen()), "Esc did not close New capture");
+        await act("screen-review").click();
     },
     { allowText: /takes no capture requests|^Choose a change on the left/ },
 );
@@ -854,7 +879,7 @@ await step("Open the first change (a candidate or seed run when listed) by its r
     await page.locator('#snap-list [data-act="pickrow"]').first().waitFor({ timeout: 180_000 });
     await viewerSettled();
     snapOpen = true;
-    check((await decided()) !== null, "no 'N of M decided' after opening");
+    check((await decided()) !== null, "no 'N left' after opening");
     check((await itemNumber()) !== null, "the viewer names no snapshot number");
     const e = await viewerError();
     check(!e, `viewer error: ${e}`);
@@ -863,7 +888,12 @@ await step("Open the first change (a candidate or seed run when listed) by its r
 await step("Every key in the Keys sheet has a visible button (snapshot open)", async ({ check }) => {
     needOpen();
     const shown = await shownKeys();
+    // Blink [L] acts only in Highlight, and is drawn only there; the viewer-mode steps check it in Highlight.
+    const inHighlight = (await act("view-highlight").getAttribute("aria-checked")) === "true";
     for (const k of SNAPSHOT_KEYS) {
+        if (k === "L" && !inHighlight) {
+            continue;
+        }
         check(shown.has(k), `key ${k} acts here but no visible button shows it`);
     }
     const lit = await page.evaluate(() =>
@@ -932,6 +962,17 @@ await step("Walk snapshots with Right / Left and K / J keys", async ({ check }) 
     check(Number(b) === Number(a) + 1, `after Right Right Left K J expected #${Number(a) + 1}, at #${b}`);
 });
 
+// Show baseline [P] lives in the Display menu: its state is the menu item's check.
+async function baselineShown() {
+    await act("displaymenu").click();
+    const item = page.locator('.menu [data-act="baseline"]');
+    await item.waitFor();
+    const on = await item.getAttribute("aria-checked");
+    await page.keyboard.press("Escape");
+    await page.locator(".menu").waitFor({ state: "detached" });
+    return on;
+}
+
 await step("Viewer modes by button", async ({ check }) => {
     needOpen();
     await onChanged();
@@ -962,13 +1003,17 @@ await step("Viewer modes by button", async ({ check }) => {
     await bl.click();
     // Baseline shown / hidden.
     await act("view-side").click();
-    const p = act("baseline");
-    const pb = await p.getAttribute("aria-pressed");
-    await p.click();
-    check((await p.getAttribute("aria-pressed")) !== pb, "Baseline did not toggle");
+    const clickBaseline = async () => {
+        await act("displaymenu").click();
+        await page.locator('.menu [data-act="baseline"]').click();
+        await page.locator(".menu").waitFor({ state: "detached" });
+    };
+    const pb = await baselineShown();
+    await clickBaseline();
+    check((await baselineShown()) !== pb, "Show baseline did not toggle");
     await viewerSettled();
-    await p.click();
-    check((await p.getAttribute("aria-pressed")) === pb, "Baseline did not toggle back");
+    await clickBaseline();
+    check((await baselineShown()) === pb, "Show baseline did not toggle back");
 });
 
 await step("Viewer modes by key (V F H L S P)", async ({ check }) => {
@@ -1000,67 +1045,75 @@ await step("Viewer modes by key (V F H L S P)", async ({ check }) => {
     check((await bl.getAttribute("aria-pressed")) !== before, "L did not toggle Blink");
     await press("L", check);
     await press("V", check);
-    const p = act("baseline");
-    const pb = await p.getAttribute("aria-pressed");
+    const pb = await baselineShown();
     await press("P", check);
-    check((await p.getAttribute("aria-pressed")) !== pb, "P did not toggle Baseline");
+    check((await baselineShown()) !== pb, "P did not toggle Show baseline");
     await press("P", check);
-    check((await p.getAttribute("aria-pressed")) === pb, "P did not toggle Baseline back");
+    check((await baselineShown()) === pb, "P did not toggle Show baseline back");
 });
 
 await step("Zoom buttons and keys (0 1 2 4 8 Z)", async ({ check }) => {
     needOpen();
-    const on = (a) =>
+    // The Zoom button names the step: "Zoom: Fit", "Zoom: 2x".
+    const zoomText = () =>
         page
-            .locator(`[data-act="${a}"]`)
-            .first()
-            .evaluate((x) => x.classList.contains("on"));
-    for (const z of ["zoom-1", "zoom-2", "zoom-4", "zoom-8", "zoom-fit"]) {
-        await act(z).click();
-        check(await on(z), `${z} not shown as on after clicking it`);
+            .locator('#vtb [data-act="zoomcycle"]')
+            .evaluate((x) => x.firstChild.textContent)
+            .catch(() => "");
+    for (const [name, label] of [
+        ["Actual size", "1x"],
+        ["2x", "2x"],
+        ["4x", "4x"],
+        ["8x", "8x"],
+        ["Fit", "Fit"],
+    ]) {
+        await act("zoomcycle").click();
+        await page.locator(".menu").getByText(name, { exact: true }).click();
+        check((await zoomText()) === `Zoom: ${label}`, `the Zoom menu's ${name} did not zoom to ${label}`);
         await viewerSettled();
     }
     for (const k of ["1", "2", "4", "8", "0"]) {
         await press(k, check);
-        const z = k === "0" ? "zoom-fit" : `zoom-${k}`;
+        const want = `Zoom: ${k === "0" ? "Fit" : `${k}x`}`;
         await page
-            .waitForFunction((a) => document.querySelector(`[data-act="${a}"]`)?.classList.contains("on"), z, {
-                timeout: 5000,
-            })
-            .catch(() => check(false, `key ${k} did not select ${z}`));
+            .waitForFunction(
+                (w) => document.querySelector('#vtb [data-act="zoomcycle"]')?.firstChild.textContent === w,
+                want,
+                { timeout: 5000 },
+            )
+            .catch(() => check(false, `key ${k} did not zoom to ${want}`));
     }
     await press("Z", check);
-    const anyOn = await page.evaluate(() =>
-        ["zoom-1", "zoom-2", "zoom-4", "zoom-8"].some((a) =>
-            document.querySelector(`[data-act="${a}"]`)?.classList.contains("on"),
-        ),
-    );
-    check(anyOn, "Z did not cycle away from Fit");
+    check((await zoomText()) !== "Zoom: Fit", "Z did not step away from Fit");
     await press("0", check);
     const e = await viewerError();
     check(!e, `viewer error: ${e}`);
 });
 
-await step("More menu, Outline, Next area", async ({ check }) => {
+await step("Display menu, Outline, Next area", async ({ check }) => {
     needOpen();
     await onChanged();
-    await act("more").click();
+    await act("displaymenu").click();
     const menu = page.locator(".menu");
     await menu.waitFor();
     const t = await menu.innerText();
-    for (const w of ["Image only", "Layout", "Outline", "Open centered on the area"]) {
-        check(t.includes(w), `More menu lacks "${w}"`);
+    for (const w of ["Show baseline", "Image only", "Layout", "Outline changed areas", "Start zoomed on the change"]) {
+        check(t.includes(w), `Display menu lacks "${w}"`);
     }
     await page.keyboard.press("Escape");
     await menu.waitFor({ state: "detached" });
     await press("B", check);
     await page
-        .waitForFunction(() => /Outline on/.test(document.querySelector("#msg-t").innerText), null, { timeout: 5000 })
-        .catch(() => check(false, "B did not say Outline on"));
+        .waitForFunction(() => /Outline changed areas: on/.test(document.querySelector("#msg-t").innerText), null, {
+            timeout: 5000,
+        })
+        .catch(() => check(false, "B did not say Outline changed areas: on"));
     await press("B", check);
     await page
-        .waitForFunction(() => /Outline off/.test(document.querySelector("#msg-t").innerText), null, { timeout: 5000 })
-        .catch(() => check(false, "second B did not say Outline off"));
+        .waitForFunction(() => /Outline changed areas: off/.test(document.querySelector("#msg-t").innerText), null, {
+            timeout: 5000,
+        })
+        .catch(() => check(false, "second B did not say Outline changed areas: off"));
     const n1 = (await page.locator("#viewer").innerText()).match(/(\d+) of (\d+)/);
     if (n1 && Number(n1[2]) > 1) {
         await act("nextarea").click();
@@ -1141,17 +1194,20 @@ await step("Select two snapshots, bulk Accept, Undo", async ({ check }) => {
         skip("no undecided snapshot after the current one to select beside it");
     }
     await press("X", check);
-    await page.locator('[data-act="accsel"]').filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    await page.locator('[data-act="clearsel"]').filter({ visible: true }).first().waitFor({ timeout: 10_000 });
     const box = page.locator(`#snap-list .srow[data-snap="${next}"] [data-act="rowcheck"]`);
     await box.scrollIntoViewIfNeeded();
     await box.click();
-    const accsel = act("accsel");
+    // The decision bar decides the selection while the current row is in it: "Accept 2".
+    const accsel = page.locator('.decide [data-act="accept"]');
     await page
-        .waitForFunction(() => /Accept 2/.test(document.querySelector('[data-act="accsel"]')?.innerText ?? ""), null, {
-            timeout: 10_000,
-        })
+        .waitForFunction(
+            () => /Accept 2/.test(document.querySelector('.decide [data-act="accept"]')?.innerText ?? ""),
+            null,
+            { timeout: 10_000 },
+        )
         .catch(async () =>
-            check(false, `selection bar says "${await accsel.innerText().catch(() => "nothing")}", not Accept 2`),
+            check(false, `the decision bar says "${await accsel.innerText().catch(() => "nothing")}", not Accept 2`),
         );
     check(/Esc/.test(await act("clearsel").innerText()), "the selection's Clear shows no Esc key");
     await decideAndUndo(check, { count: 2, decide: () => accsel.click(), undo: () => press("U", check) });
@@ -1163,7 +1219,7 @@ await step("Select two snapshots, bulk Accept, Undo", async ({ check }) => {
         await act("clearsel").click();
     }
     check(
-        !(await page.locator('[data-act="accsel"]').filter({ visible: true }).count()),
+        !(await page.locator('[data-act="clearsel"]').filter({ visible: true }).count()),
         "the selection did not clear",
     );
 });
@@ -1271,7 +1327,7 @@ await step("A pane key pressed again restores the panes (Shift+1, Shift+2, rails
     const keys = await shownKeys();
     check(
         ["Left", "J", "Right", "K"].every((k) => keys.has(k)),
-        "with both panes rails, Previous [Left / J] / Next [Right / K] are not shown",
+        "with both panes rails, Previous [J] Left / Next [K] Right are not shown",
     );
     await press("Shift+3", check);
     check(await panesAre(start), `Shift+3 again did not bring the panes back: ${await panes()}`);
@@ -1396,28 +1452,29 @@ await step("Find a snapshot", async ({ check }) => {
         .catch(() => check(false, "Esc did not clear Find"));
 });
 
-// Opens up to three rows of the Approved before group, showing it first; skips without one.
+// Opens up to three rows of the Accepted earlier group, opening it first; skips without one.
 async function approvedBefore(check) {
     const head = page.locator("#snap-list .ghead.before").first();
     if (!(await head.count())) {
-        skip("the open change lists no Approved before group");
+        skip("the open change lists no Accepted earlier group");
     }
     const grp = page.locator("#snap-list .grp").filter({ has: page.locator(".ghead.before") });
-    const show = grp.locator('[data-act="gshowall"]').filter({ visible: true });
-    if (await show.count()) {
-        await show.first().click();
+    // Accepted earlier sits collapsed at the bottom of the list: its chevron opens it.
+    const caret = head.locator('[data-act="gtoggle"]');
+    if ((await caret.getAttribute("aria-expanded")) === "false") {
+        await caret.click();
     }
     const rows = grp.locator('[data-act="pickrow"]');
     await rows
         .first()
         .waitFor({ timeout: 15_000 })
-        .catch(() => check(false, "showing Approved before showed no row"));
+        .catch(() => check(false, "opening Accepted earlier showed no row"));
     const k = Math.min(3, await rows.count());
     for (let i = 0; i < k; i++) {
         await rows.nth(i).click();
         await viewerSettled();
         const e = await viewerError();
-        check(!e, `viewer error on Approved before #${await itemNumber()}: ${e}`);
+        check(!e, `viewer error on Accepted earlier #${await itemNumber()}: ${e}`);
     }
 }
 
@@ -1429,7 +1486,9 @@ await step("Open snapshots approved before", async ({ check }) => {
 await step("Finish sheet opens; its confirm is not pressed", async ({ check }) => {
     needOpen();
     // After every decision is undone the page offers no Finish ("Nothing new to finish").
-    if ((await page.locator('[data-act="finish"]:not([aria-disabled="true"])').filter({ visible: true }).count()) === 0) {
+    if (
+        (await page.locator('[data-act="finish"]:not([aria-disabled="true"])').filter({ visible: true }).count()) === 0
+    ) {
         skip("Finish is not offered: this change has no decisions to finish");
     }
     await act("finish").click();
@@ -1462,6 +1521,18 @@ await step(
             // Out of any text field first: there Esc clears the field instead of going back.
             await page.evaluate(() => document.activeElement?.blur());
             await press("Esc", check);
+            // Right after an Esc that closed something (the Finish sheet), Esc is guarded: it says
+            // "Press Esc again to go back" and the next Esc goes back.
+            await page.waitForFunction(
+                () =>
+                    document.querySelector('#chg-list [data-act="pickchg"]')?.getClientRects().length > 0 ||
+                    /Press Esc again to go back/.test(document.querySelector("#msg-t")?.innerText ?? ""),
+                null,
+                { timeout: 10_000 },
+            );
+            if (/Press Esc again to go back/.test(await message())) {
+                await press("Esc", check);
+            }
         }
         await page
             .locator('#chg-list [data-act="pickchg"]')
@@ -1476,7 +1547,7 @@ await step(
         await changeRow(second.id).click();
         await page.waitForFunction(
             () =>
-                document.querySelector("#snaps-head")?.innerText.includes("decided") &&
+                document.querySelector("#snaps-head")?.innerText.includes(" left") &&
                 document.querySelector('#snap-list [data-act="pickrow"]'),
             null,
             { timeout: 180_000 },
@@ -1485,10 +1556,10 @@ await step(
         check(
             await page
                 .waitForFunction(
-                    (t) =>
-                        document.querySelector("#msg-t").innerText.startsWith("Opened ") &&
-                        document.querySelector("#msg-t").innerText.includes(t),
-                    second.title,
+                    (id) =>
+                        document.querySelector("#msg-t").innerText.startsWith("Opened: ") &&
+                        new URLSearchParams(location.hash.slice(1)).get("change") === id,
+                    String(second.id),
                     { timeout: 15_000 },
                 )
                 .then(
@@ -1533,20 +1604,42 @@ await step("Second change: walk snapshots, all viewer modes", async ({ check }) 
     }
 });
 
-await step("Second change: Accept with A and Reject with the button, both undone", async ({ check }) => {
-    needSecond();
-    await decideAndUndo(check, { count: 1, decide: () => press("A", check), undo: () => act("undo").click() });
-    await decideAndUndo(check, {
-        count: 1,
-        decide: async () => {
-            await act("reject").click();
-            await page.locator("#popbox #reason").fill("UAT: test reject, undone at once");
-            check(/Enter/.test(await page.locator("#popok").innerText()), "the reason box's OK shows no Enter key");
-            await page.keyboard.press("Enter");
+const DECIDE_RUNS = Math.max(1, Number.parseInt(opts["repeat-decide"], 10) || 1);
+for (let run = 1; run <= DECIDE_RUNS; run++) {
+    await step(
+        `Second change: Accept with A and Reject with the button, both undone${DECIDE_RUNS > 1 ? ` (run ${run} of ${DECIDE_RUNS})` : ""}`,
+        async ({ check }) => {
+            needSecond();
+            if (run > 1) {
+                // As step 34 ends: a new snapshot and a view pressed right before A, so the decide
+                // wait must tell this snapshot's drawing from the last one's.
+                await press("Right", check);
+                for (const [k, id] of [
+                    ["H", "view-highlight"],
+                    ["V", "view-side"],
+                ]) {
+                    if ((await act(id).getAttribute("aria-disabled")) !== "true") {
+                        await press(k, check);
+                    }
+                }
+            }
+            await decideAndUndo(check, { count: 1, decide: () => press("A", check), undo: () => act("undo").click() });
+            await decideAndUndo(check, {
+                count: 1,
+                decide: async () => {
+                    await act("reject").click();
+                    await page.locator("#popbox #reason").fill("UAT: test reject, undone at once");
+                    check(
+                        /Enter/.test(await page.locator("#popok").innerText()),
+                        "the reason box's OK shows no Enter key",
+                    );
+                    await page.keyboard.press("Enter");
+                },
+                undo: () => press("U", check),
+            });
         },
-        undo: () => press("U", check),
-    });
-});
+    );
+}
 
 await step("Second change: open snapshots approved before", async ({ check }) => {
     needSecond();

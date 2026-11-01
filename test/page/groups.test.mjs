@@ -1,6 +1,6 @@
 /*
  * The Same change grouping's Look alike groups: the server groups every reviewable snapshot, and an
- * image approved before stays in its own group until a decision since takes it out.
+ * image accepted earlier stays in its own group, last in the list, until a decision since takes it out.
  */
 
 import { describe, expect, it } from "vitest";
@@ -25,12 +25,12 @@ const clusters = new Map([["app:0", { name: "Look alike: color", representative:
 const keysOf = (rows) =>
     groupsOf(rows, { grouping: "same", clusters, pairs: new Map() }).map((g) => [g.key, g.rows.map((s) => s.n)]);
 
-describe("Look alike and Approved before", () => {
-    it("keeps an image approved before in its own group, and puts it with its look-alikes once rejected", () => {
+describe("Look alike and Accepted earlier", () => {
+    it("keeps an image accepted earlier in its own group, last, and puts it with its look-alikes once rejected", () => {
         const approved = snap(1, { decision: { decision: "accept", approvedBefore: { pr: 77 } }, before: true });
         expect(keysOf([approved, snap(2), snap(3)])).toEqual([
-            [BEFORE, [1]],
             ["l:app:0", [2, 3]],
+            [BEFORE, [1]],
         ]);
         // Reloaded after the reject: no longer approved before, so it joins its look-alikes.
         const rejected = snap(1, { decision: { decision: "reject", reason: "no" } });
@@ -41,8 +41,21 @@ describe("Look alike and Approved before", () => {
         const approved = snap(1, { decision: { decision: "accept", approvedBefore: { pr: 77 } }, before: true });
         const other = snap(4, { look: null });
         expect(keysOf([approved, snap(2), other])).toEqual([
-            [BEFORE, [1]],
             ["z:rest", [2, 4]],
+            [BEFORE, [1]],
         ]);
+    });
+
+    it("names the group Accepted earlier and puts it after every other group in every grouping", () => {
+        const approved = snap(9, { decision: { decision: "accept", approvedBefore: { pr: 77 } }, before: true });
+        for (const grouping of ["component", "project", "status", "same"]) {
+            const groups = groupsOf([approved, snap(2, { look: null }), snap(3, { component: "aaa", look: null })], {
+                grouping,
+                clusters,
+                pairs: new Map(),
+            });
+            expect(groups.at(-1)).toMatchObject({ key: BEFORE, label: "Accepted earlier" });
+            expect(groups.filter((g) => g.key === BEFORE)).toHaveLength(1);
+        }
     });
 });

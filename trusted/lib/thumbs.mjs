@@ -37,10 +37,23 @@ export function thumbnail(bytes, width = THUMB_WIDTH) {
 const plainOf = (src, width = THUMB_WIDTH) => shrink(src, [0, 0, src.width, src.height], Math.min(width, src.width));
 
 /**
+ * The source pixels [from, to) under output pixel i of n, along one side.
+ * @param {number} i the output pixel
+ * @param {number} n how many output pixels
+ * @param {number} start where the side starts in the source
+ * @param {number} length its length in the source
+ * @returns {[number, number]} [from, to]
+ */
+const span = (i, n, start, length) => {
+    const from = Math.floor(start + (i * length) / n);
+    return [from, Math.max(Math.floor(start + ((i + 1) * length) / n), from + 1)];
+};
+
+/**
  * The part `[x, y, width, height]` (fractions allowed) of decoded RGBA pixels, scaled to `w` pixels
  * across with its shape kept (or `height` pixels high), each output pixel the average of the source
  * pixels under it.
- * @param {{ width: number, height: number, data: Uint8Array }} src the pixels
+ * @param {{ width: number, height: number, data: Uint8Array | Uint8ClampedArray }} src the pixels
  * @param {number[]} rect the part to show
  * @param {number} w the result's width
  * @param {number} [height] the result's height
@@ -49,11 +62,6 @@ const plainOf = (src, width = THUMB_WIDTH) => shrink(src, [0, 0, src.width, src.
 function shrink(src, [rx, ry, rw, rh], w, height) {
     const h = height ?? Math.max(1, Math.round((rh * w) / rw));
     const out = new PNG({ width: w, height: h });
-    // The source pixels [from, to) under output pixel i of n, along one side.
-    const span = (i, n, start, length) => {
-        const from = Math.floor(start + (i * length) / n);
-        return [from, Math.max(Math.floor(start + ((i + 1) * length) / n), from + 1)];
-    };
     for (let y = 0; y < h; y++) {
         const ys = span(y, h, ry, rh);
         for (let x = 0; x < w; x++) {
@@ -65,7 +73,7 @@ function shrink(src, [rx, ry, rw, rh], w, height) {
 
 /**
  * Writes at `o` of `out` the average RGBA of the source pixels [x0, x1) x [y0, y1).
- * @param {{ width: number, data: Uint8Array }} src the pixels
+ * @param {{ width: number, data: Uint8Array | Uint8ClampedArray }} src the pixels
  * @param {number[]} xs [x0, x1]
  * @param {number[]} ys [y0, y1]
  * @param {Uint8Array} out where to write
@@ -93,21 +101,31 @@ function average(src, [x0, x1], [y0, y1], out, o) {
 
 /**
  * What a changed pair's job makes, the first one naming the job: the spotlit picture, the row's
- * zoomed pictures plain and spotlit, and the capture's plain thumbnail. A snapshot with one image (new, no baseline yet, removed, moved) has
- * no spotlight and makes only `plain`.
+ * zoomed pictures plain, spotlit and tinted, and the capture's plain thumbnail. A snapshot with one
+ * image (new, no baseline yet, removed, moved) has no spotlight and makes only `plain`.
  */
-export const PAIR_KINDS = ["spot", "row-plain", "row-spot", "plain"];
+export const PAIR_KINDS = ["spot", "tint", "row-plain", "row-spot", "row-tint", "plain"];
 
 /** The kinds the picture route answers: PAIR_KINDS, and `auto`, which autoKind resolves. */
 export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 
 /**
- * Zoom Auto: a row is zoomed when its crop shows the change at least twice as large as the
- * unzoomed picture would.
- * @param {{ zoom: number, areas: number }} facts what the pair's job found
- * @returns {"row-spot" | "spot"} the kind the row shows
+ * The picture a row shows for a kind it asks for. `auto` is the row's crop with its changed pixels
+ * tinted (`row-tint`), whatever share of it changed: the red changed pixels show what changed on
+ * the page's own colors, where a spotlight showed only where. Every other kind is answered as
+ * asked, so an old address naming a spotlit kind (`row-spot`, `spot`) still gets its picture.
+ * @param {string} kind the kind asked for, one of PICTURE_KINDS
+ * @returns {string} the kind to show
  */
-export const autoKind = (facts) => (facts.areas > 0 && facts.zoom >= 2 ? "row-spot" : "spot");
+export function shownKind(kind) {
+    return kind === "auto" ? "row-tint" : kind;
+}
+
+/**
+ * The kind `auto` shows (shownKind of `auto`).
+ * @returns {string} the kind the row shows
+ */
+export const autoKind = () => shownKind("auto");
 
 /**
  * One job's pictures, as RGBA pixels. For a pair: decoded once, both padded top-left to the
@@ -115,10 +133,12 @@ export const autoKind = (facts) => (facts.areas > 0 && facts.zoom >= 2 ? "row-sp
  * PAIR_KINDS made from that, with what the row needs to know about its areas. The server encodes them as PNG (`pictures`); `run` as WebP, in
  * capture's Chromium.
  * @param {{ image: Uint8Array } | { baseline: Uint8Array, capture: Uint8Array, threshold: number,
- *     includeAA: boolean }} job one image, or a pair with pixelmatch's options as the item has them
+ *     includeAA: boolean, scale?: number }} job one image, or a pair with pixelmatch's options as
+ *     the item has them and the capture's scale (results.json `scale`, 1 when it has none)
  * @returns {{ images: Record<string, { width: number, height: number, data: Uint8Array }>,
- *     facts?: { crop: number[], zoom: number, areas: number } }} the pixels per kind; for a pair,
- *     the row crop, its zoom against the unzoomed picture, and how many separate areas changed
+ *     facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number, how: string } }} the pixels per kind; for a pair,
+ *     the row crop, its zoom against the unzoomed picture, how many separate areas changed and
+ *     how many of them the crop frames
  */
 export function pictureParts(job) {
     if (!("baseline" in job)) {
@@ -130,27 +150,126 @@ export function pictureParts(job) {
     // At most as many areas as compare writes into results.json, so a row's facts are the same
     // whichever made them.
     const boxes = regions(grown, width, height).slice(0, MAX_AREAS);
-    const { crop, zoom } = rowCrop(boxes, width, height);
-    const whole = [0, 0, width, height];
+    // The pictures show the new image: the padding a larger baseline adds is never drawn.
+    const scale = job.scale ?? 1;
+    const { crop, zoom, shown, cover, coverAll, how } = rowCrop(boxes, b.width, b.height, {
+        scale,
+        base: [a.width, a.height],
+        mask,
+        stride: width,
+    });
     const plain = { width, height, data: pb };
     const lit = { width, height, data: dimmed(pb, grown) };
-    const tile = (src, rect, h) => shrink(src, rect, THUMB_WIDTH, h);
+    // A row crop fitted in the row's shape: one narrower than it is centered by the page, its band
+    // the row's own background.
+    const fit = Math.min(ROW[0] / crop[2], ROW[1] / crop[3]);
+    const [rw, rh] = [Math.max(1, Math.round(crop[2] * fit)), Math.max(1, Math.round(crop[3] * fit))];
+    const row = (src) => shrink(src, crop, rw, rh);
+    const shrinkTo = (part) => shrink(part, part.at, rw, rh);
+    const thumb = plainOf(b);
     return {
         images: {
-            spot: tile(lit, whole),
-            "row-plain": tile(plain, crop, ROW[1]),
-            "row-spot": tile(lit, crop, ROW[1]),
+            spot: shrink(lit, [0, 0, b.width, b.height], THUMB_WIDTH),
+            tint: tintedThumb(thumb, mask, width, height, [0, 0, b.width, b.height]),
+            "row-plain": row(plain),
+            "row-spot": row(lit),
+            "row-tint": shrinkTo(tinted(pb, mask, width, height, crop)),
             // The capture's own thumbnail, unpadded: the same file a thumbnail of it alone would be.
-            plain: plainOf(b),
+            plain: thumb,
         },
-        facts: { crop, zoom, areas: boxes.length },
+        facts: { crop, zoom, areas: boxes.length, shown, cover, coverAll, how },
     };
+}
+
+// The tint: the Highlight view's red (page.css --highlight), how far toward it a changed pixel is
+// blended, and how many image pixels each changed pixel grows by, so it survives the shrink.
+const TINT = [255, 0, 0];
+export const TINT_MIX = 0.55;
+export const TINT_GROW = 2;
+
+/**
+ * The part `rect` of an image (the whole pixels around it) with every pixel within TINT_GROW of a
+ * changed pixel of the raw mask blended TINT_MIX toward the Highlight red, every other pixel as it
+ * is. Only the part is tinted, so a tall page costs no more than its crop.
+ * @param {ArrayLike<number>} px the image, RGBA, `width` x `height`
+ * @param {ArrayLike<number>} mask pixelmatch's mask of the same size, a changed pixel opaque
+ * @param {number} width the width of both
+ * @param {number} height the height of both
+ * @param {number[]} rect [x, y, width, height], fractions allowed
+ * @returns {{ width: number, height: number, data: Uint8ClampedArray, at: number[] }} the pixels,
+ *     and `at`, the rect in their coordinates
+ */
+export function tinted(px, mask, width, height, [rx, ry, rw, rh]) {
+    const [x0, y0] = [Math.max(0, Math.floor(rx)), Math.max(0, Math.floor(ry))];
+    const [x1, y1] = [Math.min(width, Math.ceil(rx + rw)), Math.min(height, Math.ceil(ry + rh))];
+    const [w, h] = [x1 - x0, y1 - y0];
+    const data = new Uint8ClampedArray(w * h * 4);
+    const near = (x, y) => {
+        for (let yy = Math.max(0, y - TINT_GROW); yy <= Math.min(height - 1, y + TINT_GROW); yy++) {
+            for (let xx = Math.max(0, x - TINT_GROW); xx <= Math.min(width - 1, x + TINT_GROW); xx++) {
+                if (mask[(yy * width + xx) * 4 + 3] !== 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            const [i, o] = [((y + y0) * width + x + x0) * 4, (y * w + x) * 4];
+            const mix = near(x + x0, y + y0) ? TINT_MIX : 0;
+            for (let c = 0; c < 3; c++) {
+                data[o + c] = px[i + c] + (TINT[c] - px[i + c]) * mix;
+            }
+            data[o + 3] = mix > 0 ? 255 : px[i + 3];
+        }
+    }
+    return { width: w, height: h, data, at: [rx - x0, ry - y0, rw, rh] };
+}
+
+/**
+ * A copy of a picture shrunk from the part `rect` of an image (`shrink`) with each of its pixels
+ * that shows a changed pixel of the raw mask, or one within TINT_GROW of it, blended TINT_MIX
+ * toward the Highlight red. Tinted after the shrink, so the whole image is never copied.
+ * @param {{ width: number, height: number, data: Uint8Array }} img the shrunk picture
+ * @param {ArrayLike<number>} mask pixelmatch's mask, `width` x `height`, a changed pixel opaque
+ * @param {number} width the mask's width
+ * @param {number} height its height
+ * @param {number[]} rect the part `img` was shrunk from
+ * @returns {PNG} the tinted copy
+ */
+export function tintedThumb(img, mask, width, height, [rx, ry, rw, rh]) {
+    const out = new PNG({ width: img.width, height: img.height });
+    out.data.set(img.data);
+    const changedIn = ([x0, x1], [y0, y1]) => {
+        for (let y = Math.max(0, y0 - TINT_GROW); y < Math.min(height, y1 + TINT_GROW); y++) {
+            for (let x = Math.max(0, x0 - TINT_GROW); x < Math.min(width, x1 + TINT_GROW); x++) {
+                if (mask[(y * width + x) * 4 + 3] !== 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    for (let y = 0; y < img.height; y++) {
+        const ys = span(y, img.height, ry, rh);
+        for (let x = 0; x < img.width; x++) {
+            if (changedIn(span(x, img.width, rx, rw), ys)) {
+                const o = (y * img.width + x) * 4;
+                for (let c = 0; c < 3; c++) {
+                    out.data[o + c] = Math.round(out.data[o + c] + (TINT[c] - out.data[o + c]) * TINT_MIX);
+                }
+                out.data[o + 3] = 255;
+            }
+        }
+    }
+    return out;
 }
 
 /**
  * One job's pictures as PNG files (pictureParts).
  * @param {Parameters<typeof pictureParts>[0]} job one image, or a pair
- * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number } }}
+ * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number, how: string } }}
  *     a PNG per kind, and for a pair what pictureParts found
  */
 export function pictures(job) {
@@ -160,19 +279,20 @@ export function pictures(job) {
 }
 
 /**
- * What the row needs to know about a changed pair's areas (its row crop, zoom and area count),
+ * What the row needs to know about a changed pair's areas (its row crop, zoom, area count and
+ * how many of them the crop frames),
  * from the areas compare wrote into its item, without a picture job.
  * @param {{ areas?: number[][], size?: number[] | null, baselineSize?: number[] | null }} item the item
- * @returns {{ crop: number[], zoom: number, areas: number } | null} the facts, or null when the
+ * @param {number} [scale] the capture's scale (results.json `scale`)
+ * @returns {{ crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number } | null} the facts, or null when the
  *     item has no areas or sizes
  */
-export function factsOf(item) {
+export function factsOf(item, scale = 1) {
     if (!Array.isArray(item.areas) || !item.size || !item.baselineSize) {
         return null;
     }
-    const w = Math.max(item.size[0], item.baselineSize[0]);
-    const h = Math.max(item.size[1], item.baselineSize[1]);
-    return { ...rowCrop(item.areas, w, h), areas: item.areas.length };
+    const facts = rowCrop(item.areas, item.size[0], item.size[1], { scale, base: item.baselineSize });
+    return { ...facts, areas: item.areas.length };
 }
 
 const FLAG = "--visual-review-thumbnails";
@@ -189,7 +309,7 @@ if (process.argv[2] === FLAG) {
 }
 
 /**
- * @typedef {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number } }} Made
+ * @typedef {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number, cover: number, coverAll: number, how: string } }} Made
  * @typedef {{ run: (load: () => Promise<object>, when?: "now" | "ahead", tag?: unknown) => Promise<Made>,
  *     raise: (match: (tag: unknown) => boolean) => void }} Pool
  */

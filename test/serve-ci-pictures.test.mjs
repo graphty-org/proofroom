@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { compareImages } from "../trusted/lib/compare.mjs";
 import { junitXml } from "../trusted/lib/junit.mjs";
 import { createApp } from "../trusted/lib/serve.mjs";
-import { autoKind, createPool, PAIR_KINDS, pictures } from "../trusted/lib/thumbs.mjs";
+import { createPool, PAIR_KINDS, pictures, shownKind } from "../trusted/lib/thumbs.mjs";
 import { fakeAdapters } from "./fakes/adapters.mjs";
 import { copyFixture, FIXTURE_CONFIG, makeRepo } from "./helpers.mjs";
 
@@ -126,10 +126,14 @@ describe("serve: a capture run made", () => {
                     crop: job.facts.crop,
                     zoom: job.facts.zoom,
                     count: job.facts.areas,
+                    shown: job.facts.shown,
+                    how: job.facts.how,
+                    cover: job.facts.cover,
+                    coverAll: job.facts.coverAll,
                 });
                 for (const kind of [...PAIR_KINDS, "auto"]) {
                     const pic = await s.get(`/api/pic/${row.pic}-${kind}`);
-                    const want = kind === "auto" ? autoKind(job.facts) : kind;
+                    const want = shownKind(kind, job.facts);
                     expect(pic.status, `${item.file} ${kind}`).toBe(200);
                     expect(pic.type).toBe("image/webp");
                     expect(pic.body.toString(), `${item.file} ${kind}`).toBe(item.pictures[want]);

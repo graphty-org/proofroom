@@ -50,6 +50,7 @@ const MARKS = {
     offline:
         '<path d="M1 4.5a7.5 7.5 0 0 1 10 0M2.8 6.6a5 5 0 0 1 6.4 0M4.6 8.6a2.4 2.4 0 0 1 2.8 0" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M1.5 1.5l9 9" stroke="currentColor" stroke-width="1.4"/>',
     chevOpen: '<path d="M2.5 4.2 6 7.8 9.5 4.2" fill="none" stroke="currentColor" stroke-width="1.7"/>',
+    chevLeft: '<path d="M7.8 2.5 4.2 6 7.8 9.5" fill="none" stroke="currentColor" stroke-width="1.7"/>',
     chevClosed: '<path d="M4.2 2.5 7.8 6 4.2 9.5" fill="none" stroke="currentColor" stroke-width="1.7"/>',
 };
 
@@ -78,12 +79,23 @@ const NONLETTER = /^(Left|Right|Up|Down|Enter|Esc|Tab|Space|hold Space|Shift\+Up
 export const kbClass = (k) => (NONLETTER.test(k) ? (k === "Enter" ? "ek" : null) : "lk");
 
 /**
- * The key hint boxes for a key's printed name ("Shift+1", "Enter", "Left / J"): a box per key,
- * classed by kbClass.
+ * The key hints for a key's printed name ("Shift+1", "Enter", "Left / J"): one per key, classed by
+ * kbClass. Boxed on the look-decide-next loop; `quiet` (muted text, no box) everywhere else.
  * @param {string} keys the printed keys, " / " between two
- * @returns {HTMLElement[]} the boxes
+ * @param {boolean} [quiet] printed quiet
+ * @returns {HTMLElement[]} the hints
  */
-export const kb = (keys) => keys.split(" / ").map((k) => el("kbd", { class: kbClass(k), "aria-hidden": "true" }, k));
+export const kb = (keys, quiet = false) =>
+    keys.split(" / ").map((k) =>
+        el(
+            "kbd",
+            {
+                class: [kbClass(k), quiet ? "quiet" : null].filter(Boolean).join(" ") || null,
+                "aria-hidden": "true",
+            },
+            k,
+        ),
+    );
 
 /**
  * A number with thousands separators.
@@ -91,6 +103,26 @@ export const kb = (keys) => keys.split(" / ").map((k) => el("kbd", { class: kbCl
  * @returns {string} the text
  */
 export const fmt = (n) => Number(n).toLocaleString("en-US");
+
+/**
+ * A count with its noun: "1 snapshot", "1,208 snapshots".
+ * @param {number} n the count
+ * @param {string} word the noun, singular
+ * @returns {string} the text
+ */
+export const plural = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
+
+/**
+ * A size, short: under 10,000 in full with separators, above rounded to k or M ("490k", "1.2M").
+ * @param {number} n the number
+ * @returns {string} the text
+ */
+export const fmtShort = (n) => {
+    if (n < 10000) {
+        return fmt(n);
+    }
+    return n < 999500 ? `${Math.round(n / 1000)}k` : `${Number((n / 1e6).toFixed(1))}M`;
+};
 
 /**
  * How long ago, in minutes under an hour, then hours, then days.
@@ -103,8 +135,12 @@ export function ageText(ms) {
 }
 
 /**
- * Megabytes, one decimal under 10 MB.
+ * A size in bytes, the one formatter for every size the page prints: megabytes, gigabytes from
+ * 1 GB on, one decimal under 10 of either.
  * @param {number} b bytes
- * @returns {string} "6.8 MB", "68 MB"
+ * @returns {string} "6.8 MB", "68 MB", "1.9 GB"
  */
-export const megabytes = (b) => `${b < 1e7 ? (b / 1e6).toFixed(1) : Math.round(b / 1e6)} MB`;
+export const megabytes = (b) =>
+    b >= 1e9
+        ? `${b < 1e10 ? (b / 1e9).toFixed(1) : Math.round(b / 1e9)} GB`
+        : `${b < 1e7 ? (b / 1e6).toFixed(1) : Math.round(b / 1e6)} MB`;

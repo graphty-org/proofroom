@@ -583,9 +583,10 @@ const PICTURED = new Set(["changed", "moved", "new", "unseeded", "removed"]);
  *     Promise<Record<string, Buffer> | null>} encode encodes each kind's pixels as WebP, or
  *     answers null to make none for this item
  * @param {boolean} again an earlier attempt of the snapshot may have left pictures: delete them first
+ * @param {number} [scale] the capture's scale (results.json `scale`): how many image pixels a row crop may hold
  * @returns {Promise<object>} the item, with `pictures` naming the files when it has any
  */
-export async function writePictures(out, item, encode, again) {
+export async function writePictures(out, item, encode, again, scale = 1) {
     const stem = item.file.slice(0, -".png".length);
     const name = (kind) => `${stem}.${kind}.webp`;
     if (again) {
@@ -601,6 +602,7 @@ export async function writePictures(out, item, encode, again) {
               capture: await readFile(join(out, item.file)),
               threshold: item.threshold,
               includeAA: item.includeAA,
+              scale,
           }
         : { image: await readFile(item.capture ? join(out, item.file) : join(out, "baselines", item.file)) };
     const encoded = await encode(pictureParts(job).images);
@@ -652,7 +654,7 @@ async function writeProgress(file, start, written, ended) {
  *     junit?: string | null, prune?: boolean, print?: (line: object) => void,
  *     onResult?: (result: object, line: object | null) => void,
  *     log?: (line: string) => void, progress?: string | null,
- *     encode?: Parameters<typeof writePictures>[2] | null }} options `captures` is where an image line's PNG is when it
+ *     encode?: Parameters<typeof writePictures>[2] | null, scale?: number }} options `captures` is where an image line's PNG is when it
  *     carries no bytes; `ids` judges only these snapshots (`<id>` or `<id>.<mode>`), and then
  *     neither removed baselines, results.json nor JUnit are written; `junit` is the JUnit file's
  *     path (default `<out>/junit.xml`, null for none); `prune` deletes the capture of a snapshot
@@ -660,7 +662,7 @@ async function writeProgress(file, start, written, ended) {
  *     every result line with the capture line it judged (null for a removed baseline or a broken
  *     rename) before the next line is read; `progress` is a file rewritten after every result line
  *     with how far the run is (writeProgress), for a page following it; `encode` makes each item's
- *     list pictures (writePictures), none without it
+ *     list pictures (writePictures), none without it, their row crops at `scale`
  * @returns {Promise<{ results: object | null, passed: boolean, lines: object[] }>} results.json's
  *     contents (null with `ids`), whether every snapshot passed, and every result line
  */
@@ -679,6 +681,7 @@ export async function compareRun({
     log = console.error,
     progress = null,
     encode = null,
+    scale = 1,
 }) {
     await mkdir(join(out, "baselines"), { recursive: true });
     // A run of a few snapshots (`ids`) adds its lines to the run they belong to.
@@ -711,7 +714,7 @@ export async function compareRun({
     const report = async (judged, line) => {
         const attempt = (attempts.get(judged.file) ?? 0) + 1;
         attempts.set(judged.file, attempt);
-        const item = encode ? await writePictures(out, judged, encodeOnce, attempt > 1) : judged;
+        const item = encode ? await writePictures(out, judged, encodeOnce, attempt > 1, scale) : judged;
         const result = resultLine(item, { project, attempt });
         written.push(result);
         await appendFile(join(out, RESULT_LINES), `${JSON.stringify(result)}\n`);

@@ -423,7 +423,8 @@ export function installBaselines(app) {
         bar.replaceChildren(
             control(host, "prev", {
                 zone: "decision",
-                children: [el("span", { class: "lbl" }, "Previous"), kb("Left / J")],
+                attrs: { "aria-label": "Previous" },
+                children: [el("span", { class: "lbl" }, "Previous"), kb("J"), kb("Left", true)],
             }),
             el(
                 "span",
@@ -433,7 +434,8 @@ export function installBaselines(app) {
             ),
             control(host, "next", {
                 zone: "decision",
-                children: [el("span", { class: "lbl" }, "Next"), kb("Right / K")],
+                attrs: { "aria-label": "Next" },
+                children: [el("span", { class: "lbl" }, "Next"), kb("K"), kb("Right", true)],
             }),
         );
     }

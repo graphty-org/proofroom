@@ -8,7 +8,7 @@
  */
 
 export const FLOOR = 800;
-export const RAIL = 44;
+export const RAIL = 64;
 export const SMALL = 10; // a change of this many snapshots or fewer is small
 export const ONE_LEVEL_WIDTH = 1400; // a large change in a window this wide or wider has one level
 
@@ -75,7 +75,9 @@ export function keepFloor([changes, snaps], { width, open, holds, prefer, ids = 
 }
 
 /** The narrowest each side pane gets, as the reader's resizing would stop it. */
-export const MIN_WIDTH = { changes: 240, snaps: 320, "bl-proj": 240, "bl-list-pane": 320 };
+// Snapshots and Baselines stop at 316: with a 64 px rail beside either, a 1,180 px window still
+// leaves the viewer its 800 px.
+export const MIN_WIDTH = { changes: 240, snaps: 316, "bl-proj": 240, "bl-list-pane": 316 };
 
 /**
  * The widths of the side panes as shown: each at its own width, or narrower, down to its minimum,
@@ -151,7 +153,8 @@ export const imageOnlyPressed = ([changes, snaps]) => !changes && !snaps;
 
 /**
  * Pressing Image only: hides both panes (never making the viewer narrower), or, when pressed,
- * brings back the layout it hid (else the list), within the floor.
+ * brings back exactly the layout it hid (folded stays folded, open stays open; their widths keep
+ * the viewer's floor), else the list.
  * @param {[boolean, boolean]} shown the panes now
  * @param {[boolean, boolean] | null} before the panes it hid, if it did
  * @param {{ width: number, open: boolean, holds: boolean }} at the window and viewer
@@ -162,7 +165,7 @@ export function pressImageOnly(shown, before, at) {
     if (!imageOnlyPressed(shown)) {
         return { shown: [false, false], before: shown };
     }
-    return { shown: keepFloor(before ?? [false, true], { ...at, prefer: (at.ids ?? PANES.review)[1] }), before: null };
+    return { shown: before ?? keepFloor([false, true], { ...at, prefer: (at.ids ?? PANES.review)[1] }), before: null };
 }
 
 // ---------------------------------------------------------------- on the page

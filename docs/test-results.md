@@ -95,7 +95,8 @@ Besides the fields every capture has, an item can carry:
 - `pictures`: the list pictures `run` made for the item, as `{ "<kind>": "<file>.webp" }`, beside
   the images. The kinds are `plain` (the new image, or a removed snapshot's baseline), and for a
   changed pair also `spot` (spotlit), `zoom` and `both` (zoomed toward the change, plain and
-  spotlit), and `row-plain` and `row-spot` (cropped to the largest change, at the list row's shape).
+  spotlit), and `row-plain`, `row-spot` and `row-tint` (cropped to the change, at the list row's
+  shape; `row-tint` has the changed pixels tinted red).
 - `attempts`: the earlier attempts of the run, oldest first, each `{ status, capture, changedPixels,
 reason, console }` (and `from` for a renamed story).
 

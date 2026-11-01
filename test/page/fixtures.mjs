@@ -244,7 +244,17 @@ export function row(i, status, over = {}) {
         pic: status === "failed" ? null : `${baseline ?? "none"}-${capture ?? "none"}-0.1-0`,
         areas:
             status === "changed"
-                ? { crop: [0, 0, 400, 156], zoom: i % 4 === 0 ? 1.5 : 3 + (i % 5), count: 1 + (i % 7) }
+                ? {
+                      crop: [0, 0, 400, 156],
+                      zoom: i % 4 === 0 ? 1.5 : 3 + (i % 5),
+                      count: 1 + (i % 7),
+                      // Every third row's crop frames only its largest cluster: one of its areas,
+                      // but every twelfth frames them all.
+                      shown: i % 3 === 0 && i % 12 !== 0 ? 1 : 1 + (i % 7),
+                      how: i % 3 === 0 && i % 12 !== 0 ? "cluster" : "all",
+                      // Every other ten rows' changes cover most of their crop: the server tints them.
+                      cover: Math.floor(i / 10) % 2 ? 0.5 : 0.1,
+                  }
                 : null,
         ...rest,
     };
@@ -296,7 +306,9 @@ export function richRows(name, n = 180) {
     const look = changed.slice(-6);
     const at = (k) => changed[k];
     at(0).reReview = true;
+    // Resized, and nothing else changed: its only area is the strip the new image adds.
     at(1).size = [800, 640];
+    at(1).areas = { ...at(1).areas, how: "size", count: 1, shown: 0 };
     const d = (x, decision) => [x.file, decision];
     const decisions = Object.fromEntries([
         d(at(2), { decision: "accept", reason: null }),

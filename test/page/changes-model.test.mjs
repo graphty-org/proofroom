@@ -17,8 +17,8 @@ describe("row states", () => {
     const rows = new Map(fiftyChanges().map((t) => [t.id, rowOf(t)]));
     // [change, section, mark, words]
     const STATES = [
-        ["3484", "needs", "open", "3 undecided"],
-        ["3482", "needs", "half", "31 of 60 decided"],
+        ["3484", "needs", "open", "3 left"],
+        ["3482", "needs", "half", "29 left of 60"],
         ["3480", "decided", "full", "9 decided, not finished"],
         ["3478", "busy", "down", "Downloading: 2 of 3 projects (68 MB)"],
         ["3477", "busy", "spin", "Capturing on CI, 2 of 3 projects"],
@@ -26,7 +26,7 @@ describe("row states", () => {
         ["3475", "notready", "failed", "Incomplete: 2 of 3 projects"],
         ["3474", "nothing", "accept", "Finished, signed"],
         ["3473", "nothing", null, "No differences"],
-        ["3472", "drafts", "open", "5 undecided"],
+        ["3472", "drafts", "open", "5 left"],
         ["local", "look", "eye", "Look only: 22 to view"],
     ];
     it.each(STATES)("%s: %s, %s, %s", (id, section, mark, words) => {
@@ -41,16 +41,26 @@ describe("row states", () => {
         const some = rowOf(
             target(1, { projects: [project("graphty-element", { reviewable: 2 }), none("no capture")] }),
         );
-        expect([some.section, some.count, some.ready, some.notReady]).toEqual([
-            "needs",
-            "2 undecided",
-            "1 of 1",
-            false,
-        ]);
+        expect([some.section, some.count, some.ready, some.notReady]).toEqual(["needs", "2 left", "1 of 1", false]);
         const nothing = rowOf(target(2, { projects: [none("no capture"), none("not affected")] }));
         expect([nothing.section, nothing.count]).toEqual(["notready", "Capture failed: graphty"]);
         const skipped = rowOf(target(3, { projects: [none("not affected")] }));
         expect([skipped.section, skipped.count]).toEqual(["nothing", "No differences"]);
+    });
+
+    it("says how many projects are ready only while one is not, and an eviction as what opening downloads", () => {
+        expect(rows.get("3484").readyNote).toBeNull();
+        expect(rows.get("3477").readyNote).toBe("2 of 3 projects ready");
+        const away = rowOf(
+            target(4, {
+                projects: [project("graphty-element", { reviewable: 2 })],
+                evicted: { bytes: 68e6, deleted: false },
+            }),
+        );
+        expect(away.badges[0]).toEqual({
+            text: "68 MB to download",
+            title: "Images not on disk: opening downloads 68 MB",
+        });
     });
 
     it("tags each kind of change, and names a seed by the default branch", () => {
@@ -100,16 +110,23 @@ describe("row states", () => {
         }
     });
 
-    it("gives every badge: behind, pending push, CI pending, stale, shares", () => {
+    it("gives every badge: behind master (one for a behind branch or a stale capture), pending push, CI pending", () => {
         const text = (id) => rows.get(id).badges.map((b) => b.text);
         expect(text("3485")).toEqual(["behind master"]);
         expect(text("3481")).toEqual(["pending push"]);
         expect(text("3471")).toEqual(["CI pending"]);
-        expect(text("3483")).toEqual(["Changed on master: 3 newer baselines"]);
-        const shares = sharesOf([{ ids: ["3486", "3471"], prs: [3486, 3471], shared: Array(14).fill("x") }]);
-        expect(rowOf(fiftyChanges()[0], { shares }).badges.map((b) => b.text)).toEqual([
-            "shares 14 baselines with #3471",
-        ]);
+        expect(text("3483")).toEqual(["behind master"]);
+        expect(rows.get("3483").badges[0].title).toBe("master accepted 3 newer baselines after this capture");
+        // Both at once: still one badge.
+        const both = rowOf(target(1, { behind: "master", stale: 2, projects: [project("p", { reviewable: 4 })] }));
+        expect(both.badges.map((b) => b.text)).toEqual(["behind master"]);
+    });
+
+    it("keeps shares N baselines with #M off the row, for About this change, with separators", () => {
+        const shares = sharesOf([{ ids: ["3486", "3471"], prs: [3486, 3471], shared: Array(2188).fill("x") }]);
+        const row = rowOf(fiftyChanges()[0], { shares });
+        expect(row.badges).toEqual([]);
+        expect(row.shares).toBe("shares 2,188 baselines with #3471");
     });
 
     it("keeps a look-only change look only while a project still captures or failed", () => {

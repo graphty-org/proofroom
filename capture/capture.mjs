@@ -534,6 +534,7 @@ export function run({ reference = null, retries = 0, junit, print, ...options })
         log: options.log,
         progress: join(options.out, PROGRESS_FILE),
         encode,
+        scale: SCALE,
         onResult: (result, line) => {
             if (!result.passed && line && result.attempt <= retries) {
                 shots.again(line);

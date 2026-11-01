@@ -10,7 +10,16 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { COVERS } from "./covers.mjs";
-import { BROWSERS, TOKEN, fiftyChanges, message, openNext, visibleKeys, webkitRuns } from "./page-kit.mjs";
+import {
+    BROWSERS,
+    TOKEN,
+    fiftyChanges,
+    message,
+    openNext,
+    visibleKeys,
+    webkitRuns,
+    openedChange,
+} from "./page-kit.mjs";
 
 const pressed = new Set();
 const runWebkit = await webkitRuns();
@@ -62,8 +71,19 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.keyboard.press("Escape");
                 await expect.poll(() => page.locator("dialog[open]").count()).toBe(0);
             }
+            // Image only (Shift+3) hides the top bar and its Review tab: its own printed way out,
+            // Image only [Shift+3], is the marker clicked instead, which also leaves it.
+            const tab = page.locator('#tabs [data-act="screen-review"]');
+            if (!(await tab.isVisible())) {
+                const outs = t.actions.filter((a) => a.a === "imageonly" && a.via === "pointer").length;
+                await page.locator('#vtb [data-act="imageonly"]').click();
+                await expect
+                    .poll(() => t.actions.filter((a) => a.a === "imageonly" && a.via === "pointer").length)
+                    .toBe(outs + 1);
+                return t.actions.slice(from).filter((a) => a.via === "key");
+            }
             const marks = t.actions.filter((a) => a.a === "screen-review").length;
-            await page.locator('#tabs [data-act="screen-review"]').click();
+            await tab.click();
             await expect.poll(() => t.actions.filter((a) => a.a === "screen-review").length).toBe(marks + 1);
             return t.actions.slice(from).filter((a) => a.via === "key");
         };
@@ -87,7 +107,9 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 const page = await open({ viewport: { width: 1280, height: 800 } });
                 await page.locator('.chg[data-chg="3486"]').click();
                 await page.locator('.iline [data-act="openrow"]').click();
-                await expect.poll(() => page.locator(".iline").innerText()).toContain("Back to list");
+                await expect
+                    .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
+                    .toBe("Back to the list (Esc)");
                 return page;
             },
             "back at the changes with a change open": async () => {
@@ -95,7 +117,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.locator('.chg[data-chg="3486"]').click();
                 await page.locator(".iline").waitFor({ state: "attached" });
                 await page.keyboard.press("Escape");
-                await expect.poll(() => message(page)).toBe("Back to the changes.");
+                await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
                 return page;
             },
             "a menu open": async () => {
@@ -151,6 +173,50 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             });
         });
 
+        it("in Image only, a key whose control it hid does nothing and says once how to bring it back", async () => {
+            const page = await open({ viewport: { width: 1440, height: 900 } });
+            await page.locator('.chg[data-chg="3486"]').click();
+            await page.locator(".iline").waitFor();
+            await page.keyboard.press("Shift+Digit3");
+            await expect.poll(() => page.locator("#top").isVisible()).toBe(false);
+            // Each key shows on one visible control at most, and the way out prints its own.
+            const shown = await visibleKeys(page);
+            const keys = shown.map((k) => k.key);
+            expect(keys.filter((k, i) => keys.indexOf(k) !== i)).toEqual([]);
+            expect(shown).toContainEqual({ act: "imageonly", key: "Shift+3" });
+            for (const hidden of ["Shift+N", "?", "Shift+1", "Shift+2", "X", "P"]) {
+                expect(keys, hidden).not.toContain(hidden);
+            }
+            const from = t.actions.length;
+            await page.keyboard.press("Shift+KeyN");
+            await expect.poll(() => message(page)).toBe("Hidden in Image only: Shift+3 brings it back.");
+            // Said once: the next hidden key leaves the line as the last action left it.
+            await page.keyboard.press("KeyH");
+            await page.keyboard.press("Shift+Slash");
+            await page.keyboard.press("Shift+Digit1");
+            await page.keyboard.press("Shift+Digit2");
+            expect(await message(page)).toBe("");
+            expect(await page.locator("dialog[open]").count()).toBe(0);
+            expect(await page.locator("#top").isVisible()).toBe(false);
+            // Zoom's digits still act through the visible Zoom.
+            await page.keyboard.press("Digit2");
+            await expect.poll(() => page.locator('#vtb [data-act="zoomcycle"]').innerText()).toMatch(/^Zoom: 2x/);
+            await page.keyboard.press("Shift+Digit3");
+            await expect.poll(() => page.locator("#top").isVisible()).toBe(true);
+            await expect
+                .poll(() =>
+                    t.actions
+                        .slice(from)
+                        .filter((a) => a.via === "key")
+                        .map((a) => a.a),
+                )
+                .toEqual(["view-highlight", "zoom-2", "imageonly"]);
+            // Back out, a hidden key is said again the next time.
+            await page.keyboard.press("Shift+Digit3");
+            await page.keyboard.press("Shift+KeyN");
+            await expect.poll(() => message(page)).toBe("Hidden in Image only: Shift+3 brings it back.");
+        });
+
         it("moves the panes and the levels by key: Shift+1, Shift+2, Enter, Esc", async () => {
             const page = await open({ viewport: { width: 1280, height: 800 } });
             const rails = () =>
@@ -167,11 +233,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             }
             await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe("3486");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toBe("Opened #3486 Storybook 9 upgrade: 300 undecided.");
+            await expect.poll(() => message(page)).toBe("Opened: 300 left.");
+            expect(await openedChange(page)).toBe("3486");
             expect(await rails()).toEqual([true, false]);
             await page.keyboard.press("Enter");
             await expect.poll(rails).toEqual([true, true]);
-            expect(await page.locator('.iline [data-act="back"]').innerText()).toBe("Back to listEsc");
+            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe("Back to the list (Esc)");
             await page.keyboard.press("Shift+Digit2");
             await expect.poll(rails).toEqual([true, false]);
             await page.keyboard.press("Shift+Digit1");
@@ -186,7 +253,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => message(page)).toBe("Back to the list.");
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
             // At 1280 the viewer keeps its snapshot, so Snapshots stays a rail beside Changes.
             expect(await rails()).toEqual([false, true]);
         });
@@ -202,7 +269,9 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await page.keyboard.press("Escape");
             await expect.poll(() => page.evaluate(() => globalThis.document.activeElement?.id)).toBe("chg-list");
-            expect(await page.locator('.iline [data-act="back"]').innerText()).toBe("Back to changesEsc");
+            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe(
+                "Back to the changes (Esc)",
+            );
             // A menu takes Esc first, and Back shows no key box while it is open.
             await page.getByRole("button", { name: /^Sort:/ }).click();
             await page.getByRole("menu").waitFor();
@@ -210,15 +279,51 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => page.getByRole("menu").count()).toBe(0);
             expect(await page.locator(".iline").count()).toBe(1);
+            // Right after an Esc that closed something, Esc says how to go back instead.
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toBe("Press Esc again to go back to the changes.");
+            expect(await page.locator(".iline").count()).toBe(1);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
+        });
+
+        it("goes back with a second Esc only after saying so when the first one cleared something", async () => {
+            const page = await open({});
+            await page.locator('.chg[data-chg="3486"]').click();
+            await page.locator(".iline").waitFor({ state: "attached" });
+            // The item line's Select prints its one key; extending a selection is in the List menu.
+            expect(await page.locator('.iline [data-act="select"]').innerText()).toMatch(/^Select\s*X$/);
+            await page.keyboard.press("KeyX");
+            await expect.poll(() => page.locator("#snaps-head .lselbar").count()).toBe(1);
+            // The first Esc clears the selection; the second, right after it, stays and says so.
+            await page.keyboard.press("Escape");
+            await expect.poll(() => page.locator("#snaps-head .lselbar").count()).toBe(0);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toBe("Press Esc again to go back to the changes.");
+            expect(await page.locator(".iline").count()).toBe(1);
+            // The third goes back, and says how to come back.
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toBe("Back to the changes. Enter opens #3486 again.");
+            await page.keyboard.press("Enter");
+            await expect.poll(() => message(page)).toMatch(/^Opened: /);
+            expect(await openedChange(page)).toBe("3486");
+            // Any other key in between ends the guard: a menu closed, then a letter, then Esc goes back.
+            await page.getByRole("button", { name: "List", exact: true }).click();
+            await page.getByRole("menu").waitFor();
+            await page.keyboard.press("Escape");
+            await expect.poll(() => page.getByRole("menu").count()).toBe(0);
+            await page.keyboard.press("KeyV");
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         });
 
         it("closes a menu with Esc after Tab took focus out of it, then goes back", async () => {
             const page = await open({});
             await page.locator('.chg[data-chg="3486"]').click();
             await page.locator(".iline").waitFor({ state: "attached" });
-            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe("Back to changes [Esc]");
+            expect(await page.locator('.iline [data-act="back"]').getAttribute("title")).toBe(
+                "Back to the changes (Esc)",
+            );
             await page.keyboard.press("Shift+Digit1");
             await expect.poll(() => page.locator("#chg-find").isVisible()).toBe(true);
             await page.getByRole("button", { name: /^Sort:/ }).click();
@@ -230,8 +335,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => page.getByRole("menu").count()).toBe(0);
             expect(await page.locator(".iline").count()).toBe(1);
+            // Right after an Esc that closed something, Esc says how to go back instead.
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toBe("Press Esc again to go back to the changes.");
+            expect(await page.locator(".iline").count()).toBe(1);
+            await page.keyboard.press("Escape");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         });
 
         it("does what the printed [Enter] says after a box closes", async () => {
@@ -247,9 +356,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             // The current row is 3480, decided, not finished: its Finish... prints Enter.
             await expect.poll(() => visibleKeys(page)).toContainEqual({ act: "finishchg", key: "Enter" });
             await page.keyboard.press("Enter");
-            await expect
-                .poll(() => page.locator("dialog.finish[open] h3").innerText())
-                .toBe("Finish #3480 Change 3480");
+            await expect.poll(() => page.locator("dialog.finish[open] h3").innerText()).toBe("Finish #3480");
         });
 
         it("hides letter key hints and ignores those keys while letter keys are off", async () => {
@@ -277,7 +384,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("ArrowDown");
             await page.keyboard.press("ArrowDown");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toBe("Opened #3484 Legend overlay: 3 undecided.");
+            await expect.poll(() => message(page)).toBe("Opened: 3 left.");
+            expect(await openedChange(page)).toBe("3484");
             // The viewer's boxes keep only their arrow and Space halves.
             expect(await visibleKeys(page)).toEqual([
                 { act: "view-flash", key: "hold Space" },
@@ -286,7 +394,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 { act: "next", key: "Right" },
             ]);
             await page.keyboard.press("Escape");
-            await expect.poll(() => message(page)).toBe("Back to the changes.");
+            await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         });
 
         it.skipIf(name !== "chromium")("reads AZERTY's digit row by key position", async () => {

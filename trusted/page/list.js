@@ -1,7 +1,6 @@
 /*
- * The snapshot list (design section 4): the five header lines (folded for a change of 10 or fewer),
- * the groups with their sticky headers, and the rows with their pictures, marks, badges and
- * decisions. The rows are real elements with `content-visibility: auto` and a fixed intrinsic size,
+ * The snapshot list (design section 4): the three header lines, the groups with their sticky
+ * headers, and the rows with their pictures, marks, badges and decisions. The rows are real elements with `content-visibility: auto` and a fixed intrinsic size,
  * and their pictures load lazily from the server's content-addressed picture names, one request per
  * row. The list is built again only when what it shows changes (Show, Group, Pictures, Find, a
  * group opened or closed, a newer capture loaded); moving the current row moves one class, and a
@@ -28,29 +27,34 @@ import {
     storyOf,
     undecided,
 } from "./groups.js";
-import { DECISION, ORDER, STATUS, mark, statusMark } from "./marks.js";
-import { el, fmt, ic, kb } from "./ui.js";
+import { DECISION, ORDER, STATUS, mark } from "./marks.js";
+import { el, fmt, fmtShort, ic, kb } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const PICTURES_KEY = "proofroom:pictures";
 
-/** The Show menu's choices after Undecided and All: each status, then each decision. */
+/**
+ * The Show menu's choices after Undecided and All: each status, then what was accepted before this
+ * capture, then each decision (Accepted is the reader's own, never the carry-over).
+ */
 export const SHOWS = [
     ["undecided", "Undecided"],
     ["all", "All"],
-    ...ORDER.map((s) => [s, STATUS[s].word]),
+    ...ORDER.map((s) => [s, STATUS[s].word.charAt(0).toUpperCase() + STATUS[s].word.slice(1)]),
+    ["before", "Accepted earlier"],
     ["accept", "Accepted"],
     ["reject", "Rejected"],
     ["exclude", "Excluded"],
 ];
 export const SHOW_LABEL = Object.fromEntries(SHOWS);
 
-/** The Zoom rows to the change choices. */
+/** The row picture choices besides Text only: a crop onto the change, or the whole image. */
 export const ZOOMS = {
-    auto: "Auto: when the change is small (2x Fit or more)",
-    always: "Always",
-    never: "Never",
+    crop: "Crop to the change",
+    whole: "Whole image",
 };
+// The choices of an older page: When small and Always both became the crop, Never the whole image.
+const OLD_ZOOMS = { auto: "crop", always: "crop", never: "whole" };
 
 // ---------------------------------------------------------------- the model
 
@@ -146,29 +150,46 @@ export function shownBy(s, show, keep) {
     if (show === "undecided") {
         return !s.decision || s.before || s.rejectedBefore;
     }
+    if (show === "before") {
+        return s.before;
+    }
+    if (show === "accept" && s.before) {
+        return false;
+    }
     return STATUS[show] ? s.status === show : s.decision?.decision === show;
 }
 
 /**
- * How many snapshots each Show choice holds (the menu's counts): a status or decision with none is
- * not offered, Undecided and All always are.
+ * How many snapshots each Show choice holds (the menu's counts): a status the change does not have
+ * is not offered (it can never gain one); every other choice is, a count of 0 included.
  * @param {any[]} snaps the snapshots
  * @returns {[string, string, number][]} key, label, count
  */
 export function showCounts(snaps) {
-    const count = (k) =>
-        snaps.filter((s) =>
-            k === "all"
-                ? true
-                : k === "undecided"
-                  ? !s.decision
-                  : STATUS[k]
-                    ? s.status === k
-                    : s.decision?.decision === k,
-        ).length;
+    const none = new Set();
+    const count = (k) => snaps.filter((s) => (k === "undecided" ? !s.decision : shownBy(s, k, none))).length;
     return SHOWS.map(([k, label]) => /** @type {[string, string, number]} */ ([k, label, count(k)])).filter(
-        ([k, , n]) => n > 0 || k === "undecided" || k === "all",
+        ([k, , n]) => n > 0 || !STATUS[k],
     );
+}
+
+/**
+ * The progress line's words: what is left, then the reader's own decisions and what was accepted
+ * before this capture, each only when it is not 0. A change of 10 or fewer says only what is left
+ * until something is decided.
+ * @param {any[]} snaps the snapshots
+ * @returns {{ left: string, rest: string[] }} "34 left", and the parts after it in the order they
+ *     drop when the line is tight (the last first)
+ */
+export function progressOf(snaps) {
+    const earlier = snaps.filter((s) => s.before).length;
+    const left = snaps.filter((s) => !s.decision).length;
+    const mine = snaps.length - left - earlier;
+    const rest =
+        snaps.length <= 10 && mine === 0
+            ? []
+            : [mine > 0 ? `${fmt(mine)} decided` : null, earlier > 0 ? `${fmt(earlier)} accepted earlier` : null];
+    return { left: `${fmt(left)} left`, rest: rest.filter(Boolean) };
 }
 
 /**
@@ -230,54 +251,81 @@ function computeLayout(lv, snaps) {
 }
 
 /**
- * The picture a row asks for under the Row pictures choices, and its corner tags: one request per
- * row. A changed pair is spotlit or plain, zoomed to its change or whole; Zoom Auto zooms when the
- * crop around the largest area is at least 2x Fit (the server's `auto` when spotlit). A snapshot of
- * one image has only its plain picture.
+ * The picture a row asks for under the Row pictures choices, and how it is cropped: one request
+ * per row. A changed pair is marked (its changed pixels tinted red) or plain, cropped to its change
+ * (rowCrop, spot.js)
+ * or whole. A snapshot of one image has only its plain picture.
  * @param {any} s the snapshot
- * @param {{ spot: boolean, zoom: "auto" | "always" | "never" }} pics the choices
- * @returns {{ kind: string, tags: string[] } | null} the kind and tags, or null for no picture
+ * @param {{ spot: boolean, zoom: "crop" | "whole" }} pics the choices
+ * @returns {{ kind: string, how: string | null, shown: number | null } | null} the kind, which
+ *     rule cropped it ("all", "cluster", "dense", "center" or "size"; null when whole) and how many of the
+ *     changed areas the crop frames, or null for no picture
  */
 export function pictureKind(s, pics) {
     if (!s.pic || s.status === "failed") {
         return null;
     }
     if (!pairOf(s)) {
-        return { kind: "plain", tags: [] };
+        return { kind: "plain", how: null, shown: null };
+    }
+    if (pics.zoom === "whole") {
+        return { kind: pics.spot ? "tint" : "plain", how: null, shown: null };
     }
     const a = s.areas;
-    const big = Boolean(a && a.count > 0 && a.zoom >= 2);
-    const zoomed = pics.zoom === "always" || (pics.zoom === "auto" && big);
-    let kind;
-    if (pics.spot) {
-        kind = pics.zoom === "auto" ? "auto" : zoomed ? "row-spot" : "spot";
-    } else {
-        kind = zoomed ? "row-plain" : "plain";
+    const shown = a ? (a.shown ?? a.count) : null;
+    // Before the server has found the areas, the row only knows it is cropped.
+    const how = a ? (a.how ?? (shown < a.count ? "cluster" : "all")) : "crop";
+    return { kind: pics.spot ? "row-tint" : "row-plain", how, shown };
+}
+
+/**
+ * How a resized snapshot's size changed: "2 px shorter", "10 px wider, 2 px taller".
+ * @param {any} s the snapshot
+ * @returns {string} the words, or "" when the size did not change
+ */
+export function sizeChange(s) {
+    if (!s.size || !s.baselineSize) {
+        return "";
     }
-    const tags = [];
-    if (zoomed && a) {
-        tags.push(`zoomed ${Math.round(a.zoom)}x`);
-        if (a.count > 1) {
-            tags.push(`+${a.count - 1} area${a.count === 2 ? "" : "s"}`);
-        }
+    const [dw, dh] = [s.size[0] - s.baselineSize[0], s.size[1] - s.baselineSize[1]];
+    const said = (d, less, more) => (d === 0 ? null : `${fmt(Math.abs(d))} px ${d < 0 ? less : more}`);
+    return [said(dw, "narrower", "wider"), said(dh, "shorter", "taller")].filter(Boolean).join(", ");
+}
+
+/**
+ * A row's words for its change, under the story's name: how many areas changed ("66 changed
+ * areas", "1 changed area"; "Only the size changed: 2 px shorter" when nothing else did), else
+ * what sizeText says ("image identical"). How the picture is cropped is in its tooltip, its pixel
+ * size in Details.
+ * @param {any} s the snapshot
+ * @returns {string} the words, or ""
+ */
+export function rowSizeText(s) {
+    const count = s.areas?.count;
+    if (s.status === "changed" && s.areas?.how === "size" && sizeChange(s)) {
+        return `Only the size changed: ${sizeChange(s)}`;
     }
-    return { kind, tags };
+    if (s.status === "changed") {
+        return typeof count === "number" ? `${fmt(count)} changed area${count === 1 ? "" : "s"}` : "";
+    }
+    return sizeText(s);
 }
 
 /**
  * The Row pictures choices, kept in this browser.
- * @returns {{ spot: boolean, zoom: "auto" | "always" | "never", none: boolean }} the choices
+ * @returns {{ spot: boolean, zoom: "crop" | "whole", none: boolean }} the choices
  */
 export function loadPictures() {
     try {
         const v = JSON.parse(localStorage.getItem(PICTURES_KEY) ?? "null");
-        if (v && typeof v.spot === "boolean" && ZOOMS[v.zoom] && typeof v.none === "boolean") {
-            return v;
+        const zoom = OLD_ZOOMS[v?.zoom] ?? v?.zoom;
+        if (v && typeof v.spot === "boolean" && ZOOMS[zoom] && typeof v.none === "boolean") {
+            return { ...v, zoom };
         }
     } catch {
         // A private window: the defaults.
     }
-    return { spot: true, zoom: "auto", none: false };
+    return { spot: true, zoom: "crop", none: false };
 }
 
 const savePictures = (pics) => {
@@ -287,24 +335,6 @@ const savePictures = (pics) => {
         // Not kept; the defaults next time.
     }
 };
-
-/**
- * The Pictures button's label at three widths: "spotlit, zoom auto" (after "Pictures: "),
- * "Spotlit, zoom auto", then "Zoom auto" / "Zoomed" / "Not zoomed". The word zoom never drops.
- * @param {{ spot: boolean, zoom: string, none: boolean }} pics the choices
- * @param {number} [level] 0, 1 or 2
- * @returns {string} the label
- */
-export function picturesLabel(pics, level = 0) {
-    if (pics.none) {
-        return "No pictures";
-    }
-    if (level >= 2) {
-        return { auto: "Zoom auto", always: "Zoomed", never: "Not zoomed" }[pics.zoom];
-    }
-    const t = `${pics.spot ? "spotlit" : "plain"}, zoom ${pics.zoom}`;
-    return level ? t[0].toUpperCase() + t.slice(1) : t;
-}
 
 // ---------------------------------------------------------------- the list's state
 
@@ -395,7 +425,7 @@ export function setShow(app, show) {
     const lv = app.lv;
     lv.show = show;
     lv.keep = new Set();
-    if (show === "all" || show === "accept") {
+    if (show === "all" || show === "before") {
         lv.collapsed.delete(BEFORE);
     } else {
         lv.collapsed.add(BEFORE);
@@ -419,7 +449,7 @@ export function setGrouping(app, grouping) {
 /**
  * Changes a Row pictures choice.
  * @param {any} app the page
- * @param {{ spot?: boolean, zoom?: "auto" | "always" | "never", none?: boolean }} change the choice
+ * @param {{ spot?: boolean, zoom?: "crop" | "whole", none?: boolean }} change the choice
  */
 export function setPictures(app, change) {
     app.lv.pics = { ...app.lv.pics, ...change };
@@ -560,7 +590,8 @@ export function findBox() {
                 "data-act": "find",
                 "data-key": "/",
                 "data-zone": "snaps-head",
-                "data-find": "Find a story, or jump to a number",
+                "data-find": "Find",
+                title: "Find a story, or #number",
                 "aria-label": "Find a story, or jump to a number",
                 autocomplete: "off",
             })
@@ -575,8 +606,8 @@ export function findBox() {
 const measure = document.createElement("canvas").getContext("2d");
 // The body's font family, read once: getComputedStyle per row would recompute styles per row.
 let family = null;
-const FONT = () => (family ??= getComputedStyle(document.body).fontFamily);
-const textWidth = (t, font) => {
+export const FONT = () => (family ??= getComputedStyle(document.body).fontFamily);
+export const textWidth = (t, font) => {
     measure.font = font;
     return measure.measureText(String(t)).width;
 };
@@ -588,7 +619,7 @@ const textWidth = (t, font) => {
  * @param {string} font the font
  * @returns {string} the name, whole or cut
  */
-function midCut(t, w, font) {
+export function midCut(t, w, font) {
     if (textWidth(t, font) <= w) {
         return t;
     }
@@ -606,88 +637,48 @@ function midCut(t, w, font) {
     return cut(lo);
 }
 
+/**
+ * A name cut at its start to fit a width, so its end shows ("...cytoscape-js-specimens"): sibling
+ * groups share their start, and the end is what tells them apart (design 9.4 item 2).
+ * @param {string} t the name
+ * @param {number} w the width
+ * @param {string} font the font
+ * @returns {string} the name, whole or cut
+ */
+export function endCut(t, w, font) {
+    let k = t.length;
+    while (k > 6 && textWidth(k === t.length ? t : `...${t.slice(t.length - k)}`, font) > w) {
+        k--;
+    }
+    return k === t.length ? t : `...${t.slice(t.length - k)}`;
+}
+
 const lines = {};
 const line = (cls) => {
     lines[cls] ??= el("div", { class: `hl ${cls}` });
     return lines[cls];
 };
 
-/**
- * The status summary's entries: one per status present, a mark, a count and a word, each setting
- * Show to that status.
- * @param {any} app the page
- * @param {string[]} [only] the statuses to draw
- * @returns {HTMLElement[]} the entries
- */
-function statusEntries(app, only = null) {
-    return ORDER.filter((st) => (only ?? ORDER).includes(st))
-        .map((st) => [st, app.snaps.filter((s) => s.status === st).length])
-        .filter(([, n]) => n > 0)
-        .map(([st, n]) =>
-            control(app, "statshow", {
-                zone: "snaps-head",
-                ctx: { status: st },
-                attrs: {
-                    "aria-pressed": app.lv.show === st ? "true" : "false",
-                    title: `Show: ${STATUS[st].word}`,
-                    "data-status": st,
-                },
-                children: [
-                    mark(STATUS[st].shape, STATUS[st].cls),
-                    el("span", { class: "num" }, fmt(n)),
-                    ` ${STATUS[st].word}`,
-                ],
-            }),
-        );
-}
-
-// The entries that fold into "+N more" first: moved, then no baseline yet, then changed. Failed,
-// new and removed never fold.
-const FOLD = ["moved", "unseeded", "changed"];
-
-// Folds the status entries that do not fit on their line into one "+N more" menu.
-function foldStatus(app, host) {
-    app.lv.more = [];
-    if (host.scrollWidth <= host.clientWidth + 1) {
-        return;
-    }
-    const more = () =>
-        control(app, "statmore", {
-            zone: "snaps-head",
-            label: `+${app.lv.more.length} more`,
-            attrs: { title: "The other statuses", "data-more": "" },
-        });
-    host.append(more());
-    for (const st of FOLD) {
-        if (host.scrollWidth <= host.clientWidth + 1) {
-            break;
-        }
-        const b = host.querySelector(`[data-status="${st}"]`);
-        if (b) {
-            b.remove();
-            app.lv.more.push(st);
-            host.querySelector("[data-more]").replaceWith(more());
-        }
-    }
-    if (app.lv.more.length === 0) {
-        host.querySelector("[data-more]").remove();
-    }
-}
+// Whether a header line is wider than its box.
+const over = (n) => n.scrollWidth > n.clientWidth + 1;
 
 /**
- * The header's five lines, or four for a change of 10 or fewer (progress and summary on one line,
- * one View options menu), plus the newer-capture banner.
+ * The header's three lines (design 2.4 item 3, 9.4):
+ * 1. the change's number and title (at most two lines) and the fold button (built by the page);
+ * 2. the progress line, "34 left" then "12 decided, 1,208 accepted earlier", over the bar, and the
+ *    notice chips at its right end;
+ * 3. Find, Show, the List menu and the Up/Down pair;
+ * and, only while rows are selected, the selection bar under them (its bulk buttons need the room).
+ * Nothing wraps: line 2 drops "accepted earlier", then "decided"; Find's placeholder is
+ * "Find  /" at every width. "N left", the Show value and the change's number never go.
  * @param {any} app the page
- * @param {HTMLElement} h1 line 1, built by the page (title, Next change, Hide)
+ * @param {HTMLElement} h1 line 1, built by the page (number, title, Next change, the fold button)
  */
 export function drawHead(app, h1) {
     const lv = app.lv;
     const snaps = app.snaps;
-    const small = snaps.length <= 10;
-    const decided = snaps.filter((s) => s.decision).length;
-    const left = snaps.length - decided;
     const lay = layoutOf(lv, snaps);
-    const shownN = lay.filtering ? `${fmt(lay.shown)} of ${fmt(snaps.length)} shown` : "";
+    const decided = snaps.filter((s) => s.decision).length;
     // Set through the element's style: the page's content security policy refuses style attributes.
     const fill = el("div");
     fill.style.width = `${snaps.length ? (100 * decided) / snaps.length : 0}%`;
@@ -696,26 +687,12 @@ export function drawHead(app, h1) {
     const h2 = line("h2");
     const h3 = line("h3");
     const h4 = line("h4");
-    const h5 = line("h5");
     h1.classList.add("hl", "h1");
-    if (small) {
-        h2.classList.add("ssum");
-        h2.replaceChildren(
-            el("span", { class: "num lead" }, `${fmt(decided)} of ${fmt(snaps.length)} decided:`),
-            ...statusEntries(app),
-            bar,
-        );
-    } else {
-        h2.classList.remove("ssum");
-        h2.replaceChildren(
-            el("span", { class: "num" }, `${fmt(decided)} of ${fmt(snaps.length)} decided, ${fmt(left)} left`),
-            el("span", { class: "grow" }),
-            el("span", { class: "muted num" }, shownN),
-            bar,
-        );
-        h3.replaceChildren(...statusEntries(app));
-    }
-    // Line 4: Find, its count in a small change, and Clear while it holds text.
+    // Line 2: the progress, the number the reader acts on first.
+    const p = progressOf(snaps);
+    const rest = el("span", { class: "muted num rest" }, p.rest.join(", "));
+    h2.replaceChildren(el("b", { class: "num left" }, p.left), rest, bar);
+    // Line 3: Find, Clear while it holds text, Show and List (or the selection bar), Up and Down.
     const box = findBox();
     if (box.value !== lv.find) {
         box.value = lv.find;
@@ -723,64 +700,41 @@ export function drawHead(app, h1) {
     const clear = control(app, "clearfind", {
         zone: "snaps-head",
         attrs: { id: "find-clear", hidden: lv.find === "" ? true : null, title: "Empty Find" },
-        children: ["Clear", el("kbd", { class: "fk", "aria-hidden": "true" }, "Esc")],
+        children: ["Clear", el("kbd", { class: "fk quiet", "aria-hidden": "true" }, "Esc")],
     });
-    if (box.parentNode !== h4) {
-        h4.replaceChildren(box);
+    // The count shows only while the list is filtered: by Show away from Undecided, or by Find.
+    const show = `Show: ${SHOW_LABEL[lv.show]}`;
+    const showLabel = lv.show !== "undecided" || lay.filtering ? `${show} (${fmt(lay.shown)})` : show;
+    const selecting = app.sel.size > 0;
+    if (box.parentNode !== h3) {
+        h3.replaceChildren(box);
     }
-    while (h4.childNodes.length > 1) {
-        h4.lastChild.remove();
+    while (h3.childNodes.length > 1) {
+        h3.lastChild.remove();
     }
-    h4.append(
-        small && shownN ? el("span", { class: "small muted num" }, shownN) : "",
+    h3.append(
         clear,
+        control(app, "showmenu", {
+            zone: "snaps-head",
+            label: showLabel,
+            attrs: { "aria-label": showLabel, "aria-haspopup": "menu" },
+        }),
+        // Its Select section's keys act with the menu closed: Shift+Up and Shift+Down are printed here
+        // at every width.
+        control(app, "listmenu", {
+            zone: "snaps-head",
+            attrs: {
+                "aria-haspopup": "menu",
+                "data-menukeys": JSON.stringify({ "Shift+Up": "extendup", "Shift+Down": "extenddown" }),
+            },
+        }),
         ...rowButtons(app, "snaps", "snaps-head"),
     );
-    h4.classList.add("findwrap");
-    // Line 5: the controls, their labels shortened (never cut) when the line would wrap.
-    const show = SHOW_LABEL[lv.show];
-    const showN = showCounts(snaps).find(([k]) => k === lv.show)?.[2] ?? 0;
-    const controls = (level) =>
-        small
-            ? [
-                  control(app, "viewopts", {
-                      zone: "snaps-head",
-                      attrs: {
-                          title: `Show: ${show}; Group: ${GROUPINGS[lv.grouping]}; Pictures: ${picturesLabel(lv.pics)}`,
-                      },
-                  }),
-                  el("span", { class: "grow" }),
-                  el("span", { class: "small muted" }, `${show}, ${picturesLabel(lv.pics, 1)}`),
-              ]
-            : [
-                  control(app, "showmenu", {
-                      zone: "snaps-head",
-                      label: `${level ? "" : "Show: "}${show} (${fmt(showN)})`,
-                      attrs: { title: `Show: ${show}`, "aria-label": `Show: ${show} (${fmt(showN)})` },
-                  }),
-                  control(app, "groupmenu", {
-                      zone: "snaps-head",
-                      label: `${level ? "" : "Group: "}${GROUPINGS[lv.grouping]}`,
-                      attrs: {
-                          title: `Group: ${GROUPINGS[lv.grouping]}`,
-                          "aria-label": `Group: ${GROUPINGS[lv.grouping]}`,
-                      },
-                  }),
-                  control(app, "picsmenu", {
-                      zone: "snaps-head",
-                      label: `${level ? "" : "Pictures: "}${picturesLabel(lv.pics, level)}`,
-                      attrs: {
-                          title: `Pictures: ${picturesLabel(lv.pics)}`,
-                          "aria-label": `Pictures: ${picturesLabel(lv.pics)}`,
-                      },
-                  }),
-                  control(app, "listmenu", { zone: "snaps-head" }),
-              ];
-    const selecting = app.sel.size > 0;
-    h5.classList.toggle("lselbar", selecting);
-    h5.classList.remove("tight");
-    h5.replaceChildren(...(selecting ? selectionBar(app) : controls(0)));
-    const parts = small ? [h1, h2, h4, h5] : [h1, h2, h3, h4, h5];
+    h3.classList.add("findwrap");
+    h4.classList.add("lselbar");
+    h4.classList.remove("tight");
+    h4.replaceChildren(...(selecting ? selectionBar(app) : []));
+    const parts = selecting ? [h1, h2, h3, h4] : [h1, h2, h3];
     // Only the lines that are new go in: a line already in place never moves, so the Find box
     // keeps the reader's focus and caret while the header is drawn again.
     for (const c of [...head.children]) {
@@ -788,33 +742,29 @@ export function drawHead(app, h1) {
             c.remove();
         }
     }
-    parts.forEach((p, i) => {
-        if (head.children[i] !== p) {
-            head.insertBefore(p, head.children[i] ?? null);
+    parts.forEach((x, i) => {
+        if (head.children[i] !== x) {
+            head.insertBefore(x, head.children[i] ?? null);
         }
     });
-    for (const level of [1, 2]) {
-        if (!small && !selecting && h5.scrollWidth > h5.clientWidth + 1) {
-            h5.replaceChildren(...controls(level));
-        }
-    }
     // The selection bar never wraps and never cuts a label: "(3 not shown)" goes into the count's
     // tooltip first, then the buttons drop their marks.
-    if (selecting && h5.scrollWidth > h5.clientWidth + 1) {
-        h5.querySelector(".nsh").textContent = "";
+    if (selecting && over(h4)) {
+        h4.querySelector(".nsh").textContent = "";
     }
-    if (selecting && h5.scrollWidth > h5.clientWidth + 1) {
-        h5.classList.add("tight");
+    if (selecting && over(h4)) {
+        h4.classList.add("tight");
     }
-    foldStatus(app, small ? h2 : h3);
-    drawBanner(app);
+    fitProgress(app, h2, rest, p.rest);
     drawRenderer(app);
-    drawStale(app);
     $("snaps").classList.toggle("nopics", lv.pics.none);
+    // One bulk Accept on screen: while rows are selected, the decision bar's Accept N is it, and
+    // the group headers draw none (each group's name menu still lists Accept N  Shift+A).
+    $("snaps").classList.toggle("selecting", selecting);
 }
 
-// The selection bar, in place of the controls line (design 4.6): the count, Accept N, Reject N...,
-// Exclude N..., Clear [Esc] and its menu.
+// The selection bar, under line 3 while rows are selected (design 4.6): the count, Clear [Esc] and
+// its menu. The decision bar decides the selection ("Accept 3") while the current row is in it.
 function selectionBar(app) {
     const n = app.sel.size;
     const hid = app.selHidden();
@@ -826,35 +776,9 @@ function selectionBar(app) {
             `${fmt(n)} selected`,
             el("span", { class: "nsh" }, hid ? ` (${fmt(hid)} not shown)` : ""),
         ),
-        control(app, "accsel", { zone, children: [ic("accept", "c-accept"), ` Accept ${fmt(n)}`] }),
-        control(app, "rejsel", { zone }),
-        control(app, "excsel", { zone }),
         control(app, "clearsel", { zone, attrs: { class: "clearsel" } }),
-        control(app, "selmenu", { zone }),
+        control(app, "selmenu", { zone, label: "More" }),
     ];
-}
-
-// "master has 3 newer baselines since this capture": what changed there, and Update from it.
-function drawStale(app) {
-    const b = $("snap-stale");
-    const c = app.open();
-    const n = c?.stale ?? 0;
-    b.hidden = n === 0;
-    const master = app.list?.defaultBranch ?? "master";
-    b.replaceChildren(
-        ...(n > 0
-            ? [
-                  ic("clock", "c-changed"),
-                  el(
-                      "span",
-                      { class: "grow" },
-                      `${master} has ${fmt(n)} newer baseline${n === 1 ? "" : "s"} since this capture.`,
-                  ),
-                  control(app, "chgonmaster", { zone: "snaps-head", ctx: { id: c.id } }),
-                  control(app, "updatefrom", { zone: "snaps-head", ctx: { id: c.id } }),
-              ]
-            : []),
-    );
 }
 
 const rendererName = (r, major) => `${r.name} ${major ? r.version.split(".")[0] : r.version}`;
@@ -909,23 +833,84 @@ function drawRenderer(app) {
     );
 }
 
-// "A newer capture of this change is ready": the rows never change under the reader.
-function drawBanner(app) {
-    const b = $("snap-banner");
-    const n = app.lv.newer;
-    b.hidden = !n;
-    b.replaceChildren(
-        ...(n
-            ? [
-                  el(
-                      "span",
-                      { class: "grow" },
-                      `A newer capture of this change is ready${n.sha ? ` (${n.sha.slice(0, 7)})` : ""}.`,
-                  ),
-                  control(app, "loadnewer", { zone: "snaps-head" }),
-              ]
-            : []),
-    );
+// Line 2 holds "N left", then the reader's own counts, then at its right end the notices
+// ("Behind master: 1,242", "Newer capture"), each a menu button saying what it means and what to do.
+// When the line is tight: "accepted earlier" goes first, then two notices fold into one "2 notices",
+// then a chip says it shorter ("Behind: 1,242"), then "decided" goes, and last the chip's words are
+// cut. "N left" never goes. The notices never block anything: the rows never change under the reader.
+function fitProgress(app, h2, rest, parts) {
+    const bar = h2.querySelector(".bar3");
+    const chips = (list, short = false) => {
+        h2.querySelectorAll('[data-act="stalechip"]').forEach((n) => n.remove());
+        return list.map((w) => h2.insertBefore(noticeChip(app, w, short), bar));
+    };
+    const which = noticesOf(app);
+    let drawn = chips(which);
+    const words = (n) => {
+        rest.textContent = parts.slice(0, n).join(", ");
+    };
+    const steps = [
+        () => parts.at(-1)?.endsWith("accepted earlier") && words(parts.length - 1),
+        () => drawn.length === 2 && (drawn = chips(["both"])),
+        () => drawn.length === 1 && (drawn = chips([drawn[0].dataset.notice], true)),
+        () => words(0),
+        () => drawn[0]?.classList.add("squeeze"),
+    ];
+    for (const step of steps) {
+        if (!over(h2)) {
+            return;
+        }
+        step();
+    }
+}
+
+const noticesOf = (app) => [...((app.open()?.stale ?? 0) > 0 ? ["stale"] : []), ...(app.lv.newer ? ["newer"] : [])];
+
+function noticeChip(app, which, short) {
+    const master = app.list?.defaultBranch ?? "master";
+    const n = fmt(app.open()?.stale ?? 0);
+    const full = { stale: `Behind ${master}: ${n}`, newer: "Newer capture", both: "2 notices" }[which];
+    const label = short ? { stale: `Behind: ${n}`, newer: "Newer", both: "2 notices" }[which] : full;
+    return control(app, "stalechip", {
+        zone: "snaps-head",
+        ctx: { which },
+        attrs: { class: "chip", "aria-haspopup": "menu", "aria-label": full, "data-notice": which },
+        children: [
+            ic("clock"),
+            el("span", { class: "cl" }, label),
+            el("span", { class: "gcaret", "aria-hidden": "true" }),
+        ],
+    });
+}
+
+const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+
+/**
+ * A notice chip's menu: what the notice means and what to do about it; "both" holds both.
+ * @param {any} app the page
+ * @param {"stale" | "newer" | "both"} which the chip
+ * @returns {any[]} the items
+ */
+export function noticeItems(app, which) {
+    const c = app.open();
+    const n = c?.stale ?? 0;
+    const master = app.list?.defaultBranch ?? "master";
+    const stale = [
+        { text: `${cap(master)} accepted ${fmt(n)} newer baseline${n === 1 ? "" : "s"} after this capture.` },
+        {
+            text: `Your decisions stay valid unless ${master} changed the same images. If it did, updating first saves reviewing them twice: Update from ${master} merges ${master} in and CI captures again.`,
+        },
+        { id: "chgonmaster", label: `See what changed on ${master}`, ctx: { id: c?.id } },
+        { id: "updatefrom", label: `Update from ${master}...`, ctx: { id: c?.id } },
+    ];
+    const sha = app.lv.newer?.sha;
+    const newer = [
+        {
+            text: `A newer capture${sha ? ` (${sha.slice(0, 7)})` : ""} is ready. Your decisions on unchanged images are kept.`,
+        },
+        { id: "loadnewer", label: "Load it" },
+    ];
+    return { stale, newer, both: [...stale, { sep: true }, ...newer] }[which];
 }
 
 // ---------------------------------------------------------------- drawing: the rows
@@ -939,13 +924,14 @@ const BADGE_FONT = () => `11px ${FONT()}`;
  * A snapshot's change size, as its row and the viewer's item line show it.
  * @param {any} s the snapshot
  * @param {number} [count] its changed areas: by default the capture's count, in the viewer the diff's
- * @returns {string} "1,234 px, 3 areas", "image identical", or ""
+ * @returns {string} "3 areas, 1,234 px" (sizes of 10,000 and more as "490k px"), "image
+ *     identical", or ""
  */
 export function sizeText(s, count = s.areas?.count) {
     if (s.status === "changed") {
-        const px = s.changedPixels === null ? "" : `${fmt(s.changedPixels)} px`;
-        const a = count === undefined ? "" : `${fmt(count)} area${count === 1 ? "" : "s"}`;
-        return [px, a].filter(Boolean).join(", ");
+        const px = s.changedPixels === null || s.changedPixels === undefined ? "" : `${fmtShort(s.changedPixels)} px`;
+        const a = count === undefined || count === null ? "" : `${fmt(count)} area${count === 1 ? "" : "s"}`;
+        return [a, px].filter(Boolean).join(", ");
     }
     if (s.status === "moved") {
         return "image identical";
@@ -959,8 +945,8 @@ export function sizeText(s, count = s.areas?.count) {
 const changeLabel = (app) => app.open()?.label ?? "";
 
 /**
- * A decision's words, whole: "Accepted", "Accepted (not opened)", "Accepted (approved before
- * #1356)", "Rejected: reason", "Rejected before (#3486, 2026-10-20): reason" (the date when the
+ * A decision's words, whole: "Accepted", "Accepted (not opened)", "Accepted earlier
+ * (#1356)", "Rejected: reason", "Rejected before (#3486, 2026-10-20): reason" (the date when the
  * server recorded one), "Excluded: reason", "Finished: it is on the branch".
  * @param {any} app the page
  * @param {any} s the snapshot
@@ -978,7 +964,7 @@ export function decisionWords(app, s) {
         if (s.before) {
             const pr = d.approvedBefore.pr;
             const before = pr === null || pr === undefined ? "on the seed" : `${wordsOf(app.list).numberPrefix}${pr}`;
-            return `Accepted (approved before ${before})`;
+            return `Accepted earlier (${before})`;
         }
         return d.bulk ? "Accepted (not opened)" : "Accepted";
     }
@@ -993,6 +979,24 @@ const decisionMark = (s) => {
     return mark(d.shape, d.cls);
 };
 
+// A row picture's tooltip: which part of the image it shows.
+function pictureTitle(s, pk) {
+    const count = s.areas?.count ?? 0;
+    if (pk.how === "cluster" && pk.shown < count) {
+        return `Cropped to ${fmt(pk.shown)} of the ${fmt(count)} changed areas`;
+    }
+    return (
+        {
+            all: "Cropped to the changed areas",
+            cluster: "Cropped to the changed areas",
+            dense: "Cropped to where the most pixels changed",
+            center: "Cropped to the change",
+            size: "Centered: only the size changed",
+            crop: "Cropped to the change",
+        }[pk.how] ?? "Whole image"
+    );
+}
+
 // The row's picture: the server's picture for the Row pictures choices, or a placeholder chip.
 function pictureOf(app, s) {
     const chip = (...c) => el("div", { class: "ph" }, el("span", {}, ...c));
@@ -1003,12 +1007,20 @@ function pictureOf(app, s) {
     if (!pk) {
         return el("div", { class: "pic" }, chip("No picture"));
     }
-    const box = el("div", { class: "pic" }, chip("Making picture..."));
+    // Nothing is drawn over the picture: how it is cropped is said in this tooltip (and chosen in
+    // the List menu).
+    // A size-only crop is centered away from the strip that changed: nothing in it is tinted.
+    const tinted = (pk.kind === "row-tint" && pk.how !== "size") || pk.kind === "tint";
+    const title = `${pictureTitle(s, pk)}${tinted ? ", changed pixels tinted" : ""}`;
+    const box = el("div", { class: "pic", title }, chip("Making picture..."));
+    // The tooltip's words reach a keyboard or screen-reader reader too, with the tint.
     const img = el("img", {
-        alt: "",
+        alt: title,
         loading: "lazy",
         decoding: "async",
-        src: `/api/pic/${s.pic}-${pk.kind}${s.retried ? `?try=${s.retried}` : ""}`,
+        // `v` names how the server makes pictures (serve.mjs SPOTS_MADE_BY): the browser keeps a
+        // picture for good, so one made the older way is fetched again.
+        src: `/api/pic/${s.pic}-${pk.kind}?v=6${s.retried ? `&try=${s.retried}` : ""}`,
         "data-kind": pk.kind,
     });
     img.addEventListener("load", () => box.classList.add("ready"));
@@ -1023,15 +1035,6 @@ function pictureOf(app, s) {
     if (s.status === "removed") {
         box.append(el("div", { class: "rm" }));
     }
-    if (pk.tags.length > 0) {
-        box.append(
-            el(
-                "span",
-                { class: "ztags" },
-                pk.tags.map((t) => el("span", { class: "ztag" }, t)),
-            ),
-        );
-    }
     return box;
 }
 
@@ -1045,7 +1048,8 @@ function pictureOf(app, s) {
 export function badgesOf(app, s) {
     const out = [];
     if (s.status === "changed" && s.size && s.baselineSize && String(s.size) !== String(s.baselineSize)) {
-        out.push({ text: "size changed" });
+        const size = (z) => `${fmt(z[0])} x ${fmt(z[1])}`;
+        out.push({ text: "resized", title: `Resized: ${size(s.baselineSize)} to ${size(s.size)}` });
     }
     if (s.reReview) {
         out.push({
@@ -1055,8 +1059,8 @@ export function badgesOf(app, s) {
     }
     if (s.disagree) {
         out.push({
-            text: "attempts disagree",
-            title: "Its attempts in this run did not agree: Attempts in the details lists each",
+            text: "unstable",
+            title: "Unstable: its attempts in this run did not agree. Attempts in the details lists each",
             cls: "other",
             mark: "wavy",
         });
@@ -1064,7 +1068,11 @@ export function badgesOf(app, s) {
     // Last, as the mockup orders them: the identical change's count.
     const pair = pairOf(s);
     if (pair && app.lv.grouping !== "same" && (app.lv.pairs.get(pair) ?? 0) > 1) {
-        out.push({ text: `same as ${fmt(app.lv.pairs.get(pair) - 1)} others` });
+        const others = app.lv.pairs.get(pair) - 1;
+        out.push({
+            text: `+${fmt(others)} identical`,
+            title: `The same change as ${fmt(others)} other ${others === 1 ? "snapshot" : "snapshots"}`,
+        });
     }
     return out;
 }
@@ -1083,18 +1091,48 @@ export const badgeNode = (b) =>
         b.text,
     );
 
-// Line 4's badges: the first that fits after the change size, the rest as one "+N" chip.
+// Badges that never fold: they change what Accept means.
+const PINNED = new Set(["resized", "unstable"]);
+const badgeW = (b) => textWidth(b.text, BADGE_FONT()) + 14 + (b.mark ? 15 : 0);
+const MORE_W = () => textWidth("+99 more", BADGE_FONT()) + 20;
+
+// Line 4's badges in a width: "resized" and "unstable" always, then as many of the others as fit,
+// the rest folded into "+N more" (its tooltip names them) only when 2 or more are left: one left
+// shows its own word. Returns the badges drawn whole and the folded ones.
+function badgeFit(badges, room) {
+    const pinned = badges.filter((b) => PINNED.has(b.text));
+    const rest = badges.filter((b) => !PINNED.has(b.text));
+    let left = room - pinned.reduce((w, b) => w + badgeW(b) + 6, 0);
+    const shown = [];
+    for (const [i, b] of rest.entries()) {
+        const after = rest.length - i - 1;
+        // The last one, or room for it and the fold of the others.
+        if (badgeW(b) + (after > 1 ? MORE_W() : after === 1 ? badgeW(rest[i + 1]) + 6 : 0) > left) {
+            break;
+        }
+        shown.push(b);
+        left -= badgeW(b) + 6;
+    }
+    let folded = rest.slice(shown.length);
+    if (folded.length === 1) {
+        shown.push(folded[0]);
+        folded = [];
+    }
+    return { shown: [...pinned, ...shown], folded };
+}
+
 function badgeNodes(badges, room) {
-    if (badges.length === 0) {
-        return [];
-    }
-    const chip = (list) =>
-        el("span", { class: "badge", title: list.map((b) => b.title ?? b.text).join(", ") }, `+${list.length}`);
-    const fits = textWidth(badges[0].text, BADGE_FONT()) + 14 + (badges.length > 1 ? 30 : 0) <= room;
-    if (!fits) {
-        return [chip(badges)];
-    }
-    return [badgeNode(badges[0]), badges.length > 1 ? chip(badges.slice(1)) : null];
+    const { shown, folded } = badgeFit(badges, room);
+    return [
+        ...shown.map(badgeNode),
+        folded.length > 0
+            ? el(
+                  "span",
+                  { class: "badge more", title: folded.map((b) => b.title ?? b.text).join("\n") },
+                  `+${fmt(folded.length)} more`,
+              )
+            : null,
+    ];
 }
 
 /**
@@ -1133,22 +1171,35 @@ export function rowOf(app, s, filled = true) {
         { class: "l" },
         el("span", { class: "nmb" }, `#${s.n}`),
         el("span", { class: "st ell" }, mark(st?.shape ?? "wavy", st?.cls ?? "c-ink2"), word),
-        s.mode ? el("span", { class: "tag" }, s.mode) : null,
     );
+    // The story's name, the one bold thing on the row, and its mode and "resized" as muted words
+    // after it: "graph-file, dark, resized". The other badges are pills on line 4.
+    const all = badgesOf(app, s);
+    const resized = all.find((b) => b.text === "resized");
+    const tail = [s.mode, resized?.text].filter(Boolean);
+    const mode = tail.length > 0 ? `, ${tail.join(", ")}` : "";
+    const modeW = mode ? textWidth(mode, `12px ${FONT()}`) : 0;
+    const named = (text) => [text, mode ? el("span", { class: "mode", title: resized?.title ?? null }, mode) : null];
     let body;
     if (!s.decision) {
-        const one = textWidth(s.name, NAME_FONT()) <= textW;
+        const one = textWidth(s.name, NAME_FONT()) + modeW <= textW;
         const l23 = one
             ? [
-                  el("div", { class: "nm1" }, s.name),
-                  el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)),
+                  el("div", { class: "nm1" }, named(s.name)),
+                  comp ? el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)) : null,
               ]
-            : [el("div", { class: "nm" }, midCut(s.name, 2 * textW - 24, NAME_FONT()))];
-        const size = sizeText(s);
-        const room = textW - (size ? textWidth(size, SIZE_FONT()) + 8 : 0);
+            : [el("div", { class: "nm" }, named(midCut(s.name, 2 * textW - 24 - modeW, NAME_FONT())))];
+        const size = rowSizeText(s);
+        const badges = all.filter((b) => b !== resized);
+        const width = (x) => (x ? textWidth(x, SIZE_FONT()) + 8 : 0);
         body = [
             ...l23,
-            el("div", { class: "l x4" }, el("span", { class: "keep muted" }, size), badgeNodes(badgesOf(app, s), room)),
+            el(
+                "div",
+                { class: "l x4" },
+                el("span", { class: "keep muted" }, size),
+                badgeNodes(badges, textW - width(size)),
+            ),
         ];
     } else {
         const words = decisionWords(app, s);
@@ -1160,7 +1211,7 @@ export function rowOf(app, s, filled = true) {
                       ctx: { key: s.key },
                       attrs: { title: "Undo this decision" },
                   });
-        const name1 = el("div", { class: "nm1" }, midCut(s.name, textW, NAME_FONT()));
+        const name1 = el("div", { class: "nm1" }, named(midCut(s.name, textW - modeW, NAME_FONT())));
         const long = s.decision.decision !== "accept" || textWidth(words, NAME_FONT()) + 22 + (undo ? 60 : 0) > textW;
         body = long
             ? [
@@ -1174,7 +1225,7 @@ export function rowOf(app, s, filled = true) {
               ]
             : [
                   name1,
-                  el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)),
+                  comp ? el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)) : null,
                   el("div", { class: "l x4" }, el("span", { class: "keep st" }, decisionMark(s), words), undo),
               ];
     }
@@ -1197,35 +1248,10 @@ export function rowOf(app, s, filled = true) {
     ]);
 }
 
-// A group's count, or its status split with the marks and the words: "19: [diamond] 12 changed [plus] 7 new".
-function countOf(g, fold) {
-    const split = splitOf(g);
-    if (!split) {
-        return el("span", { class: "muted num" }, fmt(g.rows.length));
-    }
-    const keep = fold ? split.filter(([st]) => !["changed", "moved"].includes(st)) : split;
-    const folded = fold ? split.filter(([st]) => ["changed", "moved"].includes(st)) : [];
-    return el(
-        "span",
-        { class: "split muted num", title: `${fmt(g.rows.length)}: ${splitWords(split)}` },
-        `${fmt(g.rows.length)}: `,
-        keep.map(([st, n]) =>
-            el("span", { class: "sent" }, mark(STATUS[st].shape, STATUS[st].cls), `${fmt(n)} ${STATUS[st].word}`),
-        ),
-        folded.length > 0
-            ? el(
-                  "span",
-                  { class: "badge", title: splitWords(folded) },
-                  `+${fmt(folded.reduce((a, [, n]) => a + n, 0))} other`,
-              )
-            : null,
-    );
-}
-
 /**
  * What a group header's actions act on: the undecided rows the group shows (Accept N), how many
  * more undecided rows of the group Show and Find hide (never touched), and the decisions in it its
- * Undo N takes back. Approved before acts on all its rows: they are decided by the server.
+ * Undo N takes back. Accepted earlier acts on all its rows: they are decided by the server.
  * @param {any} app the page
  * @param {any} g the group, as layoutOf gives it
  * @returns {{ und: any[], hidden: number, undoable: any[], all: any[] }} the rows
@@ -1275,69 +1301,67 @@ function countHidden(app) {
     }
 }
 
-// A header's buttons, at their labels: Accept N (with the Shift+A box counted, so the layout never
-// depends on the current row), Undo N and [...]; for Approved before, Reject N..., Exclude N...,
-// Show and [...].
-function headButtonLabels(app, g, compact) {
+const groupName = (g) =>
+    g.key === BEFORE ? "Accepted earlier" : g.kind === "status" ? (STATUS[g.label]?.word ?? g.label) : g.label;
+
+// A header's third control: Accept N while the group holds undecided rows (a neutral outline; green,
+// with its quiet Shift+A, only on the current snapshot's group), else Undo N while it holds
+// decisions to take back. Accepted earlier has none: its Reject N... and Exclude N... are in its menu.
+function headAction(app, g, name) {
     const sc = groupScope(app, g);
     if (g.key === BEFORE) {
-        const n = fmt(g.rows.length);
-        return [...(compact ? [] : [`Reject ${n}...`, `Exclude ${n}...`]), ...(g.collapsed ? ["Show"] : []), "..."];
+        return null;
     }
-    return [
-        ...(sc.und.length ? [`${acceptLabel(sc)} Shift+A  `] : []),
-        ...(sc.undoable.length ? [`Undo ${fmt(sc.undoable.length)}`] : []),
-        "...",
-    ];
-}
-
-// How the header fits: one line, or the name over its split, the split folding changed and moved
-// into "+N other" only when its own line is still too narrow. The name is never cut. Approved
-// before stays one line: in a narrow pane its Reject and Exclude move into its [...] menu.
-function headLayout(app, g, name) {
-    const room = app.lv.listW - 28;
-    const btnsW = (compact) =>
-        headButtonLabels(app, g, compact).reduce((w, l) => w + textWidth(l, `11px ${FONT()}`) + 22, 0);
+    const zone = "rows";
+    const ctx = { group: g.key };
+    if (sc.und.length === 0) {
+        return sc.undoable.length > 0 ? control(app, "gundo", { zone, ctx, attrs: { title: "Asks first" } }) : null;
+    }
     const split = splitOf(g);
-    const font = `700 12px ${FONT()}`;
-    const nameW =
-        24 + textWidth(name, font) + (g.key === BEFORE && g.collapsed ? textWidth(" (already accepted)", font) : 0);
-    const splitW = (fold) => {
-        if (!split) {
-            return textWidth(fmt(g.rows.length), font) + 6;
-        }
-        const keep = fold ? split.filter(([st]) => !["changed", "moved"].includes(st)) : split;
-        return (
-            textWidth(`${g.rows.length}: `, font) +
-            keep.reduce((w, [st, n]) => w + 20 + textWidth(`${n} ${STATUS[st].word}`, font), 0) +
-            (fold && keep.length < split.length ? textWidth("+999 other", font) + 18 : 0)
-        );
-    };
-    if (nameW + splitW(false) + btnsW(false) <= room) {
-        return { two: false, fold: false, compact: false };
-    }
-    if (g.key === BEFORE) {
-        return { two: false, fold: false, compact: true };
-    }
-    if (!split) {
-        return { two: true, fold: false, compact: false };
-    }
-    return { two: true, fold: splitW(false) + btnsW(false) > room, compact: false };
+    const label = acceptLabel(sc);
+    // Its key only while the current snapshot is in this group: Shift+A accepts that group.
+    const mine = g.rows.some((s) => s.key === app.snap);
+    return control(app, "gaccept", {
+        zone,
+        ctx,
+        keyed: mine,
+        attrs: {
+            class: mine ? "acc mine" : "acc",
+            title: `${label} in ${name}${split ? ` (${splitWords(split)})` : ""}`,
+        },
+        children: [label, mine ? kb("Shift+A", true) : null],
+    });
 }
 
-const groupName = (g) =>
-    g.key === BEFORE ? "Approved before" : g.kind === "status" ? (STATUS[g.label]?.word ?? g.label) : g.label;
+// The width a header's third control takes: Accept N, with its bold label and Shift+A only on the
+// current snapshot's group (the header is drawn again when the current group changes), so the
+// other groups' names get the room the key would take.
+function actionWidth(app, g, mine) {
+    const sc = groupScope(app, g);
+    if (g.key === BEFORE || (sc.und.length === 0 && sc.undoable.length === 0)) {
+        return 0;
+    }
+    const font = `11px ${FONT()}`;
+    return sc.und.length > 0
+        ? mine
+            ? textWidth(acceptLabel(sc), `700 ${font}`) + textWidth("Shift+A", font) + 22
+            : textWidth(acceptLabel(sc), font) + 18
+        : textWidth(`Undo ${fmt(sc.undoable.length)}`, font) + 22;
+}
 
 /**
- * A group's sticky header: the chevron (with `aria-expanded`), the name, the count or status split.
+ * A group's sticky header, one line: the chevron (collapses and expands, with `aria-expanded`), the
+ * name button (cut at its start, keeping its end, a drawn caret after it) that opens the group's actions, and
+ * Accept N: always on the current snapshot's group, on the others only while the header is hovered
+ * or focused. The count is said once, in Accept N; it is also the first item of the name's menu.
  * @param {any} app the page
  * @param {any} g the group
  * @returns {{ node: HTMLElement, height: number }} the header and its height
  */
 function headerOf(app, g) {
     const name = groupName(g);
-    const lay = headLayout(app, g, name);
     const open = !g.collapsed;
+    const before = g.key === BEFORE;
     const caret = control(app, "gtoggle", {
         zone: "rows",
         ctx: { group: g.key },
@@ -1349,96 +1373,46 @@ function headerOf(app, g) {
         },
         children: [mark(open ? "chevOpen" : "chevClosed")],
     });
-    const label =
-        g.key === BEFORE
-            ? el("span", { class: "st" }, mark(DECISION.before.shape, DECISION.before.cls), "Approved before")
-            : g.kind === "status"
-              ? statusMark(g.label)
-              : el("span", {}, g.label);
-    const before = g.key === BEFORE;
-    const count = before
-        ? [
-              el("span", { class: "muted num" }, fmt(g.rows.length)),
-              g.collapsed ? el("span", { class: "muted aa" }, " (already accepted)") : null,
-          ]
-        : [countOf(g, lay.fold)];
-    const buttons = headButtons(app, g, name, lay);
-    const height = lay.two ? 50 : 32;
-    const node = lay.two
-        ? el(
-              "div",
-              { class: `ghead two ${before ? "before" : ""}`, "data-group": g.key, title: name },
-              el("span", { class: "gname" }, caret, label),
-              count,
-              el("span", { class: "gsp" }),
-              buttons,
-          )
-        : el(
-              "div",
-              { class: `ghead ${before ? "before" : ""}`, "data-group": g.key, title: name },
-              caret,
-              el("span", { class: "gname1" }, label, " ", count),
-              el("span", { class: "gsp" }),
-              buttons,
-          );
-    return { node, height };
-}
-
-// A header's buttons (design 4.5), every one acting on exactly the rows the group shows.
-function headButtons(app, g, name, lay) {
-    const ctx = { group: g.key };
-    const zone = "rows";
-    const sc = groupScope(app, g);
-    const menu = control(app, "gmenu", { zone, ctx, attrs: { title: "More for this group" } });
-    const showRows =
-        g.collapsed && g.key === BEFORE
-            ? control(app, "gshowall", {
-                  zone,
-                  ctx,
-                  label: "Show",
-                  attrs: { title: `Show the ${g.rows.length} rows` },
-              })
-            : null;
-    if (g.key === BEFORE) {
-        return [
-            lay.compact
-                ? null
-                : [
-                      control(app, "greject", {
-                          zone,
-                          ctx,
-                          attrs: { title: "Reject every approved-before snapshot here, with one reason" },
-                      }),
-                      control(app, "gexclude", {
-                          zone,
-                          ctx,
-                          attrs: { title: "Exclude every approved-before snapshot here, with one reason" },
-                      }),
-                  ],
-            showRows,
-            menu,
-        ];
-    }
-    const split = splitOf(g);
-    const label = acceptLabel(sc);
-    // Its key box only while the current snapshot is in this group: Shift+A accepts that group.
+    // A component group is named by its component alone ("legend"), its project in the tooltip,
+    // unless another project has a component of that name.
+    const comp = g.kind === "component" ? g.rows[0].component : null;
+    const twin =
+        comp !== null &&
+        layoutOf(app.lv, app.snaps).groups.some(
+            (o) => o.key !== g.key && o.kind === "component" && o.rows[0]?.component === comp,
+        );
+    const label = comp !== null && !twin ? comp : name;
+    const shape = before ? DECISION.before : g.kind === "status" ? STATUS[g.label] : null;
+    const font = `${before ? 400 : 700} 12px ${FONT()}`;
+    // The list's width less the header's padding, the chevron, the gaps, the name button's padding,
+    // its mark, its caret and the third control.
     const mine = g.rows.some((s) => s.key === app.snap);
-    return [
-        sc.und.length > 0
-            ? control(app, "gaccept", {
-                  zone,
-                  ctx,
-                  keyed: mine,
-                  attrs: {
-                      class: "acc",
-                      title: `${label} in ${name}${split ? ` (${splitWords(split)})` : ""}`,
-                  },
-                  children: [ic("accept"), ` ${label}`, mine ? kb("Shift+A") : null],
-              })
-            : null,
-        sc.undoable.length > 0 ? control(app, "gundo", { zone, ctx, attrs: { title: "Asks first" } }) : null,
+    const room = app.lv.listW - 74 - (shape ? 16 : 0) - actionWidth(app, g, mine);
+    const menu = control(app, "gmenu", {
+        zone: "rows",
+        ctx: { group: g.key },
+        attrs: {
+            class: "gname",
+            "aria-haspopup": "menu",
+            "aria-label": `${name}: group actions`,
+            title: `Group actions: ${name}`,
+        },
+        children: [
+            shape ? mark(shape.shape, shape.cls) : null,
+            // 4 px spare: the estimate of Accept N runs a pixel or two short, which clipped the end.
+            el("span", { class: "gn" }, endCut(label, Math.max(room - 4, 48), font)),
+            el("span", { class: "gcaret", "aria-hidden": "true" }),
+        ],
+    });
+    const node = el(
+        "div",
+        { class: `ghead ${before ? "before" : ""} ${mine ? "mine" : ""}`, "data-group": g.key, title: name },
+        caret,
         menu,
-    ];
+        el("span", { class: "gsp" }),
+        headAction(app, g, name),
+    );
+    return { node, height: 32 };
 }
 
 /**
@@ -1673,21 +1647,36 @@ export function drawList(app, h1) {
 // ---------------------------------------------------------------- menus
 
 /**
- * The Show menu's items.
+ * The Show menu's items: Undecided and All, then "By kind" and "By decision", each choice with its
+ * count right-aligned, a choice of 0 greyed, then Accept all N shown...
  * @param {any} app the page
  * @returns {any[]} the items
  */
-export const showItems = (app) =>
-    showCounts(app.snaps).map(([k, label, n]) => ({
-        id: "show",
-        label: `${label} (${fmt(n)})`,
-        ctx: { show: k },
-        checked: app.lv.show === k,
-        mark: STATUS[k] ? [STATUS[k].shape, STATUS[k].cls] : null,
-    }));
+export const showItems = (app) => [
+    // Two breakdowns of the same snapshots, each under its muted heading (never focused, the arrow
+    // keys skip it): by kind (the statuses), then by decision.
+    ...showCounts(app.snaps)
+        .flatMap(([k, label, n], i, all) => [
+            STATUS[k] && !STATUS[all[i - 1][0]] ? { head: "By kind" } : null,
+            k === "before" ? { head: "By decision" } : null,
+            {
+                id: "show",
+                label,
+                count: fmt(n),
+                dim: n === 0,
+                ctx: { show: k },
+                checked: app.lv.show === k,
+                mark: STATUS[k] ? [STATUS[k].shape, STATUS[k].cls] : null,
+            },
+        ])
+        .filter(Boolean),
+    // It acts on what Show shows, so it sits with Show, under a separator.
+    { sep: true },
+    { id: "acceptshown", label: `Accept all ${fmt(shownUndecided(app).length)} shown...` },
+];
 
 /**
- * The Group menu's items.
+ * The Group by items of the List menu.
  * @param {any} app the page
  * @returns {any[]} the items
  */
@@ -1700,38 +1689,40 @@ export const groupItems = (app) =>
     }));
 
 /**
- * The Row pictures menu's items.
+ * The Pictures items of the List menu.
  * @param {any} app the page
  * @returns {any[]} the items
  */
 export function pictureItems(app) {
     const p = app.lv.pics;
     return [
-        { id: "picspot", label: "Spotlight rows (switch)", checked: p.spot && !p.none, check: true },
-        { sep: true },
-        { head: "Zoom rows to the change" },
         ...Object.entries(ZOOMS).map(([k, label]) => ({
             id: "piczoom",
             label,
             ctx: { zoom: k },
             checked: p.zoom === k && !p.none,
         })),
-        { sep: true },
-        { id: "picnone", label: "No pictures (text rows)", checked: p.none, check: true },
+        { id: "picnone", label: "Text only, no pictures", checked: p.none },
+        { id: "picspot", label: "Mark the change", checked: p.spot && !p.none, check: true },
     ];
 }
 
 /**
- * The list menu's items: Accept all shown (N)..., Undo all decisions..., Download the comparison
- * report (JUnit), Copy link.
+ * The List menu's items, about the list only: Group by, Pictures, and Select (Extend selection up
+ * and down, whose keys act with the menu closed, and Select all shown). Accept all shown is the Show
+ * menu's last item; Undo all, the JUnit report and Copy link are in the change's own menu.
  * @param {any} app the page
  * @returns {any[]} the items
  */
 export const listItems = (app) => [
-    { id: "acceptshown", label: `Accept all shown (${fmt(shownUndecided(app).length)})...` },
-    { id: "undoall", label: "Undo all decisions..." },
-    { id: "junit", label: "Download the comparison report (JUnit)" },
-    { id: "listlink", label: "Copy link" },
+    { head: `Group by: ${GROUPINGS[app.lv.grouping]}` },
+    ...groupItems(app),
+    { sep: true },
+    { head: "Pictures" },
+    ...pictureItems(app),
+    { sep: true },
+    { head: "Select" },
+    ...app.selectItems(),
 ];
 
 /**
@@ -1743,35 +1734,3 @@ export const shownUndecided = (app) =>
     layoutOf(app.lv, app.snaps)
         .groups.flatMap((g) => g.rows)
         .filter(undecided);
-
-/**
- * The View options menu of a small change: Show, Group, Pictures and the list menu's items.
- * @param {any} app the page
- * @returns {any[]} the items
- */
-export const viewItems = (app) => [
-    { head: "Show" },
-    ...showItems(app),
-    { sep: true },
-    { head: "Group" },
-    ...groupItems(app),
-    { sep: true },
-    { head: "Pictures" },
-    ...pictureItems(app),
-    { sep: true },
-    ...listItems(app),
-];
-
-/**
- * The "+N more" menu: the status entries that did not fit on their line.
- * @param {any} app the page
- * @returns {any[]} the items
- */
-export const moreItems = (app) =>
-    (app.lv.more ?? []).map((st) => ({
-        id: "statshow",
-        label: `${fmt(app.snaps.filter((s) => s.status === st).length)} ${STATUS[st].word}`,
-        ctx: { status: st },
-        checked: app.lv.show === st,
-        mark: [STATUS[st].shape, STATUS[st].cls],
-    }));

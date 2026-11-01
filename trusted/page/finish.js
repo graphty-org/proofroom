@@ -12,11 +12,10 @@
 import { approve, passkeyWrongHost } from "./passkey.js";
 import { control } from "./actions.js";
 import { api } from "./api.js";
-import { hostCan } from "./messages.js";
-import { el, fmt, ic } from "./ui.js";
+import { hostCan, wordsOf } from "./messages.js";
+import { el, fmt, ic, plural } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
-const plural = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clock = () => {
     const at = new Date();
@@ -174,7 +173,10 @@ export function installFinish(app) {
         app.snaps.length > 0
             ? app.snaps.filter((s) => s.decision && !s.finished && !s.rejectedBefore).length
             : (targetOf(app.openId)?.unpublished ?? 0);
-    app.finishLabel = () => `Finish ${app.open()?.label ?? ""} (${fmt(app.finishCount())})`;
+    // The top bar's Finish opens the sheet ("Finish review...": the title already names the
+    // change); the end card's says how many decisions it publishes.
+    app.finishLabel = () => "Finish review...";
+    app.finishCountLabel = () => `Finish ${app.open()?.label ?? ""} (${fmt(app.finishCount())})`;
     app.finishOK = () => {
         if (app.finishing()) {
             return "A Finish is running: wait for it to end";
@@ -373,39 +375,17 @@ export function installFinish(app) {
         undecided: "snapshots are still undecided",
     };
 
+    // One change's sheet: its number as the title and its title muted below; then three lines (what
+    // it saves, what is still left, the check it sets) and the plumbing under one closed Details.
     function oneBody({ id, t, prepared }, notice) {
         const f = t.finish;
         const c = app.change(id);
         const seed = t.pr === null;
         const rejects = f.notes.filter((x) => x.decision === "reject");
         const undecided = f.undecided.reduce((k, p) => k + p.undecided, 0);
-        return [
-            el("h3", {}, `Finish ${c?.label ?? id} ${c?.title ?? ""}`),
-            notice ? el("p", { class: "c-failed" }, notice) : null,
-            f.unloaded.length > 0
-                ? el(
-                      "div",
-                      { class: "warnbox" },
-                      el(
-                          "b",
-                          {},
-                          `Not loaded: ${f.unloaded.join(", ")}. Finish will not sign the approval until ${f.unloaded.length === 1 ? "it loads" : "they load"}.`,
-                      ),
-                  )
-                : null,
-            undecided > 0
-                ? el(
-                      "div",
-                      { class: "warnbox" },
-                      el(
-                          "b",
-                          {},
-                          `${plural(undecided, "snapshot")} ${undecided === 1 ? "is" : "are"} still undecided; ${undecided === 1 ? "it" : "they"} will block the merge.`,
-                      ),
-                      id === app.openId ? [" ", control(app, "gofirst", { zone: "box" })] : null,
-                  )
-                : null,
-            el("p", {}, el("b", {}, "Will commit:"), ` ${commitLine(t)}`),
+        // Who signs (or why nothing is signed) is on the main body, right above the confirm button.
+        const signs = signsLine(t, prepared);
+        const posts =
             rejects.length > 0 || (!seed && f.acceptNotes > 0)
                 ? [
                       toFile(t)
@@ -424,27 +404,74 @@ export function installFinish(app) {
                             )
                           : null,
                   ]
+                : null;
+        return [
+            el("h3", {}, `Finish ${c?.label ?? id}`),
+            c?.title ? el("p", { class: "ptitle muted" }, c.title) : null,
+            notice ? el("p", { class: "c-failed" }, notice) : null,
+            el("p", { class: "saves" }, commitLine(t)),
+            f.unloaded.length > 0
+                ? el(
+                      "p",
+                      { class: "left" },
+                      el(
+                          "b",
+                          {},
+                          `Not loaded: ${f.unloaded.join(", ")}. Finish will not sign the approval until ${f.unloaded.length === 1 ? "it loads" : "they load"}.`,
+                      ),
+                  )
                 : null,
-            toFile(t) ? null : el("p", {}, el("b", {}, "Will set:"), ` ${statusText(f)}.`),
-            signsLine(t, prepared),
+            undecided > 0
+                ? el(
+                      "p",
+                      { class: "left" },
+                      el("b", {}, `${fmt(undecided)} left: they will block the merge`),
+                      id === app.openId ? [" ", control(app, "gofirst", { zone: "box" })] : null,
+                  )
+                : null,
+            toFile(t)
+                ? null
+                : el(
+                      "p",
+                      { class: "check" },
+                      `${wordsOf(app.list).hostName} check: ${f.status.description.split(":")[0]}`,
+                  ),
+            el(
+                "details",
+                { class: "plumbing" },
+                el("summary", { class: "small" }, "Details"),
+                posts,
+                toFile(t) ? null : el("p", {}, el("b", {}, "Will set:"), ` ${statusText(f)}.`),
+                startCommandOf(t),
+            ),
+            signs,
         ];
     }
 
+    // "Saves 12 you accepted and 1,208 accepted earlier to <branch>, as <name>.": the reader's own
+    // work told apart from what was accepted before this capture, each part only when it is not 0.
     function commitLine(t) {
         const f = t.finish;
         // Under plain git the rejects file is committed too, so the line is the branch's even then.
         if (f.accepts + f.excludes === 0 && !(toFile(t) && f.rejects > 0)) {
-            return f.rejects > 0 ? "nothing; only rejects are posted." : "nothing.";
+            return f.rejects > 0 ? "Saves nothing; only rejects are posted." : "Saves nothing.";
         }
-        const what = `${fmt(f.accepts)} accepted (${fmt(f.notOpened)} not opened), ${fmt(f.excludes)} excluded`;
+        const mine = f.accepts - (f.approvedBefore ?? 0);
+        const parts = [
+            mine > 0 ? `${fmt(mine)} you accepted${f.notOpened > 0 ? ` (${fmt(f.notOpened)} not opened)` : ""}` : null,
+            f.excludes > 0 ? `${fmt(f.excludes)} excluded` : null,
+            f.approvedBefore > 0 ? `${fmt(f.approvedBefore)} accepted earlier` : null,
+        ].filter(Boolean);
+        const said = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0];
+        const what = `Saves ${said ?? "the rejects file"}`;
         if (t.pr === null && !t.localBranch) {
             // A candidate's or a rolling render's branch is replaced by each Finish; a seed's is dated.
             const branch = t.candidate
                 ? `visual/approve-${t.rolling ? "rolling-" : ""}${t.candidate.commit.slice(0, 12)}`
                 : `visual/seed-${new Date().toISOString().slice(0, 10)}`;
-            return `${what}, to branch ${branch} as ${committer(t)}, and open its pull request.`;
+            return `${what} to branch ${branch}, as ${committer(t)}, and opens its pull request.`;
         }
-        return `${what}, to branch ${t.branch} as ${committer(t)}.`;
+        return `${what} to branch ${t.branch}, as ${committer(t)}.`;
     }
 
     // A code host that cannot post (plain git): a local branch's rejects go to a file on it, and no
@@ -564,17 +591,21 @@ export function installFinish(app) {
         ];
     }
 
+    // The shell command that starts this server, for a Finish signed from the reader's own shell.
+    function startCommandOf(t) {
+        return t.startCommand
+            ? el(
+                  "div",
+                  { class: "startcmd" },
+                  el("p", { class: "small" }, el("b", {}, "Start this server from your own shell")),
+                  el("pre", { class: "small" }, t.startCommand),
+              )
+            : null;
+    }
+
     function sheetFoot(items) {
-        const t = items[0].t;
         return [
-            t.startCommand
-                ? el(
-                      "details",
-                      {},
-                      el("summary", { class: "small" }, "Start this server from your own shell"),
-                      el("pre", { class: "small" }, t.startCommand),
-                  )
-                : null,
+            items.length > 1 ? startCommandOf(items[0].t) : null,
             el(
                 "div",
                 { class: "foot" },

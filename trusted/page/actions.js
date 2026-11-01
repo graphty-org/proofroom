@@ -11,8 +11,8 @@
  * queued for later (design 10).
  */
 
-import { wordsOf } from "./messages.js";
-import { el, kb } from "./ui.js";
+import { beforeAction, wordsOf } from "./messages.js";
+import { el, fmt, kb } from "./ui.js";
 
 // Where a control sits, in the order that decides which of two controls showing the same key
 // carries its key box (design 8.1.7): an open box or menu, the end card, the decision bar, the
@@ -65,8 +65,8 @@ export const ACTIONS = {
         },
         run: (app) => app.newCapture(),
     },
-    refresh: { label: (app) => app.statusText(), title: "Refresh now", run: (app) => app.refresh() },
-    keys: { label: "Keys", key: "?", title: "Every key, and the last 20 messages", run: (app) => app.keysSheet() },
+    refresh: { label: "Refresh", title: "Refresh now", run: (app) => app.refresh() },
+    keys: { label: "Keys", key: "?", title: "Every key, grouped by task", run: (app) => app.keysSheet() },
     settings: { label: "Settings", run: (app) => app.settingsSheet() },
     finish: {
         label: (app) => app.finishLabel(),
@@ -230,24 +230,25 @@ export const ACTIONS = {
         run: (app, ctx) => app.finishSheet([ctx.id]),
         available: (app) => (app.finishing() ? RUNNING : true),
     },
-    // The Snapshots pane's summary of the current change, while none is open.
+    // The summary of the current change in the viewer's place, while none is open.
     summaryopen: {
         label: "Open",
-        title: "Enter opens it (the key is printed on its row)",
+        key: "Enter",
+        title: "Opens this change",
         run: (app, ctx) => app.openChange(ctx.id),
     },
 
-    // Levels: the one Back, named by where it goes, and Open on the item line.
+    // Levels: the one Back, named by where it goes, and Wider on the item line (it folds the list).
     back: {
-        label: (app) => (app.level === 2 ? "Back to list" : "Back to changes"),
+        label: "Back",
         key: "Esc",
-        title: (app) => `${app.level === 2 ? "Back to list" : "Back to changes"} [Esc]`,
+        title: (app) => `${app.level === 2 ? "Back to the list" : "Back to the changes"} (Esc)`,
         run: (app) => app.back(),
     },
     openrow: {
-        label: "Open",
+        label: "Wider",
         key: "Enter",
-        title: "Open this snapshot: Snapshots collapses to its rail",
+        title: "Fold the snapshot list to its rail; Esc brings it back",
         run: (app) => app.openSnapshot(),
     },
     // A click on a row makes it current; with Ctrl or Cmd it goes in or out of the selection instead.
@@ -257,27 +258,29 @@ export const ACTIONS = {
     },
 
     // The snapshot list (design 4).
-    statshow: {
-        label: (app, ctx) => ctx.status,
-        title: "Show only this status; pressed again, Undecided",
-        run: (app, ctx) => app.setShowStatus(ctx.status),
-    },
-    statmore: { label: "+ more", title: "The other statuses", run: (app, ctx) => app.listMenu("more", ctx.el) },
     clearfind: { label: "Clear", title: "Empty Find", run: (app) => app.clearFind() },
-    showmenu: { label: "Show", title: "Show", run: (app, ctx) => app.listMenu("show", ctx.el) },
-    groupmenu: { label: "Group", title: "Group", run: (app, ctx) => app.listMenu("group", ctx.el) },
-    picsmenu: { label: "Pictures", title: "Pictures", run: (app, ctx) => app.listMenu("pics", ctx.el) },
-    listmenu: { label: "...", title: "More for this list", run: (app, ctx) => app.listMenu("list", ctx.el) },
-    viewopts: { label: "View options", run: (app, ctx) => app.listMenu("view", ctx.el) },
+    showmenu: {
+        label: "Show",
+        title: "Which snapshots the list shows",
+        run: (app, ctx) => app.listMenu("show", ctx.el),
+    },
+    listmenu: {
+        label: "List",
+        title: "Group by, pictures and selection for this list",
+        run: (app, ctx) => app.listMenu("list", ctx.el),
+    },
     show: { label: (app, ctx) => `Show: ${ctx.show}`, run: (app, ctx) => app.setShow(ctx.show) },
     group: { label: (app, ctx) => ctx.grouping, run: (app, ctx) => app.setGrouping(ctx.grouping) },
     picspot: {
-        label: "Spotlight rows (switch)",
+        label: "Mark the change",
+        title: "Tints the changed pixels red",
         run: (app) => app.setPictures({ spot: !(app.lv.pics.spot && !app.lv.pics.none), none: false }),
     },
     piczoom: { label: (app, ctx) => ctx.zoom, run: (app, ctx) => app.setPictures({ zoom: ctx.zoom, none: false }) },
-    picnone: { label: "No pictures (text rows)", run: (app) => app.setPictures({ none: !app.lv.pics.none }) },
-    listlink: { label: "Copy link", run: (app) => app.copyListLink() },
+    picnone: { label: "Text only, no pictures", run: (app) => app.setPictures({ none: true }) },
+    listlink: { label: "Copy link to this list", run: (app) => app.copyListLink() },
+    // The open change's number and title, a menu of what is change-wide and rare (app.js).
+    chgmenu: { label: "", run: (app, ctx) => app.changeMenu(ctx.el) },
     gtoggle: { label: "", run: (app, ctx) => app.toggleGroup(ctx.group) },
     gshowall: { label: "Show all", run: (app, ctx) => app.toggleGroup(ctx.group, true) },
     rowundo: {
@@ -305,7 +308,11 @@ export const ACTIONS = {
         run: (app, ctx) => app.groupUndo(ctx.group),
         available: (app) => app.writeOK(),
     },
-    gmenu: { label: "...", title: "More for this group", run: (app, ctx) => app.groupMenu(ctx.group, ctx.el) },
+    gmenu: {
+        label: "Group menu",
+        title: "Opens the group's menu",
+        run: (app, ctx) => app.groupMenu(ctx.group, ctx.el),
+    },
     greject: {
         label: (app, ctx) => `Reject ${groupN(app, ctx, "all")}...`,
         run: (app, ctx) => app.groupReason("reject", ctx.group),
@@ -320,25 +327,8 @@ export const ACTIONS = {
         label: (app, ctx) => `Select all ${app.groupScope(ctx.group)?.rows.length ?? 0}`,
         run: (app, ctx) => app.selectKeys(app.groupScope(ctx.group).rows.map((s) => s.key)),
     },
-    // The selection bar (design 4.6).
-    accsel: {
-        label: (app) => `Accept ${app.sel.size}`,
-        title: "Accept the selection",
-        run: (app) => app.acceptMany(app.selected(), `${app.sel.size} selected`),
-        available: (app) => app.writeOK(),
-    },
-    rejsel: {
-        label: (app) => `Reject ${app.sel.size}...`,
-        title: "Reject the selection, with one reason",
-        run: (app) => app.reasonBox("reject", app.selected()),
-        available: (app) => app.writeOK(),
-    },
-    excsel: {
-        label: (app) => `Exclude ${app.sel.size}...`,
-        title: "Exclude the selection, with one reason",
-        run: (app) => app.reasonBox("exclude", app.selected()),
-        available: (app) => app.writeOK(),
-    },
+    // The selection bar (design 4.6): the count, Clear and its menu. The decision bar decides the
+    // selection ("Accept 3") while the current row is in it.
     clearsel: { label: "Clear", key: "Esc", title: "Clear the selection", run: (app) => app.clearSel() },
     selmenu: {
         label: "...",
@@ -348,7 +338,7 @@ export const ACTIONS = {
     extendup: { label: "Extend up", key: "Shift+Up", run: (app) => app.extendSel(-1) },
     extenddown: { label: "Extend down", key: "Shift+Down", run: (app) => app.extendSel(1) },
     selshown: { label: "Select all shown", run: (app) => app.selectShown() },
-    // The list menu.
+    // The Show menu's last item, and the change's own menu's.
     acceptshown: {
         label: "Accept all shown...",
         run: (app) => app.acceptShown(),
@@ -367,9 +357,21 @@ export const ACTIONS = {
         title: "Capture again, so the baselines are drawn by the same renderer",
         run: (app) => app.newCapture(),
     },
+    // The notice chips on the Snapshots header's line 1 (Behind master, Newer capture, or both
+    // folded into "2 notices"): each opens its menu.
+    stalechip: {
+        label: "Notices",
+        title: (app, ctx) =>
+            ({
+                stale: `This capture is behind ${master(app)}: what that means and what to do`,
+                newer: "A newer capture is ready",
+                both: "Two notices about this capture",
+            })[ctx.which],
+        run: (app, ctx) => app.noticeMenu(ctx.which, ctx.el),
+    },
     // The stale capture: what changed on the default branch, and Update from it.
     chgonmaster: {
-        label: (app) => `Changed on ${master(app)}`,
+        label: (app) => `See what changed on ${master(app)}`,
         title: "The baselines that changed there since this capture",
         run: (app, ctx) => app.changedOnMaster(ctx.id),
     },
@@ -383,8 +385,8 @@ export const ACTIONS = {
     picretry: { label: "Retry", title: "Ask for the picture again", run: (app, ctx) => app.retryPicture(ctx.key) },
     loadnewer: { label: "Load it", title: "Show the newer capture's rows", run: (app) => app.loadNewer() },
 
-    // The viewer (design 5, viewer.js): the four views, Blink, zoom, Baseline, the display group and
-    // its menus, Next area, the locator, and Previous and Next on the decision bar.
+    // The viewer (design 5, viewer.js): the four views, Blink, Zoom and its menu, the Display menu,
+    // Next area and Details on the item line, the locator, and Previous and Next on the decision bar.
     "view-side": {
         label: "Side by side",
         key: "V",
@@ -420,19 +422,29 @@ export const ACTIONS = {
         run: (app) => app.viewer.toggle("blink"),
         available: (app) => (app.viewer.shownView() === "highlight" ? true : "Blink works in Highlight [H]"),
     },
+    // Zoom: Z steps Fit, 1x, 2x, 4x, 8x in one press; a click (or Enter on it) opens its menu,
+    // whose digits act with the menu closed.
     zoomcycle: {
-        label: "Zoom",
+        label: (app) => app.viewer.zoomLabel(),
         key: "Z",
-        title: "Zoom: cycles Fit, 1x, 2x, 4x, 8x",
-        run: (app) => app.viewer.cycleZoom(),
+        title: "Z steps the zoom: Fit, 1x, 2x, 4x, 8x. Click for the menu (0, 1, 2, 4, 8)",
+        run: (app, ctx) => (ctx.ev ? app.viewer.zoomMenu(ctx.el) : app.viewer.cycleZoom()),
     },
     "zoom-fit": { label: "Fit", key: "0", title: "Fit", run: (app) => app.viewer.setZoom("fit") },
-    "zoom-1": { label: "1x", key: "1", title: "1x", run: (app) => app.viewer.setZoom(1) },
+    "zoom-1": { label: "Actual size", key: "1", title: "1x", run: (app) => app.viewer.setZoom(1) },
     "zoom-2": { label: "2x", key: "2", title: "2x", run: (app) => app.viewer.setZoom(2) },
     "zoom-4": { label: "4x", key: "4", title: "4x", run: (app) => app.viewer.setZoom(4) },
     "zoom-8": { label: "8x", key: "8", title: "8x", run: (app) => app.viewer.setZoom(8) },
+    // The Display menu: the settings a reader sets once a session. Each prints its key, which acts
+    // with the menu closed (the Display button's data-menukeys).
+    displaymenu: {
+        // Hidden baseline is said on the button, so the missing panel is never silently gone.
+        label: (app) => (app.viewer.state.showBase || !app.viewer.twoImages() ? "Display" : "Display: baseline hidden"),
+        title: "Show baseline, Image only, Layout, Outline changed areas, Start zoomed on the change",
+        run: (app, ctx) => app.viewer.displayMenu(ctx.el),
+    },
     baseline: {
-        label: (app) => (app.viewer.twoImages() ? "Baseline" : "Baseline: none"),
+        label: "Show baseline",
         key: "P",
         title: (app) => (app.viewer.state.showBase ? "Baseline shown" : "Baseline hidden"),
         run: (app) => app.viewer.toggle("showBase"),
@@ -442,30 +454,31 @@ export const ACTIONS = {
         label: "Image only",
         key: "Shift+3",
         title: (app) =>
-            app.viewer.imageOnly() ? "Both side panes are rails: Shift+3 brings them back" : "Hide both side panes",
+            app.viewer.imageOnly()
+                ? "Shift+3 brings back the top bar, the panes and the message line"
+                : "Only the picture, its views and the decision bar",
         run: (app) => app.viewer.pressImageOnly(),
     },
+    // Layout: Y steps Auto, Side by side, Over and under in one press; the Display item, clicked or
+    // given Enter, opens the three as a menu.
     layoutmenu: {
         label: (app) => `Layout: ${app.viewer.layoutName()}`,
         key: "Y",
         title: (app) => app.viewer.layoutTitle(),
-        run: (app, ctx) => app.viewer.layoutMenu(ctx.el),
+        run: (app, ctx) => (ctx.ev ? app.viewer.layoutMenu(ctx.el) : app.viewer.cycleLayout()),
     },
     "layout-auto": { label: "Auto", run: (app) => app.viewer.setLayout("auto") },
     "layout-side": { label: "Side by side", run: (app) => app.viewer.setLayout("side") },
     "layout-stacked": { label: "Over and under", run: (app) => app.viewer.setLayout("stacked") },
-    options: {
-        label: "Options",
-        run: (app, ctx) => app.viewer.optionsMenu(ctx.el),
+    outline: { label: "Outline changed areas", key: "B", run: (app) => app.viewer.toggle("outline") },
+    centerarea: { label: "Start zoomed on the change", key: "O", run: (app) => app.viewer.toggle("center") },
+    // At the end of the item line: the image's technical details, and in them its link.
+    details: {
+        label: "Details",
+        title: "Threshold, renderer, hashes, attempts and console of this image",
+        run: (app) => app.viewer.toggle("details"),
     },
-    more: { label: "More", title: "Image only, Layout, Options", run: (app, ctx) => app.viewer.moreMenu(ctx.el) },
-    outline: { label: "Outline", key: "B", run: (app) => app.viewer.toggle("outline") },
-    centerarea: { label: "Open centered on the area", key: "O", run: (app) => app.viewer.toggle("center") },
-    details: { label: "Details", run: (app) => app.viewer.toggle("details") },
-    flashheld: {
-        label: "Flash while held",
-        run: (app) => app.say("Hold Space to flash the current view; release to stop."),
-    },
+    imagelink: { label: "Copy link to this image", run: (app) => app.copyListLink() },
     nextarea: {
         label: "Next area",
         key: "N",
@@ -479,23 +492,27 @@ export const ACTIONS = {
     },
     // The decision bar (design 6.1). A, R and E act on the selection while the current row is in it.
     accept: {
-        label: (app) => (selN(app) ? `Accept ${selN(app)} selected` : "Accept"),
+        label: (app) => (selN(app) ? `Accept ${fmt(selN(app))}` : "Accept"),
         key: "A",
-        title: (app) => app.acceptTitle(),
+        title: (app) => (selN(app) ? `Accept the ${fmt(selN(app))} selected` : app.acceptTitle()),
         run: (app) => app.accept(),
         available: (app) => app.decideOK("accept"),
     },
     reject: {
-        label: (app) => (selN(app) ? `Reject ${selN(app)} selected...` : "Reject..."),
+        label: (app) => (selN(app) ? `Reject ${fmt(selN(app))}...` : "Reject..."),
         key: "R",
-        title: "Reject, with a reason the author sees",
+        title: (app) =>
+            selN(app) ? `Reject the ${selN(app)} selected, with one reason` : "Reject, with a reason the author sees",
         run: (app) => app.reject("reject"),
         available: (app) => app.decideOK("reject"),
     },
     exclude: {
-        label: (app) => (selN(app) ? `Exclude ${selN(app)} selected...` : "Exclude..."),
+        label: (app) => (selN(app) ? `Exclude ${fmt(selN(app))}...` : "Exclude..."),
         key: "E",
-        title: "Exclude, with a reason: the story stops being captured",
+        title: (app) =>
+            selN(app)
+                ? `Exclude the ${selN(app)} selected, with one reason`
+                : "Exclude, with a reason: the story stops being captured",
         run: (app) => app.reject("exclude"),
         available: (app) => app.decideOK("exclude"),
     },
@@ -530,13 +547,13 @@ export const ACTIONS = {
     prev: {
         label: "Previous",
         key: "Left / J",
-        title: "Previous snapshot",
+        title: "Previous snapshot (J or Left)",
         run: (app) => app.viewer.step(-1),
     },
     next: {
         label: "Next",
         key: "Right / K",
-        title: "Next snapshot",
+        title: "Next snapshot (K or Right)",
         run: (app) => app.viewer.step(1),
     },
 
@@ -584,7 +601,11 @@ export const ACTIONS = {
         run: (app) => app.finishGo(),
         available: (app) => app.finishGoOK(),
     },
-    gofirst: { label: "Go to the first undecided", run: (app) => app.goFirstUndecided() },
+    gofirst: {
+        label: "Go to the first",
+        title: "Closes this sheet at the first undecided snapshot",
+        run: (app) => app.goFirstUndecided(),
+    },
     finishregister: {
         label: "Register passkey...",
         title: "Opens Settings; closing it brings this sheet back",
@@ -593,6 +614,8 @@ export const ACTIONS = {
     // The message line's own button: Retry after a failed list or a failed open (ctx.run retries it).
     retry: { label: "Retry", run: (app, ctx) => ctx.run() },
     messages: { label: "Messages", title: "The last 20 messages", run: (app) => app.messagesBox() },
+    // A message with a button stays until the button is used or this clears it.
+    msgdismiss: { label: "Dismiss", title: "Clear the message line", run: () => {} },
     usetoken: { label: "Open", key: "Enter", run: (app) => app.submitToken() },
 };
 
@@ -633,6 +656,7 @@ export function labelOf(app, id, ctx = {}) {
  */
 export function runAction(app, id, ctx, via) {
     app.logUsage("action", { a: id, via });
+    beforeAction(ctx?.el?.dataset?.zone === "msgline");
     const ok = availability(app, id, ctx);
     if (ok === OFFLINE_WHY) {
         app.notSaved();
@@ -681,6 +705,26 @@ export const contextOf = (node) => contexts.get(node) ?? {};
  */
 export const hostOf = (node) => hosts.get(node);
 
+// A printed key's names in aria-keyshortcuts' spelling ("Up" is "ArrowUp", "Left / J" is two).
+const ARIA_KEYS = { Up: "ArrowUp", Down: "ArrowDown", Left: "ArrowLeft", Right: "ArrowRight", Esc: "Escape" };
+
+/**
+ * A printed key as an aria-keyshortcuts value.
+ * @param {string} keys the printed keys, " / " between two ("Shift+2", "Left / J", "hold Space")
+ * @returns {string} the value ("Shift+2", "ArrowLeft J", "Space")
+ */
+export const ariaKeys = (keys) =>
+    keys
+        .replace(/^hold /, "")
+        .split(" / ")
+        .map((k) =>
+            k
+                .split("+")
+                .map((p) => ARIA_KEYS[p] ?? p)
+                .join("+"),
+        )
+        .join(" ");
+
 /**
  * A control for an action: a button (or, with `tag`, another element) with the action's label and
  * key box, its id in `data-act`, its key in `data-key` and its zone in `data-zone`. Unavailable, it
@@ -688,14 +732,16 @@ export const hostOf = (node) => hosts.get(node);
  * @param {any} app the page
  * @param {string} id the action
  * @param {{ zone: string, ctx?: any, tag?: string, attrs?: Record<string, any>, children?: any[],
- *     label?: string | null, keyed?: boolean }} where its zone, context, element, extra attributes,
- *     content in place of the label, and whether it prints its key (default: when it has one)
+ *     label?: string | null, keyed?: boolean, quiet?: boolean }} where its zone, context, element,
+ *     extra attributes, content in place of the label, whether it prints its key (default: when it
+ *     has one), and whether that key is quiet (muted text, not a box: every control off the
+ *     look-decide-next loop)
  * @returns {HTMLElement} the control
  */
 export function control(
     app,
     id,
-    { zone, ctx = {}, tag = "button", attrs = {}, children = null, label = null, keyed = true },
+    { zone, ctx = {}, tag = "button", attrs = {}, children = null, label = null, keyed = true, quiet = false },
 ) {
     const a = ACTIONS[id];
     const ok = availability(app, id, ctx);
@@ -709,11 +755,12 @@ export function control(
             "data-act": id,
             "data-zone": zone,
             "data-key": key,
+            "aria-keyshortcuts": key ? ariaKeys(key) : null,
             "aria-disabled": ok === true ? null : "true",
             ...attrs,
             title: ok === true ? own : ok,
         },
-        children ?? [text, key ? kb(key) : null],
+        children ?? [text, key ? kb(key, quiet) : null],
     );
     contexts.set(node, ctx);
     titles.set(node, own);
@@ -743,6 +790,6 @@ export const rowButtons = (app, pane, zone) =>
             zone,
             ctx: { pane },
             attrs: { "data-rows": pane, "aria-label": word },
-            children: [el("span", { class: "rl" }, word), kb(ACTIONS[id].key)],
+            children: [el("span", { class: "rl" }, word), kb(ACTIONS[id].key, true)],
         });
     });

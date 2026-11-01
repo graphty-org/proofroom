@@ -1,12 +1,14 @@
 /*
- * The viewer's locator (design 5.3): at 2x and above, a 120 px miniature of the whole image at the
- * stage's lower right, a rectangle for the part the frames show and a dot for each changed area.
- * Clicking it moves every frame's view there; scrolling a frame moves the rectangle.
+ * The viewer's locator (design 5.3): at 2x and above, a miniature of the whole image at the right
+ * end of the New panel's label strip, within 60 x 16 px and never over the image, a rectangle for
+ * the part the frames show and a dot for each changed area. Clicking it moves every frame's view
+ * there; scrolling a frame moves the rectangle.
  */
 
 import { control } from "./actions.js";
 import { el } from "./ui.js";
 
+const LOCATOR = [60, 16]; // the most room it takes in the label strip, in CSS px
 const clicked = new WeakMap(); // where on the locator the reader pressed, as fractions
 const framesOf = new WeakMap();
 
@@ -42,6 +44,10 @@ export function makeLocator(app, { src, size: [w, h], boxes, frames }) {
             rect,
         ],
     });
+    // The whole image at its own shape, as large as fits in the strip's 60 x 16.
+    const k = Math.min(LOCATOR[0] / w, LOCATOR[1] / h);
+    node.style.width = `${Math.max(4, Math.round(w * k))}px`;
+    node.style.height = `${Math.max(4, Math.round(h * k))}px`;
     framesOf.set(node, frames);
     node.addEventListener("pointerdown", (e) => {
         const r = node.getBoundingClientRect();

@@ -6,7 +6,7 @@ to capture a pull request again.
 
 ## New capture
 
-Press **New capture...** in the top bar (or on the empty Review screen, or **Capture again...** in a
+Press **New capture...** on the Captures screen (or on the empty Review screen, or **Capture again...** in a
 change's **...** menu). The sheet asks four things, and its defaults are filled in, so **Start
 capture [Enter]** is one key:
 
@@ -62,7 +62,7 @@ newest capture, so once it ends you review and finish it as any CI capture of th
 CI is offered only when your capturing workflow on the default branch takes capture requests: a
 `workflow_dispatch` trigger with the inputs `ref`, `pr`, `projects`, `stories` and `request`. The
 workflow `proofroom init` writes has them; a workflow written before them shows CI unavailable,
-with the reason (on New capture and in Settings, Adapters), until you update it:
+with the reason (on New capture and in Settings, Repository setup), until you update it:
 
 ```sh
 npx proofroom init --force

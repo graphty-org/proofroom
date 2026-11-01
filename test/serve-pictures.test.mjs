@@ -11,8 +11,20 @@ import { PNG } from "pngjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
-import { autoKind, createPool, PAIR_KINDS, pictures, thumbnail } from "../trusted/lib/thumbs.mjs";
-import { ROW, rowCrop } from "../trusted/page/spot.js";
+import {
+    autoKind,
+    createPool,
+    factsOf,
+    PAIR_KINDS,
+    pictureParts,
+    pictures,
+    shownKind,
+    thumbnail,
+    tinted,
+    TINT_GROW,
+    TINT_MIX,
+} from "../trusted/lib/thumbs.mjs";
+import { clusters, covered, ROW, ROW_MAX, rowCrop, SPOT_UNDER } from "../trusted/page/spot.js";
 import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
 import { capturedItems, copyFixture, FIXTURE, FIXTURE_CONFIG, job, makeRepo, until } from "./helpers.mjs";
 
@@ -163,11 +175,12 @@ describe("rowCrop", () => {
     });
 
     it("grows past its smallest size to hold an area larger than it, still at the row's shape", () => {
-        const box = [100, 100, 1000, 300];
-        const { crop, zoom } = rowCrop([box], 2400, 1800);
+        const box = [100, 100, 500, 150];
+        const { crop, zoom, how } = rowCrop([box], 2400, 1800, { scale: 2 });
+        expect(how).toBe("all");
         expect(contains(crop, box)).toBe(true);
         expect(crop[2] / crop[3]).toBeCloseTo(SHAPE, 6);
-        expect(crop[2]).toBeGreaterThan(1000);
+        expect(crop[2]).toBeGreaterThan(500);
         expect(zoom).toBeCloseTo(Math.max(2400 / crop[2], 1800 / crop[3]), 6);
     });
 
@@ -178,25 +191,240 @@ describe("rowCrop", () => {
         expect(crop[0] + crop[2] / 2).toBeCloseTo(1600, 6);
     });
 
-    it("with no area, shows the middle of the image at the row's shape, as large as fits", () => {
-        const { crop, zoom } = rowCrop([], 2400, 1800);
-        expect(crop[0]).toBe(0);
-        expect(crop[2]).toBeCloseTo(2400, 6);
-        expect(crop[2] / crop[3]).toBeCloseTo(SHAPE, 6);
-        expect(crop[1] + crop[3] / 2).toBeCloseTo(900, 6);
-        expect(zoom).toBeLessThan(2);
+    it("frames every area when that crop fits ROW_MAX, and says it frames them all", () => {
+        const boxes = [
+            [1000, 800, 20, 10],
+            [1100, 830, 20, 10],
+        ];
+        const { crop, how, shown } = rowCrop(boxes, 2400, 1800);
+        expect(shown).toBe(2);
+        expect(how).toBe("all");
+        for (const b of boxes) {
+            expect(contains(crop, b)).toBe(true);
+        }
     });
 
-    it("on an image smaller than its smallest size, crops inside the image at the row's shape", () => {
-        const { crop } = rowCrop([[160, 80, 40, 40]], 320, 200);
+    it("frames the largest cluster of nearby areas when all of them would not fit ROW_MAX", () => {
+        // Three areas close together at the top left (each gap under one area-height), one apart at
+        // the bottom right: the box around all four is nearly the whole image.
+        const near = [
+            [100, 100, 40, 40],
+            [150, 110, 40, 40],
+            [200, 100, 40, 40],
+        ];
+        const far = [2300, 1700, 50, 50];
+        const { crop, how, shown } = rowCrop([...near, far], 2400, 1800);
+        expect(shown).toBe(3);
+        expect(how).toBe("cluster");
+        for (const b of near) {
+            expect(contains(crop, b)).toBe(true);
+        }
+        expect(contains(crop, far)).toBe(false);
+    });
+
+    it("clusters areas within one area-height of each other, through chains of them", () => {
+        const groups = clusters([
+            [0, 0, 10, 10],
+            [15, 0, 10, 10], // 5 px from the first: joined
+            [30, 0, 10, 10], // 5 px from the second: joined through it
+            [100, 0, 10, 10], // 60 px away: its own
+        ]);
+        expect(groups.map((g) => g.length)).toEqual([3, 1]);
+    });
+
+    it("with no area, shows a ROW_MAX crop centered on the image", () => {
+        const { crop, how } = rowCrop([], 2400, 1800, { scale: 2 });
+        expect(crop).toEqual([800, 744, 800, 312]);
+        expect(how).toBe("size");
+    });
+
+    // A resized page, as measured on #4455's ddram: a small height change shifts everything under
+    // it, so its largest area runs from the first shifted line to the bottom.
+    const DDRAM = [
+        [0, 1150, 2400, 2654],
+        [40, 200, 30, 30],
+    ];
+
+    // A raw mask of a w x h image with the given rects changed.
+    const maskOf = (w, h, rects) => {
+        const m = new Uint8Array(w * h * 4);
+        for (const [x0, y0, rw, rh] of rects) {
+            for (let y = y0; y < y0 + rh; y++) {
+                for (let x = x0; x < x0 + rw; x++) {
+                    m[(y * w + x) * 4 + 3] = 255;
+                }
+            }
+        }
+        return m;
+    };
+
+    it("on a change too large for ROW_MAX, crops the ROW_MAX window holding the most changed pixels, not the change's top", () => {
+        // A resized page whose largest area spans it, with a few changed lines at its top and a
+        // dense block low down: the block wins.
+        const [w, h] = [2400, 3804];
+        const mask = maskOf(w, h, [
+            [0, 1150, 2400, 2],
+            [0, 1300, 2400, 2],
+            [1000, 3000, 600, 250],
+        ]);
+        const { crop, how, shown } = rowCrop(DDRAM, w, h, { scale: 2, base: [2400, 3770], mask });
+        expect(how).toBe("dense");
+        expect(shown).toBe(1);
+        expect(crop.slice(2)).toEqual([ROW_MAX[0] * 2, ROW_MAX[1] * 2]);
+        expect(contains(crop, [1000, 3000, 600, 250])).toBe(true);
+        // At scale 1 the window is ROW_MAX image pixels.
+        expect(rowCrop(DDRAM, w, h, { scale: 1, base: [2400, 3770], mask }).crop.slice(2)).toEqual(ROW_MAX);
+    });
+
+    it("never crops onto the strip a size change adds or removes, however dense", () => {
+        const [w, h] = [2400, 3804];
+        // The bottom 34 px are new: every pixel there changed. A sparser change above is chosen.
+        const mask = maskOf(w, h, [
+            [0, 3770, 2400, 34],
+            [500, 400, 300, 40],
+            [0, 1000, 2400, 1],
+        ]);
+        const boxes = [
+            [0, 400, 2400, 3404],
+            [0, 0, 5, 5],
+        ];
+        const { crop, how } = rowCrop(boxes, w, h, { scale: 2, base: [2400, 3770], mask });
+        expect(how).toBe("dense");
+        expect(contains(crop, [500, 400, 300, 40])).toBe(true);
+        expect(crop[1] + crop[3]).toBeLessThan(3770 - 10);
+    });
+
+    it("breaks a tie top-most, then left-most", () => {
+        const [w, h] = [2400, 3804];
+        const mask = maskOf(w, h, [
+            [1600, 2000, 50, 50],
+            [100, 2000, 50, 50],
+            [1000, 3000, 50, 50],
+        ]);
+        const { crop } = rowCrop([[0, 0, 2400, 3804], [0, 0, 1, 1]], w, h, { scale: 2, mask });
+        expect(contains(crop, [100, 2000, 50, 50])).toBe(true);
+    });
+
+    it("without the mask, centers ROW_MAX on the largest area, kept inside the image", () => {
+        const { crop, how } = rowCrop(DDRAM, 2400, 3804, { scale: 2, base: [2400, 3770] });
+        expect(how).toBe("center");
+        expect(crop).toEqual([800, 1150 + 2654 / 2 - 156, 800, 312]);
+        const far = rowCrop([[2000, 3000, 400, 804], [0, 0, 10, 10]], 2400, 3804, { scale: 2 });
+        expect(inside(far.crop, 2400, 3804)).toBe(true);
+    });
+
+    it.each([
+        ["2 px shorter", [2400, 1802], [[0, 1790, 2400, 10]]],
+        ["2 px taller", [2400, 1798], [[0, 1788, 2400, 12]]],
+        ["10 px narrower", [2410, 1800], [[2390, 0, 10, 1800]]],
+    ])("when only the size changed (%s), centers a ROW_MAX crop on the image", (_, base, boxes) => {
+        const { crop, how, shown } = rowCrop(boxes, 2400, 1800, { scale: 2, base });
+        expect(how).toBe("size");
+        expect(shown).toBe(0);
+        expect(crop).toEqual([800, 744, 800, 312]);
+    });
+
+    it("a resized image with a change inside it is not a size-only change", () => {
+        const boxes = [
+            [0, 1790, 2400, 10],
+            [100, 100, 20, 20],
+        ];
+        expect(rowCrop(boxes, 2400, 1800, { scale: 2, base: [2400, 1802] }).how).not.toBe("size");
+    });
+
+    it("fills the row's shape on any page larger than ROW_MAX, never leaving bands beside it", () => {
+        for (const [w, h] of [
+            [2400, 15618],
+            [900, 4000],
+            [2400, 400],
+        ]) {
+            for (const r of [
+                rowCrop([[0, 10, w, h - 10]], w, h, { scale: 2 }),
+                rowCrop([], w, h, { scale: 2 }),
+            ]) {
+                expect(r.crop[2] / r.crop[3]).toBeCloseTo(SHAPE, 6);
+                expect(r.crop[2]).toBeLessThanOrEqual(800);
+                expect(inside(r.crop, w, h)).toBe(true);
+            }
+        }
+    });
+
+    it("shows an image smaller than ROW_MAX both ways whole when its change does not fit", () => {
+        const { crop, how } = rowCrop([[0, 0, 390, 150]], 400, 156);
+        expect(how).toBe("center");
+        expect(crop).toEqual([0, 0, 400, 156]);
+    });
+
+    it("on an image narrower than the crop at the row's shape, keeps the crop inside it, its whole width, not zoomed further", () => {
+        const { crop, zoom } = rowCrop([[160, 80, 40, 40]], 320, 200);
         expect(inside(crop, 320, 200)).toBe(true);
         expect(crop[2]).toBeCloseTo(320, 6);
-        expect(crop[2] / crop[3]).toBeCloseTo(SHAPE, 6);
+        // The smallest height kept: the band beside the picture is the row's background.
+        expect(crop[3]).toBeCloseTo(380 / SHAPE, 6);
+        expect(crop[2] / crop[3]).toBeLessThan(SHAPE);
+        expect(zoom).toBeCloseTo(200 / (380 / SHAPE), 6);
+    });
+
+    it("never frames the padding a larger baseline adds: areas are clipped to the new image", () => {
+        const { crop, shown } = rowCrop(
+            [
+                [900, 0, 300, 300],
+                [10, 10, 20, 20],
+            ],
+            800,
+            600,
+        );
+        expect(inside(crop, 800, 600)).toBe(true);
+        expect(shown).toBe(1);
+    });
+
+    it("holds an area against the image's edge whole: the crop slides inside the image, never cuts it", () => {
+        const [w, h] = [2400, 1800];
+        for (const box of [
+            [1000, 1780, 30, 20],
+            [1542, 1700, 380, 100],
+            [0, 0, 12, 8],
+            [2380, 900, 20, 20],
+            [1000, 1795.5, 40, 4.5],
+        ]) {
+            const { crop, how } = rowCrop([box], w, h, { scale: 2 });
+            expect(how).toBe("all");
+            expect(inside(crop, w, h)).toBe(true);
+            expect([box, contains(crop, box)]).toEqual([box, true]);
+        }
+        // Rule 2: the largest cluster, against the bottom edge, with a far area left out.
+        const near = [
+            [1000, 1770, 40, 30],
+            [1060, 1760, 20, 40],
+        ];
+        const { crop, how } = rowCrop([...near, [10, 10, 10, 10]], w, h, { scale: 2 });
+        expect(how).toBe("cluster");
+        expect(inside(crop, w, h)).toBe(true);
+        for (const box of near) {
+            expect(contains(crop, box)).toBe(true);
+        }
+    });
+
+    it("says how much of the crop and of the whole image the areas cover", () => {
+        const small = rowCrop([[1000, 800, 20, 10]], 2400, 1800);
+        expect(small.cover).toBeLessThan(SPOT_UNDER);
+        expect(small.coverAll).toBeCloseTo((20 * 10) / (2400 * 1800), 9);
+        const most = rowCrop([[0, 0, 2000, 1500]], 2400, 1800);
+        expect(most.cover).toBeGreaterThanOrEqual(SPOT_UNDER);
+        expect(
+            covered(
+                [
+                    [0, 0, 10, 10],
+                    [5, 5, 10, 10],
+                ],
+                [0, 0, 10, 10],
+            ),
+        ).toBe(1);
     });
 });
 
 describe("the picture job", () => {
-    it("makes every kind of a changed pair from one job, with its areas, and Zoom Auto zooms a small change", () => {
+    it("makes every kind of a changed pair from one job, with its areas, and Auto crops onto a small change", () => {
         const baseline = png(2400, 1800, null);
         const capture = png(2400, 1800, [1000, 800, 30, 20]);
         const made = pictures({ baseline, capture, threshold: 0.1, includeAA: false });
@@ -205,25 +433,31 @@ describe("the picture job", () => {
             const p = PNG.sync.read(made.images[k]);
             return [p.width, p.height];
         };
-        for (const k of ["spot", "plain"]) {
+        for (const k of ["spot", "tint", "plain"]) {
             expect(size(k)).toEqual([400, 300]);
         }
         expect(size("row-plain")).toEqual(ROW);
         expect(size("row-spot")).toEqual(ROW);
+        expect(size("row-tint")).toEqual(ROW);
         // Its plain picture is the capture's own thumbnail.
         expect(made.images.plain.equals(thumbnail(capture))).toBe(true);
         expect(made.facts.areas).toBe(1);
         expect(made.facts.zoom).toBeGreaterThan(2);
         expect(contains(made.facts.crop, [1000, 800, 30, 20])).toBe(true);
-        expect(autoKind(made.facts)).toBe("row-spot");
+        // A small change is tinted too, never spotlit.
+        expect(made.facts.cover).toBeLessThan(SPOT_UNDER);
+        expect(autoKind(made.facts)).toBe("row-tint");
     });
 
-    it("counts each separate area, and leaves an image-wide change unzoomed under Auto", () => {
+    it("counts each separate area, and shows an image-wide change cropped and plain under Auto", () => {
         const baseline = png(800, 600, null);
         const capture = PNG.sync.read(png(800, 600, [0, 0, 800, 600]));
         capture.data.set([240, 240, 240, 255], 0);
         const wide = pictures({ baseline, capture: PNG.sync.write(capture), threshold: 0.1, includeAA: false });
-        expect(autoKind(wide.facts)).toBe("spot");
+        // Tinted, as every changed row is.
+        expect(autoKind(wide.facts)).toBe("row-tint");
+        // Mark the change off: the plain crop, whatever the cover.
+        expect(shownKind("row-plain", wide.facts)).toBe("row-plain");
         const two = pictures({
             baseline,
             capture: png(800, 600, [10, 10, 5, 5]),
@@ -239,6 +473,169 @@ describe("the picture job", () => {
         const pair = pictures({ baseline, capture: PNG.sync.write(both), threshold: 0.1, includeAA: false });
         expect(two.facts.areas).toBe(1);
         expect(pair.facts.areas).toBe(2);
+    });
+
+    it("crops a resized page where the most pixels changed, ROW_MAX of the page at the capture's scale", () => {
+        // A 40 px band inserted at y 300 shifts everything below it: all of it counts as changed.
+        const stripes = (h, at, extra) => {
+            const img = new PNG({ width: 1200, height: h });
+            for (let y = 0; y < h; y++) {
+                const src = y >= at + extra ? y - extra : y;
+                const v = y >= at && y < at + extra ? 90 : src % 20 < 10 ? 200 : 240;
+                for (let x = 0; x < 1200; x++) {
+                    img.data.set([v, v, v, 255], (y * 1200 + x) * 4);
+                }
+            }
+            return PNG.sync.write(img);
+        };
+        const made = pictures({
+            baseline: stripes(1800, 0, 0),
+            capture: stripes(1840, 300, 40),
+            threshold: 0.1,
+            includeAA: false,
+            scale: 2,
+        });
+        expect(made.facts.how).toBe("dense");
+        expect(made.facts.crop.slice(2)).toEqual([800, 312]);
+        // The stripes repeat every 20 lines, so only the band changed (and the 40 lines the new
+        // image adds at its bottom, which never count): the window frames the whole band.
+        const [, y] = made.facts.crop;
+        expect(y).toBeLessThanOrEqual(300);
+        expect(y + 312).toBeGreaterThanOrEqual(340);
+    });
+
+    it("factsOf crops at the capture's scale and knows a size-only change from compare's areas", () => {
+        const item = { areas: [[0, 1790, 2400, 10]], size: [2400, 1800], baselineSize: [2400, 1802] };
+        expect(factsOf(item, 2)).toMatchObject({ how: "size", crop: [800, 744, 800, 312], areas: 1 });
+        // The same strip on a page whose size did not change is a real change: too wide for
+        // ROW_MAX, and without the mask the crop is centered on it.
+        expect(factsOf({ ...item, baselineSize: [2400, 1800] }, 2).how).toBe("center");
+    });
+
+    it("marks every changed row by Tint, under and over a third of the crop changed; Mark the change off is plain", () => {
+        const facts = (cover) => ({ zoom: 2, areas: 1, cover, coverAll: cover / 4 });
+        for (const cover of [0.01, SPOT_UNDER - 0.01, SPOT_UNDER, 0.9]) {
+            expect(shownKind("auto", facts(cover))).toBe("row-tint");
+            // An old address naming a spotlit kind gets it; nothing on the page asks for one.
+            expect(shownKind("row-spot", facts(cover))).toBe("row-spot");
+            expect(shownKind("spot", facts(cover))).toBe("spot");
+            expect(shownKind("tint", facts(cover))).toBe("tint");
+            expect(shownKind("row-plain", facts(cover))).toBe("row-plain");
+            expect(shownKind("plain", facts(cover))).toBe("plain");
+        }
+        // The spotlit kinds are still made, so an old address answers.
+        expect(PAIR_KINDS).toEqual(expect.arrayContaining(["row-spot", "spot"]));
+    });
+
+    it("tints a small change's row picture at the changed pixels grown by TINT_GROW, the new image elsewhere", () => {
+        // A gray block on the light page: a small share of the row's crop.
+        const block = [1000, 800, 6, 4];
+        const capture = PNG.sync.read(png(2400, 1800, null));
+        for (let y = block[1]; y < block[1] + block[3]; y++) {
+            for (let x = block[0]; x < block[0] + block[2]; x++) {
+                capture.data.set([120, 120, 120, 255], (y * 2400 + x) * 4);
+            }
+        }
+        const { images, facts } = pictureParts({
+            baseline: png(2400, 1800, null),
+            capture: PNG.sync.write(capture),
+            threshold: 0.1,
+            includeAA: false,
+        });
+        expect(facts.cover).toBeLessThan(SPOT_UNDER);
+        const [tint, plain] = [images["row-tint"], images["row-plain"]];
+        expect([tint.width, tint.height]).toEqual([plain.width, plain.height]);
+        // The block grown by TINT_GROW, in the row picture's pixels, with one pixel for resampling.
+        const [cx, cy, cw, ch] = facts.crop;
+        const [sx, sy] = [tint.width / cw, tint.height / ch];
+        const [bx, by, bw, bh] = block;
+        const x0 = Math.floor((bx - TINT_GROW - cx) * sx) - 1;
+        const x1 = Math.ceil((bx + bw + TINT_GROW - cx) * sx) + 1;
+        const y0 = Math.floor((by - TINT_GROW - cy) * sy) - 1;
+        const y1 = Math.ceil((by + bh + TINT_GROW - cy) * sy) + 1;
+        let redder = 0;
+        for (let y = 0; y < tint.height; y++) {
+            for (let x = 0; x < tint.width; x++) {
+                const i = (y * tint.width + x) * 4;
+                const same = [0, 1, 2, 3].every((k) => tint.data[i + k] === plain.data[i + k]);
+                const near = x >= x0 && x < x1 && y >= y0 && y < y1;
+                if (!near) {
+                    expect([x, y, same]).toEqual([x, y, true]);
+                } else if (tint.data[i] > plain.data[i] && tint.data[i + 1] < plain.data[i + 1]) {
+                    redder++;
+                }
+            }
+        }
+        // The block itself, at the row's zoom, is red.
+        expect(redder).toBeGreaterThanOrEqual(Math.floor(bw * sx) * Math.floor(bh * sy));
+    });
+
+    it("tints exactly the changed pixels grown by TINT_GROW toward the Highlight red, the new image elsewhere", () => {
+        const [w, h] = [30, 20];
+        const px = new Uint8Array(w * h * 4);
+        for (let i = 0; i < w * h; i++) {
+            px.set([i % 200, 100, 200, 255], i * 4);
+        }
+        const mask = new Uint8Array(w * h * 4);
+        const changed = [
+            [10, 8],
+            [20, 15],
+        ];
+        for (const [x, y] of changed) {
+            mask[(y * w + x) * 4 + 3] = 255;
+        }
+        const rect = [4.5, 3, 20, 12];
+        const t = tinted(px, mask, w, h, rect);
+        expect([t.width, t.height]).toEqual([21, 12]);
+        expect(t.at).toEqual([0.5, 0, 20, 12]);
+        for (let y = 0; y < t.height; y++) {
+            for (let x = 0; x < t.width; x++) {
+                const [ix, iy] = [x + 4, y + 3];
+                const near = changed.some(
+                    ([cx, cy]) => Math.abs(cx - ix) <= TINT_GROW && Math.abs(cy - iy) <= TINT_GROW,
+                );
+                const src = [...px.slice((iy * w + ix) * 4, (iy * w + ix) * 4 + 4)];
+                const want = near
+                    ? [...[255, 0, 0].map((c, k) => Math.round(src[k] + (c - src[k]) * TINT_MIX)), 255]
+                    : src;
+                const got = [...t.data.slice((y * t.width + x) * 4, (y * t.width + x) * 4 + 4)];
+                expect([ix, iy, ...got]).toEqual([ix, iy, ...want]);
+            }
+        }
+    });
+
+    it("makes a mostly-changed pair's tinted pictures: red where it changed, the plain picture elsewhere", () => {
+        const baseline = png(800, 600, null);
+        // A gray block on the light page: the tint makes it, and the 2 px around it, redder.
+        const capture = PNG.sync.read(png(800, 600, null));
+        for (let y = 100; y < 400; y++) {
+            for (let x = 100; x < 700; x++) {
+                capture.data.set([120, 120, 120, 255], (y * 800 + x) * 4);
+            }
+        }
+        const { images, facts } = pictureParts({
+            baseline,
+            capture: PNG.sync.write(capture),
+            threshold: 0.1,
+            includeAA: false,
+        });
+        expect(autoKind(facts)).toBe("row-tint");
+        for (const [tint, plain] of [
+            [images["row-tint"], images["row-plain"]],
+            [images.tint, images.plain],
+        ]) {
+            expect([tint.width, tint.height]).toEqual([plain.width, plain.height]);
+            let [redder, same] = [0, 0];
+            for (let i = 0; i < tint.width * tint.height; i++) {
+                const [r, g] = [tint.data[i * 4] - plain.data[i * 4], tint.data[i * 4 + 1] - plain.data[i * 4 + 1]];
+                redder += r > 0 && g < 0 ? 1 : 0;
+                same += tint.data.slice(i * 4, i * 4 + 4).every((v, k) => v === plain.data[i * 4 + k]) ? 1 : 0;
+            }
+            expect(redder).toBeGreaterThan(0);
+            expect(redder + same).toBe(tint.width * tint.height);
+        }
+        // Far from the block the whole picture is the plain one: its corner is untouched.
+        expect([...images.tint.data.slice(0, 4)]).toEqual([...images.plain.data.slice(0, 4)]);
     });
 
     it("makes only the plain picture of a snapshot with one image", () => {
@@ -295,10 +692,10 @@ describe("serve: the picture queue", () => {
         ]);
         // The pairs are each one job, the new and the removed snapshot one image each.
         expect(fake.started.map((j) => "baseline" in j)).toEqual([true, true, true, false, false, true]);
-        // Every kind each needs is on disk, and nothing more: three pictures per pair beside the
+        // Every kind each needs is on disk, and nothing more: five pictures per pair beside the
         // thumbnails, one per item.
         const spots = readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"));
-        expect(spots).toHaveLength(4 * 3);
+        expect(spots).toHaveLength(4 * 5);
         expect(readdirSync(join(s.tmp, "thumbs")).filter((f) => f.endsWith(".png"))).toHaveLength(5);
         const badge = capturedItems().find((i) => i.file === "badge--default.light.png");
         expect(spots.some((f) => f.includes(badge.capture))).toBe(false);
@@ -353,7 +750,7 @@ describe("serve: the picture queue", () => {
         ]);
     });
 
-    it("answers Zoom Auto from what the job found, and a restart reads the areas from one file, never per list", async () => {
+    it("answers Auto with the row's crop from what the job found, and a restart reads the areas from one file, never per list", async () => {
         const first = fakePool();
         const s = await start({ fakes: onePrFakes(), pictures: first.pool });
         await s.api("GET", "/api/prs");
@@ -363,12 +760,15 @@ describe("serve: the picture queue", () => {
         expect(first.started).toHaveLength(6);
         const auto = await s.api("GET", pic("button--primary.dark.png", "auto"));
         expect(auto.status).toBe(200);
-        // A 320 x 200 capture: its row crop is the whole width, under twice Fit, so Auto is spotlit.
-        const spot = await s.api("GET", pic("button--primary.dark.png", "spot"));
-        expect(auto.body.equals(spot.body)).toBe(true);
-        const row = await s.api("GET", pic("button--primary.dark.png", "row-spot"));
+        // Auto is the row's crop, tinted: every changed row is cropped to its change.
+        const row = await s.api("GET", pic("button--primary.dark.png", "row-tint"));
+        expect(auto.body.equals(row.body)).toBe(true);
+        const spot = row;
+        // A 320 x 200 capture: its row crop is the image's whole width at the row's smallest
+        // height, narrower than the row's shape, so the picture is too, and the page centers it.
         const drawn = PNG.sync.read(row.body);
-        expect([drawn.width, drawn.height]).toEqual(ROW);
+        expect(drawn.height).toBe(ROW[1]);
+        expect(drawn.width).toBeLessThan(ROW[0]);
         const lines = readFileSync(join(s.tmp, "spots", "areas.jsonl"), "utf8")
             .trim()
             .split("\n");
@@ -398,7 +798,31 @@ describe("serve: the picture queue", () => {
         expect(areasReads.count).toBe(readsBefore + 1);
     });
 
-    it("makes a pair's pictures again for Auto when the areas file was lost", async () => {
+    it("makes the pairs' pictures again when an older version made them", async () => {
+        const first = fakePool();
+        const s = await start({ fakes: onePrFakes(), pictures: first.pool });
+        await s.api("GET", "/api/prs");
+        await s.app.idle();
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("6");
+        // Made before the spotlight dimmed less and the row crop framed every area.
+        writeFileSync(join(s.tmp, "spots", "made-by"), "1");
+        const again = fakePool();
+        const t = await start({
+            repo: s.repo,
+            remote: s.remote,
+            head: s.head,
+            fakes: onePrFakes(),
+            pictures: again.pool,
+            tmp: s.tmp,
+        });
+        await t.api("GET", "/api/prs");
+        await t.app.idle();
+        // The three pairs again; the captures' own thumbnails are kept.
+        expect(again.started).toHaveLength(3);
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("6");
+    });
+
+    it("makes a pair's pictures again for a tinted crop or Auto when the areas file was lost", async () => {
         const first = fakePool();
         const s = await start({ fakes: onePrFakes(), pictures: first.pool });
         await s.api("GET", "/api/prs");
@@ -416,8 +840,14 @@ describe("serve: the picture queue", () => {
         await t.api("GET", "/api/prs");
         await t.app.idle();
         expect(again.started).toHaveLength(0);
+        // A tinted crop asked for before its areas are known is made again, so the row learns its
+        // crop and areas, the same picture as Auto.
+        const lit = await t.api("GET", pic("button--primary.dark.png", "row-tint"));
+        expect(lit.status).toBe(200);
+        expect(again.started.map((j) => basename(j.label))).toEqual(["button--primary.dark.png"]);
         const auto = await t.api("GET", pic("button--primary.dark.png", "auto"));
         expect(auto.status).toBe(200);
+        expect(auto.body.equals(lit.body)).toBe(true);
         expect(again.started.map((j) => basename(j.label))).toEqual(["button--primary.dark.png"]);
         expect(existsSync(join(s.tmp, "spots", "areas.jsonl"))).toBe(true);
         // The cut line was ended first, so the new line reads back: a third start makes nothing.

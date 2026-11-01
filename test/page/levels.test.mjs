@@ -10,6 +10,7 @@ import {
     imageOnlyPressed,
     keepFloor,
     layoutFor,
+    PANES,
     paneWidths,
     pressImageOnly,
     sizeClass,
@@ -91,11 +92,15 @@ describe("the 800 px floor", () => {
     });
 
     it("narrows a lone pane toward its minimum in a 1180 px window", () => {
-        expect(paneWidths([false, true], { width: 1180, open: true, holds: true })).toEqual([44, 336]);
-        expect(paneWidths([true, false], { width: 1180, open: true, holds: true })).toEqual([320, 44]);
-        expect(paneWidths([false, true], { width: 1280, open: true, holds: true })).toEqual([44, 420]);
+        expect(paneWidths([false, true], { width: 1180, open: true, holds: true })).toEqual([64, 316]);
+        expect(paneWidths([true, false], { width: 1180, open: true, holds: true })).toEqual([316, 64]);
+        expect(paneWidths([false, true], { width: 1280, open: true, holds: true })).toEqual([64, 416]);
         // With no snapshot in the viewer, nothing narrows: Changes is 480 while no change is open.
         expect(paneWidths([true, true], { width: 1180, open: false, holds: false })).toEqual([480, 420]);
+        // Baselines' column beside the Projects rail leaves the viewer its 800 px at 1180 too.
+        const bl = { width: 1180, open: true, holds: true, ids: PANES.baselines };
+        expect(paneWidths([false, true], bl)).toEqual([64, 316]);
+        expect(1180 - 64 - 316).toBe(FLOOR);
     });
 
     it("does not apply while the viewer holds no snapshot", () => {

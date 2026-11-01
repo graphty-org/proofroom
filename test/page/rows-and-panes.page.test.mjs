@@ -51,6 +51,68 @@ async function openLarge() {
 }
 const current = (page, sel, attr) => page.locator(`${sel}.cur`).first().getAttribute(attr);
 
+describe("the rails", () => {
+    it("read horizontally: a badge of the number over its word, the pane's name at 11 px, and its key quiet on one line", async () => {
+        const page = await openLarge();
+        await page.keyboard.press("Shift+Digit2");
+        await expect.poll(() => shown(page)).toEqual([false, false]);
+        for (const [rail, key, name, title] of [
+            ["#rail-c", "Shift+1", "Changes", /^\d+ changes? needs? you$/],
+            ["#rail-s", "Shift+2", "Snaps", /^\d+ snapshots? left to decide$/],
+        ]) {
+            const look = await page.locator(rail).evaluate((n) => {
+                const kbd = n.querySelector(":scope > kbd");
+                const count = n.querySelector(".count");
+                const vt = n.querySelector(".vt");
+                const kcs = globalThis.getComputedStyle(kbd);
+                return {
+                    width: n.parentElement.getBoundingClientRect().width,
+                    key: kbd.innerText,
+                    quiet: kbd.classList.contains("quiet"),
+                    keyBorder: kcs.borderTopStyle,
+                    keyHeight: kbd.getBoundingClientRect().height,
+                    keyLine: parseFloat(kcs.lineHeight) || parseFloat(kcs.fontSize) * 1.5,
+                    keyRight: kbd.getBoundingClientRect().right,
+                    railRight: n.getBoundingClientRect().right,
+                    name: vt.innerText,
+                    nameSize: globalThis.getComputedStyle(vt).fontSize,
+                    nameMode: globalThis.getComputedStyle(vt).writingMode,
+                    badge: count.innerText,
+                    badgeWidth: count.getBoundingClientRect().width,
+                    // The badge, the name and the key, top to bottom, each wholly inside the rail.
+                    parts: [count, vt, kbd].map((p) => {
+                        const r = p.getBoundingClientRect();
+                        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+                    }),
+                    railLeft: n.getBoundingClientRect().left,
+                    title: count.title,
+                };
+            });
+            expect(look.width).toBe(64);
+            // Each on its own line, none touching the next or the rail's edges.
+            for (const [a, b] of [
+                [look.parts[0], look.parts[1]],
+                [look.parts[1], look.parts[2]],
+            ]) {
+                expect(b.top - a.bottom).toBeGreaterThanOrEqual(2);
+            }
+            for (const p of look.parts) {
+                expect(p.left - look.railLeft).toBeGreaterThanOrEqual(2);
+                expect(look.railRight - p.right).toBeGreaterThanOrEqual(2);
+            }
+            expect(look.key).toBe(key);
+            expect(look.quiet).toBe(true);
+            expect(look.keyBorder).toBe("none");
+            expect(look.keyHeight).toBeLessThan(2 * look.keyLine);
+            expect(look.keyRight).toBeLessThanOrEqual(look.railRight);
+            expect([look.name, look.nameSize, look.nameMode]).toEqual([name, "11px", "horizontal-tb"]);
+            expect(look.badge).toMatch(/^[\d,]+\nleft$/);
+            expect(look.badgeWidth).toBeLessThan(40);
+            expect(look.title).toMatch(title);
+        }
+    });
+});
+
 describe("a pane key pressed again", () => {
     it("Shift+1 twice brings Snapshots back out of its rail", async () => {
         const page = await openLarge();

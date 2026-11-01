@@ -13,7 +13,17 @@ import { onePrFakes } from "../fakes/adapters.mjs";
 import { makeRepo } from "../helpers.mjs";
 import { COVERS } from "./covers.mjs";
 import { NOW } from "./fixtures.mjs";
-import { TOKEN, fiftyChanges, listAnswer, message, openNext, project, rowsAnswer, target } from "./page-kit.mjs";
+import {
+    TOKEN,
+    fiftyChanges,
+    listAnswer,
+    message,
+    openNext,
+    project,
+    rowsAnswer,
+    target,
+    openedChange,
+} from "./page-kit.mjs";
 
 let browser;
 let t = null;
@@ -53,11 +63,12 @@ describe("with no changes", () => {
         expect(await next.getAttribute("title")).toBe("No changes yet");
         const sort = page.getByRole("button", { name: /^Sort:/ });
         expect(await sort.getAttribute("title")).toBe("No changes yet");
-        // The Snapshots pane says how captures appear, with New capture... there and in the top bar.
-        expect(await page.locator("#snap-list").innerText()).toContain("No captures yet.");
-        expect(await page.locator("#snap-list").innerText()).toContain("Captures made by CI appear here on their own");
-        expect(await page.locator("#snap-list").getByRole("button", { name: "New capture..." }).count()).toBe(1);
-        expect(await page.locator("#top").getByRole("button", { name: "New capture..." }).count()).toBe(1);
+        // The viewer's place says how captures appear, with New capture... there (and on the
+        // Captures screen), never in the top bar.
+        expect(await page.locator("#viewer").innerText()).toContain("No captures yet.");
+        expect(await page.locator("#viewer").innerText()).toContain("Captures made by CI appear here on their own");
+        expect(await page.locator("#viewer").getByRole("button", { name: "New capture..." }).count()).toBe(1);
+        expect(await page.locator("#top").getByRole("button", { name: "New capture..." }).count()).toBe(0);
         // Pressing either, by pointer or by key, says why.
         // A reader can press a control marked unavailable; Playwright's click would wait for it to
         // become available, so these clicks skip that wait.
@@ -75,13 +86,17 @@ describe("with no changes", () => {
 describe("with one change", () => {
     it("opens it by itself, Changes on its rail still counting it", async () => {
         const page = await open({ targets: [target(3486, { title: "Storybook 9 upgrade" })] });
-        await expect.poll(() => message(page)).toBe("Opened #3486 Storybook 9 upgrade: 3 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened: 3 left.");
+        expect(await openedChange(page)).toBe("3486");
         expect(await page.locator("#changes").getAttribute("class")).toContain("rail");
-        expect(await page.locator("#rail-c .count").innerText()).toBe("1");
+        // The rail's badge is the number over a word, its meaning in the tooltip.
+        expect(await page.locator("#rail-c .count").innerText()).toBe("1\nleft");
+        expect(await page.locator("#rail-c .count").getAttribute("title")).toBe("1 change needs you");
         // A small change: Snapshots on its rail too, the first undecided snapshot in the viewer.
         expect(await page.locator("#snaps").getAttribute("class")).toContain("rail");
         expect(await page.locator(".iline").innerText()).toContain("#1");
-        expect(await page.locator("#rail-s .count").innerText()).toBe("3");
+        expect(await page.locator("#rail-s .count").innerText()).toBe("3\nleft");
+        expect(await page.locator("#rail-s .count").getAttribute("title")).toBe("3 snapshots left to decide");
     });
 });
 
@@ -103,8 +118,10 @@ describe("with 50 changes", () => {
         // The tab's title counts the changes that need the reader: Needs you, and Decided, not
         // finished, whose Finish is still theirs.
         expect(await page.title()).toBe("(10) Visual review");
-        // The top bar measures on the server's clock, as the rows' ages do.
-        expect(await page.locator("#srvstatus").innerText()).toBe("Updated 40 s ago");
+        // Data 40 s old (on the server's clock, as the rows' ages are) is fresh: the top bar shows
+        // neither its age nor Refresh.
+        expect(await page.locator("#srvage").count()).toBe(0);
+        expect(await page.locator("#srvstatus").count()).toBe(0);
         // Nothing to decide and Drafts start collapsed.
         expect(await page.locator('.sec[data-sec="nothing"]').getAttribute("aria-expanded")).toBe("false");
         expect(await page.locator('.sec[data-sec="drafts"]').getAttribute("aria-expanded")).toBe("false");
@@ -113,8 +130,8 @@ describe("with 50 changes", () => {
         // Every row state's words, as a reader sees them.
         const text = await page.locator("#chg-list").innerText();
         for (const words of [
-            "3 undecided",
-            "31 of 60 decided",
+            "3 left",
+            "29 left of 60",
             "9 decided, not finished",
             "Downloading: 2 of 3 projects (68 MB)",
             "Capturing on CI, 2 of 3 projects",
@@ -124,16 +141,43 @@ describe("with 50 changes", () => {
             "behind master",
             "pending push",
             "CI pending",
-            "Changed on master: 3 newer baselines",
         ]) {
             expect(text, words).toContain(words);
         }
+        // A stale capture: one "behind master" badge, the count in its tooltip.
+        const stale = page.locator('.chg[data-chg="3483"] .badge');
+        expect(await stale.allInnerTexts()).toEqual(["behind master"]);
+        expect(await stale.getAttribute("title")).toBe("master accepted 3 newer baselines after this capture");
         // An incomplete row says why and what to do; it has no job log to open.
         const incomplete = page.locator('.chg[data-chg="3475"]');
         expect(await incomplete.locator(".cnt").getAttribute("title")).toBe(
             "graphty-element: artifact expired: re-run the visual job",
         );
         expect(await incomplete.getByRole("button", { name: "Job log" }).count()).toBe(0);
+        // Line 2 holds the count and at most one badge, "+N more" naming the rest in its tooltip,
+        // never a word cut; the details are in the row's tooltip, joined by " - ".
+        for (const r of await page.locator(".chg").all()) {
+            // The badges drawn on line 2 (one that does not fit wraps whole onto the hidden line).
+            const shown = await r
+                .locator(".l2 .badge")
+                .evaluateAll(
+                    (n) =>
+                        n.filter((b) => b.getBoundingClientRect().top < b.parentElement.getBoundingClientRect().bottom)
+                            .length,
+                );
+            expect(shown).toBeLessThanOrEqual(2);
+        }
+        const cut = await page
+            .locator(".chg .l2 .badge")
+            .evaluateAll((n) => n.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent));
+        expect(cut).toEqual([]);
+        expect(await page.locator(".chg .l2 .ell").count()).toBe(0);
+        expect(await page.locator('.chg[data-chg="3484"]').getAttribute("title")).toMatch(
+            /^#3484 Legend overlay\n.* - by mlin - from CI - 4 min ago$/,
+        );
+        expect(await page.locator('.chg[data-chg="3477"]').getAttribute("title")).toContain(
+            " - 2 of 3 projects ready - ",
+        );
         // Kind tags: a pull request, a preview and a seed.
         const tags = await page.locator(".chg .tag").allInnerTexts();
         expect(new Set(tags)).toEqual(new Set(["PR", "preview", "seed"]));
@@ -205,15 +249,17 @@ describe("with 50 changes", () => {
             await page.keyboard.press("ArrowDown");
             await expect.poll(() => currentRow(page)).toBe(id);
         }
-        // Open [Enter] is printed on the current row only.
+        // Open is on the current row only; its Enter is printed on the summary's Open, beside it.
         expect(await page.locator('.chg [data-act="openchg"]').count()).toBe(1);
-        expect(await page.locator('.chg.cur [data-act="openchg"]').innerText()).toBe("OpenEnter");
+        expect(await page.locator('#viewer [data-act="summaryopen"]').innerText()).toBe("OpenEnter");
         await page.keyboard.press("Enter");
-        await expect.poll(() => message(page)).toBe("Opened #3481 Change 3481: 7 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened: 7 left.");
+        expect(await openedChange(page)).toBe("3481");
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         await page.locator('.chg.cur [data-act="openchg"]').click();
-        await expect.poll(() => message(page)).toBe("Opened #3481 Change 3481: 7 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened: 7 left.");
+        expect(await openedChange(page)).toBe("3481");
     });
 
     it("opens a change by a click on its row, and the next that needs you with Next change", async () => {
@@ -221,27 +267,30 @@ describe("with 50 changes", () => {
         // Needs you, fewest snapshots first: 3484 (3), 3481 (7), 3485 (12), the seed (12), 3483 (18),
         // 3471 (26), 3482 (60), 3486 (300).
         await page.locator('.chg[data-chg="3485"]').click();
-        await expect.poll(() => message(page)).toBe("Opened #3485 Change 3485: 12 undecided.");
-        // With Changes on its rail, the Snapshots header carries Next change [Shift+N].
-        expect(await page.locator('#snaps-head [data-act="nextchange"]').innerText()).toBe("Next changeShift+N");
+        await expect.poll(() => message(page)).toBe("Opened: 12 left.");
+        expect(await openedChange(page)).toBe("3485");
+        // Next change Shift+N has one home: the top bar.
+        expect(await page.locator('[data-act="nextchange"]').count()).toBe(1);
+        expect(await page.locator('#top [data-act="nextchange"]').innerText()).toBe("Next changeShift+N");
         await page.keyboard.press("Shift+KeyN");
-        await expect.poll(() => message(page)).toBe("Opened seed Seed from master: 12 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened: 12 left.");
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
-        // Back at the changes, the Changes header carries it.
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
+        // Back at the changes, still in the top bar.
         expect(await page.locator('#snaps-head [data-act="nextchange"]').count()).toBe(0);
-        await page.locator('#changes [data-act="nextchange"]').click();
-        await expect.poll(() => message(page)).toBe("Opened #3483 Change 3483: 18 undecided.");
+        await page.locator('#top [data-act="nextchange"]').click();
+        await expect.poll(() => message(page)).toBe("Opened: 18 left.");
+        expect(await openedChange(page)).toBe("3483");
         expect(await page.title()).toBe("(10) Visual review");
         // Walking every change that needs you (the two decided, not finished too), by key from the
         // changes, never reaches the look-only preview, and comes round to the start.
         const seen = new Set();
         for (let i = 0; i < 11; i++) {
             await page.keyboard.press("Escape");
-            await expect.poll(() => page.locator('#changes [data-act="nextchange"]').isVisible()).toBe(true);
+            await expect.poll(() => page.locator('#top [data-act="nextchange"]').isVisible()).toBe(true);
             await page.keyboard.press("Shift+KeyN");
             await expect.poll(() => t.actions.filter((a) => a.a === "nextchange").length).toBe(i + 3);
-            await expect.poll(() => message(page)).toMatch(/^Opened /);
+            await expect.poll(() => message(page)).toMatch(/^Opened: /);
             seen.add(await page.evaluate(() => new URLSearchParams(globalThis.location.hash.slice(1)).get("change")));
         }
         expect(seen.has("local")).toBe(false);
@@ -263,29 +312,33 @@ describe("with 50 changes", () => {
         });
         await page.locator('.chg[data-chg="3486"] .t').click();
         await expect.poll(() => asked).toBeGreaterThan(0);
-        // The rows have not come, and the picked row is already current, with Open [Enter].
+        // The rows have not come, and the picked row is already current, its summary with Open [Enter].
         expect(await currentRow(page)).toBe("3486");
-        expect(await page.locator('.chg.cur [data-act="openchg"]').innerText()).toBe("OpenEnter");
+        expect(await page.locator('#viewer [data-act="summaryopen"]').innerText()).toBe("OpenEnter");
         await page.keyboard.press("Enter");
         release();
-        await expect.poll(() => message(page)).toBe("Opened #3486 Storybook 9 upgrade: 300 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened: 300 left.");
+        expect(await openedChange(page)).toBe("3486");
         expect(await page.evaluate(() => globalThis.location.hash)).toContain("change=3486");
     });
 
-    it("shows the current change's summary in the Snapshots pane while none is open, with Open", async () => {
+    it("shows the current change's summary in the viewer's place while none is open, with Open", async () => {
         const page = await open({ targets: fiftyChanges() });
         await expect.poll(() => currentRow(page)).toBe("3480");
         // Down past the two decided, not finished, to the first change in Needs you.
         await page.locator("#chg-list").focus();
         await page.keyboard.press("ArrowDown");
         await page.keyboard.press("ArrowDown");
-        await expect.poll(() => page.locator("#snap-list .summary .title").innerText()).toBe("#3484 Legend overlay");
-        const text = await page.locator("#snap-list").innerText();
-        expect(text).toContain("by mlin, from CI, 1 of 1 projects ready, 4 min ago");
-        expect(text).toContain("3 undecided of 3");
-        expect(text).toContain("3 changed");
-        await page.locator("#snap-list").getByRole("button", { name: "Open" }).click();
-        await expect.poll(() => message(page)).toBe("Opened #3484 Legend overlay: 3 undecided.");
+        await expect.poll(() => page.locator("#viewer .summary .title").innerText()).toBe("#3484 Legend overlay");
+        const text = await page.locator("#viewer").innerText();
+        // Every project ready: not said.
+        expect(text).toContain("by mlin, from CI, 4 min ago");
+        // One plain sentence of what the change holds, and what is left.
+        expect(text).toContain("3 snapshots: 3 changed");
+        expect(text).toContain("3 left");
+        await page.locator("#viewer").getByRole("button", { name: "Open" }).click();
+        await expect.poll(() => message(page)).toBe("Opened: 3 left.");
+        expect(await openedChange(page)).toBe("3484");
     });
 
     it("says nothing needs you when nothing does, with the sections below", async () => {
@@ -390,7 +443,8 @@ describe("the row menu", () => {
 describe("row actions", () => {
     it("Dismiss is offered only on a change finished since the first visit, and stays off once pressed", async () => {
         const targets = fiftyChanges();
-        const page = await open({ targets });
+        // Data 6 minutes old: the top bar offers Refresh.
+        const page = await open({ list: listAnswer(targets, { updatedAt: NOW - 6 * 60000 }) });
         await page.locator('.sec[data-sec="nothing"]').click();
         // Changes finished before the first visit are not news: no Dismiss.
         await page.locator('.chg[data-chg="3474"]').waitFor();
@@ -401,7 +455,7 @@ describe("row actions", () => {
                 ? { ...x, projects: x.projects.map((p) => ({ ...p, decided: 3, undecided: 0, finished: 3 })) }
                 : x,
         );
-        t.setList(listAnswer(done));
+        t.setList(listAnswer(done, { updatedAt: NOW - 6 * 60000 }));
         await page.locator("#srvstatus").click();
         const row = page.locator('.chg[data-chg="3484"]');
         await expect.poll(() => row.getByRole("button", { name: "Dismiss" }).count()).toBe(1);
@@ -428,8 +482,9 @@ describe("row actions", () => {
 });
 
 describe("the top bar and the message line", () => {
-    it("names the repository, refreshes on a click of the status, and keeps the last messages", async () => {
-        const page = await open({ targets: fiftyChanges() });
+    it("names the repository, refreshes with Refresh once the data is 5 minutes old, and keeps the last messages", async () => {
+        const page = await open({ list: listAnswer(fiftyChanges(), { updatedAt: NOW - 6 * 60000 }) });
+        expect(await page.locator("#srvage").innerText()).toBe("Updated 6 min ago");
         await expect.poll(() => page.locator("#repo").innerText()).toBe("graphty-monorepo");
         await page.getByRole("button", { name: "Review" }).click();
         await page.locator("#srvstatus").click();
@@ -445,7 +500,7 @@ describe("the top bar and the message line", () => {
 
     it("says when the code host did not answer", async () => {
         const page = await open({ list: listAnswer(fiftyChanges(), { error: "gh: HTTP 502" }) });
-        await expect.poll(() => page.locator("#srvstatus").innerText()).toBe("GitHub not answering");
+        await expect.poll(() => page.locator("#srvage").innerText()).toBe("GitHub not answering");
     });
 });
 
@@ -570,15 +625,14 @@ describe("on the real server", () => {
             page.setDefaultTimeout(0);
             await page.goto(`${s.origin}/#token=${TOKEN}`);
             // One change: it opens by itself, its first undecided snapshot on the item line.
-            await expect.poll(() => message(page)).toMatch(/^Opened #123 PR 123: \d+ undecided\.$/);
+            await expect.poll(() => message(page)).toMatch(/^Opened: \d+ left\.$/);
+            expect(await openedChange(page)).toBe("123");
             expect(await page.locator(".iline").innerText()).toContain("#1");
             // The repository is named after origin (remote.git), not the checkout's folder.
             expect(await page.locator("#repo").innerText()).toBe("remote");
             await page.keyboard.press("Escape");
             await expect.poll(() => page.locator(".chg.cur").innerText()).toContain("#123 PR 123");
-            expect(await page.locator(".chg.cur").innerText()).toMatch(
-                /feature\s+octocat\s+CI\s+2 of 2 projects ready\n/,
-            );
+            expect(await page.locator(".chg.cur").getAttribute("title")).toMatch(/\nfeature - by octocat - from CI$/);
         } finally {
             await page.close();
             await s.close();
@@ -611,7 +665,7 @@ describe("while the server's first list loads", () => {
         expect(await page.locator("#screens").isVisible()).toBe(false);
         expect(await page.getByText("No changes yet").count()).toBe(0);
         expect(await page.getByText("No captures yet.").count()).toBe(0);
-        expect(await page.locator("#srvstatus").innerText()).toBe("Loading...");
+        expect(await page.locator("#srvage").count()).toBe(0);
         t.setList(listAnswer(fiftyChanges()));
         await page.locator(".chg").first().waitFor();
         expect(await page.locator("#wait-box").count()).toBe(0);
@@ -622,11 +676,12 @@ describe("when the server's first list fails", () => {
     it("keeps the error and its Retry, stops the waiting box's clock, and Retry loads the changes", async () => {
         const page = await open({ targets: fiftyChanges(), failList: 1 });
         await expect.poll(() => message(page)).toMatch(/^The review server did not answer: /);
-        expect(await page.locator("#msg-x").getByRole("button").allInnerTexts()).toEqual(["Retry"]);
+        // A message with a button stays until it is used or dismissed.
+        expect(await page.locator("#msg-x").getByRole("button").allInnerTexts()).toEqual(["Retry", "Dismiss"]);
         expect(await page.locator("#wait-box").innerText()).toMatch(
             /^Waiting for the code host\n+The review server did not answer\.$/,
         );
-        expect(await page.locator("#srvstatus").innerText()).toBe("Server not answering");
+        expect(await page.locator("#srvage").innerText()).toBe("Server not answering");
         await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
         await page.locator(".chg").first().waitFor();
         expect(await page.locator("#wait-box").count()).toBe(0);
@@ -690,11 +745,11 @@ describe("a poll while a control has focus", () => {
         expect(await focused()).toBe("3480 rowmenu");
         const lists = () => t.requests.filter((r) => r.startsWith("/api/prs")).length;
         const before = lists();
-        t.setList(listAnswer(fiftyChanges(), { updatedAt: NOW - 10000 }));
+        t.setList(listAnswer(fiftyChanges(), { updatedAt: NOW - 6 * 60000 }));
         await page.clock.fastForward(16000);
         await expect.poll(lists).toBe(before + 1);
         // The poll's answer is drawn: the top bar says so.
-        await expect.poll(() => page.locator("#srvstatus").innerText()).toBe("Updated 10 s ago");
+        await expect.poll(() => page.locator("#srvage").innerText()).toMatch(/^Updated 6 min ago$/);
         expect(await focused()).toBe("3480 rowmenu");
         await page.keyboard.press("Enter");
         await page.getByRole("menu").waitFor();

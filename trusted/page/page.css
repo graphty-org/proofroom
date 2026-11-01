@@ -126,18 +126,29 @@ button[aria-disabled="true"] {
     opacity: 0.45;
     cursor: default;
 }
-/* A button the reviewer focused with Tab takes Enter: it shows [Enter], and every other [Enter] loses its box. */
+/* A button the reviewer focused with Tab takes Enter: it shows [Enter], and every other [Enter] loses its box.
+   The hint is drawn outside the button, centered under it, so focusing a button never widens it
+   or moves its neighbors. */
+button:focus-visible:not(.fa, .sec) {
+    position: relative;
+}
 button:focus-visible:not(:has(kbd.ek))::after {
     content: "Enter";
-    display: inline-block;
+    position: absolute;
+    left: 50%;
+    top: calc(100% + 3px);
+    transform: translateX(-50%);
+    z-index: 5;
     font:
         11px/1 system-ui,
         sans-serif;
+    font-weight: 400;
+    color: var(--ink);
+    background: var(--surface);
     border: 1px solid currentColor;
     border-radius: 3px;
     padding: 2px 3px;
-    margin-left: 5px;
-    opacity: 0.75;
+    pointer-events: none;
 }
 body:has(button:focus-visible) button:not(:focus-visible) kbd.ek {
     display: none;
@@ -148,6 +159,16 @@ button.primary {
     color: var(--on-ink);
     border-color: var(--focus);
     font-weight: 700;
+}
+/* The primary color as an outline: Finish while anything is left. Never the grey of an unavailable
+   button, even when pressing it would only say there is nothing new to finish. */
+button.outline {
+    border-color: var(--focus);
+    color: var(--focus);
+    font-weight: 700;
+}
+#finish[aria-disabled="true"] {
+    opacity: 1;
 }
 input[type="search"],
 input[type="text"],
@@ -173,7 +194,25 @@ kbd {
     border-radius: 3px;
     padding: 2px 3px;
     margin-left: 5px;
-    opacity: 0.65;
+    opacity: 0.72; /* 4.5:1 on the current row's tint (contrast.test.mjs) */
+}
+/* A quiet key: every control off the look-decide-next loop prints its key as muted text after
+   its label, no box, so the boxed keys on the loop are the ones that stand out. */
+/* On a filled button the key is drawn at full strength: 0.72 of the label's color would drop under
+   4.5:1 on the fill (contrast.test.mjs). */
+button.on kbd,
+button.primary kbd,
+.decide .acc kbd {
+    opacity: 1;
+}
+kbd.quiet {
+    border: none;
+    background: none;
+    padding: 0;
+    min-width: 0;
+    margin-left: 6px;
+    color: var(--ink-2);
+    opacity: 1;
 }
 /* A key box on a control the key does not act on now (keys.js syncHints). */
 kbd[hidden] {
@@ -279,6 +318,7 @@ body.held [data-zone="end"] kbd {
     white-space: nowrap;
 }
 .badge {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 3px;
@@ -331,30 +371,53 @@ body.held [data-zone="end"] kbd {
     border-bottom-color: var(--focus);
     font-weight: 700;
 }
-#top .status {
+/* The data's age, muted, and a small Refresh: only once the data is 5 minutes old, or while
+   something is wrong. */
+#status-slot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 0 1 auto;
+}
+#top .age {
     font-size: 12px;
     color: var(--ink-2);
-    border: 0;
-    background: transparent;
     max-width: 220px;
     overflow: hidden;
     text-overflow: ellipsis;
-    flex: 0 1 auto;
-    min-width: 60px;
     display: inline-flex;
     align-items: center;
     gap: 4px;
+}
+#top .age.trouble {
+    color: var(--ink);
+    font-weight: 600;
+}
+#top .age.trouble .ic {
+    color: var(--warn);
+}
+#top button.small {
+    min-height: 22px;
+    height: 22px;
+    padding: 0 7px;
+    font-size: 12px;
 }
 #frame-slot {
     display: flex;
     gap: 8px;
 }
-#top .status.trouble {
-    color: var(--ink);
-    font-weight: 600;
+/* When the top bar is tight, the repository's name goes first, then the age text (its words stay
+   in Refresh's tooltip and accessible name); Finish never leaves the screen. */
+@media (max-width: 1279px) {
+    #top .repo {
+        display: none;
+    }
 }
-#top .status.trouble .ic {
-    color: var(--warn);
+@media (max-width: 1100px) {
+    #top .age {
+        display: none;
+    }
 }
 #screens {
     flex: 1;
@@ -390,6 +453,11 @@ body.held [data-zone="end"] kbd {
     height: 20px;
     padding: 0 8px;
     font-size: 12px;
+}
+#msgline button.quiet {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ink-2);
 }
 
 /* panes */
@@ -440,7 +508,7 @@ body.held [data-zone="end"] kbd {
     background: var(--surface);
 }
 .pane.rail {
-    width: 44px !important;
+    width: 64px !important;
     cursor: pointer;
 }
 .pane.rail > :not(.railbar) {
@@ -449,11 +517,13 @@ body.held [data-zone="end"] kbd {
 .railbar {
     display: none;
 }
+/* A rail reads horizontally, top down: the badge, the pane's name at 11 px and its key on one
+   quiet line. No rotated text. */
 .pane.rail .railbar {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     padding: 10px 0;
     height: 100%;
     width: 100%;
@@ -463,23 +533,31 @@ body.held [data-zone="end"] kbd {
     background: transparent;
 }
 .railbar .vt {
-    writing-mode: vertical-rl;
+    font-size: 11px;
     font-weight: 700;
     color: var(--ink);
+    white-space: nowrap;
 }
+/* A rail's badge: the number over a short word, each line under 40 px. */
 .railbar .count {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 40px;
     font-size: 11px;
+    line-height: 13px;
     background: var(--ink);
     color: var(--on-ink);
-    border-radius: 8px;
-    padding: 1px 6px;
+    border-radius: 6px;
+    padding: 2px 4px;
 }
-.railbar .count:empty {
-    display: none;
+.railbar .count span {
+    font-size: 10px;
 }
 .railbar kbd {
     margin: 0;
     font-size: 10px;
+    white-space: nowrap;
 }
 
 /* changes rows */
@@ -584,14 +662,27 @@ body.held [data-zone="end"] kbd {
     overflow: hidden;
     color: var(--ink);
 }
-.chg .l2 > .ell.grow {
-    flex: 1 1 0;
-}
-.chg .l2 > .badge {
-    flex: 0 1 auto;
+/* A long state ("Capture failed: a, b, c") ends in "..." rather than mid-word; its tooltip has it whole. */
+.chg .cnt > span:last-child {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+/* A change row's badges: one, and "+N more". What does not fit wraps whole onto a second line
+   that is never shown (the empty first item holds line 1), so a badge is never cut mid-word. */
+.chg .l2 > .bdg {
+    min-width: 0;
+    height: 24px;
+    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    align-content: flex-start;
+    column-gap: 4px;
+}
+.chg .l2 .bdg0 {
+    width: 0;
+    height: 24px;
 }
 .empty {
     padding: 10px;
@@ -607,7 +698,7 @@ body.held [data-zone="end"] kbd {
     gap: 0;
 }
 #snaps-head > .h1 {
-    height: 28px;
+    min-height: 28px;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -625,6 +716,141 @@ body.held [data-zone="end"] kbd {
 }
 #snaps-head > .h1 a {
     color: inherit;
+}
+/* The change's number and title: one run of text, wrapped to two lines and cut only after that
+   (design 9.4 item 1). The number leads the first line, never cut; the title's words flow on
+   under it, so at 1,024 px the title keeps the whole width of both lines, not what is left beside
+   the number. */
+#snaps-head > .h1 .ctl {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+}
+#snaps-head > .h1 .ctl > .tt {
+    flex: 1 1 auto;
+    width: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+#snaps-head > .h1 .cnum {
+    white-space: nowrap;
+}
+#snaps-head > .h1 .tt .ell {
+    white-space: normal;
+}
+/* The number and title are the change's own menu: they read as the title, not a box (the border
+   shows on hover and focus), with the group names' drawn caret after them. */
+#snaps-head > .h1 button.tmenu {
+    font-weight: 700;
+    font-size: 14px;
+    height: auto;
+    min-height: 26px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    line-height: 18px;
+    flex: 1 1 auto;
+    align-items: center;
+    padding: 0 4px;
+    margin-left: -4px;
+    border-color: transparent;
+    background: transparent;
+    text-align: left;
+}
+#snaps-head > .h1 button.tmenu:hover {
+    border-color: var(--line);
+}
+/* A drawn caret (a bordered triangle, no glyph) after a menu button's words: the change's title,
+   a notice chip, a group's name. */
+.gcaret {
+    flex: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--ink-2);
+}
+/* The change's own menu starts with its whole title, wrapped, never cut. */
+.menu .mt.mtitle {
+    font-weight: 700;
+    color: var(--ink);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+/* The fold button: a drawn caret pointing left, "Hide" and its quiet key. */
+#snaps-head > .h1 button.fold {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 6px;
+    align-self: flex-start;
+    margin-top: 2px;
+}
+.lcaret {
+    flex: none;
+    width: 0;
+    height: 0;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-right: 5px solid var(--ink-2);
+}
+/* A notice chip at the right end of line 2 (Behind master: 1,242, Newer capture, 2 notices): an outlined menu button
+   on one line, its words in the ordinary ink and only its small mark in the warning color, a drawn
+   caret after them. */
+#snaps-head > .h2 button.chip {
+    margin-left: auto;
+    flex: none;
+    height: 20px;
+    min-height: 20px;
+    font-size: 12px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    gap: 4px;
+    color: var(--ink);
+    border-color: var(--line);
+}
+/* Above the progress bar, which runs along the line's foot. */
+#snaps-head > .h2 button.chip {
+    align-self: flex-start;
+}
+#snaps-head > .h2 button.chip + button.chip {
+    margin-left: 4px;
+}
+#snaps-head > .h2 button.chip .ic {
+    color: var(--warn);
+}
+/* Last resort on a narrow line: the chip's words are cut, its mark and the fold button stay. */
+#snaps-head > .h2 button.chip.squeeze {
+    flex: 0 1 auto;
+    min-width: 28px;
+}
+#snaps-head > .h2 button.chip .cl {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* No change open: the current change's summary sits in the viewer's place, on a --surface card
+   (no text is drawn on --stage). */
+body[data-open="false"] #snaps {
+    display: none;
+}
+.summarystage {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.summarystage .summary {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 16px 20px;
+    max-width: 520px;
+    width: 100%;
 }
 .summary {
     padding: 10px 12px;
@@ -646,14 +872,9 @@ body.held [data-zone="end"] kbd {
 .nocap p {
     margin: 0;
 }
-.summary .ssum {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-}
 
-/* The snapshot list's header: five fixed one-line rows (28, 24, 24, 32, 32 with the border), never
-   wrapping, so it ends 176 px from the top of the window and never changes height. */
+/* The snapshot list's header: three fixed one-line rows (28, 24, 32 with the border), never
+   wrapping, so it ends 121 px from the top of the window and never changes height. */
 #snaps-head > .hl {
     display: flex;
     align-items: center;
@@ -681,75 +902,60 @@ body.held [data-zone="end"] kbd {
     height: 100%;
     background: var(--accept);
 }
-#snaps-head > .h2 .lead {
+/* "34 left" in the ink, bold; "12 decided, 1,208 accepted earlier" muted after it. */
+#snaps-head > .h2 .left {
     flex: none;
+}
+#snaps-head > .h2 .rest {
+    white-space: nowrap;
+    margin-left: 8px;
 }
 #snaps-head > .h3 {
-    height: 24px;
-}
-#snaps-head > .h4 {
-    height: 32px;
-}
-#snaps-head > .h5 {
     height: 31px;
+    gap: 3px;
 }
-#snaps-head > .h5 button {
+/* Show, List, Up and Down in one text size, which keeps the row inside the pane at 1024 px. */
+#snaps-head > .h3 button {
+    font-size: 12px;
+}
+#snaps-head > .h3 button,
+#snaps-head > .h4 button {
     min-height: 24px;
     height: 26px;
-    padding: 0 7px;
+    padding: 0 5px;
     flex: none;
 }
-/* The selection bar, in place of the controls line at the same height (design 4.6). */
-#snaps-head > .h5.lselbar {
+/* The selection bar, a fourth line only while rows are selected (design 4.6). */
+#snaps-head > .h4.lselbar {
+    height: 31px;
     margin: 0 -10px;
     padding: 0 8px;
     gap: 3px;
     font-size: 12px;
     background: var(--sel);
 }
-#snaps-head > .h5.lselbar .selcount {
+#snaps-head > .h4.lselbar .selcount {
     flex: none;
     white-space: nowrap;
 }
-#snaps-head > .h5.lselbar button {
+#snaps-head > .h4.lselbar button {
     padding: 0 5px;
     font-size: 12px;
 }
-#snaps-head > .h5.lselbar.tight button .ic {
+#snaps-head > .h4.lselbar.tight button .ic {
     display: none;
 }
-#snaps-head .ssum button {
-    flex: none;
-    min-height: 24px;
-    height: 24px;
-    padding: 0 6px;
-    font-size: 12px;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-}
-button[aria-pressed="true"] {
-    border-color: var(--focus);
-    box-shadow: inset 0 0 0 2px var(--focus);
-    font-weight: 700;
-}
-#snaps-head > .h3 {
-    gap: 4px;
-}
-#snaps-head > .h3 button {
-    flex: none;
-    min-height: 24px;
-    height: 24px;
-    padding: 0 6px;
-    font-size: 12px;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-}
+/* The Find box never narrower than its placeholder "Find  /": the word stays at 1024 px. */
 .findwrap input {
     flex: 1;
     height: 26px;
-    min-width: 0;
+    min-width: 56px;
+    padding: 4px 5px;
+}
+/* The browser's own clear cross takes room from the placeholder even while the box is empty;
+   Clear [Esc] beside the box does its job. */
+.findwrap input::-webkit-search-cancel-button {
+    display: none;
 }
 .findwrap button {
     min-height: 24px;
@@ -758,6 +964,10 @@ button[aria-pressed="true"] {
 }
 .findwrap button[hidden] {
     display: none;
+}
+/* Up and Down in the find row print only their keys: in the same text size as Show and List. */
+.findwrap button[data-rows] > kbd {
+    font: inherit;
 }
 /* Previous [Up] and Next [Down] (actions.js rowButtons): the key box alone, which fits the narrow
    pane headers beside their other controls; the word while the other pane's pair has the boxes. */
@@ -825,9 +1035,17 @@ body.infind .fk {
     width: 15px;
     height: 15px;
     border-radius: 3px;
-    border: 1.5px solid var(--ink-2);
+    border: 1.5px solid var(--line);
     background: var(--surface);
     display: block;
+}
+/* The checkbox stays in its column (nothing moves), drawn in the border color until the row is
+   hovered, current or a selection exists; then in the muted ink, 3:1 or more on every row tint
+   (contrast.test.mjs). */
+.srow:hover .rcheck span,
+.srow.cur .rcheck span,
+#snap-list:has(.srow.selx) .rcheck span {
+    border-color: var(--ink-2);
 }
 .srow.selx:not(.cur) {
     background: color-mix(in srgb, var(--sel) 60%, var(--surface));
@@ -855,21 +1073,6 @@ body.infind .fk {
     height: 100%;
     object-fit: contain;
 }
-.pic .ztags {
-    position: absolute;
-    right: 2px;
-    bottom: 2px;
-    display: flex;
-    gap: 2px;
-}
-.pic .ztag {
-    font-size: 10px;
-    background: rgba(20, 24, 32, 0.82);
-    color: #fff;
-    padding: 0 4px;
-    border-radius: 3px;
-    line-height: 15px;
-}
 /* Placeholders: --ink text in a --surface chip inside the slot, never text on --stage. */
 .pic .ph {
     position: absolute;
@@ -881,6 +1084,11 @@ body.infind .fk {
 }
 .pic.ready .ph {
     display: none;
+}
+/* Loaded, a picture narrower than the row's shape is centered on the row's own background, never
+   on the stage grey. */
+.pic.ready {
+    background: transparent;
 }
 /* A removed row's hatching covers its loaded picture, never the placeholder chip. */
 .pic.ready .rm {
@@ -914,7 +1122,8 @@ body.infind .fk {
 }
 .srow .info {
     flex: 1;
-    min-width: 200px;
+    /* It takes the room the picture leaves, never more: its words wrap, never run off the row. */
+    min-width: 0;
     display: flex;
     flex-direction: column;
     line-height: 18px;
@@ -933,9 +1142,14 @@ body.infind .fk {
 .srow .info .l .keep {
     flex: none;
 }
-.srow .info .l .tag {
-    margin-left: auto;
-    flex: none;
+/* Only the story's name is bold on a row; its mode follows it in muted words ("graph-file, dark"). */
+.srow .info .st {
+    font-weight: 400;
+}
+.srow .info .mode {
+    font-weight: 400;
+    color: var(--ink-2);
+    word-break: normal;
 }
 .srow .info .nm {
     height: 36px;
@@ -967,7 +1181,6 @@ body.infind .fk {
     white-space: normal;
     line-height: 18px;
     align-self: flex-start;
-    font-weight: 600;
 }
 .srow .info button {
     min-height: 24px;
@@ -980,7 +1193,6 @@ body.infind .fk {
 .srow .nmb {
     font-variant-numeric: tabular-nums;
     color: var(--ink-2);
-    font-weight: 600;
     flex: none;
 }
 .srow .info .l > .st.ell {
@@ -1022,7 +1234,8 @@ body.infind .fk {
     padding: 14px 12px;
 }
 
-/* Group headers: sticky, collapsible by the chevron (aria-expanded), the name never cut. */
+/* Group headers: sticky, one line: the chevron collapses, the name button (the name cut in the
+   middle first, its count muted) opens the group's menu, then Accept N. */
 .grp {
     position: relative;
 }
@@ -1033,11 +1246,10 @@ body.infind .fk {
     height: 32px;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     padding: 0 8px 0 10px;
     background: var(--ghead);
     border-bottom: 1px solid var(--line);
-    font-weight: 700;
     font-size: 12px;
     /* Its height is fixed, so a header off screen skips its contents without moving anything. */
     content-visibility: auto;
@@ -1056,21 +1268,8 @@ body.infind .fk {
     color: var(--ink-2);
     flex: none;
 }
-.ghead .gname1 {
-    white-space: nowrap;
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-}
 .ghead .gsp {
     flex: 1;
-}
-.ghead .sent {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    margin-left: 5px;
 }
 .ghead button {
     font-size: 11px;
@@ -1078,55 +1277,65 @@ body.infind .fk {
     min-height: 24px;
     height: 24px;
     font-weight: 400;
+    flex: none;
 }
-.ghead .acc {
-    border-color: var(--accept);
-    color: var(--ink);
+/* The name button reads as the group's name, not a box: its border shows on hover and focus. */
+.ghead button.gname {
+    font-size: 12px;
     font-weight: 700;
-}
-.ghead .acc .ic {
-    color: var(--accept);
-}
-.ghead .split {
-    font-weight: 400;
+    border-color: transparent;
+    background: transparent;
+    padding: 0 6px;
     display: inline-flex;
-    gap: 4px;
-    align-items: center;
-}
-.ghead .aa {
-    font-weight: 400;
-}
-.ghead.two {
-    height: 50px;
-    contain-intrinsic-size: auto 50px;
-    flex-wrap: wrap;
-    align-content: center;
-    row-gap: 2px;
-    padding-top: 1px;
-    padding-bottom: 1px;
-}
-.ghead.two .gname {
-    flex: 1 0 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    line-height: 20px;
-    display: flex;
     align-items: center;
     gap: 4px;
-}
-/* The split never wraps the buttons onto a third line: it starts at no width and takes the room
-   the buttons leave, shrinking (its title holds every word) when even the folded split is too wide. */
-.ghead.two .split {
-    flex: 1 1 0;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
+}
+.ghead .gname .gn {
+    overflow: hidden;
     white-space: nowrap;
 }
-.ghead.two .split + .gsp {
+/* The name is a button: a small drawn caret after it (a bordered triangle, no glyph), and an
+   underline on hover. */
+/* (Its caret is the shared .gcaret.) */
+.ghead button.gname:hover .gn {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+/* Every group's Accept N reads as a button (a neutral outline); the current snapshot's group's is
+   green, prints its quiet Shift+A and always shows. The other groups' show only while their header
+   is hovered or focused: the count is said once, where the reader is. */
+.ghead .acc.mine {
+    border-color: var(--accept);
+    font-weight: 700;
+}
+/* While rows are selected the decision bar's Accept N is the one bulk Accept on screen: no group
+   header draws its own (the group's name menu still lists it, with Shift+A). */
+#snaps.selecting .ghead .acc {
     display: none;
 }
-.ghead.before {
-    background: color-mix(in srgb, var(--accept) 8%, var(--ghead));
+/* Hidden by opacity, not visibility, so Tab still reaches it (WebKit drops focus out of the page
+   on a visibility-hidden button) and shows it; no pointer reaches it while it is unseen. */
+.ghead:not(.mine) > .gsp ~ button {
+    opacity: 0;
+    pointer-events: none;
+}
+.ghead:not(.mine):hover > .gsp ~ button,
+.ghead:not(.mine):focus-within > .gsp ~ button {
+    opacity: 1;
+    pointer-events: auto;
+}
+/* Accepted earlier, at the bottom of the list: one quiet line. */
+.ghead.before .gname {
+    font-weight: 400;
+    color: var(--ink-2);
+}
+/* The Baselines screen's group headers: a name alone. */
+.ghead .gname1 {
+    font-weight: 700;
+    white-space: nowrap;
 }
 .gmore {
     height: 30px;
@@ -1152,8 +1361,9 @@ body.infind .fk {
     container-type: inline-size;
     container-name: viewer;
 }
-/* Two pressed styles, one meaning each: the dark fill only for the selected segment of View and
-   Zoom; every on/off toggle (Baseline, Flash in Spotlight, Blink, Image only) is the outline and check. */
+/* One selected style per meaning: the dark fill only for the one selected view of the segment;
+   every on/off toggle (Flash in Spotlight, Blink, Select) shows a check mark before its label, and
+   a toggle in a menu its tick. Focus keeps its outline, the only thing drawn in that style. */
 button.on {
     background: var(--ink);
     color: var(--on-ink);
@@ -1191,8 +1401,8 @@ body.nokeys kbd .lk {
     position: relative;
     z-index: 1;
 }
-/* The toolbar: exactly one 44 px row. View, Blink, Zoom and Baseline never move; below a viewer
-   width of 1100 px Image only, Layout and Options move into More (a container query, no measuring). */
+/* The toolbar: exactly one 44 px row of seven controls at every width: the view segment and
+   Blink, Zoom, and the Display menu at the right end. */
 .vtb {
     height: 44px;
     flex: none;
@@ -1206,15 +1416,36 @@ body.nokeys kbd .lk {
     flex-wrap: nowrap;
 }
 .vtb button {
-    padding: 2px 4px;
-    font-size: 11.5px;
+    padding: 2px 6px;
+    font-size: 12px;
     flex: none;
 }
+/* Zoom is a menu button: its words, its quiet key, then the drawn caret, on one line. Blink and
+   Image only (a check, the words, the quiet key) take the same gap, so innerText reads
+   "Image only  Shift+3" like every other labeled key. */
+.vtb [data-act="zoomcycle"],
+.vtb [data-act="blink"],
+.vtb [data-act="imageonly"] {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.vtb [data-act="zoomcycle"] kbd,
+.vtb [data-act="blink"] kbd,
+.vtb [data-act="imageonly"] kbd,
+.vtb [data-act="blink"] .chk,
+.vtb [data-act="imageonly"] .chk {
+    margin: 0;
+}
 .vtb kbd {
-    margin-left: 3px;
+    margin-left: 4px;
     font-size: 10px;
     padding: 1px 2px;
     min-width: 12px;
+}
+.vtb kbd.quiet {
+    padding: 0;
+    min-width: 0;
 }
 .vtb kbd + kbd {
     margin-left: 2px;
@@ -1222,26 +1453,25 @@ body.nokeys kbd .lk {
 .tg {
     display: flex;
     align-items: center;
-    gap: 3px;
+    gap: 5px;
     flex: none;
 }
 .tg + .tg {
     border-left: 1px solid var(--line);
-    padding-left: 5px;
+    padding-left: 6px;
 }
-.vtb > .grow + .tg,
-.vtb > .itemsum + .tg {
+.vtb > .grow + .tg {
     border-left: 0;
     padding-left: 0;
 }
-.morebtn {
-    display: none;
-}
+/* Image only's strip starts with Back and the snapshot's name, which gives way first. */
 .vtb .itemsum {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
+    padding-right: 6px;
+    border-right: 1px solid var(--line);
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
@@ -1251,57 +1481,31 @@ body.nokeys kbd .lk {
 .vtb .itemsum .iright {
     flex: none;
 }
-.vtb .itemsum .name {
+/* The name and its mode are inline text in one box, not flex items: innerText and a screen reader
+   read "story-0, light", no space before the comma. A name too long is cut at the box's end. */
+.vtb .itemsum .who {
+    display: block;
     min-width: 0;
-    flex: 0 1 auto;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-@container viewer (max-width: 1099px) {
-    .vtb .tg[data-g="display"] {
-        display: none;
-    }
-    .morebtn {
-        display: inline-block;
-    }
 }
 @container viewer (max-width: 899px) {
     .vtb {
         gap: 4px;
     }
     .vtb button {
-        font-size: 11px;
-        padding: 2px 3px;
-    }
-    .vtb kbd {
-        font-size: 9.5px;
-        min-width: 11px;
-        margin-left: 2px;
-        padding: 1px;
-    }
-    .vtb button[aria-pressed="true"] .chk {
-        margin-right: 1px;
-    }
-    .tg + .tg {
-        padding-left: 4px;
+        font-size: 11.5px;
+        padding: 2px 4px;
     }
 }
-/* Image only, 1300 px and wider: the item line is merged into the toolbar's middle. */
-@container viewer (min-width: 1300px) {
-    .iline.ionly {
-        display: none;
-    }
-    .vtb.merged .tg[data-g="display"] {
-        display: none;
-    }
-    .vtb.merged .morebtn {
-        display: inline-block;
-    }
-}
-@container viewer (max-width: 1299px) {
-    .vtb .itemsum {
-        display: none;
-    }
+/* Image only (design 9.5): one strip over the picture and the decision bar. The top bar, both
+   rails, the item line and an empty message line go; a message still shows. */
+.iline.ionly,
+body.ionly #top,
+body.ionly .pane.rail,
+body.ionly #msgline:has(#msg-t:empty) {
+    display: none !important;
 }
 .iline {
     min-height: 32px;
@@ -1329,28 +1533,48 @@ body.nokeys kbd .lk {
     gap: 6px;
     flex: none;
 }
+/* Nothing on the line shrinks: the page drops badges, then cuts the name in the middle down to 24
+   characters (viewer.js fillLine), then wraps the line to a second line. */
+.iline.wrap {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding-block: 4px;
+}
+.iline .who {
+    flex: none;
+    min-width: 0;
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .iline .name {
     min-width: 0;
-    flex: 0 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     padding: 0;
 }
-.iline .comp {
-    flex: 0 5 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    padding: 0;
+.iline .mode {
+    flex: none;
 }
 .iline .keep,
 .iline .badge,
-.iline .tag,
-.iline .st,
-.iline .asay {
+.iline .st {
     flex: none;
 }
+/* A quiet text button: Details at the end of the item line. */
+button.quietbtn {
+    border-color: transparent;
+    background: none;
+    color: var(--ink-2);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+button.quietbtn[aria-expanded="true"] {
+    color: var(--ink);
+}
 .badge {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     font-size: 11px;
@@ -1373,6 +1597,9 @@ body.nokeys kbd .lk {
 }
 .details[hidden] {
     display: none;
+}
+.details .dlink {
+    grid-column: 1 / -1;
 }
 .details .dcon {
     grid-column: span 7;
@@ -1429,7 +1656,8 @@ body.nokeys kbd .lk {
 .stage .label .lt {
     min-width: 110px;
 }
-.stage .label .note {
+.stage .label .note,
+.stage .label .state {
     color: var(--ink-2);
     font-weight: 400;
 }
@@ -1492,43 +1720,31 @@ body.nokeys kbd .lk {
     box-shadow: 0 0 0 1px #fff;
     pointer-events: none;
 }
-.stagewrap .note {
-    position: absolute;
-    left: 50%;
-    top: 40px;
-    transform: translateX(-50%);
-    background: var(--surface);
-    color: var(--ink);
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    z-index: 2;
-}
+/* The locator sits at the right end of the New panel's label strip, never over the image. */
 .locator {
-    position: absolute;
-    right: 18px;
-    bottom: 18px;
-    width: 120px;
-    border: 1px solid #fff;
+    position: relative;
+    flex: none;
+    margin-left: auto;
+    border: 1px solid var(--line);
     background: #fff;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
     cursor: crosshair;
-    z-index: 4;
+    overflow: hidden;
 }
 .locator img {
     width: 100%;
+    height: 100%;
     display: block;
 }
 .locator .lr {
     position: absolute;
-    border: 2px solid var(--focus);
+    border: 1px solid var(--focus);
     pointer-events: none;
 }
 .locator .ld {
     position: absolute;
-    width: 6px;
-    height: 6px;
-    margin: -3px 0 0 -3px;
+    width: 4px;
+    height: 4px;
+    margin: -2px 0 0 -2px;
     border-radius: 50%;
     background: #ff00aa;
     pointer-events: none;
@@ -1584,24 +1800,30 @@ body.nokeys kbd .lk {
 .decide .big {
     min-height: 36px;
     font-weight: 700;
-    color: #fff;
-    border: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     white-space: nowrap;
 }
-.decide .big .ic {
-    color: #fff;
-}
+/* Accept: the only filled button on the page's loop. Reject: a red outline, red words and mark. */
 .decide .acc {
     background: var(--accept);
-    min-width: 120px;
+    color: var(--on-ink);
+    border: 0;
+    min-width: 110px;
+}
+.decide .acc .ic {
+    color: var(--on-ink);
 }
 .decide .rej {
-    background: var(--reject);
-    min-width: 100px;
+    background: var(--surface);
+    color: var(--reject);
+    border: 2px solid var(--reject);
+    min-width: 96px;
+}
+.decide .rej .ic {
+    color: var(--reject);
 }
 .decide.tight {
     gap: 4px;
@@ -1739,14 +1961,15 @@ body.nokeys kbd .lk {
     overflow: auto;
     outline: none;
 }
+/* 24 px items: the List menu stays under 460 px at 1440 x 900. */
 .menu .mi {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 5px 10px;
+    padding: 3px 10px;
     border-radius: 5px;
     cursor: pointer;
-    min-height: 26px;
+    min-height: 24px;
 }
 .menu .mi:hover,
 .menu .mi:focus {
@@ -1760,6 +1983,14 @@ body.nokeys kbd .lk {
 .menu .mi .mk {
     flex: 1;
 }
+.menu .mi .mc {
+    margin-left: auto;
+    padding-left: 16px;
+    color: var(--ink-2);
+}
+.menu .mi.dim {
+    color: var(--ink-2);
+}
 .menu .mi .tick {
     width: 12px;
     display: inline-flex;
@@ -1768,6 +1999,12 @@ body.nokeys kbd .lk {
     height: 1px;
     background: var(--line);
     margin: 4px 2px;
+}
+.menu .mt {
+    max-width: 360px;
+    margin: 4px 10px 6px;
+    font-size: 12px;
+    line-height: 1.4;
 }
 .menu .mh {
     font-size: 11px;
@@ -1828,6 +2065,21 @@ dialog .q > b {
     display: block;
     margin-bottom: 4px;
 }
+dialog details.q > summary {
+    font-weight: 700;
+    cursor: pointer;
+}
+/* The Finish sheet: the change's title muted under its number, then three lines and Details. */
+dialog .ptitle {
+    margin: -6px 0 10px;
+    overflow-wrap: normal;
+}
+dialog.finish .left b {
+    color: color-mix(in srgb, var(--warn) 75%, var(--ink));
+}
+dialog .plumbing p {
+    font-size: 12px;
+}
 dialog label {
     display: flex;
     gap: 6px;
@@ -1844,6 +2096,14 @@ dialog label {
 }
 .keys kbd {
     margin: 0 3px 0 0;
+}
+dialog.keys-sheet label {
+    display: block;
+    margin-top: 12px;
+}
+dialog .kgroup {
+    margin: 10px 0 4px;
+    font-size: 12px;
 }
 dialog details {
     margin-top: 8px;
@@ -2027,7 +2287,10 @@ dialog.finish pre {
 .log {
     background: #11151b;
     color: #cfd6e0;
-    font: 11px/1.5 ui-monospace, Menlo, monospace;
+    font:
+        11px/1.5 ui-monospace,
+        Menlo,
+        monospace;
     padding: 8px 10px;
     border-radius: 6px;
     height: 200px;
@@ -2079,4 +2342,23 @@ dialog.finish .warnbox {
 .jobs td {
     padding: 4px 12px 4px 0;
     border-bottom: 1px solid var(--line);
+}
+/* The reason box's heading: one line, the story name cut in the middle by the page. */
+.popbox .phead {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* With the baseline hidden (P): "Show baseline  P" at the left end of the remaining label strip. */
+.stage .label .showbase {
+    flex: none;
+    height: 18px;
+    padding: 0 4px;
+    font-size: 12px;
+    font-weight: 400;
+}
+/* A menu item that is a link (Open on GitHub): it reads as the other items. */
+.menu a.mi {
+    color: inherit;
+    text-decoration: none;
 }

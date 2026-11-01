@@ -5,25 +5,33 @@ change's branch, posts the rejects, and sets the commit status.
 
 ## Finish one change
 
-With a change open, **Finish #3486 (12)** is the primary button at the right of the top bar. The
-number counts the decisions it will publish. At 0 it is unavailable and says "Nothing new to
-finish". You can also press **Finish [Enter]** on the card that shows once every snapshot is
-decided, or **Finish...** on a row of **Decided, not finished** in the changes pane, which
+With a change open, **Finish #3486...** is at the right of the top bar: outlined in the primary
+color while snapshots are left, filled once none is. With no new decision to publish, pressing it
+says "Nothing new to finish". You can also press **Finish #3486 (12) [Enter]** on the card that
+shows once every snapshot is decided (its number counts the decisions it will publish), or **Finish...** on a row of **Decided, not finished** in the changes pane, which
 finishes that change without opening it.
 
-Each opens the summary sheet, which says what will happen before anything does:
+Each opens the summary sheet, which says what will happen before anything does. It is titled
+"Finish #3486", with the change's title muted below, and says four things:
 
-- **Still undecided**, first, when snapshots are left: "17 snapshots are still undecided; they
-  will block the merge." **Go to the first undecided** closes the sheet on the first of them.
-  Finishing with undecided snapshots is allowed.
-- **Will commit**: how many accepted (and how many of those you never opened) and excluded, the
-  branch, and the git identity that commits.
+- **Saves**: what it commits, your own work apart from what was accepted before this capture,
+  each part only when it is not 0, then the branch and the git identity that commits: "Saves 12
+  you accepted (2 not opened), 3 excluded and 1,208 accepted earlier to branch feat/x, as Ada
+  Owner."
+- **Left**, when snapshots are left: "17 left: they will block the merge", with **Go to the
+  first**, which closes the sheet on the first of them. Finishing with snapshots left is allowed.
+- **The check** it sets, by its short name: "GitHub check: Reviewed".
+- **Signs with**, right above the confirm button: the passkey that signs it ("Signs with: Passkey
+  'MacBook Touch ID'"), while it is prepared "preparing the approval: ...", or why nothing is
+  signed ("Not yet protected: no passkey registered.", or why Finish cannot be approved now).
+  **Register passkey...** opens Settings; closing Settings brings the sheet back.
+
+The rest is under **Details**, closed until you open it:
+
 - **Will post**: the rejects, as one comment on the pull request, with their reasons under **The
   reasons**.
 - **Will set**: the commit status, in the server's own words, for example
   `"Reviewed: 190 accepted, 12 rejected, 2 excluded, 17 left undecided" (failure)`.
-- **Signs with**: the passkey that signs it, or "Not yet protected: no passkey registered."
-  **Register passkey...** opens Settings; closing Settings brings the sheet back.
 - **Start this server from your own shell**: the command, when someone else started the server.
 
 **Sign and finish #3486 [Enter]** (or **Finish #3486 [Enter]** with no passkey) starts it; **Cancel

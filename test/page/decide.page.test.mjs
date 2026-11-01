@@ -39,6 +39,7 @@ import {
     target,
     visibleKeys,
     webkitRuns,
+    openedChange,
 } from "./page-kit.mjs";
 
 const browsers = {};
@@ -374,7 +375,7 @@ describe.each(["chromium", "webkit"])("the decision keys in %s", (name) => {
 });
 
 const head = (page, comp) => page.locator(`.ghead[data-group="c:graphty-element > ${comp}"]`);
-const selBar = (page) => page.locator("#snaps-head > .h5.lselbar");
+const selBar = (page) => page.locator("#snaps-head > .h4.lselbar");
 const menuItem = (page, name) => page.locator(".menu .mi", { hasText: name });
 const dialog = (page) => page.locator("dialog[open]");
 const activeId = (page) => page.evaluate(() => globalThis.document.activeElement?.id ?? "");
@@ -390,11 +391,15 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         await page.keyboard.press("KeyX");
         await expect.poll(() => selBar(page).innerText()).toMatch(/^1 selected/);
         expect(await shows(page.locator('.iline [data-act="select"]'))).toBe("Unselect [X]");
-        expect(await barText(page, "accept")).toBe("Accept 1 selected [A]");
-        expect(await barText(page, "reject")).toBe("Reject 1 selected... [R]");
-        expect(await barText(page, "exclude")).toBe("Exclude 1 selected... [E]");
-        // The selection bar's Accept 1 shows no key: A acts through the decision bar's.
-        expect(await shows(selBar(page).locator('[data-act="accsel"]'))).toBe("Accept 1");
+        expect(await barText(page, "accept")).toBe("Accept 1 [A]");
+        expect(await barText(page, "reject")).toBe("Reject 1... [R]");
+        expect(await barText(page, "exclude")).toBe("Exclude 1... [E]");
+        // The selection bar holds only the count, Clear and its menu: the decision bar decides it.
+        expect(
+            await selBar(page)
+                .locator("[data-act]")
+                .evaluateAll((ns) => ns.map((n) => n.dataset.act)),
+        ).toEqual(["clearsel", "selmenu"]);
         expect(await keyOwners(page, "A")).toEqual(["accept"]);
         // On a row that is not selected, A decides that row: the plain Accept [A].
         await page.keyboard.press("ArrowRight");
@@ -411,12 +416,13 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         await page.keyboard.press("KeyA");
         await expect.poll(() => message(page)).toBe("Accepted #1.");
         expect(posts("/api/accept-all").map((p) => p.body.files)).toEqual([[fileOf(MAIN, 1)]]);
-        // The selection is cleared once decided: Show, Group and Pictures are back.
+        // The selection is cleared once decided: Show and List are back.
         await expect.poll(() => selBar(page).count()).toBe(0);
-        expect(await page.locator('#snaps-head > .h5 [data-act="showmenu"]').count()).toBe(1);
+        expect(await page.locator('#snaps-head > .h3 [data-act="showmenu"]').count()).toBe(1);
+        expect(await page.locator('#snaps-head > .h3 [data-act="listmenu"]').count()).toBe(1);
     });
 
-    it("selects by checkbox, shift-click ranges across groups and over a collapsed one, Ctrl/Cmd-click, Extend up and down by menu and key; the bar replaces line 5 and no row moves", async () => {
+    it("selects by checkbox, shift-click ranges across groups and over a collapsed one, Ctrl/Cmd-click, Extend up and down by menu and key; the bar appears under line 3 and no row moves", async () => {
         const page = await openIn(MAIN);
         await head(page, "component-1").locator(".caret").click();
         await expect.poll(() => row$(page, 6).count()).toBe(0);
@@ -427,7 +433,7 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
                 return n.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
             });
         const before = await rowTop();
-        const h5 = await page.locator("#snaps-head > .h5").boundingBox();
+        const line3 = await page.locator("#snaps-head > .h3").boundingBox();
         await row$(page, 2).locator(".rcheck").click();
         await expect.poll(() => selBar(page).innerText()).toMatch(/^1 selected/);
         // The range runs through the collapsed component-1, whose rows are not drawn.
@@ -435,15 +441,15 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
             .locator(".rcheck")
             .click({ modifiers: ["Shift"] });
         await expect.poll(() => selBar(page).locator(".selcount").innerText()).toBe("12 selected");
-        expect(await shows(selBar(page).locator('[data-act="accsel"]'))).toBe("Accept 12");
+        expect(await shows(selBar(page).locator('[data-act="clearsel"]'))).toBe("Clear [Esc]");
         for (const n of [2, 5, 11, 13]) {
             expect(await row$(page, n).getAttribute("class"), `#${n}`).toContain("selx");
             expect(await row$(page, n).locator(".rcheck").getAttribute("aria-checked")).toBe("true");
         }
         expect(await row$(page, 14).getAttribute("class")).not.toContain("selx");
-        // Same height, same place: the bar took line 5's place and no row moved.
+        // Its own line, right under line 3 and as tall; no row moved in the list.
         const sb = await selBar(page).boundingBox();
-        expect([sb.y, sb.height]).toEqual([h5.y, h5.height]);
+        expect([sb.y, sb.height]).toEqual([line3.y + line3.height, line3.height]);
         expect(await rowTop()).toBe(before);
         // Ctrl/Cmd-click toggles a row without making it current.
         await row$(page, 20).click({ modifiers: ["ControlOrMeta"] });
@@ -461,12 +467,15 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         expect(await currentN(page)).toBe("#2");
         // Extend down and Extend up, from the bar's menu, do what the keys do.
         await selBar(page).locator('[data-act="selmenu"]').click();
-        expect((await menuItem(page, "Extend down").innerText()).trim()).toMatch(/^Extend down\s*Shift\+Down$/);
-        await menuItem(page, "Extend down").click();
+        expect((await selBar(page).locator('[data-act="selmenu"]').innerText()).trim()).toBe("More");
+        expect((await menuItem(page, "Extend selection down").innerText()).trim()).toMatch(
+            /^Extend selection down\s*Shift\+Down$/,
+        );
+        await menuItem(page, "Extend selection down").click();
         await expect.poll(() => selBar(page).locator(".selcount").innerText()).toBe("3 selected");
         expect(await currentN(page)).toBe("#3");
         await selBar(page).locator('[data-act="selmenu"]').click();
-        await menuItem(page, "Extend up").click();
+        await menuItem(page, "Extend selection up").click();
         await expect.poll(() => currentN(page)).toBe("#2");
         await page.keyboard.press("Shift+ArrowUp");
         await expect.poll(() => currentN(page)).toBe("#1");
@@ -499,7 +508,8 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         };
         const byProject = (list) => list.map((p) => [p.body.project, p.body.decision, p.body.files.length]).sort();
         await selectAll();
-        await selBar(page).locator('[data-act="accsel"]').click();
+        expect(await barText(page, "accept")).toBe("Accept 24 [A]");
+        await bar(page, "accept").click();
         // Over 20: it asks first, and its default button has focus.
         expect(await dialog(page).locator("h3").innerText()).toBe("Accept 24 snapshots without opening them?");
         expect(await dialog(page).innerText()).toContain("they will be marked Accepted (not opened).");
@@ -519,7 +529,7 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         expect(await page.locator("#snap-list .srow.decided").count()).toBe(0);
         // Bulk Reject, with one reason.
         await selectAll();
-        await selBar(page).locator('[data-act="rejsel"]').click();
+        await bar(page, "reject").click();
         expect(await page.locator("#popbox").innerText()).toContain("One reason for 24 snapshots.");
         await page.keyboard.type("Text is clipped");
         await page.keyboard.press("Enter");
@@ -537,7 +547,7 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         // Bulk Exclude, with its second step; one project fails, is named, and Retry sends it alone.
         failGraphty = true;
         await selectAll();
-        await selBar(page).locator('[data-act="excsel"]').click();
+        await bar(page, "exclude").click();
         await page.keyboard.type("Animated");
         await page.keyboard.press("Enter");
         expect(await page.locator("#popbox b").innerText()).toBe("Exclude 24 snapshots");
@@ -551,7 +561,9 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
         await expect.poll(() => posts("/api/accept-all").length).toBe(11);
         expect(byProject(posts("/api/accept-all").slice(10))).toEqual([["graphty", "exclude", 12]]);
-        await expect.poll(() => page.locator("#snaps-head > .h2").innerText()).toMatch(/^24 of 24 decided/);
+        await expect
+            .poll(async () => (await page.locator("#snaps-head > .h2").innerText()).replaceAll(/\s+/g, " "))
+            .toMatch(/^0 left 24 decided/);
     });
 });
 
@@ -586,8 +598,8 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
                     : x,
             ),
         });
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
-        await menuItem(page, "Accept all shown (24)...").click();
+        await page.locator('#snaps-head [data-act="showmenu"]').click();
+        await menuItem(page, "Accept all 24 shown...").click();
         await page.keyboard.press("Enter");
         await expect
             .poll(() => message(page))
@@ -599,10 +611,10 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         ]);
     });
 
-    it("Accept all shown... and Undo all decisions... from the list menu ask first, one request each", async () => {
+    it("Accept all N shown... (Show menu) and Undo all decisions... (the change's menu) ask first, one request each", async () => {
         const page = await openIn(MAIN);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
-        await menuItem(page, "Accept all shown (30)...").click();
+        await page.locator('#snaps-head [data-act="showmenu"]').click();
+        await menuItem(page, "Accept all 30 shown...").click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Accept 30 matching?");
         expect(await dialog(page).innerText()).toContain("Every undecided row the filter and Find show.");
         await dialog(page)
@@ -610,7 +622,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .click();
         await expect.poll(() => posts("/api/accept-all").length).toBe(1);
         expect(posts("/api/accept-all")[0].body.files).toHaveLength(30);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
+        await page.locator('#snaps-head [data-act="chgmenu"]').click();
         await menuItem(page, "Undo all decisions...").click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Undo all decisions?");
         expect(await dialog(page).innerText()).toContain("30 decisions go back to undecided.");
@@ -619,7 +631,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .click();
         expect(await dialog(page).count()).toBe(0);
         expect(posts("/api/accept-all")).toHaveLength(1);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
+        await page.locator('#snaps-head [data-act="chgmenu"]').click();
         await menuItem(page, "Undo all decisions...").click();
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Undone: 30 decisions.");
@@ -636,7 +648,10 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             await page.keyboard.press("KeyA");
             await expect.poll(() => message(page)).toBe(`Accepted #${n}.`);
         }
-        await head(page, "component-0").locator('[data-act="gundo"]').click();
+        // Accept 3 holds the header's third place; Undo 2... is in the group's menu, opened by its name.
+        expect(await head(page, "component-0").locator('[data-act="gundo"]').count()).toBe(0);
+        await head(page, "component-0").locator('[data-act="gmenu"]').click();
+        await menuItem(page, "Undo 2...").click();
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Undone: 2 decisions in graphty-element > component-0.");
         await page.keyboard.press("KeyU");
@@ -652,6 +667,8 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         const page = await openIn(MAIN);
         await head(page, "component-0").locator('[data-act="gaccept"]').click();
         await expect.poll(() => shows(head(page, "component-0").locator('[data-act="gundo"]'))).toBe("Undo 5");
+        // No longer the current group: its Undo 5 shows while its header is hovered.
+        await head(page, "component-0").hover();
         await head(page, "component-0").locator('[data-act="gundo"]').click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Undo 5 decisions in graphty-element > component-0?");
         await page.keyboard.press("Enter");
@@ -710,7 +727,7 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .toBe("Accept 5 [Shift+A]");
         expect(await keyOwners(page, "Enter")).toEqual(["openrow"]);
         await page.keyboard.press("Enter");
-        await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back to list [Esc]");
+        await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back [Esc]");
         expect(posts("/api/accept-all")).toHaveLength(1);
         await page.keyboard.press("Escape");
         // On a group with nothing left, Shift+A says so.
@@ -732,25 +749,33 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         );
         await page.keyboard.press("Escape");
         await expect.poll(() => dialog(page).count()).toBe(0);
-        // One level at 1440: no Open is printed, so Enter does nothing.
-        expect(await keyOwners(page, "Enter")).toEqual([]);
-        await page.keyboard.press("Enter");
+        // Open [Enter] is printed at every width; Enter is only Open's.
+        expect(await keyOwners(page, "Enter")).toEqual(["openrow"]);
         await page.keyboard.press("Shift+KeyA");
         await page.keyboard.press("Enter");
         await expect.poll(() => posts("/api/accept-all").length).toBe(1);
         expect(posts("/api/accept-all")[0].body.files).toHaveLength(25);
     });
 
-    it("Approved before has Reject and Exclude but no Undo; Rejected before is replaced by Accept", async () => {
+    it("Accepted earlier has Reject and Exclude in its menu but no Undo; Rejected before is replaced by Accept", async () => {
         const page = await openIn(RICH);
         const before = page.locator(`.ghead[data-group="!before"]`);
-        expect((await before.innerText()).trim()).toMatch(/^Approved before\s+2\s+\(already accepted\)/);
+        // As text: the line is at the list's end, off screen (content-visibility), so innerText skips it.
+        expect((await before.textContent()).trim()).toBe("Accepted earlier");
         expect(await before.locator('[data-act="gundo"]').count()).toBe(0);
-        await before.getByRole("button", { name: "Show", exact: true }).click();
-        const approved = page.locator("#snap-list .srow", { hasText: "Accepted (approved before #1356)" });
+        expect(await before.locator('[data-act="gaccept"]').count()).toBe(0);
+        await before.locator('[data-act="gtoggle"]').click();
+        const approved = page.locator("#snap-list .srow", { hasText: "Accepted earlier (#1356)" });
         await expect.poll(() => approved.count()).toBe(2);
         expect(await approved.getByRole("button", { name: "Undo" }).count()).toBe(0);
-        await before.getByRole("button", { name: "Reject 2..." }).click();
+        await before.locator('[data-act="gmenu"]').click();
+        expect(await page.locator(".menu .mi .ml").allInnerTexts()).toEqual([
+            "Collapse",
+            "Reject 2...",
+            "Exclude 2...",
+            "Select all 2",
+        ]);
+        await menuItem(page, "Reject 2...").click();
         await page.keyboard.type("Not the right theme");
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Rejected 2 snapshots.");
@@ -765,10 +790,10 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
             .getByRole("button", { name: /^Cancel/ })
             .click();
         // Rejected before: no Undo; Reject says why not, Accept replaces it.
-        await page.getByRole("button", { name: /^Group:/ }).click();
+        await page.locator('#snaps-head [data-act="listmenu"]').click();
         await menuItem(page, "None").click();
         await page.getByRole("button", { name: /^Show:/ }).click();
-        await menuItem(page, "Rejected (2)").click();
+        await page.getByRole("menu").locator(".mi", { hasText: "Rejected" }).click();
         const rej = page.locator("#snap-list .srow", { hasText: "Rejected before (#5000, 2026-10-20)" });
         expect(await rej.getByRole("button", { name: "Undo" }).count()).toBe(0);
         await rej.click();
@@ -843,24 +868,26 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         expect(await card.locator("h2").innerText()).toBe("All 3 decided.");
         expect(await activeId(page)).toBe("endfinish");
         expect(await shows(page.locator("#endfinish"))).toBe("Finish #8200 (3) [Enter]");
+        // Nothing left: the top bar's Finish is filled, no longer outlined.
+        expect(await page.locator("#finish").getAttribute("class")).toBe("primary");
         expect(await shows(card.locator('[data-act="endback"]'))).toBe("Back to changes [Esc]");
         expect(await shows(card.locator('[data-act="nextchange"]'))).toMatch(
             /^Next change: #\d+ \(\d+ undecided\) \[Shift\+N\]$/,
         );
         expect(await keyOwners(page, "Esc")).toEqual(["endback"]);
         expect(await keyOwners(page, "Shift+N")).toEqual(["nextchange"]);
-        expect(await shows(page.locator('.iline [data-act="back"]'))).toBe("Back to changes");
+        expect(await shows(page.locator('.iline [data-act="back"]'))).toBe("Back");
         // Esc: Back, as the card prints it.
         await page.keyboard.press("Escape");
-        await expect.poll(() => message(page)).toBe("Back to the changes.");
+        await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
     });
 
     it("opens the next change from the end card by Shift+N", async () => {
         const page = await toEndCard();
         const next = await page.locator('.endcard [data-act="nextchange"]').innerText();
         await page.keyboard.press("Shift+KeyN");
-        await expect.poll(() => message(page)).toMatch(/^Opened #\d+ /);
-        expect(next).toContain((await message(page)).match(/^Opened (#\d+) /)[1]);
+        await expect.poll(() => message(page)).toMatch(/^Opened: /);
+        expect(next).toContain(`#${await openedChange(page)}`);
     });
 
     it("opens this change's Finish summary sheet from the end card by Enter", async () => {
@@ -869,14 +896,14 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         await page.keyboard.press("Enter");
         const sheet = page.locator("dialog.finish[open]:not([aria-busy])");
         await sheet.waitFor();
-        expect(await sheet.locator("h3").innerText()).toBe(`Finish #${SMALL} Three`);
+        expect(await sheet.locator("h3").innerText()).toBe(`Finish #${SMALL}`);
+        expect(await sheet.locator(".ptitle").innerText()).toBe("Three");
         expect(await page.evaluate(() => globalThis.document.activeElement.dataset.act)).toBe("finishgo");
     });
 });
 
 describe("the decision bar's layout", () => {
-    // Every button wholly inside the bar's one 52 px row, none wrapped, none drawn as its key alone;
-    // the position text whole, or gone.
+    // Every button wholly inside the bar's one 52 px row, none wrapped, none drawn as its key alone.
     const fits = (page) =>
         page.evaluate(() => {
             const d = globalThis.document.querySelector(".decide");
@@ -893,8 +920,7 @@ describe("the decision bar's layout", () => {
                     bad.push(b.dataset.act);
                 }
             }
-            const pos = d.querySelector(".pos")?.textContent ?? "";
-            return { bad, pos, row: box.height };
+            return { bad, row: box.height };
         });
 
     for (const viewport of [
@@ -907,16 +933,15 @@ describe("the decision bar's layout", () => {
                 const f = await fits(page);
                 expect(f.bad).toEqual([]);
                 expect(f.row).toBe(52);
-                expect(f.pos).toMatch(/^(#\d+(, \d+ left)?)?$/);
             };
             await check();
             await page.keyboard.press("KeyX");
-            await expect.poll(() => barText(page, "accept")).toBe("Accept 1 selected [A]");
+            await expect.poll(() => barText(page, "accept")).toBe("Accept 1 [A]");
             await check();
             await page.keyboard.press("Escape");
             if (viewport.width < 1400) {
                 await page.keyboard.press("Enter");
-                await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back to list [Esc]");
+                await expect.poll(() => shows(page.locator('.iline [data-act="back"]'))).toBe("Back [Esc]");
                 await check();
             }
         });
@@ -926,23 +951,33 @@ describe("the decision bar's layout", () => {
 describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
     const openIn = inBrowser(name);
 
-    it("says master has newer baselines, lists them, and Update from master runs the job, shows its steps and reloads the list", async () => {
+    it("says Behind master on line 2, its menu says what it means, lists them, and Update from master runs the job and reloads the list", async () => {
         let done = false;
         const page = await openIn(STALE, {
             update: (b) => ({ job: { kind: "update", target: b.id, running: true, step: "starting", error: null } }),
             finishStatus: () => ({ kind: "update", target: STALE, running: !done, step: "merging", error: null }),
         });
-        const banner = page.locator("#snap-stale");
+        // One chip at the right end of line 2 (the progress line), one line, no banner between the
+        // header and the rows (design 9.4 item 1).
+        const chip = page.locator('#snaps-head > .h2 [data-act="stalechip"]');
+        // Its name in full; on a tight line 2 it says it shorter.
+        expect(await chip.getAttribute("aria-label")).toBe("Behind master: 3");
+        expect((await chip.innerText()).trim()).toMatch(/^Behind( master)?: 3$/);
+        const box = await chip.boundingBox();
+        expect(box.height).toBeLessThanOrEqual(26);
+        expect(await page.locator("#snap-stale").count()).toBe(0);
+        await chip.click();
         // trim: WebKit's innerText puts a line break around the flex box's text.
-        expect((await banner.innerText()).trim()).toMatch(
-            /^master has 3 newer baselines since this capture\.\s*Changed on master\s*Update from master\.\.\.$/,
+        expect((await page.locator(".menu").innerText()).trim()).toMatch(
+            /^master accepted 3 newer baselines after this capture\.\s*Your decisions stay valid unless master changed the same images\. If it did, updating first saves reviewing them twice: Update from master merges master in and CI captures again\.\s*See what changed on master\s*Update from master\.\.\.$/i,
         );
-        await banner.getByRole("button", { name: "Changed on master" }).click();
+        await menuItem(page, "See what changed on master").click();
         expect(await dialog(page).innerText()).toContain("graphty-element/legend--default.light.png");
         await dialog(page)
             .getByRole("button", { name: /^Close/ })
             .click();
-        await banner.getByRole("button", { name: "Update from master..." }).click();
+        await chip.click();
+        await menuItem(page, "Update from master...").click();
         expect(await dialog(page).locator("h3").innerText()).toBe("Update #8500 from master?");
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Updating #8500: merging...");
@@ -957,7 +992,7 @@ describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
         );
         done = true;
         await expect.poll(() => message(page)).toBe("Updated #8500 from master: CI captures it again.");
-        expect(await banner.isVisible()).toBe(false);
+        expect(await chip.count()).toBe(0);
     });
 
     it("offers Update from master... in the changes row menu, for a pull request", async () => {
@@ -976,8 +1011,8 @@ describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
 describe("counted work", () => {
     it("accepts 1,000 shown in one project with one request, and undoes it with one", async () => {
         const page = await openChange(BIG);
-        await page.locator('#snaps-head [data-act="listmenu"]').click();
-        await menuItem(page, "Accept all shown (1,000)...").click();
+        await page.locator('#snaps-head [data-act="showmenu"]').click();
+        await menuItem(page, "Accept all 1,000 shown...").click();
         await page.keyboard.press("Enter");
         await expect.poll(() => message(page)).toBe("Accepted 1,000 snapshots.");
         await page.keyboard.press("KeyU");
@@ -1012,8 +1047,8 @@ describe("on the review server", () => {
             await page.keyboard.press("Slash");
             await page.keyboard.type("slider");
             await expect.poll(() => page.locator("#snap-list .srow").count()).toBe(1);
-            await page.locator('#snaps-head [data-act="viewopts"]').click();
-            await menuItem(page, "Accept all shown (1)...").click();
+            await page.locator('#snaps-head [data-act="showmenu"]').click();
+            await menuItem(page, "Accept all 1 shown...").click();
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toMatch(/^Accepted #\d+\.$/);
             const saved = JSON.parse(readFileSync(join(s.tmp, "state", "123.json"), "utf8"));
@@ -1028,7 +1063,7 @@ describe("on the review server", () => {
 });
 
 describe("Update from master on the review server", () => {
-    it("runs the job on the branch, shows its progress, and reloads the list with the stale banner gone", async () => {
+    it("runs the job on the branch, shows its progress, and reloads the list with the Behind master chip gone", async () => {
         // The server logs the update, and the thumbnail it cannot make of the newer baseline (text,
         // not an image): neither is this test's subject.
         const out = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -1063,9 +1098,9 @@ describe("Update from master on the review server", () => {
                 .toBe(true);
             await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await showList(page);
-            const banner = page.locator("#snap-stale");
-            await banner.waitFor();
-            expect(await banner.innerText()).toMatch(/^master has 1 newer baseline since this capture\./);
+            const chip = page.locator('#snaps-head > .h2 [data-act="stalechip"]');
+            await chip.waitFor();
+            expect(await chip.getAttribute("aria-label")).toBe("Behind master: 1");
             // Every message the line shows, in order.
             await page.evaluate(() => {
                 const line = globalThis.document.getElementById("msg-t");
@@ -1076,7 +1111,11 @@ describe("Update from master on the review server", () => {
                     characterData: true,
                 });
             });
-            await banner.getByRole("button", { name: "Update from master..." }).click();
+            await chip.click();
+            expect(await page.locator(".menu").innerText()).toContain(
+                "Master accepted 1 newer baseline after this capture.",
+            );
+            await menuItem(page, "Update from master...").click();
             expect(await dialog(page).locator("h3").innerText()).toBe("Update #123 from master?");
             await page.keyboard.press("Enter");
             await expect.poll(() => message(page)).toBe("Updated #123 from master: CI captures it again.");
@@ -1085,7 +1124,7 @@ describe("Update from master on the review server", () => {
                 said.filter((m) => /^Updating #123: .+\.\.\.$/.test(m)),
                 said.join(" / "),
             ).not.toEqual([]);
-            expect(await banner.isVisible()).toBe(false);
+            expect(await chip.count()).toBe(0);
             // The branch holds the merge of master: its first parent the old head, its second master.
             expect(git(r.remote, "rev-parse", "feature^1")).toBe(r.head);
             expect(git(r.remote, "rev-parse", "feature^2")).toBe(masterTip);

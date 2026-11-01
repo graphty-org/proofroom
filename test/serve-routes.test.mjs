@@ -446,7 +446,15 @@ describe("serve: the list's rows", () => {
         const button = body.items.find((i) => i.file === "button--primary.dark.png");
         const item = full.items.find((i) => i.file === "button--primary.dark.png");
         expect(button.pic).toBe(`${item.baseline}-${item.capture}-${item.threshold}-0`);
-        expect(button.areas).toEqual({ crop: expect.any(Array), zoom: expect.any(Number), count: 1 });
+        expect(button.areas).toEqual({
+            crop: expect.any(Array),
+            zoom: expect.any(Number),
+            count: 1,
+            shown: 1,
+            how: "all",
+            cover: expect.any(Number),
+            coverAll: expect.any(Number),
+        });
         expect((await s.api("GET", `/api/pic/${button.pic}-row-spot`)).status).toBe(200);
         for (const row of body.items) {
             for (const gone of ["console", "bbox", "threshold", "includeAA", "flaky", "attempts", "pictures"]) {

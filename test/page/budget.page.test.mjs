@@ -8,7 +8,21 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { BROWSERS, listAnswer, message, openNext, project, rowsAnswer, target, webkitRuns } from "./page-kit.mjs";
+import { NOW } from "./fixtures.mjs";
+import {
+    BROWSERS,
+    listAnswer,
+    message,
+    openNext,
+    project,
+    rowsAnswer,
+    target,
+    webkitRuns,
+    openedChange,
+} from "./page-kit.mjs";
+
+// Data old enough that the top bar shows its age and Refresh.
+const OLD = { updatedAt: NOW - 6 * 60000 };
 
 const runWebkit = await webkitRuns();
 
@@ -58,7 +72,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             const row = page.locator("dialog[open] #set-disk");
             await expect
                 .poll(() => row.innerText())
-                .toMatch(/^Disk budget\s*10 GB, least recently opened removed first\. 3\.2 GB in use\.$/);
+                .toMatch(/^Picture storage\s*10 GB, least recently opened removed first\. 3\.2 GB in use\.$/);
         });
 
         it("downloads an evicted change again when it is clicked, then opens it", async () => {
@@ -70,10 +84,11 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 projects: [project("graphty-element", { reviewable: 3, downloading: true })],
             });
             t = await openNext(browser, {
-                list: listAnswer([evicted(), deleted]),
+                // Data 6 minutes old, so the top bar offers Refresh.
+                list: listAnswer([evicted(), deleted], OLD),
                 rows: (id, p) => {
                     if (id === "10" && asked++ === 0) {
-                        t.setList(listAnswer([downloading, deleted]));
+                        t.setList(listAnswer([downloading, deleted], OLD));
                         return { downloading: true };
                     }
                     return rowsAnswer(p, 3);
@@ -83,8 +98,11 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             const row = page.locator('.chg[data-chg="10"]');
             await row.waitFor();
             const l2 = () => row.locator(".l2").innerText();
-            await expect.poll(l2).toContain("3 undecided");
-            expect(await l2()).toContain("Images not on disk: opening downloads 68 MB");
+            await expect.poll(l2).toContain("3 left");
+            expect(await l2()).toContain("68 MB to download");
+            expect(await row.locator(".l2 .badge").getAttribute("title")).toBe(
+                "Images not on disk: opening downloads 68 MB",
+            );
             expect(await sectionOf(page, "10")).toBe("needs");
             // Deleted by the code host: not ready, and what to do.
             // WebKit's innerText ends the mark's line with a newline.
@@ -102,11 +120,14 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             expect(await sectionOf(page, "10")).toBe("busy");
 
             // Its images are in: the next list shows it as before, and it opens with no other click.
-            t.setList(listAnswer([target(10, { projects: [project("graphty-element", { reviewable: 3 })] }), deleted]));
+            t.setList(
+                listAnswer([target(10, { projects: [project("graphty-element", { reviewable: 3 })] }), deleted], OLD),
+            );
             await page.locator('[data-act="refresh"]').click();
-            await expect.poll(() => message(page)).toMatch(/^Opened #10 Change 10: 3 undecided\.$/);
+            await expect.poll(() => message(page)).toMatch(/^Opened: 3 left\.$/);
+            expect(await openedChange(page)).toBe("10");
             expect(await l2()).not.toContain("Downloading");
-            expect(await l2()).not.toContain("Images not on disk");
+            expect(await l2()).not.toContain("to download");
             expect(asked).toBe(2);
             // While it is open, every list poll names it, so the budget keeps its images.
             await page.locator('[data-act="refresh"]').click();

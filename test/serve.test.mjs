@@ -2355,9 +2355,9 @@ describe("serve: what the page waits on", () => {
         const s = await start({ fakes: onePrFakes() });
         await s.api("GET", "/api/prs");
         await app.idle();
-        // Six thumbnails and three changed pairs of three pictures: nothing is still being made.
+        // Six thumbnails and three changed pairs of five pictures: nothing is still being made.
         expect(readdirSync(join(s.tmp, "thumbs")).filter((f) => f.endsWith(".png"))).toHaveLength(6);
-        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(9);
+        expect(readdirSync(join(s.tmp, "spots")).filter((f) => f.endsWith(".png"))).toHaveLength(15);
     });
 
     it("makes each changed item's spotlit and row pictures once, kept by both images and the diff's settings", async () => {
@@ -2369,14 +2369,14 @@ describe("serve: what the page waits on", () => {
                       .filter((f) => f.endsWith(".png"))
                       .sort()
                 : [];
-        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), three
+        // Three changed pairs in compact-mantine (button, slider, the unstable tooltip), five
         // pictures each beside the capture's thumbnail.
-        await until(() => spots().length === 9);
+        await until(() => spots().length === 15);
         const rows = (await s.api("GET", "/api/pr/123/compact-mantine?rows=1")).body.items;
         const pic = (file) => rows.find((i) => i.file === file).pic;
         const button = rows.find((i) => i.file === "button--primary.dark.png");
         expect(spots().filter((f) => f.startsWith(`${button.baseline}-${button.capture}-`))).toEqual(
-            ["row-plain", "row-spot", "spot"].map((k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`),
+            ["row-plain", "row-spot", "row-tint", "spot", "tint"].map((k) => `${button.baseline}-${button.capture}-0.063-0-${k}.png`),
         );
         const tile = await s.api("GET", `/api/pic/${pic("button--primary.dark.png")}-spot`);
         expect(tile.type).toBe("image/png");
@@ -2388,7 +2388,7 @@ describe("serve: what the page waits on", () => {
         const plain = PNG.sync.read((await s.api("GET", `/api/pic/${pic("button--primary.dark.png")}-plain`)).body);
         expect(at(spot, 2, 2)[3]).toBeGreaterThanOrEqual(190);
         expect(at(spot, 2, 2).slice(0, 3)).not.toEqual(at(plain, 1, 1).slice(0, 3));
-        expect(spots()).toHaveLength(9);
+        expect(spots()).toHaveLength(15);
         // A slider of another height is padded, as the page pads it.
         expect((await s.api("GET", `/api/pic/${pic("slider--sizes.png")}-spot`)).status).toBe(200);
         // An unchanged story and a new one have no change to light; an unknown or retired kind is
