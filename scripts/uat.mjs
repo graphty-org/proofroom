@@ -76,7 +76,7 @@ const SNAPSHOT_KEYS = [
 // Text a reviewer should never see unless the step expects it.
 const BAD_TEXT = /could not be shown|could not be loaded|damaged|\berrors?\b|\bfailed\b/i;
 // A change's row that has snapshots to decide: its count says so.
-const READY_COUNT = /: [\d,]+ undecided$|: [\d,]+ of [\d,]+ decided$/;
+const READY_COUNT = /: [\d,]+ left( of [\d,]+)?$/;
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: true });
@@ -584,9 +584,9 @@ await step(
     "Settings sheet",
     async ({ check }) => {
         await act("settings").click();
-        check(await waitDialog("Disk budget"), "Settings opened no sheet");
+        check(await waitDialog("Picture storage"), "Settings opened no sheet");
         const t = await page.locator("dialog#dlg").innerText();
-        for (const w of ["Passkeys", "Theme", "Highlight color", "Disk budget"]) {
+        for (const w of ["Passkeys", "Theme", "Highlight color", "Single-letter keys", "Picture storage", "Repository setup"]) {
             check(t.includes(w), `Settings does not show "${w}"`);
         }
         check(
