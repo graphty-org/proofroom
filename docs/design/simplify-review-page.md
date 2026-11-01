@@ -373,3 +373,91 @@ opening a menu. Esc keeps "back" behind a guard against the double-Esc accident.
 - Docs: `docs/the-screens.md`, `docs/keys.md` (Esc guard, Y cycle, Display menu, Shift+Down on
   Select), `docs/decisions.md` (records: nothing drawn on pictures, two key tiers, the thumbnail
   choice from 2.1 item 7, `accepted earlier` split, Y cycles).
+
+## 7. Second pass: defects and calm (2026-10-31, after the first build review)
+
+The first build was reviewed against before/after captures at 1440, 1280 and 1024. Where this
+section and sections 2-6 disagree, this section wins.
+
+### 7.1 Defects to fix (the first build broke or never met the spec)
+
+1. **Pictures never disappear.** Opening a menu, toggling a setting or any other re-render that
+   does not change the snapshot or the pixels a pane shows keeps the drawn pictures (call the stage
+   with `keep`). When the pixels do change (new snapshot, new view, new zoom), the old pictures stay
+   on screen until the new ones are ready; `Loading baseline...` on blank grey shows only on the
+   first draw of a snapshot whose images are not cached yet, and only after 300 ms.
+2. **Zoom shows the same place on both sides, resized snapshots included.** Every zoom step centers
+   on the current area in New-image coordinates and maps that point into the baseline the way the
+   diff aligns the two (top-left), so both panes show the same place. When that place lies outside
+   the smaller image, that pane's label strip says `Baseline (outside this image)` instead of
+   showing grey. A 1024 and 1440 test opens a resized snapshot at 4x and checks that both panes
+   draw non-blank pixels around the area.
+3. **One view at a time.** Flash is a view, never a toggle on Spotlight. In the view segment exactly
+   one button is filled and none carries a check mark. F (or Flash) from Spotlight switches to
+   Flash and flashes the spotlit pair; the label strip says `Baseline (flashing, spotlit)` /
+   `New (flashing, spotlit)`. Leaving Flash (V, H, S) ends flashing: S after H is plain Spotlight.
+   Hold Space keeps flashing only while held, then returns to the view it left.
+4. **Image only gives back exactly what it took.** Shift+3 a second time restores the panes as they
+   were before the first press (folded stays folded, open stays open), and the message says
+   `Image only off: panes back as they were.` The remembered-panes store and the floor rule must not
+   overwrite the saved pair in between. While Image only is on, `Back  Esc` stays visible in the
+   merged toolbar.
+5. **Laptop width (1024 x 768) keeps every name.** Previous, Next and Undo always keep their words;
+   the fixed 760 px threshold is deleted. The decision bar fits by the 2.4 item 10 budget (588 px
+   at 654 px). If it ever overflows, the quiet `Left` / `Right` after J / K shorten to `<-` / `->`
+   (ASCII), never removed. Find keeps the word: `Find  /`. On the item line, `Details` and the
+   `resized` / `unstable` tags never shrink (`flex-shrink: 0`); the story name is cut first. Group
+   names are cut keeping their end (`...fidelity-cx-specimens`), so sibling groups that share a
+   prefix stay distinct; a test fails when two visible group headers read the same. A 1024 test
+   checks every visible control's box lies wholly inside the viewport.
+6. **Every key printed at every width.** `Shift+Up/Down` leaves the Select button (it was dropped
+   at 1280 and below). The List menu gains a `Select` section, always reachable on Snapshots line 3:
+   `Extend selection up  Shift+Up`, `Extend selection down  Shift+Down`, `Select all shown`,
+   acting with the menu closed. The selection bar's `...` button gets a word: `More`.
+7. **Group actions are visibly a button.** The group name button draws a small CSS caret (a
+   bordered triangle, no unicode glyph) after the name and underlines on hover; tooltip
+   `Group actions`. Its menu lists `Accept N  Shift+A` (current group), `Collapse`, `Reject N...`,
+   `Exclude N...`, `Select all N`.
+8. **The owner's link works.** Before handing off, restart servherd `proofroom-studio` with
+   `HOST=dev.ato.ms` (not 0.0.0.0) and check the brief's `#token=` link loads the review page.
+
+### 7.2 Calmer (the cockpit complaint, which reviewers judged still open)
+
+The first build cut controls from 72 to 65 and boxed keys from 29 to 23; the target was about 42
+and 10. These close the gap:
+
+1. **Each count once in the list.** Group headers drop `(N)`; the count lives in `Accept N`.
+   `Accept N` shows always on the current group (green, `Shift+A`) and on other groups only while
+   the header is hovered or focused; on every group it is also the first item of the name menu, so
+   the pointer path and the capability stay visible. (Supersedes 2.4 item 8 and the rejected
+   "quiet group Accept" line: the button is not quiet, it is shown where the reader is.)
+2. **`resized` on rows is a word, not a pill.** On rows it is muted text after the story name like
+   `dark` (`graph-file, dark, resized`); on the item line it stays a tag. `unstable` stays a pill
+   (rare, needs attention).
+3. **Item line holds no repeat.** Drop the size (`490k px`) from the item line; it is on the row and
+   in Details. The item line is `Back  Esc`, `#1028 [mark] changed`, story name, tags,
+   `Next area  N` (with counter above Fit), `Select  X`, `Details`.
+4. **Blink only in Highlight.** L does nothing outside Highlight, so Blink is not drawn outside it
+   (no greyed control taking space). In Highlight it sits beside the segment as today.
+5. **Boxed keys only on the loop.** Exactly V F H S and J K U E R A are boxed. Every other printed
+   key is plain muted text with no border and no background; check by eye in a capture, not only by
+   class name.
+6. **Rails read horizontally.** No rotated text. The rail widens to 56 px and stacks, horizontally:
+   the badge (`7` / `left`), the pane name at 11 px (`Changes`, `Snaps`), and the key `Shift+1` on
+   one line, quiet.
+7. **Words for the change said once.** Top bar Finish reads `Finish review...` (the title already
+   names the change; filled once nothing is left). The open message reads `Opened: 34 left.`
+8. **Numbers.** Sizes in the change row use one formatter: `1.9 GB to download`, `140 MB to
+   download`, never `1984 MB`.
+9. **Reject / Exclude box heading on one line**, the story name middle-cut with `...`, full name in
+   the tooltip.
+
+Expected count on the opened change at 1440, Changes folded: about 48 controls, 10 boxed keys.
+
+### 7.3 Rejected in this pass
+
+- Merging the toolbar and the item line into one row: does not fit the 800 px viewer floor with
+  seven toolbar controls; the item line lost its repeats instead.
+- Hiding quiet keys until hover or focus: the owner's rule wants the key on the visible control.
+- Dropping the locator: at 2x and above it is the only "where am I"; it stays in the label strip.
+- A "most snapshots resized" header note: the muted word on each row already costs nothing.
