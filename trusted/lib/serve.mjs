@@ -134,12 +134,7 @@ import { branchCaptures, branchTargetId, captureQueue, CaptureRefused, lookCaptu
 import { exec, retrying } from "./github.mjs";
 import { changeFolder, newestDecisions, statementId, statementProblem } from "./change-approval.mjs";
 import { approvalFormatAt, CONFIG_FILE } from "./config.mjs";
-import {
-    approvalIndex,
-    baselineWriters,
-    clusters,
-    itemsByFile,
-} from "./filters.mjs";
+import { approvalIndex, baselineWriters, clusters, itemsByFile } from "./filters.mjs";
 import { inboxOf, PREVIEW_CAPTURING, readyKey, writeJson } from "./inbox.mjs";
 import { isSkipMarker, NOT_AFFECTED, SKIPPED_FILE, validateResults } from "./results.mjs";
 import { junitXml } from "./junit.mjs";
@@ -1632,6 +1627,9 @@ export function createApp({
             p.logUrl = jobs[name]?.url ?? run.url;
             p.ci = ciOf(name);
             markDeleted(p, downloaded[name]);
+            if (!p.results && p.problem && p.problem !== NOT_AFFECTED && run.status === "completed") {
+                console.error(`proofroom: ${info.id}: ${name} not loaded from run ${run.id}: ${p.problem}`);
+            }
             list.push(p);
         }
         const warnings = others.map(
@@ -3710,19 +3708,24 @@ export function createApp({
 
     /**
      * Why a Finish of this work signs nothing, or null when it signs the baselines tree it leaves.
-     * A reject means the owner did not approve what the branch shows. On a pull request an image
-     * left undecided, or a project not loaded, may be a baseline the branch already changed, which
+     * A reject means the owner did not approve what the branch shows. A project not loaded, or on a
+     * pull request or a candidate an image left undecided, may be a baseline already changed, which
      * the signature would cover unseen. A seed's tree holds only what it accepts. A reject an
      * earlier Finish posted counts while its image is still the one captured.
      * @param {object} t the target
      * @param {{ undecided: number, unloaded: string[] }} work as finishWork returns
-     * @returns {"rejects" | "undecided" | null} why not
+     * @returns {"rejects" | "unloaded" | "undecided" | null} why not
      */
     const signingProblem = (t, work) => {
         if ([...decisionsOf(t).values()].some((d) => d.decision === "reject")) {
             return "rejects";
         }
-        if (t.pr !== null && (work.undecided > 0 || work.unloaded.length > 0)) {
+        // A project not loaded may hold changed pictures nobody saw: no target signs over it.
+        if (work.unloaded.length > 0) {
+            return "unloaded";
+        }
+        // A candidate's tree holds every image it captured, as a pull request's does.
+        if ((t.pr !== null || t.candidate) && work.undecided > 0) {
             return "undecided";
         }
         return null;
@@ -5527,9 +5530,7 @@ export function createApp({
         const name = pathname === "/" ? "index.html" : pathname.slice(1);
         const path = Object.hasOwn(VENDOR, name) ? VENDOR[name] : PAGE_FILE.test(name) ? join(PAGE_DIR, name) : null;
         const body = req.method === "GET" && path ? await readFile(join(HERE, path)).catch(() => null) : null;
-        return body
-            ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()])
-            : send(res, 404, { error: "not found" });
+        return body ? send(res, 200, body, PAGE_TYPES[name.split(".").pop()]) : send(res, 404, { error: "not found" });
     }
 
     const handler = async (req, res) => {

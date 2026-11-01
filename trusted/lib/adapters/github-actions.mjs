@@ -12,7 +12,16 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { sha256 } from "../compare.mjs";
-import { download, downloadCaptures, getRun, hurry, newestCiRun, newestMasterCapture, visualJobs } from "../github.mjs";
+import {
+    download,
+    downloadCaptures,
+    getRun,
+    hurry,
+    newestCiRun,
+    newestMasterCapture,
+    runArtifacts,
+    visualJobs,
+} from "../github.mjs";
 
 /**
  * A capture job's state as the Captures screen says it, from GitHub's job and, once it ended, the
@@ -102,9 +111,7 @@ export function githubActionsStore(gh, { keep = null, warn = (m) => console.erro
     };
     const forRun = (run) => (keep && run.status === "completed" ? kept(run) : gh);
     const list = async (run) => {
-        const { artifacts } = JSON.parse(
-            await forRun(run)(["api", `repos/{owner}/{repo}/actions/runs/${run.id}/artifacts?per_page=100`]),
-        );
+        const artifacts = await runArtifacts(forRun(run), run);
         return artifacts.flatMap((a) => {
             const m = /^visual-(.+)-(\d+)$/.exec(a.name);
             return m
