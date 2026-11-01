@@ -389,7 +389,7 @@ describe.each(["chromium", "webkit"])("what A acts on, and the selection in %s",
         const page = await openIn(MAIN);
         await page.keyboard.press("KeyX");
         await expect.poll(() => selBar(page).innerText()).toMatch(/^1 selected/);
-        expect(await shows(page.locator('.iline [data-act="select"]'))).toBe("Unselect [X / Shift+Up/Down]");
+        expect(await shows(page.locator('.iline [data-act="select"]'))).toBe("Unselect [X]");
         expect(await barText(page, "accept")).toBe("Accept 1 [A]");
         expect(await barText(page, "reject")).toBe("Reject 1... [R]");
         expect(await barText(page, "exclude")).toBe("Exclude 1... [E]");

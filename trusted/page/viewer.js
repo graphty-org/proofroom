@@ -16,7 +16,7 @@ import { makeLocator, moveToPressed } from "./locator.js";
 import { statusMark } from "./marks.js";
 import { PANES, applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow, twoLevels } from "./panes.js";
 import { HIGHLIGHTS, highlight } from "./settings.js";
-import { el, fmt, fmtShort, ic, kb } from "./ui.js";
+import { el, fmt, ic, kb } from "./ui.js";
 
 const KEPT_KEY = "proofroom:viewer";
 const VIEWS = [
@@ -59,7 +59,7 @@ const reducedMotion = () => globalThis.matchMedia?.("(prefers-reduced-motion: re
 
 // The one key box of the Flash segment, naming both of its keys (design 5.1).
 const flashKeys = () => el("kbd", { "aria-hidden": "true" }, el("span", { class: "lk" }, "F / "), "hold Space");
-// The check of the one on/off pressed style.
+// The check of an on/off toggle (Blink, Select); never in the view segment.
 const check = () => el("span", { class: "chk" }, ic("accept"));
 const short = (hash) => (hash ? hash.slice(0, 8) : "none");
 // Puts children in a node in place of its own: nested lists flattened, null and false left out.
@@ -101,6 +101,7 @@ export function createViewer(app, o = {}) {
     let ioBefore = null; // the panes Image only hid
     let zoomStep = false; // the next drawing is a zoom step: it centers on the current area
     let centerKey = null; // the drawing a zoom step asked to center
+    let doneKey = null; // the last drawing the stage finished
 
     const save = () => {
         try {
@@ -134,12 +135,17 @@ export function createViewer(app, o = {}) {
     }
     // The view drawn now: the reader's, or Side by side where it is not available.
     const shownView = (s = current()) => (viewOK(vs.view, s) === true ? vs.view : "side");
-    // What the stage is asked to draw: holding Space flashes the current view.
-    const stageView = (s) => (vs.space && twoImages(s) && shownView(s) !== "spotlight" ? "flash" : shownView(s));
-    const flashing = (s) => {
-        const v = stageView(s);
-        return v === "flash" || (v === "spotlight" && (vs.spotFlash || vs.space));
+    // Flash entered from Spotlight flashes the spotlit pair; any other view leaves it.
+    const spotlit = (s) => shownView(s) === "flash" && vs.spotFlash;
+    // What the stage is asked to draw: holding Space flashes the current view. The spotlit Flash is
+    // the stage's flashing Spotlight.
+    const stageView = (s) => {
+        if (spotlit(s)) {
+            return "spotlight";
+        }
+        return vs.space && twoImages(s) && shownView(s) !== "spotlight" ? "flash" : shownView(s);
     };
+    const flashing = (s) => shownView(s) === "flash" || (twoImages(s) && vs.space);
     // One frame or two: one for a one-sided snapshot, while flashing, and with the baseline hidden.
     const twoFrames = (s) => twoImages(s) && vs.showBase && !flashing(s);
 
@@ -183,7 +189,7 @@ export function createViewer(app, o = {}) {
                 showBox: vs.outline,
                 baselinePane: Boolean(s && twoFrames(s)),
                 blink: vs.blink,
-                spotFlash: Boolean(s) && shownView(s) === "spotlight" && (vs.spotFlash || vs.space),
+                spotFlash: Boolean(s) && (spotlit(s) || (shownView(s) === "spotlight" && vs.space)),
                 motion: !reducedMotion(),
                 color: HIGHLIGHTS[highlight()],
             };
@@ -237,7 +243,11 @@ export function createViewer(app, o = {}) {
             return { rightLabel: "No baseline yet: never approved. Accept makes this the first baseline." };
         }
         // Flashing: the strip names the image showing, with each flash; nothing is said on the image.
-        if (view === "flash" || (view === "spotlight" && (vs.spotFlash || vs.space))) {
+        if (view === "spotlight" && (spotlit(s) || vs.space)) {
+            const flash = ["Baseline (flashing, spotlit)", "New (flashing, spotlit)"];
+            return { rightLabel: flash[0], flash };
+        }
+        if (view === "flash") {
             return { rightLabel: "Baseline (flashing)", flash: ["Baseline (flashing)", "New (flashing)"] };
         }
         return { leftLabel: "Baseline", rightLabel: view === "spotlight" ? "Spotlit new" : "New" };
@@ -281,8 +291,12 @@ export function createViewer(app, o = {}) {
             return;
         }
         const was = shownKey === null ? null : JSON.parse(shownKey);
+        // A drawing replaced before it finished hands on what it was still to do: its centering,
+        // and no scroll to keep (its frames were never placed).
+        const settled = doneKey === shownKey;
+        const centering = zoomStep || (!settled && centerKey !== null && centerKey === shownKey);
         shownKey = key;
-        centerKey = zoomStep && was?.[0] === s.key ? key : null;
+        centerKey = centering && was?.[0] === s.key ? key : null;
         zoomStep = false;
         const st = parts.stage;
         parts.wrap.querySelector(".locator")?.remove();
@@ -298,9 +312,14 @@ export function createViewer(app, o = {}) {
         // Same snapshot and zoom: the frames keep where they were scrolled to.
         const frame = st.querySelector(".frame");
         const keep =
-            was && was[0] === s.key && was[4] === vs.zoom && frame ? [frame.scrollLeft, frame.scrollTop] : null;
+            settled && was && was[0] === s.key && was[4] === vs.zoom && frame
+                ? [frame.scrollLeft, frame.scrollTop]
+                : null;
         stage.stop();
         stage.render(st, itemOf(s), view, keep).then(() => {
+            if (shownKey === key) {
+                doneKey = key;
+            }
             if (shownKey === key && st.isConnected) {
                 decorate(s, view);
             }
@@ -381,45 +400,32 @@ export function createViewer(app, o = {}) {
 
     // ------------------------------------------------------------ the toolbar and the item line
 
-    // The toolbar, seven controls: the view segment (V F H S, boxed, exactly one filled), Blink
-    // beside Highlight, Zoom and the Display menu. Zoom's digits and every Display setting's key
-    // act with their menu closed, through the button's data-menukeys.
+    // The toolbar: the view segment (V F H S, boxed, exactly one filled, never a check mark),
+    // Blink only in Highlight (the one view it acts in), Zoom and the Display menu. Zoom's digits and
+    // every Display setting's key act with their menu closed, through the button's data-menukeys.
     function toolbar(s) {
         const ev = shownView(s);
-        const inSpot = ev === "spotlight";
         const segs = VIEWS.map(([v, key]) => {
-            const id = `view-${v}`;
-            if (v === "flash" && inSpot) {
-                // In Spotlight the one Flash segment is a toggle, never a second filled view: a check
-                // mark while the spotlit pair flashes, and the label strip says so.
-                return control(app, id, {
-                    zone: "toolbar",
-                    attrs: {
-                        "aria-pressed": String(vs.spotFlash),
-                        title: "Flashes the spotlit pair. Plain Flash: Side by side [V], then Flash [F]",
-                    },
-                    children: [check(), "Flash", flashKeys()],
-                });
-            }
             const on = ev === v && viewOK(v, s) === true;
-            return control(app, id, {
+            return control(app, `view-${v}`, {
                 zone: "toolbar",
                 attrs: { class: on ? "on" : null, role: "radio", "aria-checked": String(on) },
                 children: [VIEW_NAME[v], v === "flash" ? flashKeys() : kb(key)],
             });
         });
-        const blinkOn = ev === "highlight";
         return [
             el(
                 "div",
                 { class: "tg", "data-g": "view", title: "View" },
                 el("span", { class: "seg", role: "radiogroup", "aria-label": "View" }, segs),
-                control(app, "blink", {
-                    zone: "toolbar",
-                    quiet: true,
-                    attrs: { "aria-pressed": blinkOn ? String(vs.blink) : null },
-                    children: [check(), "Blink", kb("L", true)],
-                }),
+                ev === "highlight"
+                    ? control(app, "blink", {
+                          zone: "toolbar",
+                          quiet: true,
+                          attrs: { "aria-pressed": String(vs.blink) },
+                          children: [check(), "Blink", kb("L", true)],
+                      })
+                    : null,
             ),
             el(
                 "div",
@@ -479,8 +485,8 @@ export function createViewer(app, o = {}) {
         ];
     }
 
-    // Select [X], with the Shift+Up/Down that starts a range printed where a reader starts one;
-    // Open [Enter] at the list level of a two-level change.
+    // Select [X] (Shift+Up/Down, which extend the selection, are in the List menu); Open [Enter] at
+    // the list level of a two-level change.
     const lineEnd = (s) =>
         el(
             "span",
@@ -488,41 +494,30 @@ export function createViewer(app, o = {}) {
             control(app, "select", {
                 zone: "iline",
                 attrs: { "aria-pressed": app.sel.has(s.key) ? "true" : "false" },
-                children: [
-                    labelOf(app, "select"),
-                    kb("X", true),
-                    el("kbd", { class: "quiet range", "aria-hidden": "true" }, "Shift+Up/Down"),
-                ],
+                children: [labelOf(app, "select"), kb("X", true)],
             }),
             app.level === 1 && twoLevels(app.snaps.length, innerWidth) && s
                 ? control(app, "openrow", { zone: "iline" })
                 : null,
         );
 
-    // The size a changed snapshot's change covers, short ("490k px"); what a moved or failed one is.
-    const sizeOf = (s) => {
-        if (s.status === "changed") {
-            return typeof s.changedPixels === "number" ? `${fmtShort(s.changedPixels)} px` : "";
-        }
-        return { moved: "image identical", failed: "the render failed" }[s.status] ?? "";
-    };
     // Badges that never drop from the item line: they change what Accept means.
     const KEEP_BADGE = /^(resized|unstable|size changed|attempts disagree)$/;
     const NAME_MIN = 24; // the story's name is never cut shorter
 
-    // The item line: Back Esc, #1028 [mark] changed, the name, the size, badges, the decision, Next
-    // area (with "Area 1 of 26" while zoomed above Fit), and on the right Select and Details.
+    // The item line: Back Esc, #1028 [mark] changed, the name, badges, the decision, Next area (with
+    // "Area 1 of 26" while zoomed above Fit), and on the right Select and Details. The size is on
+    // the row and in Details, never repeated here.
     function fillLine(s) {
         // One count for Next area and "Area n of N": the diff's areas once drawn.
         const count = areas.key === s.key ? areas.count : (s.areas?.count ?? 0);
         const at = areas.key === s.key ? areas.text.replace(/ of .*/, "") : "1";
-        const size = sizeOf(s);
         const words = decisionWords(app, s);
         parts.line.className = `iline ${imageOnly() ? "ionly" : ""}`;
+        parts.line.dataset.snap = s.key;
         fill(
             parts.line,
             lineHead(s, "iline"),
-            size ? el("span", { class: "muted keep size" }, size) : null,
             badgesOf(app, s).map((b) => {
                 const n = badgeNode(b);
                 n.classList.toggle("fixed", KEEP_BADGE.test(b.text));
@@ -546,28 +541,21 @@ export function createViewer(app, o = {}) {
                   })
                 : null,
         );
-        // No room: the badges that may drop go first, then the size, then the name is cut in the
-        // middle, never below 24 characters. "unstable" and "resized" never drop.
+        // No room: the name is cut first, in the middle, down to 24 characters; then the badges that
+        // may drop go, then the status word (its mark stays, named in its tooltip). "unstable",
+        // "resized", Back, Select, Open and Details never shrink or drop; past all that the name's
+        // end is cut by the box (page.css).
         const line = parts.line;
         const over = () => line.scrollWidth > line.clientWidth + 1;
+        const name = line.querySelector(".name");
+        for (let keep = s.name.length - 2; over() && keep >= NAME_MIN; keep -= 2) {
+            name.textContent = `${s.name.slice(0, Math.ceil(keep / 2))}...${s.name.slice(s.name.length - Math.floor(keep / 2))}`;
+        }
         for (const b of [...line.querySelectorAll(".badge:not(.fixed)")].reverse()) {
             if (!over()) {
                 break;
             }
             b.remove();
-        }
-        if (over()) {
-            line.querySelector(".size")?.remove();
-        }
-        const name = line.querySelector(".name");
-        for (let keep = s.name.length - 2; over() && keep >= NAME_MIN; keep -= 2) {
-            name.textContent = `${s.name.slice(0, Math.ceil(keep / 2))}...${s.name.slice(s.name.length - Math.floor(keep / 2))}`;
-        }
-        // Still no room (a viewer near its 800 px floor at the list level): Select's Shift+Up/Down
-        // hint goes (the selection's menu prints both keys too), then the status word (its mark
-        // stays, named in its tooltip). Back, the name, Select, Open and Details stay.
-        if (over()) {
-            line.querySelector('[data-act="select"] > kbd.range')?.remove();
         }
         if (over()) {
             const st = line.querySelector(":scope > .st");
@@ -620,8 +608,8 @@ export function createViewer(app, o = {}) {
 
     // Previous [J] Left and Next [K] Right; Undo and Exclude...; Reject... and Accept on the right,
     // Accept the only filled button. With the current row in the selection the decision words say how
-    // many they decide ("Accept 3"). Under a viewer width of 760 px the words Previous and Next drop
-    // to their keys, then Undo's (page.css); the decision words never drop.
+    // many they decide ("Accept 3"). Every word stays at every width: measured too wide, the quiet
+    // Left and Right shorten to <- and ->, then the bar takes its compact size.
     function fillBar() {
         const zone = "decision";
         const step = (id, word, letter, arrow) =>
@@ -658,8 +646,20 @@ export function createViewer(app, o = {}) {
                 }),
             ),
         );
+        const over = () => parts.bar.scrollWidth > parts.bar.clientWidth + 1;
+        if (over()) {
+            for (const [id, arrow] of [
+                ["prev", "<-"],
+                ["next", "->"],
+            ]) {
+                const k = parts.bar.querySelector(`[data-act="${id}"] kbd.quiet`);
+                if (k) {
+                    k.textContent = arrow;
+                }
+            }
+        }
         // Still too narrow (a viewer under the 800 px floor): the compact size, never a second row.
-        if (parts.bar.scrollWidth > parts.bar.clientWidth + 1) {
+        if (over()) {
             parts.bar.classList.add("tight");
         }
     }
@@ -782,15 +782,12 @@ export function createViewer(app, o = {}) {
             const key = VIEWS.find((x) => x[0] === v)[1];
             return shownView() === v && v !== "side" ? `${VIEW_NAME[v]}. ${key} again: Side by side [V]` : VIEW_NAME[v];
         },
-        // A view's key: the view, or pressed again, Side by side; F in Spotlight flashes the
-        // spotlit pair.
+        // A view's key: the view, or pressed again, Side by side. Flash is one view: from Spotlight
+        // it flashes the spotlit pair, and leaving it (V, H, S) ends the flashing.
         pressView: (v) => {
             const ev = shownView();
-            if (v === "flash" && ev === "spotlight") {
-                vs.spotFlash = !vs.spotFlash;
-            } else {
-                vs.view = ev === v && v !== "side" ? "side" : v;
-            }
+            vs.spotFlash = v === "flash" && ev === "spotlight" && twoImages();
+            vs.view = ev === v && v !== "side" ? "side" : v;
             save();
             redraw();
         },
@@ -870,11 +867,10 @@ export function createViewer(app, o = {}) {
             ioBefore = before;
             applyPanes(shown, at);
             remember(app.level, app.snaps.length, shown, screen);
-            const names = (o.names ?? ["Changes", "Snapshots"]).filter((_, i) => shown[i]);
             app.say(
                 imageOnlyPressed(shown)
                     ? "Image only: Shift+3 brings the panes back."
-                    : `Image only off: ${names.join(" and ") || "no pane"} shown again.`,
+                    : "Image only off: panes back as they were.",
             );
             redraw();
         },

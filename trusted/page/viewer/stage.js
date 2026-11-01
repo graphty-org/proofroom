@@ -17,6 +17,9 @@ const CRISP_FROM = 4; // from this zoom on, pixels are drawn as hard squares
 // (event.timeStamp), so a page that runs the press late does not lengthen it.
 export const GUARD_MS = 250;
 const SKIM_MS = 120;
+// A first draw shows its panes' "Loading ..." only after this long: images in the browser's cache
+// arrive sooner, and then nothing flickers.
+const WAIT_SHOWN_MS = 300;
 // Each item's focus point, as the box [x, y, width, height] in image pixels to center on: a few
 // numbers each, kept for the items of a long session.
 const FOCUS_KEPT = 2000;
@@ -185,6 +188,7 @@ export function createStage(host) {
     const dropped = new Set(); // keys prefetch no longer wants, dropped once their diff is answered
     const focusBoxes = new Map();
     let stageRender = 0; // the newest render: an older one finishing late writes nothing
+    let painted = 0; // the newest render whose panes are on the stage
     let lastStageAt = 0; // when the last render began
     let lastStageFile = null; // and for which item
     let lastShown = null; // the last item whose images were shown (never reset by a move)
@@ -306,14 +310,22 @@ export function createStage(host) {
         return item.capture || item.status === "failed" ? "right" : "left";
     }
 
+    // Draws an item on the stage. Pictures already on the stage stay there until the new ones are
+    // ready (`hold`), so a redraw never blanks the stage; a first draw shows its waiting panes only
+    // after WAIT_SHOWN_MS. `keep`: the scroll to give the new frames.
     async function renderStage(stage, item, viewName, keep) {
         const seq = ++stageRender;
         const only = onlyPane(item);
         const panes = (l, r) => ({ right: [r], left: [l] })[only] ?? [l, r];
         const labels = stageLabels(item, viewName);
         const { left, right } = waitingPanes(item, labels);
-        if (!keep) {
-            stage.replaceChildren(...panes(left, right));
+        const hold = keep || stage.querySelector(".sheet") !== null;
+        if (!hold) {
+            setTimeout(() => {
+                if (seq === stageRender && !left.isConnected && !right.isConnected && painted !== seq) {
+                    stage.replaceChildren(...panes(left, right));
+                }
+            }, WAIT_SHOWN_MS);
         }
         if (await skimmed(item, seq)) {
             return;
@@ -329,6 +341,7 @@ export function createStage(host) {
         if (!drawn) {
             return;
         }
+        painted = seq;
         shown(stage, item);
         const frames = [...stage.querySelectorAll(".frame")];
         scrollTogether(frames);
@@ -422,13 +435,15 @@ export function createStage(host) {
         const what = kind === "capture" ? "new image" : "baseline";
         const img = await host.load(host.imageUrl(item[kind]), `${what} of ${item.file}`);
         img.alt = `${what} of ${host.itemName(item)}`;
+        // Decoded before it goes on the stage, so the pictures it replaces never give way to white.
+        await img.decode?.().catch(() => {});
         return img;
     }
 
     // Side by side: each image as soon as it arrives; the changed areas fill in afterwards. Null
     // when the stage moved on meanwhile.
     async function drawSide(s) {
-        const { item, keep, seq, stage, only, panes, left, right } = s;
+        const { item, seq, stage, only, panes, left, right } = s;
         const failed = item.status === "failed";
         await Promise.all([
             item.baseline && !failed && only !== "right" && fillPane(s, "baseline", left),
@@ -437,13 +452,19 @@ export function createStage(host) {
         if (seq !== stageRender) {
             return null;
         }
-        if (keep) {
-            stage.replaceChildren(...panes(left, right));
-        }
+        attach(stage, panes(left, right));
         return { diff: null };
     }
 
-    // Puts one image in its pane, or the error that kept it out.
+    // Puts the panes on the stage, unless they are on it already (moving a frame loses its scroll).
+    const attach = (stage, figures) => {
+        if (!figures.every((f) => f.parentElement === stage)) {
+            stage.replaceChildren(...figures);
+        }
+    };
+
+    // Puts one image in its pane, or the error that kept it out. A pane not on the stage yet (the
+    // pictures before it are held) is fitted and centered once it is.
     async function fillPane({ item, keep, seq, stage }, kind, figure) {
         const frame = figure.querySelector(".frame");
         try {
@@ -455,6 +476,9 @@ export function createStage(host) {
             if (seq === stageRender) {
                 frame.replaceChildren(el("div", { class: "sheet" }, img));
                 stateOf(figure, blankImage(img) ? "blank image" : null);
+                if (!figure.isConnected) {
+                    return;
+                }
                 fit(stage);
                 if (at) {
                     center(stage, at);
@@ -534,8 +558,8 @@ export function createStage(host) {
     }
 
     // An image or the diff failed to load: the compared views show the error in both panes; side
-    // by side already shows it in its pane, and a kept stage gets its panes back.
-    function stageFailed({ view: viewName, keep, seq, stage, panes, labels, left, right }, err) {
+    // by side shows it in its pane, put on the stage if it was not yet.
+    function stageFailed({ view: viewName, seq, stage, panes, labels, left, right }, err) {
         if (seq !== stageRender) {
             return;
         }
@@ -546,8 +570,8 @@ export function createStage(host) {
                     pane(labels.rightLabel, paneError(err.message)),
                 ),
             );
-        } else if (keep) {
-            stage.replaceChildren(...panes(left, right));
+        } else {
+            attach(stage, panes(left, right));
         }
     }
 
@@ -674,6 +698,7 @@ export function createStage(host) {
             if (!sheet) {
                 continue;
             }
+            outside(frame, sheet, [x + w / 2, y + h / 2]);
             const [sw, sh] = [sheet.offsetWidth, sheet.offsetHeight];
             // The outline is drawn inside the image, so an area at an edge keeps all four sides.
             const [left, top] = [Math.max(0, x * factor - 2), Math.max(0, y * factor - 2)];
@@ -703,6 +728,21 @@ export function createStage(host) {
             const [ox, oy] = [sheet.offsetLeft, sheet.offsetTop];
             frame.scrollLeft = reveal(ox + left, ox + right, frame.scrollLeft, frame.clientWidth);
             frame.scrollTop = reveal(oy + top, oy + bottom, frame.scrollTop, frame.clientHeight);
+        }
+    }
+
+    // Zoomed, a pane whose image does not reach the area's middle (a resized snapshot's smaller
+    // image) says so in its label strip, in place of showing grey without a word.
+    function outside(frame, sheet, [cx, cy]) {
+        const figure = frame.parentElement;
+        const pic = sheet.querySelector("img, canvas");
+        const said = figure.querySelector(".label .state")?.textContent === " (outside this image)";
+        const out =
+            Boolean(pic) &&
+            opt().zoom !== "fit" &&
+            (cx > (pic.naturalWidth ?? pic.width) || cy > (pic.naturalHeight ?? pic.height));
+        if (out !== said) {
+            stateOf(figure, out ? "outside this image" : null);
         }
     }
 

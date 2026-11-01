@@ -1409,10 +1409,12 @@ body.nokeys kbd .lk {
     gap: 6px;
     flex: none;
 }
-/* The name is cut by the page (viewer.js fillLine), in the middle and never below 24 characters,
-   so the flex box never shrinks it away. */
+/* The name is cut first: by the page in the middle (viewer.js fillLine), then by this box at its
+   end. Everything else on the line keeps its size: Details, Select and the resized and unstable
+   tags never shrink. */
 .iline .who {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
     display: flex;
     overflow: hidden;
 }
@@ -1691,29 +1693,6 @@ button.quietbtn[aria-expanded="true"] {
 }
 .decide .rej .ic {
     color: var(--reject);
-}
-/* A narrow viewer: Previous and Next show their keys alone, then Undo; the decision words never
-   drop. Each keeps its word as its accessible name. */
-@container viewer (max-width: 759px) {
-    .decide [data-act="prev"] .lbl,
-    .decide [data-act="next"] .lbl {
-        display: none;
-    }
-    .decide [data-act="prev"] kbd:first-of-type,
-    .decide [data-act="next"] kbd:first-of-type {
-        margin-left: 0;
-    }
-    .decide .gap8 {
-        width: 0;
-    }
-}
-@container viewer (max-width: 699px) {
-    .decide [data-act="undo"] .lbl {
-        display: none;
-    }
-    .decide [data-act="undo"] kbd {
-        margin-left: 0;
-    }
 }
 .decide.tight {
     gap: 4px;
@@ -2176,7 +2155,10 @@ dialog.finish pre {
 .log {
     background: #11151b;
     color: #cfd6e0;
-    font: 11px/1.5 ui-monospace, Menlo, monospace;
+    font:
+        11px/1.5 ui-monospace,
+        Menlo,
+        monospace;
     padding: 8px 10px;
     border-radius: 6px;
     height: 200px;

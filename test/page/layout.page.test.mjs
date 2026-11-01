@@ -184,13 +184,12 @@ describe.each(SIZES)("the Baselines screen at %i x %i", (width, height) => {
                 return out;
             });
             expect(bad, what).toEqual([]);
-            // The same seven controls as Review's toolbar, every one showing.
+            // The same controls as Review's toolbar, every one showing (Blink only in Highlight).
             for (const act of [
                 "view-side",
                 "view-flash",
                 "view-highlight",
                 "view-spotlight",
-                "blink",
                 "zoomcycle",
                 "displaymenu",
             ]) {

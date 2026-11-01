@@ -15,7 +15,7 @@ Where each key is printed:
   with **Left** and **Right** quiet after them (Up and Down belong to the list that owns them and
   are printed on its header).
 - **V, F (hold Space), H, S**: the view switch at the left of the viewer's toolbar, boxed. **L**:
-  **Blink** beside them. **Z**: the **Zoom: Fit** button, which also opens the zoom menu when
+  **Blink** beside them, shown in Highlight, the one view it works in. **Z**: the **Zoom: Fit** button, which also opens the zoom menu when
   clicked; its items print **0, 1, 2, 4, 8**.
 - **P, Shift+3, Y, B, O**: the **Display** menu at the right end of the toolbar (Show baseline,
   Image only, Layout, Outline changed areas, Start zoomed on the change).
@@ -24,7 +24,7 @@ Where each key is printed:
   key is stacked ("Shift" over "1"). **?**: **Keys** in the top bar. **/**: the Find box's
   placeholder.
 - **N**: **Next area** on the item line, when the snapshot has more than one changed area. **X**:
-  **Select X Shift+Up/Down** on the item line. **Esc**: **Back** on the item line, and Clear,
+  **Select X** on the item line. **Esc**: **Back** on the item line, and Clear,
   Close and Cancel wherever something can be cleared or closed.
 
 | Key                   | Action                                          |
@@ -42,7 +42,7 @@ Where each key is printed:
 | U                     | Undo the last decision                          |
 | X                     | Select or unselect the row                      |
 | V                     | Side by side                                    |
-| F                     | Flash; in Spotlight, flash the spotlit pair     |
+| F                     | Flash; from Spotlight, the spotlit pair flashes |
 | hold Space            | Flash the current view while held               |
 | H                     | Highlight; again: Side by side                  |
 | L                     | Blink (in Highlight)                            |
@@ -90,7 +90,7 @@ Rules:
   says "Press Esc again to go back to the changes." instead; the next one goes back, and the message
   line says "Back to the changes. Enter opens #4455 again."
 - **Shift+Down starts a selection** from the current row (Shift+Up the other way); it is printed
-  on **Select X Shift+Up/Down** on the item line and in the selection bar's `...` menu.
+  in the List menu (**Extend selection up / down**) and in the selection bar's menu.
 - **Enter does what the visible [Enter] says**: open the current change (its summary's **Open
   [Enter]** while no change is open) or snapshot, the default button of a box or the end card, or
   a button you focused with Tab. A focused button shows its Enter just under itself, so focusing it

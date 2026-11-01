@@ -46,20 +46,26 @@ const AREAS = [
     [40, 40, 60, 30],
     [650, 80, 40, 40],
 ];
-function picture(changed) {
-    const png = new PNG({ width: W, height: H });
+function picture(changed, areas = AREAS, [pw, ph] = [W, H], grid = false) {
+    const png = new PNG({ width: pw, height: ph });
     png.data.fill(255);
+    // Gray lines every 20 px: any part of the image shows more than one color.
+    for (let i = 0; grid && i < pw * ph; i++) {
+        if ((i % pw) % 20 === 0 || Math.floor(i / pw) % 20 === 0) {
+            png.data.fill(150, i * 4, i * 4 + 3);
+        }
+    }
     const rect = (x0, y0, w, h, [r, g, b]) => {
         for (let y = y0; y < y0 + h; y++) {
             for (let x = x0; x < x0 + w; x++) {
-                const i = (y * W + x) * 4;
+                const i = (y * pw + x) * 4;
                 [png.data[i], png.data[i + 1], png.data[i + 2]] = [r, g, b];
             }
         }
     };
     rect(100, 100, 300, 200, [80, 90, 200]);
     if (changed) {
-        for (const [x, y, w, h] of AREAS) {
+        for (const [x, y, w, h] of areas) {
             rect(x, y, w, h, [220, 30, 30]);
         }
     }
@@ -67,12 +73,22 @@ function picture(changed) {
 }
 const BASELINE = picture(false);
 const CAPTURE = picture(true);
-// The fixture's hashes start with "a" for a baseline and "b" for a new image.
-const blob = (hash) => (hash.startsWith("b") ? CAPTURE : BASELINE);
+// A resized snapshot: an 800 x 600 baseline under a grid of lines. Its first row's new image is
+// 1000 x 760, so its changed area (the part the baseline lacks, as large as the new image) has its
+// middle inside both images; its second row's is 1800 x 1400, the middle past the baseline's edge.
+const BIG = [1000, 760];
+const HUGE = [1800, 1400];
+const GRID_BASE = picture(false, [], [W, H], true);
+const RESIZED = picture(true, [[350, 250, 120, 80]], BIG, true);
+const RESIZED_OUT = picture(true, [], HUGE, true);
+// The fixture's hashes start with "a" for a baseline and "b" for a new image; the resized change's
+// are "e" (the baseline), "f" and "g" (its new images).
+const blob = (hash) => ({ b: CAPTURE, e: GRID_BASE, f: RESIZED, g: RESIZED_OUT })[hash[0]] ?? BASELINE;
 
 // Six snapshots, one of each status (a small change: one level), and forty changed ones.
 const SMALL = "9100";
 const LARGE = "9200";
+const RESIZE = "9300";
 // At 1280 the small change's Image only row keeps its own item line and Options: the viewer is
 // under 1300 px and over 1100.
 const NARROW = { width: 1280, height: 800 };
@@ -80,9 +96,31 @@ const SMALL_STATUSES = ["changed", "moved", "new", "unseeded", "removed", "faile
 const targets = () => [
     target(Number(SMALL), { projects: [project("graphty-element", { reviewable: 6 })] }),
     target(Number(LARGE), { projects: [project("graphty-element", { reviewable: 40 })] }),
+    target(Number(RESIZE), { projects: [project("graphty-element", { reviewable: 2 })] }),
 ];
+// The resized change's two rows: an 800 x 600 baseline and a 1000 x 760 new image each.
+const resizedRows = (name) => {
+    const a = rowsAnswer(name, 2, () => "changed");
+    a.items = a.items.map((x, i) => {
+        const baseline = `e${i}`.padEnd(64, "e");
+        const capture = `${"fg"[i]}${i}`.padEnd(64, "f");
+        return {
+            ...x,
+            baseline,
+            capture,
+            size: [BIG, HUGE][i],
+            baselineSize: [W, H],
+            pic: `${baseline}-${capture}-0.1-0`,
+            areas: { ...x.areas, count: 1, shown: 1 },
+        };
+    });
+    return a;
+};
 // The rows, and with no ?rows=1 the whole items: their console and earlier attempts.
 const rows = (id, name, query) => {
+    if (id === RESIZE) {
+        return resizedRows(name);
+    }
     const a = id === SMALL ? rowsAnswer(name, 6, (i) => SMALL_STATUSES[i]) : rowsAnswer(name, 40, () => "changed");
     if (query?.get("rows") === "1") {
         return a;
@@ -131,9 +169,20 @@ const frames = (page) =>
             drawn: f.querySelector(".sheet") !== null,
         })),
     );
-// Waits until snapshot #n is drawn: the item line names it and every frame has its pictures.
+// Waits until snapshot #n is drawn: the item line names it, the stage is ready for it (the
+// pictures of the snapshot before stay until then) and every frame has its pictures.
 async function drawn(page, n) {
     await expect.poll(() => page.locator(".iline .num").first().textContent()).toBe(`#${n}`);
+    await expect
+        .poll(() =>
+            page.evaluate(() => {
+                const ready = globalThis.document.getElementById("stage").dataset.ready;
+                return (
+                    ready !== undefined && ready === globalThis.document.querySelector("#viewer .iline").dataset.snap
+                );
+            }),
+        )
+        .toBe(true);
     await expect
         .poll(async () => {
             const f = await frames(page);
@@ -206,14 +255,14 @@ describe("the four views", () => {
         await expect.poll(async () => (await labels(page)).length).toBe(1);
         await tool(page, "view-spotlight").click();
         await expect.poll(() => labels(page)).toEqual(["Baseline", "Spotlit new"]);
-        // In Spotlight the one Flash segment is a toggle: the spotlit pair, in one frame.
-        expect(await tool(page, "view-flash").getAttribute("aria-pressed")).toBe("false");
+        // F from Spotlight is the Flash view, flashing the spotlit pair in one frame; F again is
+        // Side by side.
         await page.keyboard.press("KeyF");
-        await expect.poll(() => labels(page)).toEqual(["New (flashing)"]);
-        expect(await tool(page, "view-flash").getAttribute("aria-pressed")).toBe("true");
-        expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
+        await expect.poll(() => labels(page)).toEqual(["New (flashing, spotlit)"]);
+        expect(await tool(page, "view-flash").getAttribute("aria-checked")).toBe("true");
+        expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("false");
         await tool(page, "view-flash").click();
-        await expect.poll(() => labels(page)).toEqual(["Baseline", "Spotlit new"]);
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         await tool(page, "view-side").click();
         await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         expect(t.errors).toEqual([]);
@@ -373,13 +422,14 @@ describe("Baseline [P] in every view", () => {
             await menuItem(page, "Show baseline").click();
             await expect.poll(() => labels(page)).toEqual(shown);
         }
-        // Spotlight flash: one frame, baseline shown or hidden.
+        // Flash from Spotlight: one frame, baseline shown or hidden; F again is Side by side, with
+        // the baseline hidden.
         await page.keyboard.press("KeyF");
         await expect.poll(async () => (await labels(page)).length).toBe(1);
         await page.keyboard.press("KeyP");
         await expect.poll(async () => (await labels(page)).length).toBe(1);
         await page.keyboard.press("KeyF");
-        await expect.poll(() => labels(page)).toEqual(["Spotlit new"]);
+        await expect.poll(() => labels(page)).toEqual(["New"]);
         // Flash: one frame either way, and the toggle is kept for when the reader leaves it.
         await page.keyboard.press("KeyV");
         await page.keyboard.press("KeyF");
@@ -460,7 +510,7 @@ describe("one-sided snapshots and failures", () => {
 });
 
 describe("the label strips", () => {
-    it("say a panel is loading, and that an image is blank, in the strip and never on the image", async () => {
+    it("keep the pictures while the next load, and say an image is blank, in the strip and never on the image", async () => {
         const page = await open(LARGE);
         await page.keyboard.press("KeyV");
         await drawn(page, 1);
@@ -477,8 +527,11 @@ describe("the label strips", () => {
             await route.fulfill({ status: 200, contentType: "image/png", body: PNG.sync.write(blank) });
         });
         await page.locator('#snap-list .srow[data-snap="graphty-element/component-0--story-4.light.png"]').click();
-        // (The baseline waits too: it is placed only once the change it centers on is known.)
-        await expect.poll(() => labels(page)).toEqual(["Baseline (loading)", "New (loading)"]);
+        // While it loads, #1's pictures stay on the stage: never "Loading" over a blank stage.
+        await expect.poll(() => page.locator(".iline .num").first().textContent()).toBe("#5");
+        expect(await page.locator("#stage .sheet").count()).toBe(2);
+        expect(await page.locator("#stage .wait").count()).toBe(0);
+        expect(await labels(page)).toEqual(["Baseline", "New"]);
         release();
         // It arrives all white: a story that drew nothing.
         await drawn(page, 5);
@@ -491,7 +544,7 @@ describe("the label strips", () => {
 });
 
 describe("the item line", () => {
-    it("reads Back Esc, the number and status, the name, the size, Next area, Select X Shift+Up/Down and Details", async () => {
+    it("reads Back Esc, the number and status, the name, Next area, Select X and Details, and no size", async () => {
         const page = await open(SMALL);
         await expect.poll(() => page.locator("#area-at").count()).toBe(0);
         const parts = await page
@@ -502,8 +555,10 @@ describe("the item line", () => {
         expect(parts[0]).toBe("BackEsc");
         expect(parts.slice(1, 4)).toEqual(["#1", "changed", "story-0, light"]);
         expect(parts).toContain("Next areaN");
-        expect(parts.at(-2)).toBe("SelectXShift+Up/Down");
+        expect(parts.at(-2)).toBe("SelectX");
         expect(parts.at(-1)).toBe("Details");
+        // The size is on the row and in Details, never repeated here.
+        expect(parts.join(" ")).not.toMatch(/ px\b/);
         // Back, Next area, Select and Details print their keys quiet: no box.
         for (const act of ["back", "nextarea", "select"]) {
             expect(await page.locator(`.iline [data-act="${act}"] kbd`).first().getAttribute("class")).toContain(
@@ -517,7 +572,7 @@ describe("the item line", () => {
         await expect.poll(() => page.locator("#area-at").count()).toBe(0);
     });
 
-    it("drops other badges first, then the size, then cuts the name, never below 24 characters", async () => {
+    it("cuts the name first, never below 24 characters, and keeps Select and Details whole", async () => {
         const page = await open(SMALL);
         const line = () =>
             page.evaluate(() => {
@@ -525,28 +580,31 @@ describe("the item line", () => {
                 return {
                     over: l.scrollWidth > l.clientWidth + 1,
                     name: l.querySelector(".name").textContent,
-                    size: l.querySelector(".size")?.textContent ?? null,
                 };
             });
-        expect((await line()).size).not.toBeNull();
         // Narrow the viewer by showing both side panes: the line still fits, nothing cut below 24.
         await page.setViewportSize({ width: 1180, height: 820 });
         await page.keyboard.press("Shift+Digit1");
         await expect.poll(async () => (await line()).over).toBe(false);
         const l = await line();
         expect(l.name.length).toBeGreaterThanOrEqual(Math.min(24, "story-0".length));
+        const box = await page.locator(".iline").boundingBox();
+        for (const act of ["select", "details"]) {
+            const b = await page.locator(`.iline [data-act="${act}"]`).boundingBox();
+            expect(b.x + b.width, act).toBeLessThanOrEqual(box.x + box.width + 0.5);
+        }
     });
 });
 
 describe("one test per toolbar control", () => {
-    it("Blink [L] blinks the highlight, and elsewhere is unavailable with its reason", async () => {
+    it("Blink [L] blinks the highlight, and elsewhere is not drawn and L does nothing", async () => {
         const page = await open(SMALL);
-        expect(await tool(page, "blink").getAttribute("aria-disabled")).toBe("true");
-        expect(await tool(page, "blink").getAttribute("title")).toBe("Blink works in Highlight [H]");
+        expect(await page.locator('#vtb [data-act="blink"]').count()).toBe(0);
         await page.keyboard.press("KeyL");
-        await expect.poll(() => message(page)).toBe("Blink: Blink works in Highlight [H].");
         await page.keyboard.press("KeyH");
         await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(2);
+        // The L pressed in Spotlight changed nothing: Blink is off.
+        expect(await tool(page, "blink").getAttribute("aria-pressed")).toBe("false");
         await page.keyboard.press("KeyL");
         await expect.poll(() => tool(page, "blink").getAttribute("aria-pressed")).toBe("true");
         const shown = (v) =>
@@ -578,12 +636,13 @@ describe("one test per toolbar control", () => {
         // Start zoomed on the change is on for a new reader: at 4x the largest area is in the middle.
         await page.keyboard.press("Digit4");
         const [x, y, w, h] = AREAS[0];
-        const frame = await page
-            .locator("#stage .frame")
-            .first()
-            .evaluate((n) => [n.clientWidth, n.clientHeight]);
-        const middle = [(x + w / 2) * 4 - frame[0] / 2, (y + h / 2) * 4 - frame[1] / 2].map(Math.round);
+        // Measured on the frames drawn now: the pictures before stay until the new ones are in.
         const near = async () => {
+            const frame = await page
+                .locator("#stage .frame")
+                .first()
+                .evaluate((n) => [n.clientWidth, n.clientHeight]);
+            const middle = [(x + w / 2) * 4 - frame[0] / 2, (y + h / 2) * 4 - frame[1] / 2].map(Math.round);
             const [sx, sy] = (await scrolls(page))[0];
             return Math.abs(sx - middle[0]) <= 12 && Math.abs(sy - middle[1]) <= 12;
         };
@@ -687,7 +746,7 @@ describe("one test per toolbar control", () => {
         await tool(page, "displaymenu").click();
         await menuItem(page, "Image only").click();
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).not.toContain("rail");
-        await expect.poll(() => message(page)).toBe("Image only off: Snapshots shown again.");
+        await expect.poll(() => message(page)).toBe("Image only off: panes back as they were.");
         await page.keyboard.press("Shift+Digit3");
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).toContain("rail");
         await page.keyboard.press("Shift+Digit3");
@@ -726,9 +785,10 @@ describe("one test per toolbar control", () => {
 
     it("Display holds the once-a-session settings, each printing its key, and their keys act with it closed", async () => {
         const page = await open(LARGE, { width: 1280, height: 800 });
-        // Seven controls: the four views, Blink, Zoom and Display; no More, no Options.
+        // Six controls in Spotlight: the four views, Zoom and Display (Blink only in Highlight); no
+        // More, no Options.
         expect(await page.locator("#vtb [data-act]:visible").evaluateAll((ns) => ns.map((n) => n.dataset.act))).toEqual(
-            ["view-side", "view-flash", "view-highlight", "view-spotlight", "blink", "zoomcycle", "displaymenu"],
+            ["view-side", "view-flash", "view-highlight", "view-spotlight", "zoomcycle", "displaymenu"],
         );
         await tool(page, "displaymenu").click();
         const keys = await page
@@ -878,7 +938,7 @@ describe("the toolbar's one row", () => {
                 }
                 if (then) {
                     await page.keyboard.press(then);
-                    await expect.poll(() => tool(page, "view-flash").getAttribute("aria-pressed")).toBe("true");
+                    await expect.poll(() => tool(page, "view-flash").getAttribute("aria-checked")).toBe("true");
                 }
                 await oneRow(page, `${level}, ${name}`);
                 if (then) {
@@ -897,6 +957,214 @@ describe("the toolbar's one row", () => {
             expect(t.errors).toEqual([]);
         });
     }
+});
+
+// How many colors a frame shows, from a screenshot of the part of it around its middle.
+async function colorsIn(frame) {
+    const png = PNG.sync.read(await frame.screenshot());
+    const seen = new Set();
+    const [x0, y0] = [Math.floor(png.width / 4), Math.floor(png.height / 4)];
+    for (let y = y0; y < png.height - y0; y += 4) {
+        for (let x = x0; x < png.width - x0; x += 4) {
+            const i = (y * png.width + x) * 4;
+            seen.add(`${png.data[i] >> 4},${png.data[i + 1] >> 4},${png.data[i + 2] >> 4}`);
+        }
+    }
+    return seen.size;
+}
+
+describe("pictures stay, one view, Image only and laptop width", () => {
+    it.each([
+        [1024, 768],
+        [1440, 900],
+    ])("at %i x %i, 4x on a resized snapshot shows the same place, drawn, in both panes", async (width, height) => {
+        const page = await open(RESIZE, { width, height });
+        await page.keyboard.press("KeyV");
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
+        await page.keyboard.press("Digit4");
+        await expect.poll(() => zoomShown(page)).toBe("Zoom: 4x");
+        await drawn(page, 1);
+        const frameLocs = page.locator("#stage .frame");
+        await expect.poll(() => frameLocs.count()).toBe(2);
+        // The current area's middle (its outline's, B) is in the middle of both panes, so both
+        // show the same place.
+        await page.keyboard.press("KeyB");
+        await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
+        const off = await frameLocs.evaluateAll((fs) =>
+            fs.map((f) => {
+                const sheet = f.querySelector(".sheet");
+                const m = sheet.querySelector(".boxmark");
+                return [
+                    sheet.offsetLeft + m.offsetLeft + m.offsetWidth / 2 - (f.scrollLeft + f.clientWidth / 2),
+                    sheet.offsetTop + m.offsetTop + m.offsetHeight / 2 - (f.scrollTop + f.clientHeight / 2),
+                ];
+            }),
+        );
+        for (const [dx, dy] of off) {
+            expect(Math.abs(dx)).toBeLessThan(3);
+            expect(Math.abs(dy)).toBeLessThan(3);
+        }
+        // Both panes draw the picture there (the blue block's corner), never blank grey.
+        for (const f of await frameLocs.all()) {
+            expect(await colorsIn(f)).toBeGreaterThan(1);
+        }
+        expect(await labels(page)).toEqual(["Baseline", "New"]);
+        // The second row's area is past the baseline's edge: its strip says so.
+        await page.keyboard.press("KeyK");
+        await drawn(page, 2);
+        await expect.poll(() => labels(page)).toEqual(["Baseline (outside this image)", "New"]);
+        expect(t.errors).toEqual([]);
+    });
+
+    it("Flash is one view: from Spotlight F flashes the spotlit pair, and S after H is plain Spotlight", async () => {
+        const page = await open(SMALL);
+        expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
+        await page.keyboard.press("KeyF");
+        await expect.poll(() => tool(page, "view-flash").getAttribute("aria-checked")).toBe("true");
+        const seg = page.locator("#vtb .seg");
+        expect(await seg.locator("button.on").count()).toBe(1);
+        expect(await seg.locator(".chk").count()).toBe(0);
+        expect(await seg.locator("[aria-pressed]").count()).toBe(0);
+        // One frame of the two spotlit pictures, the strip naming each in turn.
+        await expect.poll(() => labels(page)).toEqual(["Baseline (flashing, spotlit)"]);
+        await expect.poll(() => labels(page)).toEqual(["New (flashing, spotlit)"]);
+        expect(await page.locator("#stage figure canvas").count()).toBe(2);
+        // H leaves Flash; S after it is plain Spotlight, not flashing.
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(2);
+        await page.keyboard.press("KeyS");
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "Spotlit new"]);
+        expect(await seg.locator("button.on").count()).toBe(1);
+        expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
+        // F from Side by side is the plain Flash.
+        await page.keyboard.press("KeyV");
+        await page.keyboard.press("KeyF");
+        await expect.poll(() => labels(page)).toEqual(["Baseline (flashing)"]);
+    });
+
+    it("Blink is drawn only in Highlight, the one view it acts in", async () => {
+        const page = await open(SMALL);
+        for (const key of ["KeyV", "KeyF", "KeyS"]) {
+            await page.keyboard.press(key);
+            expect(await page.locator('#vtb [data-act="blink"]').count(), key).toBe(0);
+        }
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => page.locator('#vtb [data-act="blink"]:visible').count()).toBe(1);
+    });
+
+    it("Image only [Shift+3] twice gives back folded Changes and open Snapshots", async () => {
+        const page = await open(LARGE);
+        const railed = async () => [
+            (await page.locator("#changes").getAttribute("class")).includes("rail"),
+            (await page.locator("#snaps").getAttribute("class")).includes("rail"),
+        ];
+        expect(await railed()).toEqual([true, false]);
+        await page.keyboard.press("Shift+Digit3");
+        await expect.poll(railed).toEqual([true, true]);
+        // Back Esc stays in the merged toolbar.
+        await expect.poll(() => page.locator('#vtb .itemsum [data-act="back"]').isVisible()).toBe(true);
+        expect(await page.locator('#vtb .itemsum [data-act="back"]').innerText()).toContain("Esc");
+        // Moving on and redrawing between the two presses changes nothing it gave back.
+        await page.keyboard.press("ArrowRight");
+        await drawn(page, 2);
+        await page.keyboard.press("Shift+Digit3");
+        await expect.poll(railed).toEqual([true, false]);
+        await expect.poll(() => message(page)).toBe("Image only off: panes back as they were.");
+    });
+
+    it("opening a menu keeps the pictures: no Loading, the same pictures on the stage", async () => {
+        const page = await open(LARGE);
+        await page.evaluate(() => {
+            for (const n of globalThis.document.querySelectorAll("#stage .sheet")) {
+                n.dataset.kept = "1";
+            }
+        });
+        for (const act of ["displaymenu", "zoomcycle"]) {
+            await tool(page, act).click();
+            await expect.poll(() => page.getByRole("menu").count()).toBe(1);
+            expect(await page.locator("#stage .wait").count()).toBe(0);
+            expect(await page.locator("#stage").innerText()).not.toContain("Loading");
+            await page.keyboard.press("Escape");
+            await expect.poll(() => page.getByRole("menu").count()).toBe(0);
+        }
+        expect(await page.locator('#stage .sheet[data-kept="1"]').count()).toBe(2);
+        // A real change (another view): the pictures stay until the new ones are in, never Loading.
+        const seen = [];
+        await page.exposeFunction("sawLoading", () => seen.push(1));
+        await page.evaluate(() => {
+            new globalThis.MutationObserver(() => {
+                if (globalThis.document.querySelector("#stage .wait")) {
+                    globalThis.sawLoading();
+                }
+            }).observe(globalThis.document.getElementById("stage"), { childList: true, subtree: true });
+        });
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(2);
+        expect(seen).toEqual([]);
+    });
+
+    it("at 1024 x 768 with a change open, every control is wholly in the window and keeps its words", async () => {
+        const page = await open(LARGE, { width: 1024, height: 768 });
+        if ((await page.locator('.iline [data-act="openrow"]').count()) > 0) {
+            await page.locator('.iline [data-act="openrow"]').click();
+        }
+        await drawn(page, 1);
+        const out = await page.evaluate(() =>
+            [...globalThis.document.querySelectorAll("button, [role=button], [data-act]")]
+                .filter((n) => n.getClientRects().length > 0 && globalThis.getComputedStyle(n).visibility !== "hidden")
+                .filter((n) => !n.closest(".rail, [hidden]"))
+                .map((n) => ({ act: n.dataset.act ?? n.textContent, r: n.getBoundingClientRect() }))
+                .filter(({ r }) => r.left < -0.5 || r.top < -0.5 || r.right > 1024.5 || r.bottom > 768.5)
+                .map(({ act }) => act),
+        );
+        expect(out).toEqual([]);
+        for (const [act, word] of [
+            ["prev", "Previous"],
+            ["next", "Next"],
+            ["undo", "Undo"],
+        ]) {
+            expect(await page.locator(`.decide [data-act="${act}"]`).innerText()).toContain(word);
+        }
+        // The item line keeps Details and Select whole; the name is what is cut.
+        const inLine = (act) =>
+            page.evaluate((a) => {
+                const line = globalThis.document.querySelector("#viewer .iline").getBoundingClientRect();
+                const b = globalThis.document
+                    .querySelector(`#viewer .iline [data-act="${a}"]`)
+                    ?.getBoundingClientRect();
+                return Boolean(b && b.width > 0 && b.right <= line.right + 0.5);
+            }, act);
+        for (const act of ["details", "select"]) {
+            await expect.poll(() => inLine(act), act).toBe(true);
+        }
+    });
+
+    it("boxes only the loop's keys, V F H S and J K U E R A; every other key is plain text", async () => {
+        const page = await open(LARGE);
+        const keys = await page.evaluate(() =>
+            [...globalThis.document.querySelectorAll("kbd")]
+                .filter((k) => k.getClientRects().length > 0)
+                .map((k) => {
+                    const st = globalThis.getComputedStyle(k);
+                    return {
+                        text: k.textContent,
+                        boxed: st.borderTopStyle !== "none" && st.borderTopWidth !== "0px",
+                        filled: st.backgroundColor !== "rgba(0, 0, 0, 0)",
+                    };
+                }),
+        );
+        const boxed = keys.filter((k) => k.boxed || k.filled).map((k) => k.text[0]);
+        expect(new Set(boxed)).toEqual(new Set(["V", "F", "H", "S", "J", "K", "U", "E", "R", "A"]));
+        // A menu prints its keys plain too.
+        await tool(page, "displaymenu").click();
+        const menuKeys = page.getByRole("menu").locator("kbd");
+        expect(await menuKeys.count()).toBe(5);
+        expect(
+            await menuKeys.evaluateAll((ks) =>
+                ks.every((k) => globalThis.getComputedStyle(k).borderTopStyle === "none"),
+            ),
+        ).toBe(true);
+    });
 });
 
 describe("counted work", () => {

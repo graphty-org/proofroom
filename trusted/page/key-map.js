@@ -21,7 +21,7 @@ export const MAP = [
     ["Shift+N", "Next change that needs you", ["nextchange"], "Move"],
     ["/", "Find in the focused pane", ["find"], "Move"],
     ["V", "Side by side", ["view-side"], "Look"],
-    ["F", "Flash; in Spotlight, flash the spotlit pair", ["view-flash"], "Look"],
+    ["F", "Flash; from Spotlight, the spotlit pair flashes", ["view-flash"], "Look"],
     ["hold Space", "Flash the current view while held", [], "Look"],
     ["H", "Highlight; again: Side by side", ["view-highlight"], "Look"],
     ["L", "Blink (in Highlight)", ["blink"], "Look"],

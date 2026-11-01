@@ -1042,9 +1042,10 @@ function showMenu(anchor, items, owner = app) {
                 el("span", { class: "ml" }, it.label),
                 // A count, right-aligned (the Show menu's).
                 it.count === undefined ? null : el("span", { class: "mc num" }, it.count),
-                // A menu item prints its key in its right column (design 8.1.1).
+                // A menu item prints its key in its right column (design 8.1.1), quiet: only the
+                // look-decide-next loop's keys are boxed.
                 (it.key ?? ACTIONS[it.id].key) ? el("span", { class: "mk" }) : null,
-                (it.key ?? ACTIONS[it.id].key) ? kb(it.key ?? ACTIONS[it.id].key) : null,
+                (it.key ?? ACTIONS[it.id].key) ? kb(it.key ?? ACTIONS[it.id].key, true) : null,
             ],
         });
         node.addEventListener("click", () => {

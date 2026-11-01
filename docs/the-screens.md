@@ -48,7 +48,8 @@ changes need you"), "34 / left" on Snapshots ("34 snapshots left to decide"); wi
 it has no badge. Opening a change folds the panes the review
 does not need: a small change (10 snapshots or fewer) opens with both side panes as rails, so the
 image gets the width at once. The viewer is never narrower than 800 px. **Image only [Shift+3]**
-folds both side panes. The page remembers your pane choices in this browser, separately for small
+folds both side panes, and pressed again gives back exactly the panes it folded ("Image only off:
+panes back as they were."). The page remembers your pane choices in this browser, separately for small
 and large changes.
 
 **Back Esc** on the item line goes back one level: to the list, or to the changes (its tooltip
@@ -159,13 +160,17 @@ the current row. Every bulk decision is one request per project and one step for
 
 ### The viewer
 
-The viewer's toolbar has seven controls. On the left, the four views: **Side by side [V]**,
-**Flash [F]** (or hold Space), **Highlight [H]** and **Spotlight [S]**, the one shown filled;
-pressing a view's key again goes back to Side by side. Beside them **Blink L**, which blinks the
-highlight on and off in Highlight and shows a check mark while on. **Zoom: Fit Z** names the zoom:
+The viewer's toolbar is one row. On the left, the four views: **Side by side [V]**,
+**Flash [F]** (or hold Space), **Highlight [H]** and **Spotlight [S]**. One view at a time: exactly
+one is filled, and pressing a view's key again goes back to Side by side. **F** from Spotlight
+flashes the spotlit pair (the label says "Baseline (flashing, spotlit)"); V, H or S leaves Flash,
+so S after H is plain Spotlight. In Highlight only, **Blink L** sits beside them; it blinks the
+highlight on and off and shows a check mark while on. **Zoom: Fit Z** names the zoom:
 Z steps Fit, 1x, 2x, 4x and 8x, and a click opens its menu (**Fit 0**, **Actual size 1**,
 **2x 2**, **4x 4**, **8x 8**), whose digits also work with the menu closed. Every zoom step
-centers on the current changed area, and from 2x a small map of the whole image at the right end
+centers on the current changed area, the same place in both panes (the two images are lined up at
+their top left, also when the snapshot was resized); a pane whose image does not reach that place
+says "Baseline (outside this image)" in its label. From 2x a small map of the whole image at the right end
 of the New panel's label moves the view where you click it. At the right end, **Display** holds
 what you set once a session, each printing its key, which works with the menu closed: **Show
 baseline P** (hide it to see the new image alone), **Image only Shift+3**, **Layout: Auto Y** (Y
@@ -173,17 +178,23 @@ steps Auto, Side by side and Over and under; Auto picks whichever draws the imag
 **Outline changed areas B** and **Start zoomed on the change O**.
 
 Under the toolbar, the item line: **Back Esc**, the snapshot's number and status ("#1028 changed"),
-its story's name (with dark or light after it), the size of the change ("490k px"), its badges,
-**Next area N** when it has more than one changed area (with "Area 1 of 26" while zoomed above
-Fit), **Select X Shift+Up/Down** and **Details**. When the line is tight, the other badges go
-first, then the size, then the name is cut in the middle (never below 24 characters); "unstable"
-and "resized" always stay. **Details** opens the snapshot's threshold, renderer, hashes, settings
+its story's name (with dark or light after it), its badges, **Next area N** when it has more than
+one changed area (with "Area 1 of 26" while zoomed above Fit), **Select X** and **Details**. The
+size of the change is on the snapshot's row and in Details, not here. When the line is tight, the
+name is cut first (in the middle, down to 24 characters, then at its end), then the other badges
+go; "unstable", "resized", Select and Details always stay whole. **Details** opens the snapshot's threshold, renderer, hashes, settings
 file, component, attempts and console under the line, with **Copy link to this image**.
 
 Nothing is drawn over the images. The label above each panel says what it shows and what state it
 is in: "Baseline", "New", "New (loading)", "Baseline (missing)", "New (blank image)" (a capture
-that is all one color), "no pixels changed" for a renamed story whose image is the same, and, while
-flashing, which image is showing: "Baseline (flashing)" or "New (flashing)".
+that is all one color), "Baseline (outside this image)", "no pixels changed" for a renamed story
+whose image is the same, and, while flashing, which image is showing: "Baseline (flashing)" or
+"New (flashing)", with ", spotlit" when Flash came from Spotlight.
+
+The pictures never disappear under you: opening a menu or changing a setting keeps them, and
+moving on to another snapshot, view or zoom keeps the old pictures until the new ones are ready.
+"Loading..." shows only the first time a snapshot's images are fetched, and only after a third of a
+second.
 
 A new snapshot, one with no baseline yet and a removed one show their one image; a failed one shows
 why the story did not render, with its console.
@@ -194,8 +205,9 @@ Under the image, the same place for every snapshot:
 
 **Previous [J] Left**, **Next [K] Right**, then **Undo [U]**, **Exclude... [E]**, **Reject... [R]**
 (a red outline) and **Accept [A]**, the only filled button. With a selection that holds the current
-row they read **Accept 3**, **Reject 3...** and **Exclude 3...**. In a viewer under 760 px wide
-Previous and Next show only their keys, then Undo; the decision words never drop. Accept moves on to the next
+row they read **Accept 3**, **Reject 3...** and **Exclude 3...**. Every word stays at every width
+(a 1024 x 768 laptop included); if the bar is ever too narrow, the quiet Left and Right shorten to
+`<-` and `->`, then the bar takes a compact size. Accept moves on to the next
 undecided snapshot; Left and Right step through every row. Reject and Exclude ask for a reason in a
 small box above the bar (the author reads a reject's reason); recent reasons are one press away.
 See [What each decision does](decisions.md).

@@ -151,7 +151,8 @@ export const imageOnlyPressed = ([changes, snaps]) => !changes && !snaps;
 
 /**
  * Pressing Image only: hides both panes (never making the viewer narrower), or, when pressed,
- * brings back the layout it hid (else the list), within the floor.
+ * brings back exactly the layout it hid (folded stays folded, open stays open; their widths keep
+ * the viewer's floor), else the list.
  * @param {[boolean, boolean]} shown the panes now
  * @param {[boolean, boolean] | null} before the panes it hid, if it did
  * @param {{ width: number, open: boolean, holds: boolean }} at the window and viewer
@@ -162,7 +163,7 @@ export function pressImageOnly(shown, before, at) {
     if (!imageOnlyPressed(shown)) {
         return { shown: [false, false], before: shown };
     }
-    return { shown: keepFloor(before ?? [false, true], { ...at, prefer: (at.ids ?? PANES.review)[1] }), before: null };
+    return { shown: before ?? keepFloor([false, true], { ...at, prefer: (at.ids ?? PANES.review)[1] }), before: null };
 }
 
 // ---------------------------------------------------------------- on the page

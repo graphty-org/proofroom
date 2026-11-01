@@ -226,10 +226,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             const page = await open({});
             await page.locator('.chg[data-chg="3486"]').click();
             await page.locator(".iline").waitFor({ state: "attached" });
-            // The item line prints where a selection starts: Select X Shift+Up/Down.
-            expect(await page.locator('.iline [data-act="select"]').innerText()).toMatch(
-                /^Select\s*X\s*Shift\+Up\/Down$/,
-            );
+            // The item line's Select prints its one key; extending a selection is in the List menu.
+            expect(await page.locator('.iline [data-act="select"]').innerText()).toMatch(/^Select\s*X$/);
             await page.keyboard.press("KeyX");
             await expect.poll(() => page.locator("#snaps-head .lselbar").count()).toBe(1);
             // The first Esc clears the selection; the second, right after it, stays and says so.
@@ -292,9 +290,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             // The current row is 3480, decided, not finished: its Finish... prints Enter.
             await expect.poll(() => visibleKeys(page)).toContainEqual({ act: "finishchg", key: "Enter" });
             await page.keyboard.press("Enter");
-            await expect
-                .poll(() => page.locator("dialog.finish[open] h3").innerText())
-                .toBe("Finish #3480");
+            await expect.poll(() => page.locator("dialog.finish[open] h3").innerText()).toBe("Finish #3480");
         });
 
         it("hides letter key hints and ignores those keys while letter keys are off", async () => {
@@ -327,7 +323,6 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             expect(await visibleKeys(page)).toEqual([
                 { act: "view-flash", key: "hold Space" },
                 { act: "back", key: "Esc" },
-                { act: "select", key: "Shift+Up/Down" },
                 { act: "prev", key: "Left" },
                 { act: "next", key: "Right" },
             ]);
