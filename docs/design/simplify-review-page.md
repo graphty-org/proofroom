@@ -461,3 +461,117 @@ Expected count on the opened change at 1440, Changes folded: about 48 controls, 
 - Hiding quiet keys until hover or focus: the owner's rule wants the key on the visible control.
 - Dropping the locator: at 2x and above it is the only "where am I"; it stays in the label strip.
 - A "most snapshots resized" header note: the muted word on each row already costs nothing.
+
+## 8. Third pass (2026-11-01, after the second build review)
+
+Where this section and sections 2-7 disagree, this section wins. Reviewers judged complaint 1
+(the thumbnail) and complaint 4 (the cockpit) still open, found the test suite red, and found
+regressions in zoom and the Finish sheet. Complaints 2 and 3 are closed.
+
+### 8.1 Defects: the branch is not done while any of these stands
+
+1. **The whole suite passes.** `test/page/plain-git.page.test.mjs` hangs at 60 s, also alone. Find
+   the step that hangs (run it with a trace or step logging, do not guess) and fix the page, not the
+   test, when the flow is broken. The likely cause is 8.3 item 7: the test reads why plain git
+   cannot do something in Settings, and that text now sits in a closed disclosure.
+   `test/finish-change.page.test.mjs` passes again by 8.1 item 2, not by editing its assertion.
+2. **The Finish sheet says who signs.** `Signs with: Passkey '...'` (or why nothing is signed) is on
+   the sheet's main body, right above the confirm button, never inside Details. Signing progress,
+   commit status text and the shell command stay in Details.
+3. **Zoom zooms, and the locator shows.** Re-capture 4x on the resized `images-charts-p-6`
+   snapshot, waiting on the stage's drawn zoom, not on a timer. If 4x draws at Fit, fix it: the
+   toolbar's `Zoom: 4x` and the pixels must always agree, including right after V and after a
+   digit key. At 2x and above the 60 x 16 locator sits at the right end of the New panel's label
+   strip (7.3: it is the only "where am I"). A test presses `4` on a resized snapshot and checks
+   the drawn scale and the locator.
+4. **Hiding the baseline is visible.** With the baseline hidden (P), the space where Baseline was
+   is not silently gone: the remaining panel's label strip reads `New` and, at its left end, a
+   button `Show baseline  P` (quiet key). The Display button reads `Display: baseline hidden`
+   while it is hidden. Both go when P shows it again.
+5. **Panels are named `Baseline` and `New`** in every view; delete `Spotlit new` (viewer.js
+   `leftLabel` / `rightLabel`).
+6. **A control does not come and go with the window width.** Find why `Open  Enter` shows on the
+   item line at 1280 and 1024 but not at 1440 for the same snapshot; it shows for the same
+   snapshot at every width or at none.
+7. **The story name on the item line is never cut below 24 characters** (section 5); at 1024 it
+   read `i...`. The cut order is: tags other than `unstable` and `resized`, then the name down to
+   24 characters; if it still does not fit, the item line wraps to a second line rather than cut.
+8. **Unexplained count change.** `Seed from master` went from 648 left to 646 left during a run
+   while its decisions file stayed empty. Find the cause from the scratch clone (did its master
+   or the change's capture move between the two reads?) and say it in the report. If the page or
+   server changed two decisions without a reader's action, that is a data-safety defect: fix it
+   and add a test.
+
+### 8.2 The thumbnail shows the change (complaint 1, still open)
+
+The labels are off the picture, but at the row's size most pictures were 60% flat Spotlight grey
+with the change impossible to see, and every row said `zoomed 4x` over a picture that looked
+unzoomed.
+
+1. **Spotlight only where it helps.** A row picture is spotlit only when the changed areas cover
+   less than a third of the part of the image the row shows. Otherwise it is the plain New image:
+   when the whole thing changed, dimming hides everything and shows nothing.
+2. **No grey filler.** The row crop is clamped inside the image. When the image is narrower than
+   the crop at the row's shape, the picture is centered and the band beside it is the row's own
+   background, not the Spotlight grey.
+3. **Row words say what changed, once.** Row line 3 reads `66 changed areas` (`1 changed area`).
+   `zoomed 4x` and the pixel size leave the row: the 3 px bar on the picture's edge already says the
+   picture is a crop, and the picture's tooltip says `Zoomed 4x to the changed areas` / `Whole
+   image`; the size stays in Details. The empty third line goes: a row is three text lines, the
+   areas line directly under the story name.
+4. Checked by eye before kept: capture the first 40 rows on the studio server at 1440 and 1024 and
+   judge with the Read tool, row by row, whether the change can be seen. Record the count of rows
+   where it can, before and after, in `docs/decisions.md`.
+
+### 8.3 Calmer, round three (complaint 4, still open)
+
+The reviewers' measure: about 64 controls on the opened change against the 48 aimed for, a
+590 px List menu covering two thirds of the screen with `Undo all decisions...` next to `Accept all
+shown`, three bulk Accepts at once, four numbers per row, a title that says nothing, and a cramped
+find row. Most of what remains is per-row and per-group structure a list needs; this round removes
+what makes it read as a cockpit: big mixed menus, repeated numbers, and controls that look alike
+but do unlike things.
+
+1. **The change's own menu.** Line 1's `#4455 ci: run th...` becomes a menu button with the CSS
+   caret of 7.1 item 7 (no key; tooltip is the full title). Its menu: the full title as a heading,
+   wrapped, never cut; `Open on GitHub` (the code host's name; today's `onhost` action and link);
+   `Copy link to this list`; `Download the comparison report (JUnit)`; a separator; `Undo all
+   decisions...`. Change-wide and rare things live with the change's name, and the one destructive
+   bulk action sits apart from every Accept.
+2. **The List menu is about the list only.** It holds `Group by` (5), `Pictures` (Spotlight rows,
+   Zoom rows to the change: `When small` / `Always` / `Never`, `Text only, no pictures`) and
+   `Select` (Extend up `Shift+Up`, Extend down `Shift+Down`, Select all shown). The `Auto: when the
+   change is small (2x Fit or more)` item reads `When small`, its tooltip keeps the rule. The menu
+   is at most 460 px tall at 1440 x 900 and opens over the list pane, left-aligned to it, never
+   over the viewer's pictures when the list pane is wide enough to hold it.
+3. **Accept all shown lives with Show.** `Accept all 34 shown...` is the last item of the Show
+   menu, under a separator: it acts on what Show shows, so it sits with Show. Its confirm box is
+   unchanged.
+4. **One bulk Accept on screen at a time.** While a selection exists, group headers draw no
+   `Accept N` (the decision bar's `Accept 3` is the bulk action); the group's name menu still lists
+   `Accept N  Shift+A`, so Shift+A keeps a visible control and keeps working.
+5. **Notices look pressable.** The `Behind master: 1,243` chip (and `Newer capture`, `2 notices`)
+   is an outlined button with the 7.1 item 7 caret; only its small mark is amber, the text is
+   ordinary ink. Its menu is unchanged.
+6. **Find row.** Placeholder `Find  /` (tooltip `Find a story, or #number`). Up and Down use the
+   same text size and height as Show and List. Up and Down stay (they print the Up and Down keys).
+7. **Settings says the problem.** When Repository setup has problems, its disclosure starts open and
+   its summary names the first one in plain words (`Repository setup: CI takes no capture requests`,
+   `+1 more` when there are more). With no problems it stays closed and reads `Repository setup`.
+8. **Group names at laptop width** are cut in the middle (`style-fi...cx-specimens`), keeping both
+   ends, never from the left. Two visible group headers never read the same (7.1 item 5's test
+   stays).
+9. Expected on the opened change at 1440 with Changes folded: about 55 controls, no menu taller
+   than 460 px, at most two numbers per row (`#688` and `66 changed areas`), one bulk Accept on
+   screen. Check by counting in a capture.
+
+### 8.4 Rejected in this pass
+
+- Dropping Up / Down from the find row: they are the only controls that print the Up and Down keys.
+- Dropping `Always` from Zoom rows: removing a capability nobody asked to lose.
+- Removing row checkboxes or group chevrons to hit 48: they are the pointer path to selection and
+  collapse; the count target moves to about 55 instead.
+- A two-column List menu: shorter but harder to walk with the keyboard; moving four items out does
+  the same.
+- Narrowing the Snapshots pane to give the viewer more room: line 3 is already tight at 420 px.
+- Moving `Signs with` to the confirm button's label: too long for a button; it is a line above it.
