@@ -1524,6 +1524,8 @@ export function createApp({
      * @param {boolean} [again] download the projects the disk budget evicted again
      * @returns {Promise<object>} the target
      */
+    /** The projects whose failure to load was logged, by target, project and run: logged once each. */
+    const toldUnloaded = new Set();
     async function build(info, run, again = false) {
         const jobs = await store.jobs(run, names);
         // Each project's capture job, for the changes list: the poll's check runs, or, when GitHub
@@ -1627,7 +1629,15 @@ export function createApp({
             p.logUrl = jobs[name]?.url ?? run.url;
             p.ci = ciOf(name);
             markDeleted(p, downloaded[name]);
-            if (!p.results && p.problem && p.problem !== NOT_AFFECTED && run.status === "completed") {
+            const key = `${info.id} ${name} ${run.id}-${run.attempt}`;
+            if (
+                !p.results &&
+                p.problem &&
+                p.problem !== NOT_AFFECTED &&
+                run.status === "completed" &&
+                !toldUnloaded.has(key)
+            ) {
+                toldUnloaded.add(key);
                 console.error(`proofroom: ${info.id}: ${name} not loaded from run ${run.id}: ${p.problem}`);
             }
             list.push(p);
