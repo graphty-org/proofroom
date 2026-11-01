@@ -293,6 +293,59 @@ dark, on a 2x screen, judged row by row:
   counts are the same in all four. No changed row has a band beside its picture wider than 3 CSS px
   (the slot is 2.61:1, the crop 2.56:1); only the two whole-image new and removed rows do.
 
+## Every changed row tinted: checked row by row
+
+Since the sixth pass a changed row's picture tints its changed pixels red at every size of change
+(Spotlight stays a viewer view). Checked on the studio server at commit 83a8b0b (picture version
+6), at 1440 x 900 on a 2x screen, light and dark, each row beside the same snapshot's Highlight at
+Fit and, for the small changes, at 4x on the first changed area (at Fit a change of a few pixels is
+under one screen pixel). A row is "yes" when it shows what changed (the glyphs, the edge, the
+border that differs), not only where. Light and dark rows show the same picture (the same file),
+so each verdict holds for both.
+
+Small changes on same-size pages (changed areas under a third of the crop): 19 of 20 yes, light
+and dark. Change #5420, named for this check, had left the candidate, so the rows come from #1998
+(15) and #1677 (5), the two changes with such rows:
+
+| Row | Snapshot | Cover | Shows | |
+|---|---|---|---|---|
+| 1 | #3 navrail default, dark | 0.02 | the history icon, the arc ends beside its badge dot red | yes |
+| 2 | #5 navrail keyboard, dark | 0.02 | the same icon and arc ends | yes |
+| 3 | #39 toolbar flyout-open, dark | 0.02 | the flyout's rounded corner red under "Ctrl+Shift+K" | yes |
+| 4 | #102 datarow long-value, dark | 0.01 | the "t" of "1 to 36" red | yes |
+| 5 | #220 variablepill from keyboard, dark | 0.04 | the PageRank tooltip's corners red | yes |
+| 6 | #254 menu long interactions, dark | 0.05 | the row numbers "23", "24" red | yes |
+| 7 | #330 color panel-ink, dark | 0.29 | every token name in the right column red | yes |
+| 8 | #392 badge states, dark | 0.06 | the right edges of the New, Pro and Live pills red | yes |
+| 9 | #454 segmented control, dark | 0.10 | the three icons and the selected segment's borders red | yes |
+| 10 | #455 segmented control, light | 0.10 | the same, light | yes |
+| 11 | #1044 contiguous-usa | 0.21 | the caption's text and the rule under it red | yes |
+| 12 | #1121 path | 0.11 | "30 nodes, 29 edges" and the rule red | yes |
+| 13 | #1192 depth-first-search | 0.30 | the caption red and a dashed red edge into node 32 | yes |
+| 14 | #479 cytoscape-session | 0.03 | red blocks on a label line in a blurred graph | no |
+| 15 | #602 layout2d arf | 0.30 | the status line and both buttons' words red | yes |
+| 16 | #1224 inspector node-data, dark | 0.30 | every edge of the hexagons red | yes |
+| 17 | #1227 inspector why-this-look, light | 0.23 | the edges red | yes |
+| 18 | #1226 inspector why-this-look, dark | 0.23 | the edges red | yes |
+| 19 | #1248 several-elements neighborhood, dark | 0.31 | the edges red | yes |
+| 20 | #1251 several-elements summary, light | 0.31 | the edges red | yes |
+
+The no: #479's change is a few glyphs of a node label in a capture drawn blurred on purpose; at
+400 CSS pixels of page per row the glyphs are about 2 px tall, and the tint (each changed pixel
+grown by 2 for the shrink) turns them into solid red blocks. The row shows where; which glyphs
+changed needs the viewer. Rows 1 and 2 pass narrowly: the red is four specks at the badge.
+
+Resized pages (#4455, the same first 20 rows as the fifth pass): 20 of 20 yes, light and dark, as
+before (table rows or drawings tinted where Highlight puts the most red), so nothing went back.
+New and removed rows (#240 new, #374 removed, #4455): the whole image, untinted (there is nothing
+to compare), the removed one hatched, as the viewer shows them.
+
+The acceptance test on 83a8b0b: 36 passed, 0 failed, 1 skipped (Captures lists no capture to
+walk). Its decide step run 20 times in a row, each right after Right and a view key: 20 of 20
+passed. A first run right after the server restart failed only its last step: the Seed row read
+"720 left" at the start, before the server had counted its 72 accepted earlier, and "648 left of
+720" at the end; no decision was saved.
+
 ## A calmer list pane
 
 The Snapshots header had a 590 px List menu holding Undo all decisions beside Accept all shown,

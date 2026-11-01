@@ -978,6 +978,12 @@ As 10.3, into `tmp/proofroom-studio/after-6/`, on the committed head, with these
 3. The resized 20 are shot again to show nothing went back.
 4. The acceptance test runs on the same commit; its counts are the result.
 
+Result (commit 83a8b0b, `tmp/proofroom-studio/after-6/`): small changes 19 of 20 yes, light and
+dark (the no is #479, glyphs of a blurred label too small to read at row size); resized 20 of 20;
+new and removed rows whole and untinted. #5420 had left the candidate, so the small rows are from
+#1998 and #1677. Acceptance test 36 passed, 0 failed, 1 skipped; step 35 passed 20 of 20 times.
+Per-row record: docs/decisions.md.
+
 ### 11.5 Rejected in this pass
 
 - Easing A's refusal right after V: the quarter-second unseen-image guard is locked (section 5).
