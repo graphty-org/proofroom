@@ -586,7 +586,14 @@ await step(
         await act("settings").click();
         check(await waitDialog("Picture storage"), "Settings opened no sheet");
         const t = await page.locator("dialog#dlg").innerText();
-        for (const w of ["Passkeys", "Theme", "Highlight color", "Single-letter keys", "Picture storage", "Repository setup"]) {
+        for (const w of [
+            "Passkeys",
+            "Theme",
+            "Highlight color",
+            "Single-letter keys",
+            "Picture storage",
+            "Repository setup",
+        ]) {
             check(t.includes(w), `Settings does not show "${w}"`);
         }
         check(
