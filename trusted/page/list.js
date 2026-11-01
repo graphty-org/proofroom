@@ -28,7 +28,6 @@ import {
     undecided,
 } from "./groups.js";
 import { DECISION, ORDER, STATUS, mark } from "./marks.js";
-import { SPOT_UNDER } from "./spot.js";
 import { el, fmt, fmtShort, ic, kb } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -253,8 +252,8 @@ function computeLayout(lv, snaps) {
 
 /**
  * The picture a row asks for under the Row pictures choices, and how it is cropped: one request
- * per row. A changed pair is marked (spotlit; the server tints it instead when its change covers a
- * third or more) or plain, cropped to its change (rowCrop, spot.js)
+ * per row. A changed pair is marked (its changed pixels tinted red) or plain, cropped to its change
+ * (rowCrop, spot.js)
  * or whole. A snapshot of one image has only its plain picture.
  * @param {any} s the snapshot
  * @param {{ spot: boolean, zoom: "crop" | "whole" }} pics the choices
@@ -270,13 +269,13 @@ export function pictureKind(s, pics) {
         return { kind: "plain", how: null, shown: null };
     }
     if (pics.zoom === "whole") {
-        return { kind: pics.spot ? "spot" : "plain", how: null, shown: null };
+        return { kind: pics.spot ? "tint" : "plain", how: null, shown: null };
     }
     const a = s.areas;
     const shown = a ? (a.shown ?? a.count) : null;
     // Before the server has found the areas, the row only knows it is cropped.
     const how = a ? (a.how ?? (shown < a.count ? "cluster" : "all")) : "crop";
-    return { kind: pics.spot ? "row-spot" : "row-plain", how, shown };
+    return { kind: pics.spot ? "row-tint" : "row-plain", how, shown };
 }
 
 /**
@@ -1010,20 +1009,18 @@ function pictureOf(app, s) {
     }
     // Nothing is drawn over the picture: how it is cropped is said in this tooltip (and chosen in
     // the List menu).
-    const title = pictureTitle(s, pk);
+    // A size-only crop is centered away from the strip that changed: nothing in it is tinted.
+    const tinted = (pk.kind === "row-tint" && pk.how !== "size") || pk.kind === "tint";
+    const title = `${pictureTitle(s, pk)}${tinted ? ", changed pixels tinted" : ""}`;
     const box = el("div", { class: "pic", title }, chip("Making picture..."));
-    // The tooltip's words reach a keyboard or screen-reader reader too, with the tint when the
-    // server tints this crop (shownKind, thumbs.mjs).
-    const tint =
-        (pk.kind === "row-spot" && s.areas?.cover >= SPOT_UNDER) ||
-        (pk.kind === "spot" && s.areas?.coverAll >= SPOT_UNDER);
+    // The tooltip's words reach a keyboard or screen-reader reader too, with the tint.
     const img = el("img", {
-        alt: tint ? `${title}, changed pixels tinted` : title,
+        alt: title,
         loading: "lazy",
         decoding: "async",
         // `v` names how the server makes pictures (serve.mjs SPOTS_MADE_BY): the browser keeps a
         // picture for good, so one made the older way is fetched again.
-        src: `/api/pic/${s.pic}-${pk.kind}?v=5${s.retried ? `&try=${s.retried}` : ""}`,
+        src: `/api/pic/${s.pic}-${pk.kind}?v=6${s.retried ? `&try=${s.retried}` : ""}`,
         "data-kind": pk.kind,
     });
     img.addEventListener("load", () => box.classList.add("ready"));

@@ -126,7 +126,7 @@ The open change's snapshots. Its header is three lines; only the title wraps:
    while the list is filtered, "Show: Rejected (3)". Then **List**, about the list only: **Group by**
    (Component, Same change, Project, Status, None), **Pictures** (**Crop to the change**, the
    default, **Whole image** or **Text only, no pictures**, and **Mark the change**, on by default,
-   which spotlights a small change and tints the changed pixels red when most of the picture changed) and **Select** (**Extend selection up Shift+Up**, **Extend selection down
+   which tints the changed pixels red) and **Select** (**Extend selection up Shift+Up**, **Extend selection down
    Shift+Down**, both acting with the menu closed, and **Select all shown**). A menu opened from the
    list stays over the list, never over the pictures. Last, the list's **Up** and **Down**, in the
    same size as Show and List.
@@ -144,16 +144,18 @@ moved), the crop of that size where the most pixels changed, never the blank str
 adds or removes at the edge.
 When only the size changed (the new image is a few pixels taller or shorter and nothing else is
 different), the crop is centered on the image and the row says so in words. With **Mark the
-change** on, the change is marked in the picture itself: spotlit (everything but the change dimmed)
-when the changed areas cover less than a third of what the picture shows; when they cover more,
-dimming would hide the change, so the changed pixels are tinted red, as Highlight shows them, and
-the rest is the page as it is.
+change** on, the change is marked in the picture itself, however small or large it is: the
+changed pixels are tinted red, as Highlight shows them, and the rest is the page as it is, so the
+row shows what changed (the glyphs of a changed cell, a moved edge), not only where. A crop that
+frames changed areas holds each of them whole: at the image's edge it slides inward, never cuts
+one.
 Nothing is ever drawn over a picture, and a picture narrower than the row is centered on the row's
 own background. Right under the story's name the row says how many areas changed, "66 changed
 areas", or "Only the size changed: 2 px shorter". Hover the picture for what it shows: "Cropped to
 the changed areas", "Cropped to 3 of the 66 changed areas", "Cropped to where the most pixels
-changed", "Centered: only the size changed", or "Whole image"; the picture's alt text says the same,
-with ", changed pixels tinted" when it is tinted. The changed pixels' count is in
+changed", "Centered: only the size changed", or "Whole image", with ", changed pixels tinted" on
+every tinted picture (a size-only crop has nothing in it to tint); the picture's alt text says the
+same. The changed pixels' count is in
 **Details**. "resized" (the new image is a different size) is a muted word after the name, not a
 badge; its tooltip gives both sizes, "Resized: 2,400 x 3,770 to 2,400 x 3,804". Badges: **unstable** (its attempts in the run did not agree, with `run --retries` or a
 runner's retries; its status is its last attempt's), **re-review**, and **+4 identical** (the same

@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { PNG } from "pngjs";
 
-import { dimmed, grow, regions, ROW, rowCrop, SPOT_UNDER } from "../page/spot.js";
+import { dimmed, grow, regions, ROW, rowCrop } from "../page/spot.js";
 import { paddedPair } from "./compare.mjs";
 import { MAX_AREAS } from "./results.mjs";
 
@@ -110,29 +110,22 @@ export const PAIR_KINDS = ["spot", "tint", "row-plain", "row-spot", "row-tint", 
 export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 
 /**
- * The picture a row shows for a kind it asks for, from what the pair's job (or compare) found.
- * `auto` is the row's crop with its change marked (`row-spot`): every changed row is cropped to its
- * change. When the changed areas cover a third or more of what it shows, dimming the rest would
- * hide what changed, not point at it: the picture is tinted instead (`row-tint` for the row's crop,
- * `tint` for the whole image).
+ * The picture a row shows for a kind it asks for. `auto` is the row's crop with its changed pixels
+ * tinted (`row-tint`), whatever share of it changed: the red changed pixels show what changed on
+ * the page's own colors, where a spotlight showed only where. Every other kind is answered as
+ * asked, so an old address naming a spotlit kind (`row-spot`, `spot`) still gets its picture.
  * @param {string} kind the kind asked for, one of PICTURE_KINDS
- * @param {{ zoom: number, areas: number, cover?: number, coverAll?: number }} facts what was found
  * @returns {string} the kind to show
  */
-export function shownKind(kind, facts) {
-    const want = kind === "auto" ? "row-spot" : kind;
-    if (want === "row-spot" && facts.cover >= SPOT_UNDER) {
-        return "row-tint";
-    }
-    return want === "spot" && facts.coverAll >= SPOT_UNDER ? "tint" : want;
+export function shownKind(kind) {
+    return kind === "auto" ? "row-tint" : kind;
 }
 
 /**
  * The kind `auto` shows (shownKind of `auto`).
- * @param {{ zoom: number, areas: number, cover?: number, coverAll?: number }} facts what was found
  * @returns {string} the kind the row shows
  */
-export const autoKind = (facts) => shownKind("auto", facts);
+export const autoKind = () => shownKind("auto");
 
 /**
  * One job's pictures, as RGBA pixels. For a pair: decoded once, both padded top-left to the
