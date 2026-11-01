@@ -78,7 +78,13 @@ The open change's snapshots. Its header holds, top to bottom:
 
 Each row shows the snapshot's number, story, mode and status, its decision, and a picture of the
 new image: spotlit (everything but the change dimmed) and, under Zoom Auto, zoomed to the change
-when that shows it at least twice as large. A badge **attempts disagree** marks a snapshot whose
+when that shows it at least twice as large. Nothing is ever drawn over a picture. A zoomed picture
+has a gray bar outside its left edge, and the line under the story says the size and the zoom in
+words: "26 areas, 490k px, zoomed 4x". When the changed areas are spread too far apart to zoom to
+all of them, the picture shows the largest group of areas that lie close together, and the line
+says how many: "zoomed 4x to 3 of them". When the row is too narrow, a badge's word is kept and the
+zoom words give way first; they stay in the line's tooltip. Hover a picture for "Zoomed 4x to the changed areas" or
+"Whole image". A badge **attempts disagree** marks a snapshot whose
 attempts in the run did not agree (with `run --retries`, or a runner's retries); its status is its
 last attempt's.
 
@@ -102,11 +108,16 @@ decision is one request per project and one step for Undo.
 The current snapshot, in four views: **Side by side [V]**, **Flash [F]** (or hold Space),
 **Highlight [H]** (with **Blink [L]**) and **Spotlight [S]**. Pressing a view's key again goes back
 to Side by side. **Zoom [Z]** and Fit [0], 1x [1], 2x [2], 4x [4] and 8x [8] zoom both images
-together, and from 2x a small map of the whole image at the lower right moves the view where you
-click it. **Baseline [P]** hides the baseline to see the new image alone; **Layout [Y]** puts the
+together, and from 2x a small map of the whole image at the right end of the New panel's label
+moves the view where you click it. **Baseline [P]** hides the baseline to see the new image alone; **Layout [Y]** puts the
 two images side by side or over and under (Auto picks whichever draws them larger); **Options**
 has Outline [B], Open centered on the area [O], Details (the snapshot's story, settings, console
 and attempts) and Copy link. **Next area [N]** steps through the changed areas.
+
+Nothing is drawn over the images. The label above each panel says what it shows and what state it
+is in: "Baseline", "New", "New (loading)", "Baseline (missing)", "New (blank image)" (a capture
+that is all one color), "no pixels changed" for a renamed story whose image is the same, and, while
+flashing, which image is showing: "Baseline (flashing)" or "New (flashing)".
 
 A new snapshot, one with no baseline yet and a removed one show their one image; a failed one shows
 why the story did not render, with its console.

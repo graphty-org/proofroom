@@ -855,20 +855,10 @@ body.infind .fk {
     height: 100%;
     object-fit: contain;
 }
-.pic .ztags {
-    position: absolute;
-    right: 2px;
-    bottom: 2px;
-    display: flex;
-    gap: 2px;
-}
-.pic .ztag {
-    font-size: 10px;
-    background: rgba(20, 24, 32, 0.82);
-    color: #fff;
-    padding: 0 4px;
-    border-radius: 3px;
-    line-height: 15px;
+/* A zoomed picture: a 3 px bar in the muted ink outside its left edge, never over its pixels and
+   never an outline (focus is the only outline on the page). */
+.pic.zoomed {
+    box-shadow: -3px 0 0 var(--ink-2);
 }
 /* Placeholders: --ink text in a --surface chip inside the slot, never text on --stage. */
 .pic .ph {
@@ -1429,7 +1419,8 @@ body.nokeys kbd .lk {
 .stage .label .lt {
     min-width: 110px;
 }
-.stage .label .note {
+.stage .label .note,
+.stage .label .state {
     color: var(--ink-2);
     font-weight: 400;
 }
@@ -1492,43 +1483,31 @@ body.nokeys kbd .lk {
     box-shadow: 0 0 0 1px #fff;
     pointer-events: none;
 }
-.stagewrap .note {
-    position: absolute;
-    left: 50%;
-    top: 40px;
-    transform: translateX(-50%);
-    background: var(--surface);
-    color: var(--ink);
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    z-index: 2;
-}
+/* The locator sits at the right end of the New panel's label strip, never over the image. */
 .locator {
-    position: absolute;
-    right: 18px;
-    bottom: 18px;
-    width: 120px;
-    border: 1px solid #fff;
+    position: relative;
+    flex: none;
+    margin-left: auto;
+    border: 1px solid var(--line);
     background: #fff;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
     cursor: crosshair;
-    z-index: 4;
+    overflow: hidden;
 }
 .locator img {
     width: 100%;
+    height: 100%;
     display: block;
 }
 .locator .lr {
     position: absolute;
-    border: 2px solid var(--focus);
+    border: 1px solid var(--focus);
     pointer-events: none;
 }
 .locator .ld {
     position: absolute;
-    width: 6px;
-    height: 6px;
-    margin: -3px 0 0 -3px;
+    width: 4px;
+    height: 4px;
+    margin: -2px 0 0 -2px;
     border-radius: 50%;
     background: #ff00aa;
     pointer-events: none;

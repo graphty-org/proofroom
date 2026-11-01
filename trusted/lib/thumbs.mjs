@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { PNG } from "pngjs";
 
-import { dimmed, grow, regions, ROW, rowCrop } from "../page/spot.js";
+import { dimmed, grow, regions, ROW, rowCrop, ROW_ZOOM_FROM } from "../page/spot.js";
 import { paddedPair } from "./compare.mjs";
 import { MAX_AREAS } from "./results.mjs";
 
@@ -107,7 +107,7 @@ export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
  * @param {{ zoom: number, areas: number }} facts what the pair's job found
  * @returns {"row-spot" | "spot"} the kind the row shows
  */
-export const autoKind = (facts) => (facts.areas > 0 && facts.zoom >= 2 ? "row-spot" : "spot");
+export const autoKind = (facts) => (facts.areas > 0 && facts.zoom >= ROW_ZOOM_FROM ? "row-spot" : "spot");
 
 /**
  * One job's pictures, as RGBA pixels. For a pair: decoded once, both padded top-left to the
@@ -117,8 +117,9 @@ export const autoKind = (facts) => (facts.areas > 0 && facts.zoom >= 2 ? "row-sp
  * @param {{ image: Uint8Array } | { baseline: Uint8Array, capture: Uint8Array, threshold: number,
  *     includeAA: boolean }} job one image, or a pair with pixelmatch's options as the item has them
  * @returns {{ images: Record<string, { width: number, height: number, data: Uint8Array }>,
- *     facts?: { crop: number[], zoom: number, areas: number } }} the pixels per kind; for a pair,
- *     the row crop, its zoom against the unzoomed picture, and how many separate areas changed
+ *     facts?: { crop: number[], zoom: number, areas: number, shown: number } }} the pixels per kind; for a pair,
+ *     the row crop, its zoom against the unzoomed picture, how many separate areas changed and
+ *     how many of them the crop frames
  */
 export function pictureParts(job) {
     if (!("baseline" in job)) {
@@ -130,7 +131,7 @@ export function pictureParts(job) {
     // At most as many areas as compare writes into results.json, so a row's facts are the same
     // whichever made them.
     const boxes = regions(grown, width, height).slice(0, MAX_AREAS);
-    const { crop, zoom } = rowCrop(boxes, width, height);
+    const { crop, zoom, shown } = rowCrop(boxes, width, height);
     const whole = [0, 0, width, height];
     const plain = { width, height, data: pb };
     const lit = { width, height, data: dimmed(pb, grown) };
@@ -143,14 +144,14 @@ export function pictureParts(job) {
             // The capture's own thumbnail, unpadded: the same file a thumbnail of it alone would be.
             plain: plainOf(b),
         },
-        facts: { crop, zoom, areas: boxes.length },
+        facts: { crop, zoom, areas: boxes.length, shown },
     };
 }
 
 /**
  * One job's pictures as PNG files (pictureParts).
  * @param {Parameters<typeof pictureParts>[0]} job one image, or a pair
- * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number } }}
+ * @returns {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number } }}
  *     a PNG per kind, and for a pair what pictureParts found
  */
 export function pictures(job) {
@@ -160,10 +161,11 @@ export function pictures(job) {
 }
 
 /**
- * What the row needs to know about a changed pair's areas (its row crop, zoom and area count),
+ * What the row needs to know about a changed pair's areas (its row crop, zoom, area count and
+ * how many of them the crop frames),
  * from the areas compare wrote into its item, without a picture job.
  * @param {{ areas?: number[][], size?: number[] | null, baselineSize?: number[] | null }} item the item
- * @returns {{ crop: number[], zoom: number, areas: number } | null} the facts, or null when the
+ * @returns {{ crop: number[], zoom: number, areas: number, shown: number } | null} the facts, or null when the
  *     item has no areas or sizes
  */
 export function factsOf(item) {
@@ -189,7 +191,7 @@ if (process.argv[2] === FLAG) {
 }
 
 /**
- * @typedef {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number } }} Made
+ * @typedef {{ images: Record<string, Buffer>, facts?: { crop: number[], zoom: number, areas: number, shown: number } }} Made
  * @typedef {{ run: (load: () => Promise<object>, when?: "now" | "ahead", tag?: unknown) => Promise<Made>,
  *     raise: (match: (tag: unknown) => boolean) => void }} Pool
  */

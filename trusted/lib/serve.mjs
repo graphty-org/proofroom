@@ -150,6 +150,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // The page's files: its folder's files whose name is plain (no path), by their extension's type,
 // its viewer's, and the diff library its worker imports.
 const PAGE_DIR = "../page";
+// The version of the changed pairs' pictures kept in <tmp>/spots: 2 dims less (SPOT_ALPHA 110) and
+// frames every area or the largest cluster of them.
+const SPOTS_MADE_BY = "2";
 const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
 const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
@@ -3879,6 +3882,22 @@ export function createApp({
      * per snapshot. A line cut short by a crash is skipped; its pair is made again when asked.
      */
     const areasFile = join(tmp, "spots", "areas.jsonl");
+    // What made the pictures and areas in spots/: raised when spot.js changes what they show (the
+    // spotlight's dimming, the row crop), so none made before is shown again; they are made anew.
+    const madeBy = join(tmp, "spots", "made-by");
+    try {
+        if (readFileSync(madeBy, "utf8") !== SPOTS_MADE_BY) {
+            throw new Error("made by an older version");
+        }
+    } catch {
+        rmSync(join(tmp, "spots"), { recursive: true, force: true });
+        try {
+            mkdirSync(join(tmp, "spots"), { recursive: true });
+            writeFileSync(madeBy, SPOTS_MADE_BY);
+        } catch {
+            // Not writable: foundAreas warns.
+        }
+    }
     const areas = new Map();
     try {
         const text = readFileSync(areasFile, "utf8");
@@ -4026,7 +4045,9 @@ export function createApp({
         return {
             ...row,
             pic: key,
-            areas: found ? { crop: found.crop, zoom: found.zoom, count: found.areas } : null,
+            areas: found
+                ? { crop: found.crop, zoom: found.zoom, count: found.areas, shown: found.shown ?? found.areas }
+                : null,
             ...(disagree && { disagree: true }),
         };
     };

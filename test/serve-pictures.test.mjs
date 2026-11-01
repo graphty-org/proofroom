@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createApp } from "../trusted/lib/serve.mjs";
 import { autoKind, createPool, PAIR_KINDS, pictures, thumbnail } from "../trusted/lib/thumbs.mjs";
-import { ROW, rowCrop } from "../trusted/page/spot.js";
+import { clusters, ROW, rowCrop, ROW_ZOOM_FROM } from "../trusted/page/spot.js";
 import { fakeAdapters, onePrFakes } from "./fakes/adapters.mjs";
 import { capturedItems, copyFixture, FIXTURE, FIXTURE_CONFIG, job, makeRepo, until } from "./helpers.mjs";
 
@@ -176,6 +176,47 @@ describe("rowCrop", () => {
         const { crop } = rowCrop([[10, 10, 5, 5], big, [600, 300, 30, 30]], 2400, 1800);
         expect(contains(crop, big)).toBe(true);
         expect(crop[0] + crop[2] / 2).toBeCloseTo(1600, 6);
+    });
+
+    it("frames every area when that crop still zooms 2x or more, and says it frames them all", () => {
+        const boxes = [
+            [1000, 800, 20, 10],
+            [1100, 830, 20, 10],
+        ];
+        const { crop, zoom, shown } = rowCrop(boxes, 2400, 1800);
+        expect(shown).toBe(2);
+        expect(zoom).toBeGreaterThanOrEqual(ROW_ZOOM_FROM);
+        for (const b of boxes) {
+            expect(contains(crop, b)).toBe(true);
+        }
+    });
+
+    it("frames the largest cluster of nearby areas when all of them would not zoom 2x", () => {
+        // Three areas close together at the top left (each gap under one area-height), one apart at
+        // the bottom right: the box around all four is nearly the whole image.
+        const near = [
+            [100, 100, 40, 40],
+            [150, 110, 40, 40],
+            [200, 100, 40, 40],
+        ];
+        const far = [2300, 1700, 50, 50];
+        const { crop, zoom, shown } = rowCrop([...near, far], 2400, 1800);
+        expect(shown).toBe(3);
+        expect(zoom).toBeGreaterThanOrEqual(ROW_ZOOM_FROM);
+        for (const b of near) {
+            expect(contains(crop, b)).toBe(true);
+        }
+        expect(contains(crop, far)).toBe(false);
+    });
+
+    it("clusters areas within one area-height of each other, through chains of them", () => {
+        const groups = clusters([
+            [0, 0, 10, 10],
+            [15, 0, 10, 10], // 5 px from the first: joined
+            [30, 0, 10, 10], // 5 px from the second: joined through it
+            [100, 0, 10, 10], // 60 px away: its own
+        ]);
+        expect(groups.map((g) => g.length)).toEqual([3, 1]);
     });
 
     it("with no area, shows the middle of the image at the row's shape, as large as fits", () => {
@@ -396,6 +437,30 @@ describe("serve: the picture queue", () => {
         // Nothing made again, and no areas file read for any list or picture request.
         expect(again.started).toHaveLength(0);
         expect(areasReads.count).toBe(readsBefore + 1);
+    });
+
+    it("makes the pairs' pictures again when an older version made them", async () => {
+        const first = fakePool();
+        const s = await start({ fakes: onePrFakes(), pictures: first.pool });
+        await s.api("GET", "/api/prs");
+        await s.app.idle();
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("2");
+        // Made before the spotlight dimmed less and the row crop framed every area.
+        writeFileSync(join(s.tmp, "spots", "made-by"), "1");
+        const again = fakePool();
+        const t = await start({
+            repo: s.repo,
+            remote: s.remote,
+            head: s.head,
+            fakes: onePrFakes(),
+            pictures: again.pool,
+            tmp: s.tmp,
+        });
+        await t.api("GET", "/api/prs");
+        await t.app.idle();
+        // The three pairs again; the captures' own thumbnails are kept.
+        expect(again.started).toHaveLength(3);
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("2");
     });
 
     it("makes a pair's pictures again for Auto when the areas file was lost", async () => {

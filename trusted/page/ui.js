@@ -93,6 +93,18 @@ export const kb = (keys) => keys.split(" / ").map((k) => el("kbd", { class: kbCl
 export const fmt = (n) => Number(n).toLocaleString("en-US");
 
 /**
+ * A size, short: under 10,000 in full with separators, above rounded to k or M ("490k", "1.2M").
+ * @param {number} n the number
+ * @returns {string} the text
+ */
+export const fmtShort = (n) => {
+    if (n < 10000) {
+        return fmt(n);
+    }
+    return n < 999500 ? `${Math.round(n / 1000)}k` : `${Number((n / 1e6).toFixed(1))}M`;
+};
+
+/**
  * How long ago, in minutes under an hour, then hours, then days.
  * @param {number} ms milliseconds since
  * @returns {string} "4 min ago", "6 h ago", "3 d ago"

@@ -68,3 +68,23 @@ describe("text contrast", () => {
         expect(status.sort()).toEqual(marks.filter((c) => c.startsWith("st-") && c !== "st-failed").sort());
     });
 });
+
+describe("the zoomed-thumbnail bar", () => {
+    // The rule that marks a zoomed row picture.
+    const rule = CSS.slice(CSS.indexOf(".pic.zoomed {"), CSS.indexOf("}", CSS.indexOf(".pic.zoomed {")));
+
+    it("is a bar outside the picture's left edge in the muted ink, never an outline or the focus color", () => {
+        expect(rule).toMatch(/box-shadow:\s*-3px 0 0 var\(--ink-2\)/);
+        expect(rule).not.toMatch(/outline|--focus/);
+    });
+
+    for (const [theme, tokens] of [
+        ["light", LIGHT],
+        ["dark", DARK],
+    ]) {
+        // A non-text mark: 3:1 against every background a row is drawn on.
+        it.each(["surface", "sel", "hover"])(`${theme}: --ink-2 on --%s is 3:1 or more`, (bg) => {
+            expect(contrast(tokens["ink-2"], tokens[bg])).toBeGreaterThanOrEqual(3);
+        });
+    }
+});

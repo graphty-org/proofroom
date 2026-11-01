@@ -582,16 +582,45 @@ describe("rows", () => {
             .filter((p) => p.startsWith("/api/pic/"))
             .map((p) => p.split("-").slice(4).join("-").split("?")[0]);
 
-    it("asks for the picture the Row pictures choices name, with its corner tags", async () => {
+    it("asks for the picture the Row pictures choices name, and says its zoom in words, never on it", async () => {
         const page = await openChange(RICH);
-        // A changed row: spotlit, zoom auto, so the server's auto picture.
+        // A changed row: spotlit, zoom auto, so the server's auto picture. Its crop frames one of
+        // its three areas (the fixture's largest cluster), zoomed 7x.
         const r = page.locator('#snap-list .srow[data-snap="graphty-element/component-22--story-114.light.png"]');
         await page.locator("#snap-find").click();
         await page.keyboard.type("115");
         await r.waitFor();
         await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-auto$/);
         expect(await page.getByRole("button", { name: /^Pictures:/ }).innerText()).toBe("Spotlit, zoom auto");
-        await expect.poll(() => r.locator(".ztag").allInnerTexts()).toEqual(["zoomed 7x", "+2 areas"]);
+        // Line 4 in words, the full words in its tooltip when "to 1 of them" does not fit.
+        const line4 = r.locator(".x4 .keep");
+        const isZoomed = () => r.locator(".pic").evaluate((p) => p.classList.contains("zoomed"));
+        const said = async () => (await line4.getAttribute("title")) ?? (await line4.innerText());
+        const zoomed = async () => {
+            await expect.poll(() => isZoomed()).toBe(true);
+            expect(await said()).toBe("3 areas, 4,318 px, zoomed 7x to 1 of them");
+            expect(await line4.innerText()).toMatch(/^3 areas, 4,318 px, zoomed 7x( to 1 of them)?$/);
+            expect(await r.locator(".pic").getAttribute("title")).toBe("Zoomed 7x to 1 of the 3 changed areas");
+        };
+        const whole = async () => {
+            await expect.poll(() => isZoomed()).toBe(false);
+            expect(await line4.innerText()).toBe("3 areas, 4,318 px");
+            expect(await r.locator(".pic").getAttribute("title")).toBe("Whole image");
+        };
+        // Nothing is drawn over any row picture: a loaded picture shows only its image (the
+        // placeholder hides; a removed row's even hatching is its status, not a label).
+        const over = () =>
+            page.evaluate(() =>
+                [...globalThis.document.querySelectorAll("#snap-list .pic.ready")].flatMap((p) =>
+                    [...p.children]
+                        .filter((c) => c.tagName !== "IMG" && c.className !== "rm")
+                        .filter((c) => globalThis.getComputedStyle(c).display !== "none")
+                        .map((c) => c.className),
+                ),
+            );
+        await zoomed();
+        await expect.poll(() => r.locator(".pic.ready").count()).toBe(1);
+        expect(await over()).toEqual([]);
         // A choice: the row asks for its picture of that kind (the request is made).
         const pics = async (label, kind) => {
             const from = t.requests.length;
@@ -601,13 +630,14 @@ describe("rows", () => {
             expect(await r.locator("img").getAttribute("src")).toMatch(new RegExp(`-${kind}$`));
         };
         await pics("Always", "row-spot");
-        await expect.poll(() => r.locator(".ztag").allInnerTexts()).toEqual(["zoomed 7x", "+2 areas"]);
+        await zoomed();
         await pics("Never", "spot");
-        expect(await r.locator(".ztag").count()).toBe(0);
+        await whole();
         expect(await page.getByRole("button", { name: /^Pictures:/ }).innerText()).toBe("Not zoomed"); // "Spotlit, zoom never" does not fit
         await pics("Spotlight rows (switch)", "plain");
         await pics("Always", "row-plain");
-        await expect.poll(() => r.locator(".ztag").allInnerTexts()).toEqual(["zoomed 7x", "+2 areas"]);
+        await zoomed();
+        expect(await over()).toEqual([]);
         // No pictures: 28 px text rows that ask for none.
         const from = t.requests.length;
         await page.getByRole("button", { name: /^Pictures:/ }).click();

@@ -29,7 +29,8 @@ import {
     undecided,
 } from "./groups.js";
 import { DECISION, ORDER, STATUS, mark, statusMark } from "./marks.js";
-import { el, fmt, ic, kb } from "./ui.js";
+import { ROW_ZOOM_FROM } from "./spot.js";
+import { el, fmt, fmtShort, ic, kb } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const PICTURES_KEY = "proofroom:pictures";
@@ -230,23 +231,25 @@ function computeLayout(lv, snaps) {
 }
 
 /**
- * The picture a row asks for under the Row pictures choices, and its corner tags: one request per
- * row. A changed pair is spotlit or plain, zoomed to its change or whole; Zoom Auto zooms when the
- * crop around the largest area is at least 2x Fit (the server's `auto` when spotlit). A snapshot of
- * one image has only its plain picture.
+ * The picture a row asks for under the Row pictures choices, and how far it is zoomed: one request
+ * per row. A changed pair is spotlit or plain, zoomed to its change or whole; Zoom Auto zooms when
+ * the row crop is at least 2x Fit (the server's `auto` when spotlit). A snapshot of one image has
+ * only its plain picture.
  * @param {any} s the snapshot
  * @param {{ spot: boolean, zoom: "auto" | "always" | "never" }} pics the choices
- * @returns {{ kind: string, tags: string[] } | null} the kind and tags, or null for no picture
+ * @returns {{ kind: string, zoom: number | null, shown: number | null } | null} the kind, the zoom
+ *     and how many of the changed areas the crop frames when zoomed (else null), or null for no
+ *     picture
  */
 export function pictureKind(s, pics) {
     if (!s.pic || s.status === "failed") {
         return null;
     }
     if (!pairOf(s)) {
-        return { kind: "plain", tags: [] };
+        return { kind: "plain", zoom: null, shown: null };
     }
     const a = s.areas;
-    const big = Boolean(a && a.count > 0 && a.zoom >= 2);
+    const big = Boolean(a && a.count > 0 && a.zoom >= ROW_ZOOM_FROM);
     const zoomed = pics.zoom === "always" || (pics.zoom === "auto" && big);
     let kind;
     if (pics.spot) {
@@ -254,14 +257,24 @@ export function pictureKind(s, pics) {
     } else {
         kind = zoomed ? "row-plain" : "plain";
     }
-    const tags = [];
-    if (zoomed && a) {
-        tags.push(`zoomed ${Math.round(a.zoom)}x`);
-        if (a.count > 1) {
-            tags.push(`+${a.count - 1} area${a.count === 2 ? "" : "s"}`);
-        }
+    return zoomed && a ? { kind, zoom: a.zoom, shown: a.shown ?? a.count } : { kind, zoom: null, shown: null };
+}
+
+/**
+ * A row's line 4 words for its picture: the size, then how far the picture is zoomed and, when the
+ * crop frames only some of the areas, how many. "26 areas, 490k px, zoomed 4x to 3 of them".
+ * @param {any} s the snapshot
+ * @param {{ zoom: number | null, shown: number | null } | null} pk what pictureKind gave
+ * @returns {{ full: string, short: string }} the words, and them without "to 3 of them"
+ */
+export function rowSizeText(s, pk) {
+    const size = sizeText(s);
+    if (!pk?.zoom) {
+        return { full: size, short: size };
     }
-    return { kind, tags };
+    const short = [size, `zoomed ${Math.round(pk.zoom)}x`].filter(Boolean).join(", ");
+    const count = s.areas?.count ?? 0;
+    return { full: pk.shown < count ? `${short} to ${fmt(pk.shown)} of them` : short, short };
 }
 
 /**
@@ -939,13 +952,14 @@ const BADGE_FONT = () => `11px ${FONT()}`;
  * A snapshot's change size, as its row and the viewer's item line show it.
  * @param {any} s the snapshot
  * @param {number} [count] its changed areas: by default the capture's count, in the viewer the diff's
- * @returns {string} "1,234 px, 3 areas", "image identical", or ""
+ * @returns {string} "3 areas, 1,234 px" (sizes of 10,000 and more as "490k px"), "image
+ *     identical", or ""
  */
 export function sizeText(s, count = s.areas?.count) {
     if (s.status === "changed") {
-        const px = s.changedPixels === null ? "" : `${fmt(s.changedPixels)} px`;
-        const a = count === undefined ? "" : `${fmt(count)} area${count === 1 ? "" : "s"}`;
-        return [px, a].filter(Boolean).join(", ");
+        const px = s.changedPixels === null || s.changedPixels === undefined ? "" : `${fmtShort(s.changedPixels)} px`;
+        const a = count === undefined || count === null ? "" : `${fmt(count)} area${count === 1 ? "" : "s"}`;
+        return [a, px].filter(Boolean).join(", ");
     }
     if (s.status === "moved") {
         return "image identical";
@@ -993,6 +1007,16 @@ const decisionMark = (s) => {
     return mark(d.shape, d.cls);
 };
 
+// A row picture's tooltip: how much of the image it shows.
+function pictureTitle(s, pk) {
+    if (!pk.zoom) {
+        return "Whole image";
+    }
+    const count = s.areas?.count ?? 0;
+    const what = pk.shown < count ? `${fmt(pk.shown)} of the ${fmt(count)} changed areas` : "the changed areas";
+    return `Zoomed ${Math.round(pk.zoom)}x to ${what}`;
+}
+
 // The row's picture: the server's picture for the Row pictures choices, or a placeholder chip.
 function pictureOf(app, s) {
     const chip = (...c) => el("div", { class: "ph" }, el("span", {}, ...c));
@@ -1003,7 +1027,13 @@ function pictureOf(app, s) {
     if (!pk) {
         return el("div", { class: "pic" }, chip("No picture"));
     }
-    const box = el("div", { class: "pic" }, chip("Making picture..."));
+    // Nothing is drawn over the picture: a zoomed one is marked by a bar outside its left edge, and
+    // its zoom is said in words on line 4 and here.
+    const box = el(
+        "div",
+        { class: pk.zoom ? "pic zoomed" : "pic", title: pictureTitle(s, pk) },
+        chip("Making picture..."),
+    );
     const img = el("img", {
         alt: "",
         loading: "lazy",
@@ -1022,15 +1052,6 @@ function pictureOf(app, s) {
     box.append(img);
     if (s.status === "removed") {
         box.append(el("div", { class: "rm" }));
-    }
-    if (pk.tags.length > 0) {
-        box.append(
-            el(
-                "span",
-                { class: "ztags" },
-                pk.tags.map((t) => el("span", { class: "ztag" }, t)),
-            ),
-        );
     }
     return box;
 }
@@ -1144,11 +1165,23 @@ export function rowOf(app, s, filled = true) {
                   el("div", { class: "l muted x3" }, el("span", { class: "ell" }, comp)),
               ]
             : [el("div", { class: "nm" }, midCut(s.name, 2 * textW - 24, NAME_FONT()))];
-        const size = sizeText(s);
-        const room = textW - (size ? textWidth(size, SIZE_FONT()) + 8 : 0);
+        // The zoom's words only with the picture they describe. When tight, "to 3 of them" goes
+        // first, then the zoom (the picture's bar still marks it), before a badge's word folds;
+        // the whole is in the tooltip.
+        const words = rowSizeText(s, lv.pics.none ? null : pictureKind(s, lv.pics));
+        const badges = badgesOf(app, s);
+        const need =
+            badges.length > 0 ? textWidth(badges[0].text, BADGE_FONT()) + 14 + (badges.length > 1 ? 30 : 0) : 0;
+        const width = (x) => (x ? textWidth(x, SIZE_FONT()) + 8 : 0);
+        const size = [words.full, words.short].find((x) => width(x) + need <= textW) ?? sizeText(s);
         body = [
             ...l23,
-            el("div", { class: "l x4" }, el("span", { class: "keep muted" }, size), badgeNodes(badgesOf(app, s), room)),
+            el(
+                "div",
+                { class: "l x4" },
+                el("span", { class: "keep muted", title: words.full === size ? null : words.full }, size),
+                badgeNodes(badges, textW - width(size)),
+            ),
         ];
     } else {
         const words = decisionWords(app, s);

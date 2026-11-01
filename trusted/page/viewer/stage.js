@@ -242,18 +242,46 @@ export function createStage(host) {
         }
     }
 
-    // A frame and its label; with a note (host.labels), the label's text is its own span beside it.
-    const pane = (text, content, empty = false, note = null) =>
+    // A frame and its label strip: the label's text in its own span, then a note (host.labels).
+    // The strip, never the image, says what the frame holds: "New (loading)", "Baseline (missing)".
+    const pane = (text, content, empty = false, note = null, state = null) =>
         el(
             "figure",
             {},
             el(
                 "div",
                 { class: "label" },
-                note === null ? text : [el("span", { class: "lt" }, text), el("span", { class: "note" }, note)],
+                el("span", { class: "lt" }, text, state ? el("span", { class: "state" }, ` (${state})`) : null),
+                note ? el("span", { class: "note" }, note) : null,
             ),
             el("div", { class: empty ? "frame empty" : "frame" }, content),
         );
+    // Sets or clears a pane's state in its label strip.
+    const stateOf = (figure, state) => {
+        const lt = figure.querySelector(".label .lt");
+        lt?.querySelector(".state")?.remove();
+        if (lt && state) {
+            lt.append(el("span", { class: "state" }, ` (${state})`));
+        }
+    };
+    // True when every pixel is the same: a story that drew nothing.
+    const samePixels = (px) => {
+        for (let i = 4; i < px.length; i++) {
+            if (px[i] !== px[i % 4]) {
+                return false;
+            }
+        }
+        return true;
+    };
+    // ponytail: judged on a 32 x 32 scale-down; a speck that averages out reads as drawn, never blank.
+    const blankImage = (img) => {
+        const c = document.createElement("canvas");
+        c.width = 32;
+        c.height = 32;
+        const g = c.getContext("2d");
+        g.drawImage(img, 0, 0, 32, 32);
+        return samePixels(g.getImageData(0, 0, 32, 32).data);
+    };
     const paneWait = (what) => el("p", { class: "wait" }, spinner(), `Loading ${what}...`);
     const paneError = (message) =>
         el(
@@ -350,20 +378,20 @@ export function createStage(host) {
     // The two panes as they wait for their pictures. A failed capture's artifact holds no copy of
     // its baseline, so none is fetched.
     function waitingPanes(item, { leftLabel, rightLabel, note, wait }) {
-        let left = pane("No baseline", null, true);
+        let left = pane("Baseline", null, true, null, "missing");
         if (item.status === "failed") {
             left = pane("Baseline not shown: the capture failed", null, true);
         } else if (item.baseline) {
-            left = pane(leftLabel, paneWait(wait[0]), false, note);
+            left = pane(leftLabel, paneWait(wait[0]), false, note, "loading");
         }
-        const right = item.capture ? pane(rightLabel, paneWait(wait[1]), false, note) : noCapturePane(item);
+        const right = item.capture ? pane(rightLabel, paneWait(wait[1]), false, note, "loading") : noCapturePane(item);
         return { left, right };
     }
 
     // The right pane of an item with no capture: a failed one shows why.
     function noCapturePane(item) {
         if (item.status !== "failed") {
-            return pane("No capture", null, true);
+            return pane("New", null, true, null, "missing");
         }
         return pane(
             "No capture: it failed",
@@ -426,6 +454,7 @@ export function createStage(host) {
             const at = opt().focus && !keep ? await focusBox(item).catch(() => null) : null;
             if (seq === stageRender) {
                 frame.replaceChildren(el("div", { class: "sheet" }, img));
+                stateOf(figure, blankImage(img) ? "blank image" : null);
                 fit(stage);
                 if (at) {
                     center(stage, at);
@@ -460,8 +489,9 @@ export function createStage(host) {
         if (seq !== stageRender) {
             return null;
         }
-        const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics), false, note);
-        const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics), false, note);
+        const blank = (px) => (samePixels(px) ? "blank image" : null);
+        const l = pane(leftLabel, el("div", { class: "sheet" }, leftPics), false, note, blank(diff.a));
+        const r = pane(rightLabel, el("div", { class: "sheet" }, rightPics), false, note, blank(diff.b));
         stage.replaceChildren(...panes(l, r));
         if (flashing) {
             startFlash(r, rightPics, viewName, labels.flash);

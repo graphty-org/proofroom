@@ -57,3 +57,20 @@ After Finish, what it published stays shown as finished, and Finish does not pub
 Accepts and exclusions read "Finished" until a new capture replaces them (the accepted snapshots
 are then `unchanged`, the excluded ones not captured); a finished accept has no Undo. Rejects still
 show as rejected on the next capture while the image is unchanged.
+
+## How the row pictures show a change
+
+A row picture never has anything drawn over it: the picture is there to show the change, so a label
+on it would cover exactly what you need to see. Whether it is zoomed, how far, and to how many of the
+changed areas is said in words on the row ("26 areas, 490k px, zoomed 4x to 3 of them"), and a
+zoomed picture is marked by a gray bar outside its left edge.
+
+A zoomed picture frames every changed area when that still shows them at least twice as large as
+the whole image would. When the areas are spread too far apart for that, it frames the largest group
+of areas that lie within one area's height of each other, so a change spread over a page still shows
+a change rather than an empty stretch of it. Rows are spotlit by default, with what did not change
+dimmed lightly enough that the rest of the story stays readable. These were chosen by looking at the
+first 40 rows of a nightly capture of about 1,800 snapshots at the list's widths on a 1440 and a 1024
+px screen: plain pictures did not show where the change was, the earlier, darker spotlight turned
+many rows into dark slabs, and framing every area left some rows showing a whole page with the
+change too small to see.

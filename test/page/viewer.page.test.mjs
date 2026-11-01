@@ -169,10 +169,12 @@ describe("the four views", () => {
         await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(0);
         expect(await tool(page, "view-side").getAttribute("aria-checked")).toBe("true");
         // F: Flash, one frame taking turns between the baseline and the new image.
+        // The label strip names the image showing, with each flash; nothing is written on the image.
         await page.keyboard.press("KeyF");
-        await expect.poll(() => labels(page)).toEqual(["Baseline"]);
-        await expect.poll(() => labels(page)).toEqual(["New"]);
+        await expect.poll(() => labels(page)).toEqual(["Baseline (flashing)"]);
+        await expect.poll(() => labels(page)).toEqual(["New (flashing)"]);
         expect(await page.locator("#stage figure img").count()).toBe(2);
+        expect(await page.locator("#stage .note, .stagewrap > .note").count()).toBe(0);
         await page.keyboard.press("KeyF");
         await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         // S, then S again.
@@ -190,7 +192,7 @@ describe("the four views", () => {
         // In Spotlight the one Flash segment is a toggle: the spotlit pair, in one frame.
         expect(await tool(page, "view-flash").getAttribute("aria-pressed")).toBe("false");
         await page.keyboard.press("KeyF");
-        await expect.poll(() => labels(page)).toEqual(["Spotlit new"]);
+        await expect.poll(() => labels(page)).toEqual(["New (flashing)"]);
         expect(await tool(page, "view-flash").getAttribute("aria-pressed")).toBe("true");
         expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
         await tool(page, "view-flash").click();
@@ -212,8 +214,8 @@ describe("the four views", () => {
         expect(await page.evaluate(() => globalThis.document.activeElement.dataset.act)).toBe("view-highlight");
         await page.keyboard.down("Space");
         await expect.poll(async () => (await labels(page)).length).toBe(1);
-        expect(await page.locator("#stage figure .label .note").textContent()).toBe("flashing while Space is held");
-        await expect.poll(() => labels(page)).toEqual(["New"]);
+        expect(await page.locator("#stage figure .label .note").count()).toBe(0);
+        await expect.poll(() => labels(page)).toEqual(["New (flashing)"]);
         await page.keyboard.up("Space");
         await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(2);
         // The highlight is back, and Space never pressed the focused button: the presses logged are
@@ -279,12 +281,25 @@ describe("zoom", () => {
         // A dot for each changed area.
         expect(await page.locator(".locator .ld").count()).toBe(3);
         const loc = await page.locator(".locator").boundingBox();
-        await page.mouse.click(loc.x + 3, loc.y + 3);
+        // In the New panel's label strip, at its right end, within 60 x 16 at the image's shape,
+        // and over no frame.
+        expect(await page.locator("#stage figure:last-child .label .locator").count()).toBe(1);
+        expect(loc.width).toBeLessThanOrEqual(60);
+        expect(loc.height).toBeLessThanOrEqual(16);
+        expect(loc.width / loc.height).toBeCloseTo(W / H, 0);
+        const strip = await page.locator("#stage figure:last-child .label").boundingBox();
+        expect(strip.x + strip.width - (loc.x + loc.width)).toBeLessThan(12);
+        for (const f of await page.locator("#stage .frame").all()) {
+            const b = await f.boundingBox();
+            expect(loc.y + loc.height <= b.y || loc.y >= b.y + b.height).toBe(true);
+        }
+        // Its corners: the strip map is small, so the clicks land half a pixel in.
+        await page.mouse.click(loc.x + 0.5, loc.y + 0.5);
         await expect.poll(async () => (await scrolls(page))[0]).toEqual([0, 0]);
         await expect
             .poll(() => page.locator(".locator .lr").evaluate((n) => [n.style.left, n.style.top]))
             .toEqual(["0%", "0%"]);
-        await page.mouse.click(loc.x + loc.width - 3, loc.y + loc.height - 3);
+        await page.mouse.click(loc.x + loc.width - 0.5, loc.y + loc.height - 0.5);
         await expect.poll(async () => (await scrolls(page))[0][0]).toBeGreaterThan(1000);
         const [a, b] = await scrolls(page);
         expect(a).toEqual(b);
@@ -349,10 +364,11 @@ describe("one-sided snapshots and failures", () => {
         await page.keyboard.press("ArrowRight");
         await drawn(page, 2);
         await page.keyboard.press("KeyH");
-        await expect.poll(() => page.locator(".stagewrap .note").textContent()).toBe("No pixels changed.");
+        const said = page.locator("#stage figure:last-child .label .note");
+        await expect.poll(() => said.textContent()).toBe("no pixels changed");
         expect(await labels(page)).toEqual(["Baseline", "New"]);
         await page.keyboard.press("KeyS");
-        await expect.poll(() => page.locator(".stagewrap .note").count()).toBe(1);
+        await expect.poll(() => said.count()).toBe(1);
         // #3 new: the new image alone, the sentence in its label strip; the compared views and the
         // Baseline toggle unavailable with their reasons, never hidden.
         await page.keyboard.press("KeyK");
@@ -398,6 +414,37 @@ describe("one-sided snapshots and failures", () => {
         await page.keyboard.press("ArrowLeft");
         await drawn(page, 1);
         expect(await labels(page)).toEqual(["Baseline", "Spotlit new"]);
+    });
+});
+
+describe("the label strips", () => {
+    it("say a panel is loading, and that an image is blank, in the strip and never on the image", async () => {
+        const page = await open(LARGE);
+        await page.keyboard.press("KeyV");
+        await drawn(page, 1);
+        // Snapshot #5's new image is held back (#2's is fetched ahead): its strip says so until it
+        // arrives.
+        let release;
+        const held = new Promise((r) => {
+            release = r;
+        });
+        const blank = new PNG({ width: W, height: H });
+        blank.data.fill(255);
+        await page.route("**/api/blob/b4b*", async (route) => {
+            await held;
+            await route.fulfill({ status: 200, contentType: "image/png", body: PNG.sync.write(blank) });
+        });
+        await page.locator('#snap-list .srow[data-snap="graphty-element/component-0--story-4.light.png"]').click();
+        // (The baseline waits too: it is placed only once the change it centers on is known.)
+        await expect.poll(() => labels(page)).toEqual(["Baseline (loading)", "New (loading)"]);
+        release();
+        // It arrives all white: a story that drew nothing.
+        await drawn(page, 5);
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New (blank image)"]);
+        // The compared views say it too.
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(2);
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New (blank image)"]);
     });
 });
 

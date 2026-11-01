@@ -232,12 +232,9 @@ export function createViewer(app, o = {}) {
         if (s.status === "unseeded") {
             return { rightLabel: "No baseline yet: never approved. Accept makes this the first baseline." };
         }
-        const note = vs.space ? "flashing while Space is held" : "alternating, about 1.5 times a second";
-        if (view === "flash") {
-            return { rightLabel: "Baseline", flash: ["Baseline", "New"], note };
-        }
-        if (view === "spotlight" && (vs.spotFlash || vs.space)) {
-            return { rightLabel: "Spotlit baseline", flash: ["Spotlit baseline", "Spotlit new"], note };
+        // Flashing: the strip names the image showing, with each flash; nothing is said on the image.
+        if (view === "flash" || (view === "spotlight" && (vs.spotFlash || vs.space))) {
+            return { rightLabel: "Baseline (flashing)", flash: ["Baseline (flashing)", "New (flashing)"] };
         }
         return { leftLabel: "Baseline", rightLabel: view === "spotlight" ? "Spotlit new" : "New" };
     }
@@ -304,11 +301,12 @@ export function createViewer(app, o = {}) {
         });
     }
 
-    // After the stage drew: "No pixels changed." on a moved snapshot's compared views, and the
-    // locator at 2x and above.
+    // After the stage drew: "No pixels changed" on a moved snapshot's compared views, and the
+    // locator at 2x and above, both in the New panel's label strip, never over the image.
+    const newStrip = () => [...parts.stage.querySelectorAll(".frame")].at(-1)?.previousElementSibling ?? null;
     async function decorate(s, view) {
         if (s.status === "moved" && (view === "highlight" || view === "spotlight")) {
-            parts.wrap.append(el("div", { class: "note" }, "No pixels changed."));
+            newStrip()?.append(el("span", { class: "note" }, "no pixels changed"));
         }
         if (vs.zoom === "fit" || vs.zoom < LOCATOR_FROM) {
             return;
@@ -327,7 +325,7 @@ export function createViewer(app, o = {}) {
             return;
         }
         parts.wrap.querySelector(".locator")?.remove();
-        parts.wrap.append(
+        newStrip()?.append(
             makeLocator(app, {
                 src: imageUrl(hash),
                 size: diff ? [diff.w, diff.h] : (s.size ?? s.baselineSize ?? [1, 1]),

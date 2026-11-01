@@ -244,7 +244,13 @@ export function row(i, status, over = {}) {
         pic: status === "failed" ? null : `${baseline ?? "none"}-${capture ?? "none"}-0.1-0`,
         areas:
             status === "changed"
-                ? { crop: [0, 0, 400, 156], zoom: i % 4 === 0 ? 1.5 : 3 + (i % 5), count: 1 + (i % 7) }
+                ? {
+                      crop: [0, 0, 400, 156],
+                      zoom: i % 4 === 0 ? 1.5 : 3 + (i % 5),
+                      count: 1 + (i % 7),
+                      // Every third row's crop frames only its largest cluster: one of its areas.
+                      shown: i % 3 === 0 ? 1 : 1 + (i % 7),
+                  }
                 : null,
         ...rest,
     };

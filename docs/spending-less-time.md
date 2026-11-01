@@ -41,9 +41,12 @@ badge "same as 11 others" when their change is identical to others'.
 
 - **Spotlight rows** (on by default): everything outside the changed pixels is dimmed, so a small
   change stands out.
-- **Zoom rows to the change**: **Auto** (the default) zooms a row when its crop around the largest
-  changed area shows the change at least twice as large as the whole image would; **Always** and
-  **Never** override it. A zoomed row's corner says how much ("zoomed 7x", "+2 areas").
+- **Zoom rows to the change**: **Auto** (the default) zooms a row when its crop around the change
+  shows it at least twice as large as the whole image would; **Always** and
+  **Never** override it. A zoomed row's picture has a gray bar on its left edge, and the row says
+  how much in words beside the size ("3 areas, 4,318 px, zoomed 7x"). When the areas are too far
+  apart to zoom to all of them, the picture shows the largest group of areas close together
+  ("zoomed 7x to 1 of them").
 - **No pictures**: text rows, the densest list.
 
 ## Selecting
