@@ -951,15 +951,16 @@ describe("the decision bar's layout", () => {
 describe.each(["chromium", "webkit"])("a stale capture in %s", (name) => {
     const openIn = inBrowser(name);
 
-    it("says Behind master on line 1, its menu says what it means, lists them, and Update from master runs the job and reloads the list", async () => {
+    it("says Behind master on line 2, its menu says what it means, lists them, and Update from master runs the job and reloads the list", async () => {
         let done = false;
         const page = await openIn(STALE, {
             update: (b) => ({ job: { kind: "update", target: b.id, running: true, step: "starting", error: null } }),
             finishStatus: () => ({ kind: "update", target: STALE, running: !done, step: "merging", error: null }),
         });
-        // One chip on line 1, one line, no banner between the header and the rows.
-        const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
-        // Its name in full; on a tight line 1 (Next change beside it) it says it shorter.
+        // One chip at the right end of line 2 (the progress line), one line, no banner between the
+        // header and the rows (design 9.4 item 1).
+        const chip = page.locator('#snaps-head > .h2 [data-act="stalechip"]');
+        // Its name in full; on a tight line 2 it says it shorter.
         expect(await chip.getAttribute("aria-label")).toBe("Behind master: 3");
         expect((await chip.innerText()).trim()).toMatch(/^Behind( master)?: 3$/);
         const box = await chip.boundingBox();
@@ -1097,7 +1098,7 @@ describe("Update from master on the review server", () => {
                 .toBe(true);
             await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await showList(page);
-            const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
+            const chip = page.locator('#snaps-head > .h2 [data-act="stalechip"]');
             await chip.waitFor();
             expect(await chip.getAttribute("aria-label")).toBe("Behind master: 1");
             // Every message the line shows, in order.

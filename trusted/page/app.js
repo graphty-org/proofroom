@@ -391,11 +391,12 @@ function drawSnaps() {
             ],
         }),
     );
-    // The fold button, compact: "< Shift+2", its name in its label for a screen reader.
+    // The fold button: a drawn caret pointing left, "Hide  Shift+2", the pane's name in its label
+    // for a screen reader.
     const hide = control(app, "pane2", {
         zone: "snaps-head",
         attrs: { class: "fold", "aria-label": "Hide Snapshots" },
-        children: [ic("chevLeft"), ...kb("Shift+2", true)],
+        children: [el("span", { class: "lcaret", "aria-hidden": "true" }), "Hide", ...kb("Shift+2", true)],
     });
     const list = $("snap-list");
     if (!c || app.snaps.length === 0) {
@@ -410,9 +411,17 @@ function drawSnaps() {
         list.replaceChildren();
         return;
     }
-    // Line 1: the number, never cut, then the title, cut first ("..."), its whole in the tooltip.
+    // Line 1: the number, never cut, then the title, wrapped to at most two lines and cut only after
+    // that ("..."), its whole in the tooltip; then the fold button. Nothing else (design 9.4).
     const title = `${c.num}${c.title}`;
-    const name = [c.num ? el("span", { class: "cnum" }, c.num.trim()) : null, el("span", { class: "ell" }, c.title)];
+    const name = [
+        el(
+            "span",
+            { class: "tt" },
+            c.num ? [el("span", { class: "cnum" }, c.num.trim()), " "] : null,
+            el("span", { class: "ell" }, c.title),
+        ),
+    ];
     const h1 = el("div", { class: "h1" }, titleMenu(title, name), hide);
     if (app.snaps.length === 0) {
         $("snaps-head").replaceChildren(h1);
@@ -523,6 +532,9 @@ function draw() {
         }
         drawMsgButton();
     }
+    // Image only (design 9.5): the top bar, the rails and an empty message line go (page.css).
+    const viewer = { review: app.viewer, baselines: app.baselines?.viewer }[app.screen];
+    document.body.classList.toggle("ionly", !waiting && Boolean(viewer?.imageOnly()));
     refocus(focus);
     document.body.dataset.rows = rowsPane();
     settle();

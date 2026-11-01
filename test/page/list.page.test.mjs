@@ -62,20 +62,23 @@ const targets = () => [
         projects: [project("graphty-element", { reviewable: 12 }), project("graphty", { reviewable: 12 })],
     }),
 ];
-const rows = (id, name) => {
-    if (id === RICH) {
-        return richRows(name);
-    }
-    const n = targets()
-        .find((x) => x.id === id)
-        .projects.find((p) => p.project === name).reviewable;
-    return rowsAnswer(name, n);
-};
+// The rows of a change in `list` (by default the changes above): the route answers every change
+// the page is given, a test's own extra ones too.
+const rowsOf =
+    (list = targets()) =>
+    (id, name) => {
+        if (id === RICH) {
+            return richRows(name);
+        }
+        const n = list.find((x) => x.id === id).projects.find((p) => p.project === name).reviewable;
+        return rowsAnswer(name, n);
+    };
+const rows = rowsOf();
 
 // A page with the changes above, the change `id` opened by a click (and, unless `rowsFirst` is
 // false, its first row drawn), and the page's errors kept.
 async function openChange(id, options = {}) {
-    t = await openNext(browser, { targets: targets(), rows, ...options });
+    t = await openNext(browser, { targets: targets(), rows: rowsOf(options.targets), ...options });
     const page = t.page;
     t.errors = [];
     page.on("pageerror", (err) => t.errors.push(err.message));
@@ -261,6 +264,12 @@ describe("the header and the rows within their budgets", () => {
         expect(await page.locator('#snaps-head > .h1 [data-act="pane2"]').getAttribute("aria-label")).toBe(
             "Hide Snapshots",
         );
+        // The fold button reads "Hide  Shift+2" after a drawn caret pointing left.
+        const fold = page.locator('#snaps-head > .h1 [data-act="pane2"]');
+        expect((await fold.innerText()).replace(/\s+/g, " ").trim()).toBe("Hide Shift+2");
+        expect(await fold.locator(".lcaret").evaluate((n) => globalThis.getComputedStyle(n).borderRightStyle)).toBe(
+            "solid",
+        );
         // The number of the change is on line 1, apart from its title.
         expect(await page.locator("#snaps-head > .h1 .cnum").innerText()).toBe("#3486");
         expect(await keyOf('.decide [data-act="accept"]')).toEqual({ aria: "A", quiet: [false] });
@@ -418,6 +427,52 @@ describe("Show, Find and the progress line", () => {
         await menuItem(page, "Undecided").click();
         await expect.poll(() => show.innerText()).toBe("Show: Undecided");
         await currentIsShown(page);
+    });
+
+    it("heads the Show menu's two breakdowns, By kind and By decision, headings the arrow keys skip", async () => {
+        const page = await openChange("3486");
+        await page.getByRole("button", { name: /^Show:/ }).click();
+        const menu = page.getByRole("menu");
+        const order = await menu
+            .locator(":scope > *")
+            .evaluateAll((ns) =>
+                ns.map((n) =>
+                    n.classList.contains("mh")
+                        ? `[${n.textContent}]`
+                        : n.classList.contains("sep")
+                          ? "---"
+                          : n.querySelector(".ml").textContent,
+                ),
+            );
+        expect(order).toEqual([
+            "Undecided",
+            "All",
+            "[By kind]",
+            "Failed",
+            "Changed",
+            "Moved",
+            "New",
+            "No baseline yet",
+            "Removed",
+            "[By decision]",
+            "Accepted earlier",
+            "Accepted",
+            "Rejected",
+            "Excluded",
+            "---",
+            "Accept all 250 shown...", // 300 shown less 50 failed, which only Exclude takes
+        ]);
+        // Muted, never focusable: Down from All goes straight to the first kind.
+        const head = menu.locator(".mh").first();
+        expect(await head.getAttribute("tabindex")).toBeNull();
+        const ink = await page.evaluate(() => globalThis.getComputedStyle(globalThis.document.body).color);
+        expect(await head.evaluate((n) => globalThis.getComputedStyle(n).color)).not.toBe(ink);
+        await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("ArrowDown");
+        expect(await page.evaluate(() => globalThis.document.activeElement.querySelector(".ml")?.textContent)).toBe(
+            "Failed",
+        );
     });
 
     it("says what is left first, then the reader's decisions, then what was accepted earlier, dropping those when tight", async () => {
@@ -882,7 +937,9 @@ describe("rows", () => {
         expect(await r.locator(".x3").count()).toBe(0);
         expect(await r.locator(".info > .nm1 + .x4").count()).toBe(1);
         const cropped = async () => {
-            await expect.poll(() => r.locator(".pic").getAttribute("title")).toBe("Cropped to 1 of the 3 changed areas");
+            await expect
+                .poll(() => r.locator(".pic").getAttribute("title"))
+                .toBe("Cropped to 1 of the 3 changed areas");
             expect(await line4.innerText()).toBe("3 changed areas");
             expect(await r.locator(".pic").evaluate((p) => globalThis.getComputedStyle(p).boxShadow)).toBe("none");
         };
@@ -1121,8 +1178,8 @@ describe("a newer capture", () => {
         newer.projects = [project("graphty-element", { reviewable: 299 })];
         t.setList(listAnswer(list));
         await page.clock.fastForward(16000);
-        // A chip on line 1, and said once in the message line with its own Load it.
-        const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
+        // A chip on line 2, and said once in the message line with its own Load it.
+        const chip = page.locator('#snaps-head > .h2 [data-act="stalechip"]');
         await chip.waitFor();
         expect((await chip.innerText()).trim()).toBe("Newer capture");
         await expect
@@ -1149,7 +1206,7 @@ describe("a newer capture", () => {
 });
 
 describe("the notice chips", () => {
-    it("fold Behind master and Newer capture into one 2 notices chip on a tight line 1, its menu holding both", async () => {
+    it("fold Behind master and Newer capture into one 2 notices chip on a tight line 2, its menu holding both", async () => {
         const page = await openChange("3486", { clock: true });
         const list = targets();
         const t3486 = list.find((x) => x.id === "3486");
@@ -1158,23 +1215,113 @@ describe("the notice chips", () => {
         t3486.stale = 5;
         t.setList(listAnswer(list));
         await page.clock.fastForward(16000);
-        const chips = page.locator('#snaps-head > .h1 [data-act="stalechip"]');
+        const chips = page.locator('#snaps-head > .h2 [data-act="stalechip"]');
         await expect.poll(() => chips.count()).toBeGreaterThan(0);
         const names = await chips.evaluateAll((ns) => ns.map((n) => n.getAttribute("aria-label")));
         // Two chips fit only with room to spare for the title; otherwise one.
         expect([["Behind master: 5", "Newer capture"], ["2 notices"]]).toContainEqual(names);
-        // Line 1 never wraps and its fold button stays wholly in view.
-        const h1 = page.locator("#snaps-head > .h1");
-        expect((await h1.boundingBox()).height).toBeLessThanOrEqual(28);
-        const hide = await h1.locator('[data-act="pane2"]').boundingBox();
-        const line = await h1.boundingBox();
-        expect(hide.x + hide.width).toBeLessThanOrEqual(line.x + line.width + 0.5);
+        // Line 2 never wraps, its chips sit wholly in it at its right end, and "N left" stays.
+        const h2 = page.locator("#snaps-head > .h2");
+        expect((await h2.boundingBox()).height).toBe(24);
+        const line = await h2.boundingBox();
+        const end = await chips.last().boundingBox();
+        expect(end.x + end.width).toBeLessThanOrEqual(line.x + line.width + 0.5);
+        expect(line.x + line.width - (end.x + end.width)).toBeLessThan(12);
+        expect(await h2.locator(".left").innerText()).toMatch(/ left$/);
+        // Line 1 holds only the change's title menu and the fold button.
+        expect(
+            await page.locator("#snaps-head > .h1 [data-act]").evaluateAll((ns) => ns.map((n) => n.dataset.act)),
+        ).toEqual(["chgmenu", "pane2"]);
         await chips.last().click();
         const menu = await page.locator(".menu").innerText();
         if (names.length === 1) {
             expect(menu).toContain("Master accepted 5 newer baselines after this capture.");
         }
         expect(menu).toContain("A newer capture (7abc123) is ready.");
+    });
+});
+
+describe("the title and the progress line (design 9.4)", () => {
+    const LONG = "ci: run the full style fidelity gate in the 6-hour full run, in four slices";
+    const withLong = {
+        targets: [
+            ...targets(),
+            target(8002, { title: LONG, projects: [project("graphty-element", { reviewable: 30 })] }),
+        ],
+    };
+
+    it("wraps a long title to at most two lines, never cutting it to a stub, at 1440 and 1024", async () => {
+        for (const width of [1440, 1024]) {
+            const page = await openChange("8002", { ...withLong, viewport: { width, height: 800 } });
+            // The number and the title are one run of text (.tt), clamped to two lines: the title
+            // flows on under the number, so it keeps both lines' width.
+            const look = await page.locator("#snaps-head > .h1 .ctl .tt").evaluate((n) => {
+                const line = parseFloat(globalThis.getComputedStyle(n).lineHeight);
+                const r = n.getBoundingClientRect();
+                return {
+                    lines: Math.round(r.height / line),
+                    width: r.width,
+                    text: n.querySelector(".ell").textContent,
+                };
+            });
+            expect(look.text).toBe(LONG);
+            expect(look.lines, `${width}`).toBe(2);
+            // At least the first five words are drawn: the lines are wide enough for them.
+            expect(look.width, `${width}`).toBeGreaterThan(150);
+            await t.close();
+            t = null;
+        }
+    });
+
+    it("puts Behind master at line 2's right end, drops accepted earlier first, then shortens the chip, never N left", async () => {
+        // The rich change holds 6 of the reader's decisions and 2 snapshots accepted earlier.
+        const page = await openChange(RICH, { clock: true, viewport: { width: 1440, height: 900 } });
+        const list = targets();
+        list.find((x) => x.id === RICH).stale = 1243;
+        t.setList(listAnswer(list));
+        await page.clock.fastForward(16000);
+        await page.locator('#snaps-head > .h2 [data-act="stalechip"]').waitFor();
+        const read = () =>
+            page.evaluate(() => {
+                const h2 = globalThis.document.querySelector("#snaps-head > .h2");
+                const chip = h2.querySelector('[data-act="stalechip"]');
+                return {
+                    left: h2.querySelector(".left").textContent,
+                    rest: h2.querySelector(".rest").textContent,
+                    chip: chip.querySelector(".cl").textContent,
+                    over: h2.scrollWidth > h2.clientWidth + 1,
+                };
+            });
+        // Snapshots widened as a reader's resize would: at its 420 px line 2 is already tight, and
+        // the first state has room for everything.
+        await page.evaluate(() => {
+            globalThis.document.getElementById("snaps").style.width = "700px";
+        });
+        const states = [];
+        for (const px of [600, 420, 330, 290, 250, 200]) {
+            await page.evaluate((w) => {
+                globalThis.document.querySelector("#snaps-head > .h2").style.maxWidth = `${w}px`;
+            }, px);
+            // Show set again draws the header again.
+            await page.getByRole("button", { name: /^Show:/ }).click();
+            await menuItem(page, "Undecided").click();
+            await expect.poll(() => read().then((r) => r.over)).toBe(false);
+            states.push(await read());
+        }
+        for (const st of states) {
+            expect(st.left).toMatch(/^[\d,]+ left$/);
+            // The chip is shortened only once "accepted earlier" is gone.
+            if (st.chip.startsWith("Behind:")) {
+                expect(st.rest).not.toContain("accepted earlier");
+            }
+            // "decided" goes only after the chip is short.
+            if (!st.rest.includes("decided")) {
+                expect(st.chip).toBe("Behind: 1,243");
+            }
+        }
+        expect(states[0]).toMatchObject({ rest: "6 decided, 2 accepted earlier", chip: "Behind master: 1,243" });
+        expect(states.some((st) => st.rest === "6 decided" && st.chip === "Behind master: 1,243")).toBe(true);
+        expect(states.at(-1).chip).toBe("Behind: 1,243");
     });
 });
 
@@ -1228,12 +1375,12 @@ describe("at 1024 x 768", () => {
         t3486.stale = 1242;
         t.setList(listAnswer(list));
         await page.clock.fastForward(16000);
-        await expect.poll(() => page.locator('#snaps-head > .h1 [data-act="stalechip"]').count()).toBeGreaterThan(0);
+        await expect.poll(() => page.locator('#snaps-head > .h2 [data-act="stalechip"]').count()).toBeGreaterThan(0);
         expect(await outside(page)).toEqual([]);
-        expect((await page.locator("#snaps-head > .h1").boundingBox()).height).toBeLessThanOrEqual(28);
+        expect((await page.locator("#snaps-head > .h2").boundingBox()).height).toBe(24);
     });
 
-    it("cuts group names in the middle, keeping both ends, so no two visible headers read the same", async () => {
+    it("cuts group names at their start, keeping the end, so no two visible headers read the same", async () => {
         const comps = ["high-fidelity-cx-specimens", "high-fidelity-cy-specimens", "high-fidelity-cz-specimens"].map(
             (x) => `graphty-element-very-long-shared-prefix-for-${x}`,
         );
@@ -1259,13 +1406,17 @@ describe("at 1024 x 768", () => {
         expect(names).toHaveLength(3);
         expect(new Set(names).size).toBe(3);
         for (const [i, n] of names.entries()) {
-            const [start, end] = n.split("...");
-            expect(n.includes("...") ? comps[i].startsWith(start) && comps[i].endsWith(end) : n === comps[i]).toBe(
-                true,
-            );
-            expect(n.startsWith("...")).toBe(false);
+            expect(n.startsWith("...") ? comps[i].endsWith(n.slice(3)) : n === comps[i]).toBe(true);
+            // The end that tells siblings apart is always whole.
+            expect(n.endsWith(comps[i].slice(-"cx-specimens".length))).toBe(true);
         }
-        expect(names.some((n) => n.includes("..."))).toBe(true);
+        expect(names.some((n) => n.startsWith("..."))).toBe(true);
+        // No name is clipped by its box: what the cut leaves is all drawn.
+        expect(
+            await page
+                .locator("#snap-list .ghead .gname .gn")
+                .evaluateAll((ns) => ns.filter((n) => n.scrollWidth > n.clientWidth).length),
+        ).toBe(0);
         expect(await page.locator("#snap-list .ghead").first().getAttribute("title")).toBe(
             `graphty-element > ${comps[0]}`,
         );
@@ -1342,11 +1493,7 @@ describe("a calmer list pane", () => {
         const page = await openChange("3486", { viewport: { width: 1440, height: 900 } });
         await listMenu(page);
         const menu = page.getByRole("menu");
-        expect(await menu.locator(".mh").allInnerTexts()).toEqual([
-            "Group by: Component",
-            "Pictures",
-            "Select",
-        ]);
+        expect(await menu.locator(".mh").allInnerTexts()).toEqual(["Group by: Component", "Pictures", "Select"]);
         for (const gone of ["Accept all", "Undo all", "JUnit", "Copy link"]) {
             expect(await menu.innerText()).not.toContain(gone);
         }
@@ -1384,7 +1531,7 @@ describe("a calmer list pane", () => {
         list.find((x) => x.id === "3486").stale = 5;
         t.setList(listAnswer(list));
         await page.clock.fastForward(16000);
-        const chip = page.locator('#snaps-head > .h1 [data-act="stalechip"]').first();
+        const chip = page.locator('#snaps-head > .h2 [data-act="stalechip"]').first();
         await chip.waitFor();
         const look = await chip.evaluate((n) => ({
             caret: n.querySelectorAll(".gcaret").length,

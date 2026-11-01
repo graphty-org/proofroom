@@ -19,7 +19,7 @@ Where each key is printed:
 - **P, Shift+3, Y, B, O**: the **Display** menu at the right end of the toolbar (Show baseline,
   Image only, Layout, Outline changed areas, Start zoomed on the change).
 - **Shift+N**: **Next change** in the top bar (and on the end card). **Shift+1**, **Shift+2**:
-  the Changes pane's **Hide** and the Snapshots pane's fold button, and each pane's rail, where the
+  the Changes pane's **Hide** and the Snapshots pane's **Hide**, and each pane's rail, where the
   key is printed quietly on one line under the pane's name. **?**: **Keys** in the top bar. **/**: the Find box's
   placeholder.
 - **Shift+A**: **Accept 14** on the current snapshot's group header, and the first item of that
@@ -63,7 +63,7 @@ Where each key is printed:
 | Z                     | Next zoom step: Fit, 1x, 2x, 4x, 8x             |
 | Shift+1               | Show / hide Changes                             |
 | Shift+2               | Show / hide Snapshots                           |
-| Shift+3               | Image only; again: the panes back as they were  |
+| Shift+3               | Image only; again: everything back as it was    |
 | Shift+N               | Next change that needs you                      |
 | /                     | Find in the focused pane                        |
 | ?                     | This sheet                                      |
@@ -103,9 +103,13 @@ Rules:
   already shown goes back to Side by side. F is never a toggle on another view: from Spotlight it
   switches to Flash and flashes the spotlit pair; V, H or S leaves Flash. Holding Space flashes only
   while held, then returns to the view it left.
-- **Shift+3 gives back what it took.** Image only folds both side panes; pressed again it restores
-  exactly the panes it folded, so a pane you had folded yourself stays folded.
+- **Shift+3 gives back what it took.** Image only hides the top bar, both side panes and an empty
+  message line; pressed again it restores them, with exactly the panes it folded, so a pane you had
+  folded yourself stays folded. While it is on, a key whose control it hid (Shift+N, ?, Shift+1,
+  Shift+2 and the rest) does nothing and says once "Hidden in Image only: Shift+3 brings it back."
+  It is the one time Finish is off the screen: you chose it, and one printed key leaves it.
 - **Enter does what the visible [Enter] says**: open the current change (its summary's **Open
-  [Enter]** while no change is open) or snapshot, the default button of a box or the end card, or
+  [Enter]** while no change is open), give the snapshot more room (the item line's **Wider
+  [Enter]**, which folds the list to its rail; Esc brings it back), the default button of a box or the end card, or
   a button you focused with Tab. A focused button shows its Enter just under itself, so focusing it
   never moves the controls beside it.

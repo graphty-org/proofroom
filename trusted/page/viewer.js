@@ -102,6 +102,7 @@ export function createViewer(app, o = {}) {
     let explain = null; // the snapshot H or S was just pressed on: its areas' share may need a word
     const explained = new Set(); // the snapshots that word was said on
     let ioBefore = null; // the panes Image only hid
+    let ioLevel = null; // the level Image only was pressed at, while it is on
     let zoomStep = false; // the next drawing is a zoom step: it centers on the current area
     let centerKey = null; // the drawing a zoom step asked to center
     let doneKey = null; // the last drawing the stage finished
@@ -337,6 +338,12 @@ export function createViewer(app, o = {}) {
                 ? [frame.scrollLeft, frame.scrollTop]
                 : null;
         stage.stop();
+        // A wait for the picture on screen (scripts/uat.mjs) takes only a "viewer-drawn" newer than
+        // this mark (design 11.3). Marked when the stage starts drawing a snapshot it does not show:
+        // a view or zoom of the one on the stage keeps its pictures, and Accept never waits for it.
+        if (stage.shownFile !== s.key) {
+            performance.mark("viewer-drawing", { detail: s.key });
+        }
         stage.render(st, itemOf(s), view, keep).then(() => {
             if (shownKey === key) {
                 doneKey = key;
@@ -432,7 +439,10 @@ export function createViewer(app, o = {}) {
     // every Display setting's key act with their menu closed, through the button's data-menukeys.
     function toolbar(s) {
         const ev = shownView(s);
-        const segs = VIEWS.map(([v, key]) => {
+        const io = imageOnly();
+        // Baselines draws only the views that act there: until two versions are ticked, none.
+        const views = review ? VIEWS : VIEWS.filter(([v]) => viewOK(v, s) === true);
+        const segs = (views.length > 1 ? views : []).map(([v, key]) => {
             const on = ev === v && viewOK(v, s) === true;
             return control(app, `view-${v}`, {
                 zone: "toolbar",
@@ -441,11 +451,15 @@ export function createViewer(app, o = {}) {
             });
         });
         return [
-            el(
-                "div",
-                { class: "tg", "data-g": "view", title: "View" },
-                el("span", { class: "seg", role: "radiogroup", "aria-label": "View" }, segs),
-            ),
+            // Image only: one strip, Back first with the snapshot's name (Review), then the views.
+            io && review ? el("span", { class: "itemsum" }, lineHead(s, "toolbar", fullName(s))) : null,
+            segs.length
+                ? el(
+                      "div",
+                      { class: "tg", "data-g": "view", title: "View" },
+                      el("span", { class: "seg", role: "radiogroup", "aria-label": "View" }, segs),
+                  )
+                : null,
             el(
                 "div",
                 { class: "tg", "data-g": "zoom", title: "Zoom" },
@@ -477,31 +491,37 @@ export function createViewer(app, o = {}) {
                       }),
                   )
                 : null,
-            imageOnly() && review
-                ? el("span", { class: "itemsum grow" }, lineHead(s, "iline", fullName(s)), lineEnd(s))
-                : el("span", { class: "grow" }),
-            el(
-                "div",
-                { class: "tg", "data-g": "display", title: "Display" },
-                control(app, "displaymenu", {
-                    zone: "toolbar",
-                    attrs: {
-                        id: `${idp}displaybtn`,
-                        "aria-haspopup": "menu",
-                        "data-menukeys": JSON.stringify(
-                            review
-                                ? {
-                                      P: "baseline",
-                                      "Shift+3": "imageonly",
-                                      Y: "layoutmenu",
-                                      B: "outline",
-                                      O: "centerarea",
-                                  }
-                                : { "Shift+3": "imageonly", Y: "layoutmenu" },
-                        ),
-                    },
-                }),
-            ),
+            el("span", { class: "grow" }),
+            // Image only's way out, its check filled; the Display menu's settings wait until then.
+            io
+                ? control(app, "imageonly", {
+                      zone: "toolbar",
+                      quiet: true,
+                      attrs: { "aria-pressed": "true" },
+                      children: [check(), "Image only", kb("Shift+3", true)],
+                  })
+                : el(
+                      "div",
+                      { class: "tg", "data-g": "display", title: "Display" },
+                      control(app, "displaymenu", {
+                          zone: "toolbar",
+                          attrs: {
+                              id: `${idp}displaybtn`,
+                              "aria-haspopup": "menu",
+                              "data-menukeys": JSON.stringify(
+                                  review
+                                      ? {
+                                            P: "baseline",
+                                            "Shift+3": "imageonly",
+                                            Y: "layoutmenu",
+                                            B: "outline",
+                                            O: "centerarea",
+                                        }
+                                      : { "Shift+3": "imageonly", Y: "layoutmenu" },
+                              ),
+                          },
+                      }),
+                  ),
         ];
     }
 
@@ -752,7 +772,7 @@ export function createViewer(app, o = {}) {
             areas.key = null;
             stage.box = 0;
         }
-        parts.tools.className = `vtb ${imageOnly() && review ? "merged" : ""}`;
+        parts.tools.className = `vtb ${imageOnly() ? "ionly" : ""}`;
         fill(parts.tools, toolbar(s));
         if (review) {
             fillLine(s);
@@ -771,7 +791,15 @@ export function createViewer(app, o = {}) {
 
     // ------------------------------------------------------------ actions
 
-    const imageOnly = () => imageOnlyPressed(shownNow(panes));
+    // Image only is on from its press until it is pressed again, or the panes or the level change
+    // under it (Back, a rail): both panes folded by hand are not Image only.
+    const imageOnly = () => {
+        if (ioLevel !== null && (ioLevel !== app.level || !imageOnlyPressed(shownNow(panes)))) {
+            ioLevel = null;
+            ioBefore = null;
+        }
+        return ioLevel !== null;
+    };
     const redraw = () => app.draw();
     const layoutTitle = () =>
         vs.layout === "auto" ? `Auto chose ${stacked ? "over and under" : "side by side"} for this window` : "Layout";
@@ -896,15 +924,18 @@ export function createViewer(app, o = {}) {
         },
         pressImageOnly: () => {
             const at = app.at();
-            const { shown, before } = pressImageOnly(shownNow(panes), ioBefore, at);
+            const on = imageOnly();
+            // Off: exactly the panes it hid come back. On: both panes fold, whatever they were.
+            const { shown, before } = on
+                ? pressImageOnly([false, false], ioBefore, at)
+                : { shown: [false, false], before: shownNow(panes) };
             ioBefore = before;
+            ioLevel = on ? null : app.level;
+            // Baselines redraws only its own screen: the page's chrome is told here too.
+            document.body.classList.toggle("ionly", !on);
             applyPanes(shown, at);
             remember(app.level, app.snaps.length, shown, screen);
-            app.say(
-                imageOnlyPressed(shown)
-                    ? "Image only: Shift+3 brings the panes back."
-                    : "Image only off: panes back as they were.",
-            );
+            app.say(on ? "Image only off: panes back as they were." : "Image only: Shift+3 brings everything back.");
             redraw();
         },
         nextArea: async () => {

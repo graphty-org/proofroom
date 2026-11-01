@@ -638,6 +638,22 @@ export function midCut(t, w, font) {
     return cut(lo);
 }
 
+/**
+ * A name cut at its start to fit a width, so its end shows ("...cytoscape-js-specimens"): sibling
+ * groups share their start, and the end is what tells them apart (design 9.4 item 2).
+ * @param {string} t the name
+ * @param {number} w the width
+ * @param {string} font the font
+ * @returns {string} the name, whole or cut
+ */
+export function endCut(t, w, font) {
+    let k = t.length;
+    while (k > 6 && textWidth(k === t.length ? t : `...${t.slice(t.length - k)}`, font) > w) {
+        k--;
+    }
+    return k === t.length ? t : `...${t.slice(t.length - k)}`;
+}
+
 const lines = {};
 const line = (cls) => {
     lines[cls] ??= el("div", { class: `hl ${cls}` });
@@ -648,9 +664,10 @@ const line = (cls) => {
 const over = (n) => n.scrollWidth > n.clientWidth + 1;
 
 /**
- * The header's three lines (design 2.4 item 3), plus the notice chips on line 1:
- * 1. the change's number and title, the chips and the fold button (built by the page);
- * 2. the progress line, "34 left" then "12 decided, 1,208 accepted earlier", over the bar;
+ * The header's three lines (design 2.4 item 3, 9.4):
+ * 1. the change's number and title (at most two lines) and the fold button (built by the page);
+ * 2. the progress line, "34 left" then "12 decided, 1,208 accepted earlier", over the bar, and the
+ *    notice chips at its right end;
  * 3. Find, Show, the List menu and the Up/Down pair;
  * and, only while rows are selected, the selection bar under them (its bulk buttons need the room).
  * Nothing wraps: line 2 drops "accepted earlier", then "decided"; Find's placeholder is
@@ -731,10 +748,6 @@ export function drawHead(app, h1) {
             head.insertBefore(x, head.children[i] ?? null);
         }
     });
-    // Line 2, tight: "accepted earlier" goes first, then "decided"; "N left" stays.
-    for (let n = p.rest.length - 1; n >= 0 && over(h2); n--) {
-        rest.textContent = p.rest.slice(0, n).join(", ");
-    }
     // The selection bar never wraps and never cuts a label: "(3 not shown)" goes into the count's
     // tooltip first, then the buttons drop their marks.
     if (selecting && over(h4)) {
@@ -743,20 +756,7 @@ export function drawHead(app, h1) {
     if (selecting && over(h4)) {
         h4.classList.add("tight");
     }
-    drawNotices(app, h1);
-    // Line 1 still tight: Next change says only "Next" (its key and tooltip stay), and the chips are
-    // drawn again in the room that frees.
-    const next = h1.querySelector('[data-act="nextchange"]');
-    const chips = [...h1.querySelectorAll('[data-act="stalechip"]')];
-    const cramped =
-        over(h1) ||
-        chips.some((c) => c.classList.contains("squeeze") || c.textContent !== c.getAttribute("aria-label"));
-    if (next && cramped) {
-        next.firstChild.textContent = "Next";
-        next.setAttribute("aria-label", "Next change");
-        chips.forEach((c) => c.remove());
-        drawNotices(app, h1);
-    }
+    fitProgress(app, h2, rest, p.rest);
     drawRenderer(app);
     $("snaps").classList.toggle("nopics", lv.pics.none);
     // One bulk Accept on screen: while rows are selected, the decision bar's Accept N is it, and
@@ -834,37 +834,36 @@ function drawRenderer(app) {
     );
 }
 
-// The notices on line 1: "Behind master: 1,242" and "Newer capture", each a menu button saying
-// what it means and what to do. When line 1 is tight the title is cut first, then the two fold into
-// one "2 notices", then a chip says it shorter ("Behind: 1,242"), and last its words are cut; the
-// fold button after it never goes. They never block anything: the rows never change under the
-// reader.
-function drawNotices(app, h1) {
+// Line 2 holds "N left", then the reader's own counts, then at its right end the notices
+// ("Behind master: 1,242", "Newer capture"), each a menu button saying what it means and what to do.
+// When the line is tight: "accepted earlier" goes first, then two notices fold into one "2 notices",
+// then a chip says it shorter ("Behind: 1,242"), then "decided" goes, and last the chip's words are
+// cut. "N left" never goes. The notices never block anything: the rows never change under the reader.
+function fitProgress(app, h2, rest, parts) {
+    const bar = h2.querySelector(".bar3");
+    const chips = (list, short = false) => {
+        h2.querySelectorAll('[data-act="stalechip"]').forEach((n) => n.remove());
+        return list.map((w) => h2.insertBefore(noticeChip(app, w, short), bar));
+    };
     const which = noticesOf(app);
-    if (which.length === 0) {
-        return;
-    }
-    const hide = h1.lastElementChild;
-    const title = h1.firstElementChild;
-    const tight = (room) => h1.scrollWidth > h1.clientWidth + 1 || title.clientWidth < room;
-    const chips = (list, short = false) => list.map((w) => h1.insertBefore(noticeChip(app, w, short), hide));
     let drawn = chips(which);
-    if (drawn.length === 2 && tight(TITLE_MIN)) {
-        drawn.forEach((n) => n.remove());
-        drawn = chips(["both"]);
-    }
-    if (tight(0)) {
-        const w = drawn[0].dataset.notice;
-        drawn[0].remove();
-        drawn = chips([w], true);
-    }
-    if (tight(0)) {
-        drawn[0].classList.add("squeeze");
+    const words = (n) => {
+        rest.textContent = parts.slice(0, n).join(", ");
+    };
+    const steps = [
+        () => parts.at(-1)?.endsWith("accepted earlier") && words(parts.length - 1),
+        () => drawn.length === 2 && (drawn = chips(["both"])),
+        () => drawn.length === 1 && (drawn = chips([drawn[0].dataset.notice], true)),
+        () => words(0),
+        () => drawn[0]?.classList.add("squeeze"),
+    ];
+    for (const step of steps) {
+        if (!over(h2)) {
+            return;
+        }
+        step();
     }
 }
-
-// The title keeps this much room before two notices fold into one.
-const TITLE_MIN = 160;
 
 const noticesOf = (app) => [...((app.open()?.stale ?? 0) > 0 ? ["stale"] : []), ...(app.lv.newer ? ["newer"] : [])];
 
@@ -1355,7 +1354,7 @@ function actionWidth(app, g, mine) {
 
 /**
  * A group's sticky header, one line: the chevron (collapses and expands, with `aria-expanded`), the
- * name button (cut in the middle, a drawn caret after it) that opens the group's actions, and
+ * name button (cut at its start, keeping its end, a drawn caret after it) that opens the group's actions, and
  * Accept N: always on the current snapshot's group, on the others only while the header is hovered
  * or focused. The count is said once, in Accept N; it is also the first item of the name's menu.
  * @param {any} app the page
@@ -1403,7 +1402,8 @@ function headerOf(app, g) {
         },
         children: [
             shape ? mark(shape.shape, shape.cls) : null,
-            el("span", { class: "gn" }, midCut(label, Math.max(room, 48), font)),
+            // 4 px spare: the estimate of Accept N runs a pixel or two short, which clipped the end.
+            el("span", { class: "gn" }, endCut(label, Math.max(room - 4, 48), font)),
             el("span", { class: "gcaret", "aria-hidden": "true" }),
         ],
     });
@@ -1650,21 +1650,29 @@ export function drawList(app, h1) {
 // ---------------------------------------------------------------- menus
 
 /**
- * The Show menu's items: each choice with its count right-aligned, a choice of 0 greyed, then
- * Accept all N shown...
+ * The Show menu's items: Undecided and All, then "By kind" and "By decision", each choice with its
+ * count right-aligned, a choice of 0 greyed, then Accept all N shown...
  * @param {any} app the page
  * @returns {any[]} the items
  */
 export const showItems = (app) => [
-    ...showCounts(app.snaps).map(([k, label, n]) => ({
-        id: "show",
-        label,
-        count: fmt(n),
-        dim: n === 0,
-        ctx: { show: k },
-        checked: app.lv.show === k,
-        mark: STATUS[k] ? [STATUS[k].shape, STATUS[k].cls] : null,
-    })),
+    // Two breakdowns of the same snapshots, each under its muted heading (never focused, the arrow
+    // keys skip it): by kind (the statuses), then by decision.
+    ...showCounts(app.snaps)
+        .flatMap(([k, label, n], i, all) => [
+            STATUS[k] && !STATUS[all[i - 1][0]] ? { head: "By kind" } : null,
+            k === "before" ? { head: "By decision" } : null,
+            {
+                id: "show",
+                label,
+                count: fmt(n),
+                dim: n === 0,
+                ctx: { show: k },
+                checked: app.lv.show === k,
+                mark: STATUS[k] ? [STATUS[k].shape, STATUS[k].cls] : null,
+            },
+        ])
+        .filter(Boolean),
     // It acts on what Show shows, so it sits with Show, under a separator.
     { sep: true },
     { id: "acceptshown", label: `Accept all ${fmt(shownUndecided(app).length)} shown...` },

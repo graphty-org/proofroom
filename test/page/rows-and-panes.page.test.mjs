@@ -79,10 +79,27 @@ describe("the rails", () => {
                     nameMode: globalThis.getComputedStyle(vt).writingMode,
                     badge: count.innerText,
                     badgeWidth: count.getBoundingClientRect().width,
+                    // The badge, the name and the key, top to bottom, each wholly inside the rail.
+                    parts: [count, vt, kbd].map((p) => {
+                        const r = p.getBoundingClientRect();
+                        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+                    }),
+                    railLeft: n.getBoundingClientRect().left,
                     title: count.title,
                 };
             });
-            expect(look.width).toBe(56);
+            expect(look.width).toBe(64);
+            // Each on its own line, none touching the next or the rail's edges.
+            for (const [a, b] of [
+                [look.parts[0], look.parts[1]],
+                [look.parts[1], look.parts[2]],
+            ]) {
+                expect(b.top - a.bottom).toBeGreaterThanOrEqual(2);
+            }
+            for (const p of look.parts) {
+                expect(p.left - look.railLeft).toBeGreaterThanOrEqual(2);
+                expect(look.railRight - p.right).toBeGreaterThanOrEqual(2);
+            }
             expect(look.key).toBe(key);
             expect(look.quiet).toBe(true);
             expect(look.keyBorder).toBe("none");

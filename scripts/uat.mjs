@@ -344,12 +344,15 @@ const waitDialog = (text) =>
             () => false,
         );
 // The page ignores a decision on an image shown less than a quarter second (a guard against
-// deciding on a picture not seen): wait until the current one has been on screen 400 ms.
+// deciding on a picture not seen): wait until the current one has been on screen 400 ms. Only a
+// "viewer-drawn" newer than the newest "viewer-drawing" counts: one from before the snapshot on
+// screen changed would let Accept in while its images still load (design 11.3).
 const seen = () =>
     page.waitForFunction(
         () => {
             const m = performance.getEntriesByName("viewer-drawn").at(-1);
-            return m && performance.now() - m.startTime > 400;
+            const start = performance.getEntriesByName("viewer-drawing").at(-1);
+            return m && (!start || m.startTime > start.startTime) && performance.now() - m.startTime > 400;
         },
         null,
         { timeout: 30_000, polling: 100 },

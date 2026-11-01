@@ -16,6 +16,7 @@
  */
 
 import { ZONES, contextOf, hostOf, runAction } from "./actions.js";
+import { MAP } from "./key-map.js";
 
 // The decision keys: held down, each decides once, never the snapshots after it unseen.
 const ONCE = new Set(["accept", "reject", "exclude", "undo", "gaccept", "select"]);
@@ -233,12 +234,15 @@ export function startKeys(app) {
     // press is an Esc right after an Esc that closed or cleared something.
     let escClosed = false;
     let escGuard = false;
+    // Image only hid this key's control: said once while Image only stays on.
+    let hiddenSaid = false;
     document.addEventListener(
         "keydown",
         (e) => {
             if (MODIFIER.has(e.key)) {
                 return;
             }
+            hiddenSaid &&= document.body.classList.contains("ionly");
             const esc = e.key === "Escape" && !e.shiftKey;
             escGuard = esc && escClosed;
             escClosed = esc && escTakesSomething();
@@ -323,6 +327,27 @@ export function startKeys(app) {
                 return;
             }
             runAction(hostOf(node) ?? app, node.dataset.act, { ...contextOf(node), el: node }, "key");
+            return;
+        }
+        // A key whose control Image only hid (Shift+N, ?, Shift+1, Shift+2, P...) does nothing, and
+        // says once how to bring it back. Zoom's digits still act through the visible Zoom.
+        if (
+            document.body.classList.contains("ionly") &&
+            !menuKeys().some((m) => matches(m.printed, e)) &&
+            MAP.some(([printed]) => matches(printed, e) && (letterKeysOn() || !isLetterKey(matchedKey(printed, e))))
+        ) {
+            e.preventDefault();
+            if (!hiddenSaid) {
+                hiddenSaid = true;
+                app.say("Hidden in Image only: Shift+3 brings it back.");
+            }
+            return;
+        }
+        // A view key on the Baselines screen before two versions are ticked: no view button is
+        // drawn there until they are.
+        if (app.screen === "baselines" && letterKeysOn() && ["V", "F", "H", "S"].some((k) => matches(k, e))) {
+            e.preventDefault();
+            app.say("The views compare two versions: tick two in the history below.");
             return;
         }
         // Shift+A on a group with nothing left to accept: its header has no Accept to print the key

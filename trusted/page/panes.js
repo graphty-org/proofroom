@@ -8,7 +8,7 @@
  */
 
 export const FLOOR = 800;
-export const RAIL = 56;
+export const RAIL = 64;
 export const SMALL = 10; // a change of this many snapshots or fewer is small
 export const ONE_LEVEL_WIDTH = 1400; // a large change in a window this wide or wider has one level
 
@@ -75,7 +75,9 @@ export function keepFloor([changes, snaps], { width, open, holds, prefer, ids = 
 }
 
 /** The narrowest each side pane gets, as the reader's resizing would stop it. */
-export const MIN_WIDTH = { changes: 240, snaps: 320, "bl-proj": 240, "bl-list-pane": 320 };
+// Snapshots and Baselines stop at 316: with a 64 px rail beside either, a 1,180 px window still
+// leaves the viewer its 800 px.
+export const MIN_WIDTH = { changes: 240, snaps: 316, "bl-proj": 240, "bl-list-pane": 316 };
 
 /**
  * The widths of the side panes as shown: each at its own width, or narrower, down to its minimum,

@@ -82,13 +82,15 @@ describe("the Baselines screen", () => {
         expect(routes.asked).toEqual(["list ", `history ${BL_THREE}`]);
     });
 
-    it("compares two versions in each of the four views, which need two until they are ticked", async () => {
+    it("compares two versions in each of the four views, drawn only once two are ticked", async () => {
         const { page } = await open();
+        // No view button is drawn that cannot act; a view key says why.
+        expect(await page.locator('#bl-viewer [data-act^="view-"]').count()).toBe(0);
         await page.keyboard.press("KeyF");
-        await expect.poll(() => message(page)).toBe("Flash: Flash needs two versions: tick two in the history below.");
-        expect(await tool(page, "view-highlight").getAttribute("aria-disabled")).toBe("true");
+        await expect.poll(() => message(page)).toBe("The views compare two versions: tick two in the history below.");
         await page.locator('#bl-hist [data-version="0"] input').click();
         await page.locator('#bl-hist [data-version="1"] input').click();
+        await expect.poll(() => page.locator('#bl-viewer [data-act^="view-"]:visible').count()).toBe(4);
         await expect
             .poll(() => page.locator("#bl-viewer .iline").innerText())
             .toContain("Comparing the previous version (left) with the current version (right)");
@@ -129,7 +131,14 @@ describe("the Baselines screen", () => {
         await page.keyboard.press("Shift+Digit2");
         await expect.poll(() => page.locator("#bl-list-pane").getAttribute("class")).toContain("rail");
         expect(await page.locator("#bl-proj").getAttribute("class")).toContain("rail");
+        // Both folded by hand is not Image only: Shift+3 hides the rest, and gives back both rails.
         await page.keyboard.press("Shift+Digit3");
+        await expect.poll(() => page.locator("#top").isVisible()).toBe(false);
+        expect(await page.locator("#bl-proj").isVisible()).toBe(false);
+        await tool(page, "imageonly").click();
+        await expect.poll(() => page.locator("#top").isVisible()).toBe(true);
+        expect(await page.locator("#bl-list-pane").getAttribute("class")).toContain("rail");
+        await page.locator("#rail-b").click();
         await expect.poll(() => page.locator("#bl-list-pane").getAttribute("class")).not.toContain("rail");
         await page.locator("#rail-p").click();
         await expect.poll(() => page.locator("#bl-proj").getAttribute("class")).not.toContain("rail");

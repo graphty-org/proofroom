@@ -238,7 +238,7 @@ export const ACTIONS = {
         run: (app, ctx) => app.openChange(ctx.id),
     },
 
-    // Levels: the one Back, named by where it goes, and Open on the item line.
+    // Levels: the one Back, named by where it goes, and Wider on the item line (it folds the list).
     back: {
         label: "Back",
         key: "Esc",
@@ -246,9 +246,9 @@ export const ACTIONS = {
         run: (app) => app.back(),
     },
     openrow: {
-        label: "Open",
+        label: "Wider",
         key: "Enter",
-        title: "Open this snapshot: Snapshots collapses to its rail",
+        title: "Fold the snapshot list to its rail; Esc brings it back",
         run: (app) => app.openSnapshot(),
     },
     // A click on a row makes it current; with Ctrl or Cmd it goes in or out of the selection instead.
@@ -454,7 +454,9 @@ export const ACTIONS = {
         label: "Image only",
         key: "Shift+3",
         title: (app) =>
-            app.viewer.imageOnly() ? "Both side panes are rails: Shift+3 brings them back" : "Hide both side panes",
+            app.viewer.imageOnly()
+                ? "Shift+3 brings back the top bar, the panes and the message line"
+                : "Only the picture, its views and the decision bar",
         run: (app) => app.viewer.pressImageOnly(),
     },
     // Layout: Y steps Auto, Side by side, Over and under in one press; the Display item, clicked or

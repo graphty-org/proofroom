@@ -71,8 +71,19 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.keyboard.press("Escape");
                 await expect.poll(() => page.locator("dialog[open]").count()).toBe(0);
             }
+            // Image only (Shift+3) hides the top bar and its Review tab: its own printed way out,
+            // Image only [Shift+3], is the marker clicked instead, which also leaves it.
+            const tab = page.locator('#tabs [data-act="screen-review"]');
+            if (!(await tab.isVisible())) {
+                const outs = t.actions.filter((a) => a.a === "imageonly" && a.via === "pointer").length;
+                await page.locator('#vtb [data-act="imageonly"]').click();
+                await expect
+                    .poll(() => t.actions.filter((a) => a.a === "imageonly" && a.via === "pointer").length)
+                    .toBe(outs + 1);
+                return t.actions.slice(from).filter((a) => a.via === "key");
+            }
             const marks = t.actions.filter((a) => a.a === "screen-review").length;
-            await page.locator('#tabs [data-act="screen-review"]').click();
+            await tab.click();
             await expect.poll(() => t.actions.filter((a) => a.a === "screen-review").length).toBe(marks + 1);
             return t.actions.slice(from).filter((a) => a.via === "key");
         };
@@ -160,6 +171,50 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                     ).toContain(owner.act);
                 }
             });
+        });
+
+        it("in Image only, a key whose control it hid does nothing and says once how to bring it back", async () => {
+            const page = await open({ viewport: { width: 1440, height: 900 } });
+            await page.locator('.chg[data-chg="3486"]').click();
+            await page.locator(".iline").waitFor();
+            await page.keyboard.press("Shift+Digit3");
+            await expect.poll(() => page.locator("#top").isVisible()).toBe(false);
+            // Each key shows on one visible control at most, and the way out prints its own.
+            const shown = await visibleKeys(page);
+            const keys = shown.map((k) => k.key);
+            expect(keys.filter((k, i) => keys.indexOf(k) !== i)).toEqual([]);
+            expect(shown).toContainEqual({ act: "imageonly", key: "Shift+3" });
+            for (const hidden of ["Shift+N", "?", "Shift+1", "Shift+2", "X", "P"]) {
+                expect(keys, hidden).not.toContain(hidden);
+            }
+            const from = t.actions.length;
+            await page.keyboard.press("Shift+KeyN");
+            await expect.poll(() => message(page)).toBe("Hidden in Image only: Shift+3 brings it back.");
+            // Said once: the next hidden key leaves the line as the last action left it.
+            await page.keyboard.press("KeyH");
+            await page.keyboard.press("Shift+Slash");
+            await page.keyboard.press("Shift+Digit1");
+            await page.keyboard.press("Shift+Digit2");
+            expect(await message(page)).toBe("");
+            expect(await page.locator("dialog[open]").count()).toBe(0);
+            expect(await page.locator("#top").isVisible()).toBe(false);
+            // Zoom's digits still act through the visible Zoom.
+            await page.keyboard.press("Digit2");
+            await expect.poll(() => page.locator('#vtb [data-act="zoomcycle"]').innerText()).toMatch(/^Zoom: 2x/);
+            await page.keyboard.press("Shift+Digit3");
+            await expect.poll(() => page.locator("#top").isVisible()).toBe(true);
+            await expect
+                .poll(() =>
+                    t.actions
+                        .slice(from)
+                        .filter((a) => a.via === "key")
+                        .map((a) => a.a),
+                )
+                .toEqual(["view-highlight", "zoom-2", "imageonly"]);
+            // Back out, a hidden key is said again the next time.
+            await page.keyboard.press("Shift+Digit3");
+            await page.keyboard.press("Shift+KeyN");
+            await expect.poll(() => message(page)).toBe("Hidden in Image only: Shift+3 brings it back.");
         });
 
         it("moves the panes and the levels by key: Shift+1, Shift+2, Enter, Esc", async () => {

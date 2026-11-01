@@ -915,6 +915,20 @@ tests never run. Each failure is decided by the spec, not by which side is newer
    tested.
 5. All of it is committed (one or more commits), `npm test` and lint exit 0 on the commit.
 
+Built as: Blink and Image only take Zoom's inline-flex gap, so the check, the words and the quiet
+key read `Image only  Shift+3`. The item line's name and mode are inline text in one box, not flex
+items, so `story-0, light` has no space before the comma; a name too long is cut at the box's end.
+Baselines' column stops at 316 px, as Snapshots does, so 1,180 - 64 - 316 = 800. The Shift+3 hang
+was the test's: Image only hides the top bar as 9.5 item 1 says, and the test's settle step clicked
+the Review tab it had just hidden; it now clicks Image only's own printed control instead, which
+also leaves Image only, and Shift+3 acts in every state. Line 1's number and title are one clamped
+run of text (`.tt`): at 1,024 px the 316 px pane left the title 109 px beside the number and the
+fold button; with the title's words flowing under the number it gets both lines' width (about
+170 px). Two viewer tests waited on V by its labels, which Spotlight now shares (`Baseline`,
+`New`), and on a zoom step or B by the held pictures, which take the new zoom and outline at once;
+both measured frames the real drawing then replaced. They now wait for Side by side's own images
+and for the stage's frames to be replaced.
+
 ### 11.3 The decide wait cannot read a stale mark
 
 Acceptance step 35 refused A with `Loading images: Accept waits for them.` after V: its wait read
@@ -924,6 +938,13 @@ snapshot or a view, and the acceptance wait (`seen` in scripts/uat.mjs) takes on
 `viewer-drawn` newer than the newest `viewer-drawing`. `viewer-drawn` is unchanged, so the
 benches keep working. A repeated run of step 35 (20 in a row against the preview server) passes
 every time.
+
+Built as: `viewer-drawing` is marked when the stage starts drawing a snapshot it does not already
+show. A view or zoom of the snapshot on the stage keeps its pictures, its `viewer-drawn` and its
+quarter-second guard, so Accept never waits for it; marking it would leave the wait without a
+newer `viewer-drawn` to find. The refusal after V came from the snapshot under it changing, whose
+drawing is marked. Test: Next marks one `viewer-drawing` for the new file and its `viewer-drawn`
+follows; V adds none.
 
 ### 11.4 Proof
 

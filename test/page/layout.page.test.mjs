@@ -2,7 +2,7 @@
  * The new page's layout in Chromium at 1280 x 800, 1440 x 900 and an iPad-like 1180 x 820: the
  * viewer is never narrower than 800 px while it shows a snapshot, in every level and after every
  * pane key, with 3 and 300 snapshots; the levels move by clicks on the rows, Open, Back and the
- * viewer as they do by keys; and the top bar's 36 px, the message line's 24 px and the rails' 56 px.
+ * viewer as they do by keys; and the top bar's 36 px, the message line's 24 px and the rails' 64 px.
  * The Baselines screen too: its viewer at 800 px or more after every pane key, and its toolbar in
  * one row with its seven controls showing. At 1024 x 768, with a change open and with three rows
  * selected, every keyed control is wholly inside the window and the decision bar is one line.
@@ -137,8 +137,8 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
         expect((await box(page, "#viewer")).width).toBe(width - 480);
         await page.locator('.chg[data-chg="3484"]').click();
         await page.locator(".iline").waitFor({ state: "attached" });
-        expect((await box(page, "#changes")).width).toBe(56);
-        expect((await box(page, "#snaps")).width).toBe(56);
+        expect((await box(page, "#changes")).width).toBe(64);
+        expect((await box(page, "#snaps")).width).toBe(64);
     });
 
     it("draws a focused button's Enter hint outside it: the button and its neighbors keep their place", async () => {
@@ -164,6 +164,10 @@ describe.each(SIZES)("the Baselines screen at %i x %i", (width, height) => {
         await page.locator(".chg").first().waitFor();
         await page.locator('#tabs [data-act="screen-baselines"]').click();
         await page.locator("#bl-vtb").waitFor();
+        // The view buttons are drawn only once two versions are ticked (design 9.5 item 3).
+        await page.locator('#bl-hist [data-version="0"] input').click();
+        await page.locator('#bl-hist [data-version="1"] input').click();
+        await expect.poll(() => page.locator('#bl-vtb [data-act^="view-"]:visible').count()).toBe(4);
         const look = async (what) => {
             expect((await box(page, "#bl-viewer")).width, what).toBeGreaterThanOrEqual(800);
             const bad = await page.evaluate(() => {
@@ -187,14 +191,16 @@ describe.each(SIZES)("the Baselines screen at %i x %i", (width, height) => {
                 return out;
             });
             expect(bad, what).toEqual([]);
-            // The same controls as Review's toolbar, every one showing (Blink only in Highlight).
+            // The same controls as Review's toolbar, every one showing (Blink only in Highlight);
+            // while Image only is on, its own button stands where Display was.
+            const io = await page.evaluate(() => globalThis.document.body.classList.contains("ionly"));
             for (const act of [
                 "view-side",
                 "view-flash",
                 "view-highlight",
                 "view-spotlight",
                 "zoomcycle",
-                "displaymenu",
+                io ? "imageonly" : "displaymenu",
             ]) {
                 expect(await page.locator(`#bl-vtb [data-act="${act}"]`).isVisible(), `${what}: ${act}`).toBe(true);
             }
@@ -271,8 +277,11 @@ describe("levels by pointer", () => {
         const page = t.page;
         await page.locator('.chg[data-chg="3486"]').click();
         await page.locator(".iline").waitFor({ state: "attached" });
-        // The list level: Snapshots shown, Open [Enter] on the item line.
-        expect(await page.locator('.iline [data-act="openrow"]').innerText()).toBe("OpenEnter");
+        // The list level: Snapshots shown, Wider [Enter] on the item line, its tooltip saying what it does.
+        expect(await page.locator('.iline [data-act="openrow"]').innerText()).toBe("WiderEnter");
+        expect(await page.locator('.iline [data-act="openrow"]').getAttribute("title")).toBe(
+            "Fold the snapshot list to its rail; Esc brings it back",
+        );
         await page.locator('.srow[data-snap="graphty-element/component-1--story-7.dark.png"]').click();
         await expect.poll(() => page.locator(".iline").innerText()).toContain("#8");
         expect(await page.evaluate(() => globalThis.location.hash)).toContain(

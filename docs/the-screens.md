@@ -41,16 +41,22 @@ With a change open, three panes side by side: **Changes**, **Snapshots** and the
 
 ### Panes and levels
 
-**Hide Shift+1** and **< Shift+2** fold the Changes and Snapshots panes into narrow rails; the
-rail, or the same key again, brings the pane back. A rail is 56 px wide and reads top down,
+**Hide Shift+1** and **< Hide Shift+2** fold the Changes and Snapshots panes into narrow rails; the
+rail, or the same key again, brings the pane back. A rail is 64 px wide and reads top down,
 nothing turned on its side: a badge of what is left, the number over the word ("7 / left" on
 Changes, its tooltip "7 changes need you"; "34 / left" on Snapshots, "34 snapshots left to
 decide"; no badge with nothing left), the pane's name ("Changes", "Snaps") and its key quietly on
-one line ("Shift+1"). Opening a change folds the panes the review
+one line ("Shift+1"), each on its own line. Opening a change folds the panes the review
 does not need: a small change (10 snapshots or fewer) opens with both side panes as rails, so the
 image gets the width at once. The viewer is never narrower than 800 px. **Image only Shift+3**
-folds both side panes, and pressed again gives back exactly the panes it folded ("Image only off:
-panes back as they were."). The page remembers your pane choices in this browser, separately for small
+leaves only the picture and what you decide it with: the top bar (Finish too), both rails, the
+item line and the message line (unless it holds a message) go. One strip stays above the picture,
+with **Back Esc** and the snapshot's name, the views, **Zoom** (and **Blink** in Highlight), and
+**Image only Shift+3** with its check mark, the way out; the decision bar stays under it. A key
+whose control is hidden (Shift+N, ?, Shift+1, Shift+2, P, X...) does nothing and says once "Hidden
+in Image only: Shift+3 brings it back." Pressed again, Image only gives back the top bar and exactly
+the panes it folded ("Image only off: panes back as they were."). Folding both panes yourself is
+not Image only: the top bar stays. The page remembers your pane choices in this browser, separately for small
 and large changes.
 
 **Back Esc** on the item line goes back one level: to the list, or to the changes (its tooltip
@@ -92,24 +98,30 @@ few seconds while it is shown.
 
 ### Snapshots
 
-The open change's snapshots. Its header is three lines that never wrap:
+The open change's snapshots. Its header is three lines; only the title wraps:
 
-1. The change's number and title, then any notice chips and the fold button **< Shift+2**. When
-   the line is tight the title is cut first ("..."); the number and the fold button never go. The
-   number and title are the change's own menu (a small caret after them, the whole title in their
-   tooltip), for what is change-wide and rare: the whole title, wrapped; **Open on GitHub** (the
+1. The change's number and title, and the fold button **< Hide Shift+2**, nothing else. The
+   number leads the first line and the title's words flow on after it and under it, so even a
+   narrow pane shows the title's first words on both lines; it wraps to at most two lines and is
+   cut ("...") only after that. The number and the fold button never go. The number and title are
+   the change's own menu (a small caret after them, the whole title in their tooltip), for what is change-wide and rare: the whole title, wrapped; **Open on GitHub** (the
    code host's name; a link, so the browser can copy its address); **Copy link to this list**;
    **Download the comparison report (JUnit)**; and, apart from them under a line, **Undo all
    decisions...**.
 2. The progress line: **34 left** in bold, then, muted, what you decided and what was accepted
    before this capture, "12 decided, 1,208 accepted earlier", each only when it is not 0. Under it,
    the bar fills with both. A change of 10 or fewer says only "3 left" until you decide something.
+   Any notice chips sit at the line's right end (below). When the line is tight, "accepted earlier"
+   goes first, then **Behind master: 1,243** shortens to **Behind: 1,243**, then "decided" goes;
+   "34 left" never goes.
    When the line is tight, "accepted earlier" goes first, then "decided"; "N left" always stays.
 3. **Find** (its placeholder "Find /", its tooltip "Find a story, or #number"): filters the rows by
    story; a number ("47" or "#47") jumps to that snapshot instead. Esc clears the box first, then
-   leaves it. Then **Show: Undecided**, the one filter: its menu lists Undecided (the default), All,
-   each status the change has, Accepted earlier, Accepted (yours), Rejected and Excluded, each with
-   its count on the right, a choice of 0 greyed, and last, under a line, **Accept all 34 shown...**,
+   leaves it. Then **Show: Undecided**, the one filter: its menu lists Undecided (the default) and
+   All, then under the muted heading **By kind** each status the change has (Changed, New,
+   Removed...), and under **By decision** Accepted earlier, Accepted (yours), Rejected and
+   Excluded, each with its count on the right, a choice of 0 greyed; the headings are never focused
+   and the arrow keys skip them. Last, under a line, **Accept all 34 shown...**,
    which accepts what Show and Find show and always asks first. The button shows the count only
    while the list is filtered, "Show: Rejected (3)". Then **List**, about the list only: **Group by**
    (Component, Same change, Project, Status, None), **Pictures** (**Crop to the change**, the
@@ -154,7 +166,7 @@ the border color, until the row is hovered or a selection exists.
 **Groups.** By component (the default above 10 snapshots). Each group header is one line: the
 chevron folds and unfolds the group; the name button, "legend" with a small caret after it (a
 component is named alone, its project in the tooltip, unless two projects share the name; a long
-name is cut in the middle, "style-fi...cx-specimens", keeping both ends, so groups that share a start stay apart,
+name is cut at its start, "...cytoscape-js-specimens", keeping its end, because groups that share a start differ at the end,
 the whole name in the header's tooltip), underlines on hover and opens the group's actions:
 **Accept 14** (printing **Shift+A** on the current snapshot's group), **Collapse** or **Expand**,
 **Reject 14...**, **Exclude 14...**, **Select all 14**, and **Undo 3...** while the group holds
@@ -206,13 +218,14 @@ after V or a digit key, while the new view's pictures are made.
 
 Under the toolbar, the item line: **Back Esc**, the snapshot's number and status ("#1028 changed"),
 its story's name (with dark or light after it), its badges, **Next area N** when it has more than
-one changed area (with "Area 1 of 26" while zoomed above Fit), **Select X**, **Open Enter** and
-**Details**. **Open Enter** shows on a large change (more than 10 snapshots) while its list is
-shown beside the viewer, at every window width: it folds the list to its rail (under 1400 px that
-is the viewing level, which Back leaves). The size of the change is on the snapshot's row and in
+one changed area (with "Area 1 of 26" while zoomed above Fit), **Select X**, **Wider Enter** and
+**Details**. **Wider Enter** shows on a large change (more than 10 snapshots) while its list is
+shown beside the viewer, at every window width: it folds the list to its rail so the picture gets
+the room, and Esc brings the list back (under 1400 px that is the viewing level, which Back
+leaves). The size of the change is on the snapshot's row and in
 Details, not here. When the line is tight, the badges other than "unstable" and "resized" go
 first, then the name is cut in the middle, never below 24 characters; if it still does not fit,
-the line wraps to a second line. "unstable", "resized", Select, Open and Details always stay
+the line wraps to a second line. "unstable", "resized", Select, Wider and Details always stay
 whole. **Details** opens the snapshot's threshold, renderer, hashes, settings
 file, component, attempts and console under the line, with **Copy link to this image**.
 
@@ -273,8 +286,8 @@ The banner never shows when either capture does not say which browser drew it.
 
 ### A newer capture, and a stale one
 
-Both are notices, never blocks: a small outlined button on the first line of the Snapshots
-header, its mark in the warning color and a caret after its words. Each is a menu button that says
+Both are notices, never blocks: a small outlined button at the right end of the Snapshots
+header's progress line, its mark in the warning color and a caret after its words. Each is a menu button that says
 what it means and what to do. When both apply and
 the line is tight, they fold into one **2 notices** chip whose menu holds both.
 
@@ -299,7 +312,8 @@ Every approved baseline in the repository: what the gate compares new captures w
   when it last changed in which change. **Find [/]** finds a story by name or by its number
   ("#12"); **Group** groups the rows by component, by project, or not at all.
 - **The viewer**, on the right: the baseline the row chose, with the same zoom controls as a review
-  and **Image only Shift+3**. **Previous [J] Left** and **Next [K] Right** move through the
+  and **Image only Shift+3**. It draws no view buttons until two versions are ticked in the
+  History; a view key before then says so. **Previous [J] Left** and **Next [K] Right** move through the
   baselines. Under it, the **History**: every version of that baseline, newest first, with its
   date, who accepted it, in which change, and its approval (signed by which passkey, or not signed).
   Tick two versions to compare them with **Side by side [V]**, **Flash [F]**, **Highlight [H]** and

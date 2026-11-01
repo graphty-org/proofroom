@@ -225,6 +225,37 @@ async function displayItem(page, act) {
     await expect.poll(() => page.getByRole("menu").count()).toBe(0);
     return out;
 }
+// Side by side drawn: Spotlight's labels read the same words ("Baseline", "New"), so a wait on
+// them passes while Spotlight's canvas is still on the stage and V's own drawing replaces the
+// frames later. Side by side draws plain images and no canvas.
+async function sideDrawn(page) {
+    await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
+    await expect
+        .poll(() =>
+            page.evaluate(() => {
+                const st = globalThis.document.getElementById("stage");
+                return (
+                    st.querySelectorAll("figure canvas").length === 0 && st.querySelectorAll("figure img").length === 2
+                );
+            }),
+        )
+        .toBe(true);
+}
+// Presses a key that redraws the snapshot on the stage (a zoom step, B) and waits until the new
+// drawing has replaced the frames: the held pictures take the new zoom and outline at once, so a
+// wait on them alone passes before the frames it measured are replaced.
+async function pressRedrawn(page, key) {
+    await page.evaluate(() => {
+        const st = globalThis.document.getElementById("stage");
+        st.dataset.redrawn = "0";
+        new globalThis.MutationObserver((_, o) => {
+            st.dataset.redrawn = "1";
+            o.disconnect();
+        }).observe(st, { childList: true });
+    });
+    await page.keyboard.press(key);
+    await expect.poll(() => page.locator("#stage").getAttribute("data-redrawn")).toBe("1");
+}
 const zoomShown = (page) => tool(page, "zoomcycle").evaluate((n) => n.firstChild.textContent);
 
 describe("the four views", () => {
@@ -236,7 +267,7 @@ describe("the four views", () => {
         expect(await page.locator("#stage figure:nth-child(2) canvas").count()).toBe(1);
         // V: Side by side, the two images.
         await page.keyboard.press("KeyV");
-        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
+        await sideDrawn(page);
         await drawn(page, 1);
         expect(await page.locator("#stage figure img").count()).toBe(2);
         // H: Highlight, the changed pixels over both images.
@@ -305,10 +336,38 @@ describe("the four views", () => {
     });
 });
 
+describe("the drawing marks (design 11.3)", () => {
+    it("marks viewer-drawing when a new snapshot starts drawing, and its viewer-drawn after it; a view keeps its mark", async () => {
+        const page = await open(SMALL);
+        const marks = () =>
+            page.evaluate(() =>
+                ["viewer-drawing", "viewer-drawn"].map((n) =>
+                    performance.getEntriesByName(n).map((m) => ({ file: m.detail, at: m.startTime })),
+                ),
+            );
+        const [start] = await marks();
+        await page.keyboard.press("KeyK");
+        await drawn(page, 2);
+        const file = await page.locator("#viewer .iline").getAttribute("data-snap");
+        const [drawing, done] = await marks();
+        expect(drawing.length).toBe(start.length + 1);
+        expect(drawing.at(-1).file).toBe(file);
+        // The newest viewer-drawn is the new snapshot's, and comes after its viewer-drawing.
+        expect(done.at(-1).file).toBe(file);
+        expect(done.at(-1).at).toBeGreaterThan(drawing.at(-1).at);
+        // A view of the snapshot on the stage keeps its pictures: no new viewer-drawing, so a wait
+        // on the newest viewer-drawn still holds.
+        await page.keyboard.press("KeyV");
+        await expect.poll(() => tool(page, "view-side").getAttribute("aria-checked")).toBe("true");
+        expect((await marks())[0].length).toBe(drawing.length);
+    });
+});
+
 describe("zoom", () => {
     it("zooms by the digits, by Z and by click, and keeps the frames registered at every level", async () => {
         const page = await open(SMALL);
         await page.keyboard.press("KeyV");
+        await sideDrawn(page);
         await drawn(page, 1);
         const width = () =>
             page
@@ -322,7 +381,7 @@ describe("zoom", () => {
             ["Digit4", 4],
             ["Digit8", 8],
         ]) {
-            await page.keyboard.press(key);
+            await pressRedrawn(page, key);
             await expect.poll(width).toBe(W * zoom);
             expect(await zoomShown(page)).toBe(`Zoom: ${zoom}x`);
             // Scrolled in one frame, the other follows to the same place.
@@ -635,12 +694,12 @@ describe("the item line", () => {
         [1440, 900],
         [1280, 800],
         [1024, 768],
-    ])("at %i x %i a large change's item line shows Open Enter while the list is shown", async (width, height) => {
+    ])("at %i x %i a large change's item line shows Wider Enter while the list is shown", async (width, height) => {
         const page = await open(LARGE, { width, height });
         const openBtn = page.locator('.iline [data-act="openrow"]');
-        await expect.poll(() => openBtn.innerText()).toBe("OpenEnter");
+        await expect.poll(() => openBtn.innerText()).toBe("WiderEnter");
         await openBtn.click();
-        // The list folds to its rail and Open goes with it.
+        // The list folds to its rail and Wider goes with it.
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).toContain("rail");
         expect(await openBtn.count()).toBe(0);
     });
@@ -802,7 +861,7 @@ describe("one test per toolbar control", () => {
         await expect.poll(() => page.locator("#stage").getAttribute("class")).not.toContain("stacked");
     });
 
-    it("Image only [Shift+3] merges the item line into the toolbar, and brings the panes back", async () => {
+    it("Image only [Shift+3] keeps one strip and the decision bar, and brings everything back", async () => {
         const page = await open(LARGE);
         expect(await page.locator("#snaps").getAttribute("class")).not.toContain("rail");
         expect(await page.locator(".vtb .itemsum").isVisible()).toBe(false);
@@ -813,13 +872,31 @@ describe("one test per toolbar control", () => {
         expect(await page.locator(".vtb .itemsum").innerText()).toContain("#1");
         expect(await page.locator(".vtb .itemsum .name").innerText()).toBe("component-0 / story-0");
         expect(await page.locator(".iline").isVisible()).toBe(false);
-        await expect.poll(() => message(page)).toBe("Image only: Shift+3 brings the panes back.");
-        // Image only sits in Display, ticked.
-        expect((await displayItem(page, "imageonly")).checked).toBe("true");
-        await tool(page, "displaymenu").click();
-        await menuItem(page, "Image only").click();
+        await expect.poll(() => message(page)).toBe("Image only: Shift+3 brings everything back.");
+        // The top bar (Finish too) and both rails are gone; the message line only while it speaks.
+        for (const gone of ["#top", "#finish", "#changes", "#snaps"]) {
+            expect(await page.locator(gone).isVisible(), gone).toBe(false);
+        }
+        expect(await page.locator("#msgline").isVisible()).toBe(true);
+        // One strip: Back, the views, Zoom, then Image only, checked, the way out; no Display.
+        expect(await page.locator("#vtb [data-act]:visible").evaluateAll((ns) => ns.map((n) => n.dataset.act))).toEqual(
+            ["back", "view-side", "view-flash", "view-highlight", "view-spotlight", "zoomcycle", "imageonly"],
+        );
+        expect(await tool(page, "imageonly").getAttribute("aria-pressed")).toBe("true");
+        expect(await tool(page, "imageonly").locator(".chk").isVisible()).toBe(true);
+        expect((await tool(page, "imageonly").innerText()).replace(/\s+/g, " ")).toBe("Image only Shift+3");
+        // The decision bar stays: A, R and E act only through it.
+        expect(await page.locator("#viewer .decide").isVisible()).toBe(true);
+        // About 14 controls in all.
+        expect(await page.locator("[data-act]:visible").count()).toBeLessThanOrEqual(16);
+        // The next action empties the message line, and it goes.
+        await page.keyboard.press("KeyH");
+        await expect.poll(() => page.locator("#msgline").isVisible()).toBe(false);
+        await tool(page, "imageonly").click();
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).not.toContain("rail");
         await expect.poll(() => message(page)).toBe("Image only off: panes back as they were.");
+        expect(await page.locator("#top").isVisible()).toBe(true);
+        expect(await page.locator(".vtb .itemsum").count()).toBe(0);
         await page.keyboard.press("Shift+Digit3");
         await expect.poll(() => page.locator("#snaps").getAttribute("class")).toContain("rail");
         await page.keyboard.press("Shift+Digit3");
@@ -886,7 +963,7 @@ describe("one test per toolbar control", () => {
         await page.keyboard.press("KeyO");
         await expect.poll(() => message(page)).toBe("Start zoomed on the change: off.");
         await page.keyboard.press("Shift+Digit3");
-        await expect.poll(() => message(page)).toBe("Image only: Shift+3 brings the panes back.");
+        await expect.poll(() => message(page)).toBe("Image only: Shift+3 brings everything back.");
         expect(await page.getByRole("menu").count()).toBe(0);
         // The pressed style is gone: a toggle shows a check mark, never an inset ring.
         await page.keyboard.press("KeyH");
@@ -1052,7 +1129,7 @@ describe("pictures stay, one view, Image only and laptop width", () => {
     ])("at %i x %i, 4x on a resized snapshot shows the same place, drawn, in both panes", async (width, height) => {
         const page = await open(RESIZE, { width, height });
         await page.keyboard.press("KeyV");
-        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
+        await sideDrawn(page);
         await page.keyboard.press("Digit4");
         await expect.poll(() => zoomShown(page)).toBe("Zoom: 4x");
         await drawn(page, 1);
@@ -1060,7 +1137,7 @@ describe("pictures stay, one view, Image only and laptop width", () => {
         await expect.poll(() => frameLocs.count()).toBe(2);
         // The current area's middle (its outline's, B) is in the middle of both panes, so both
         // show the same place.
-        await page.keyboard.press("KeyB");
+        await pressRedrawn(page, "KeyB");
         await expect.poll(() => page.locator("#stage .boxmark").count()).toBe(2);
         const off = await frameLocs.evaluateAll((fs) =>
             fs.map((f) => {
@@ -1241,7 +1318,7 @@ describe("pictures stay, one view, Image only and laptop width", () => {
         expect(await railed()).toEqual([true, false]);
         await page.keyboard.press("Shift+Digit3");
         await expect.poll(railed).toEqual([true, true]);
-        // Back Esc stays in the merged toolbar.
+        // Back Esc stays in the strip.
         await expect.poll(() => page.locator('#vtb .itemsum [data-act="back"]').isVisible()).toBe(true);
         expect(await page.locator('#vtb .itemsum [data-act="back"]').innerText()).toContain("Esc");
         // Moving on and redrawing between the two presses changes nothing it gave back.
