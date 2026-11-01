@@ -2776,7 +2776,7 @@ export function createApp({
             all.flatMap((t) => (t.rolling ? t.projects.map((p) => p.dir && basename(dirname(p.dir))) : [])),
         );
         for (const d of readdirSync(tmp)) {
-            const run = /^(\d+)-\d+$/.exec(d)?.[1];
+            const run = /^(\d+)-(?:final-)?\d+$/.exec(d)?.[1];
             if ((run && !runs.has(Number(run))) || (d.startsWith("rolling-") && !rolled.has(d))) {
                 rmSync(join(tmp, d), { recursive: true, force: true });
                 forgetImages(join(tmp, d));
@@ -2816,9 +2816,12 @@ export function createApp({
             }
         }
     };
-    // A capture directory this server downloaded from CI: `<tmp>/<run>-<attempt>/<project>`.
+    // A capture directory this server downloaded from CI: `<tmp>/<run>-[final-]<attempt>/<project>`.
     const downloaded = (p) =>
-        Boolean(p.dir) && !p.preview && dirname(dirname(p.dir)) === tmp && /^\d+-\d+$/.test(basename(dirname(p.dir)));
+        Boolean(p.dir) &&
+        !p.preview &&
+        dirname(dirname(p.dir)) === tmp &&
+        /^\d+-(?:final-)?\d+$/.test(basename(dirname(p.dir)));
     const keepBudget = () => {
         if (results || budgeting) {
             return;
@@ -2838,7 +2841,7 @@ export function createApp({
         // change has no run (waiting for CI, or not loaded): nothing shows them.
         const runs = new Set([...targets.values(), ...held.values()].map((t) => t.runId));
         for (const d of readdirSync(tmp)) {
-            const run = /^(\d+)-\d+$/.exec(d)?.[1];
+            const run = /^(\d+)-(?:final-)?\d+$/.exec(d)?.[1];
             const dir = join(tmp, d);
             // Not while a refresh may be downloading a run it has not listed yet.
             if (used <= budget || refreshing || !run || runs.has(Number(run))) {
