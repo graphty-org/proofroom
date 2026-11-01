@@ -535,7 +535,7 @@ export async function downloadCaptures(
 ) {
     const artifacts = await runArtifacts(gh, run);
     for (const a of artifacts) {
-        const p = /^visual-(.+)-\d+$/.exec(a.name)?.[1];
+        const p = /^visual-(?:final-)?(.+)-\d+$/.exec(a.name)?.[1];
         if (p && !projects.includes(p) && !others.includes(p)) {
             others.push(p);
         }
@@ -549,11 +549,15 @@ export async function downloadCaptures(
                 expired: x.expired || Date.parse(x.expires_at) <= Date.now(),
                 bytes: x.size_in_bytes ?? 0,
                 attempt: Number(pattern.exec(x.name)[1]),
+                final: false,
             }))
             .sort((x, y) => y.attempt - x.attempt)[0];
     const newest = Object.fromEntries(
         projects.map((project) => {
-            const a = newestOf(new RegExp(String.raw`^visual-${project}-(\d+)$`));
+            // A run that re-shoots stories uploads the set its gate judged as visual-final-<project>-<n>:
+            // review that one, never the first capture the re-shoot overturned.
+            const final = newestOf(new RegExp(String.raw`^visual-final-${project}-(\d+)$`));
+            const a = final ? { ...final, final: true } : newestOf(new RegExp(String.raw`^visual-${project}-(\d+)$`));
             return [project, a ?? null];
         }),
     );
@@ -567,7 +571,7 @@ export async function downloadCaptures(
             if (!a) {
                 out[project] = null;
             } else {
-                const dir = join(tmp, `${run.id}-${a.attempt}`, project);
+                const dir = join(tmp, `${run.id}-${a.final ? "final-" : ""}${a.attempt}`, project);
                 const got = { attempt: a.attempt, bytes: a.bytes };
                 if (a.expired) {
                     out[project] = whole(dir)

@@ -396,7 +396,7 @@ export function fakeGh({
         }
         if (args[0] === "run" && args[1] === "download") {
             const name = args[4];
-            const project = /^visual-(.+)-\d+$/.exec(name)[1];
+            const project = /^visual-(?:final-)?(.+)-\d+$/.exec(name)[1];
             copyFixture(project, args[6], results[name] ?? {});
             return "";
         }

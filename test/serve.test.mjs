@@ -2925,6 +2925,24 @@ describe("downloadCaptures", () => {
         expect(existsSync(join(out["compact-mantine"].dir, "results.json"))).toBe(true);
     });
 
+    it("loads the run's gated final capture, not the first one, and lists no final-<project>", async () => {
+        const { r } = setup();
+        const inner = fakeGh({ artifacts: { 1000: ["visual-compact-mantine-1", "visual-final-compact-mantine-2"] } });
+        const asked = [];
+        const gh = (args, input) => {
+            if (args[0] === "run") {
+                asked.push(args[4]);
+            }
+            return inner(args, input);
+        };
+        const others = [];
+        const tmp = join(r.dir, "downloads");
+        const out = await downloadCaptures(gh, { id: 1000 }, ["compact-mantine"], tmp, others);
+        expect(asked).toEqual(["visual-final-compact-mantine-2"]);
+        expect(out["compact-mantine"]).toMatchObject({ dir: join(tmp, "1000-final-2", "compact-mantine"), attempt: 2 });
+        expect(others).toEqual([]);
+    });
+
     it("replaces a leftover directory that has no results.json", async () => {
         const { inner, tmp, run } = setup();
         const dir = join(tmp, "1000-1", "compact-mantine");
