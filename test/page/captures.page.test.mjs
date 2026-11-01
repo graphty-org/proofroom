@@ -731,10 +731,10 @@ describe("a capture on CI on the Captures screen", () => {
             ci: { ...CI_ON, available: false, why },
         });
         await page.getByRole("button", { name: "Settings" }).click();
-        // Closed, its summary says something there needs the reader.
+        // Open, its summary naming the problem in plain words.
         const setup = page.locator("#set-setup summary");
-        expect(await setup.innerText()).toBe("Repository setup: 1 problem");
-        await setup.click();
+        expect(await setup.innerText()).toBe("Repository setup: CI takes no capture requests");
+        expect(await page.locator("#set-setup").evaluate((d) => d.open)).toBe(true);
         const adapters = page.locator("#set-adapters");
         await adapters.waitFor();
         expect(await adapters.innerText()).toContain(`Capture store\tGitHub Actions artifacts\t\nrequest: ${why}`);

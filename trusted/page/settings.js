@@ -371,25 +371,31 @@ export function adaptersRow(adapters, ci = null) {
 }
 
 /**
- * The problems Repository setup holds: a CI that takes no capture requests though the store could
- * ask, with its reason. A function an adapter lacks by design (plain git) is not a problem.
+ * The problems Repository setup holds, each in plain words: a CI that takes no capture requests
+ * though the store could ask. A function an adapter lacks by design (plain git) is not a problem.
  * @param {any} app the page
- * @returns {number} how many
+ * @returns {string[]} the problems
  */
 const setupProblems = (app) => {
     const ci = app.captures?.ci;
-    return ci && !ci.available && ci.why ? 1 : 0;
+    const adapters = app.list?.adapters;
+    // A store with no CI, or one that cannot request by design, has no problem here (as adaptersRow says).
+    const byDesign =
+        !adapters || adapters.codeHost.vocabulary.ciName === null || adapters.captureStore.lacks.includes("request");
+    return ci && !ci.available && ci.why && !byDesign ? ["CI takes no capture requests"] : [];
 };
 
 /**
  * Opens Settings: the reader's choices first (Theme, Highlight color, Single-letter keys,
- * Passkeys, Picture storage), and the repository's adapters under a closed Repository setup,
- * whose summary says when something there is wrong.
+ * Passkeys, Picture storage), and the repository's adapters under Repository setup: closed, or
+ * open with its summary naming the first problem when something there is wrong.
  * @param {any} app the page
  */
 export function settingsSheet(app) {
     const row = el("div", { class: "q", id: "set-passkeys" }, el("b", {}, "Passkeys"), "Reading...");
     const problems = setupProblems(app);
+    // With a problem the disclosure starts open, its summary naming the first; with none it is closed.
+    const more = problems.length > 1 ? ` +${problems.length - 1} more` : "";
     app.openSheet(
         "settings",
         "Settings",
@@ -420,12 +426,8 @@ export function settingsSheet(app) {
         el("div", { class: "q", id: "set-disk" }, el("b", {}, "Picture storage"), diskText(app.list?.disk)),
         el(
             "details",
-            { class: "q", id: "set-setup" },
-            el(
-                "summary",
-                {},
-                problems > 0 ? `Repository setup: ${problems} problem${problems === 1 ? "" : "s"}` : "Repository setup",
-            ),
+            { class: "q", id: "set-setup", open: problems.length > 0 },
+            el("summary", {}, problems.length > 0 ? `Repository setup: ${problems[0]}${more}` : "Repository setup"),
             adaptersRow(app.list?.adapters, app.captures?.ci),
         ),
     );

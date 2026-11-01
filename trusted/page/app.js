@@ -67,7 +67,17 @@ import {
 } from "./list.js";
 import { ORDER, STATUS, mark } from "./marks.js";
 import { history as messageHistory, hostCan, hostWho, say, sayAgain, setDismiss, wordsOf } from "./messages.js";
-import { applyPanes, keepFloor, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
+import {
+    SMALL,
+    applyPanes,
+    keepFloor,
+    layoutFor,
+    remember,
+    remembered,
+    shownNow,
+    togglePane,
+    twoLevels,
+} from "./panes.js";
 import {
     applyTheme,
     cancelPasskey,
@@ -661,7 +671,17 @@ app.back = () => {
 };
 
 app.openSnapshot = () => {
-    if (app.level !== 1 || !twoLevels(app.snaps.length, innerWidth) || !app.snap) {
+    if (app.level !== 1 || app.snaps.length <= SMALL || !app.snap) {
+        return;
+    }
+    // One level (1400 px and wider): Open folds the list to its rail, as the viewing level does
+    // in a narrower window, so Open [Enter] does the same at every width.
+    if (!twoLevels(app.snaps.length, innerWidth)) {
+        if (shownNow()[1]) {
+            app.togglePane("snaps");
+        }
+        app.focusPane = "viewer";
+        $("viewer").focus({ preventScroll: true });
         return;
     }
     app.level = 2;

@@ -377,9 +377,8 @@ export function installFinish(app) {
         const seed = t.pr === null;
         const rejects = f.notes.filter((x) => x.decision === "reject");
         const undecided = f.undecided.reduce((k, p) => k + p.undecided, 0);
+        // Who signs (or why nothing is signed) is on the main body, right above the confirm button.
         const signs = signsLine(t, prepared);
-        // Signing that cannot happen, or needs a passkey registered, is said outside Details.
-        const signsShown = Boolean(prepared?.error) || (t.passkey?.keys ?? []).length === 0;
         const posts =
             rejects.length > 0 || (!seed && f.acceptNotes > 0)
                 ? [
@@ -420,16 +419,15 @@ export function installFinish(app) {
                       { class: "check" },
                       `${wordsOf(app.list).hostName} check: ${f.status.description.split(":")[0]}`,
                   ),
-            signsShown ? signs : null,
             el(
                 "details",
                 { class: "plumbing" },
                 el("summary", { class: "small" }, "Details"),
                 posts,
                 toFile(t) ? null : el("p", {}, el("b", {}, "Will set:"), ` ${statusText(f)}.`),
-                signsShown ? null : signs,
                 startCommandOf(t),
             ),
+            signs,
         ];
     }
 

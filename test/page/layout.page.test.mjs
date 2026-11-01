@@ -78,8 +78,11 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
             await look("viewing");
             await page.keyboard.press("Shift+Digit2");
             await look("viewing, Shift+2");
-            await itemControl(page, "back").click();
-            await look("back to the list");
+            // A viewing level only under 1400 px; at one level Open only folded the list.
+            if ((await itemControl(page, "back").getAttribute("title")) === "Back to the list (Esc)") {
+                await itemControl(page, "back").click();
+                await look("back to the list");
+            }
         }
         await itemControl(page, "back").click();
         await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);

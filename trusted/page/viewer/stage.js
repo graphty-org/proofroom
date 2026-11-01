@@ -320,6 +320,12 @@ export function createStage(host) {
         const labels = stageLabels(item, viewName);
         const { left, right } = waitingPanes(item, labels);
         const hold = keep || stage.querySelector(".sheet") !== null;
+        // The same item's held pictures take the new zoom at once, centered on the current area,
+        // so the toolbar's zoom and the drawn pixels agree while the new pictures are made.
+        if (hold && view.shownFile === item.file && !keep) {
+            fit(stage);
+            showBox(stage, shownBoxes, false, true);
+        }
         if (!hold) {
             setTimeout(() => {
                 if (seq === stageRender && !left.isConnected && !right.isConnected && painted !== seq) {

@@ -14,7 +14,7 @@ import { control, labelOf } from "./actions.js";
 import { badgeNode, badgesOf, decisionWords, layoutOf } from "./list.js";
 import { makeLocator, moveToPressed } from "./locator.js";
 import { statusMark } from "./marks.js";
-import { PANES, applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow, twoLevels } from "./panes.js";
+import { PANES, SMALL, applyPanes, imageOnlyPressed, pressImageOnly, remember, shownNow } from "./panes.js";
 import { HIGHLIGHTS, highlight } from "./settings.js";
 import { el, fmt, ic, kb } from "./ui.js";
 
@@ -250,7 +250,7 @@ export function createViewer(app, o = {}) {
         if (view === "flash") {
             return { rightLabel: "Baseline (flashing)", flash: ["Baseline (flashing)", "New (flashing)"] };
         }
-        return { leftLabel: "Baseline", rightLabel: view === "spotlight" ? "Spotlit new" : "New" };
+        return { leftLabel: "Baseline", rightLabel: "New" };
     }
 
     // Over and under, when Auto finds each image drawn larger that way (or the reader chose it).
@@ -301,6 +301,7 @@ export function createViewer(app, o = {}) {
         const st = parts.stage;
         parts.wrap.querySelector(".locator")?.remove();
         parts.wrap.querySelector(".note")?.remove();
+        parts.wrap.querySelector(".showbase")?.remove();
         st.classList.toggle("stacked", stacked);
         st.dataset.status = s.status;
         st.classList.toggle("zoom-fit", vs.zoom === "fit");
@@ -326,12 +327,18 @@ export function createViewer(app, o = {}) {
         });
     }
 
-    // After the stage drew: "No pixels changed" on a moved snapshot's compared views, and the
-    // locator at 2x and above, both in the New panel's label strip, never over the image.
+    // After the stage drew: "No pixels changed" on a moved snapshot's compared views, with the
+    // baseline hidden (P) a quiet "Show baseline  P" at the strip's left end, and the locator at 2x
+    // and above, all in the New panel's label strip, never over the image.
     const newStrip = () => [...parts.stage.querySelectorAll(".frame")].at(-1)?.previousElementSibling ?? null;
     async function decorate(s, view) {
         if (s.status === "moved" && (view === "highlight" || view === "spotlight")) {
             newStrip()?.append(el("span", { class: "note" }, "no pixels changed"));
+        }
+        if (review && twoImages(s) && !vs.showBase) {
+            newStrip()?.prepend(
+                control(app, "baseline", { zone: "toolbar", quiet: true, attrs: { class: "quietbtn showbase" } }),
+            );
         }
         if (vs.zoom === "fit" || vs.zoom < LOCATOR_FROM) {
             return;
@@ -485,8 +492,9 @@ export function createViewer(app, o = {}) {
         ];
     }
 
-    // Select [X] (Shift+Up/Down, which extend the selection, are in the List menu); Open [Enter] at
-    // the list level of a two-level change.
+    // Select [X] (Shift+Up/Down, which extend the selection, are in the List menu); Open [Enter]
+    // while a large change's list is shown beside the viewer, at every window width (it folds the
+    // list to its rail: the viewing level under 1400 px, the Snapshots fold at 1400 px and wider).
     const lineEnd = (s) =>
         el(
             "span",
@@ -496,7 +504,7 @@ export function createViewer(app, o = {}) {
                 attrs: { "aria-pressed": app.sel.has(s.key) ? "true" : "false" },
                 children: [labelOf(app, "select"), kb("X", true)],
             }),
-            app.level === 1 && twoLevels(app.snaps.length, innerWidth) && s
+            app.level === 1 && app.snaps.length > SMALL && shownNow()[1] && s
                 ? control(app, "openrow", { zone: "iline" })
                 : null,
         );
@@ -541,27 +549,22 @@ export function createViewer(app, o = {}) {
                   })
                 : null,
         );
-        // No room: the name is cut first, in the middle, down to 24 characters; then the badges that
-        // may drop go, then the status word (its mark stays, named in its tooltip). "unstable",
-        // "resized", Back, Select, Open and Details never shrink or drop; past all that the name's
-        // end is cut by the box (page.css).
+        // No room: the badges that may drop go first, then the name is cut in the middle, never
+        // below 24 characters; still too wide, the line wraps to a second line rather than cut
+        // more. "unstable", "resized", Back, Select, Open and Details never shrink or drop.
         const line = parts.line;
         const over = () => line.scrollWidth > line.clientWidth + 1;
-        const name = line.querySelector(".name");
-        for (let keep = s.name.length - 2; over() && keep >= NAME_MIN; keep -= 2) {
-            name.textContent = `${s.name.slice(0, Math.ceil(keep / 2))}...${s.name.slice(s.name.length - Math.floor(keep / 2))}`;
-        }
         for (const b of [...line.querySelectorAll(".badge:not(.fixed)")].reverse()) {
             if (!over()) {
                 break;
             }
             b.remove();
         }
-        if (over()) {
-            const st = line.querySelector(":scope > .st");
-            st?.setAttribute("title", st.textContent);
-            st?.lastChild?.remove();
+        const name = line.querySelector(".name");
+        for (let keep = s.name.length - 2; over() && keep >= NAME_MIN; keep -= 2) {
+            name.textContent = `${s.name.slice(0, Math.ceil(keep / 2))}...${s.name.slice(s.name.length - Math.floor(keep / 2))}`;
         }
+        line.classList.toggle("wrap", over());
     }
 
     function fillDetails(s) {

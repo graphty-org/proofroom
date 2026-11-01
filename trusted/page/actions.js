@@ -436,7 +436,8 @@ export const ACTIONS = {
     // The Display menu: the settings a reader sets once a session. Each prints its key, which acts
     // with the menu closed (the Display button's data-menukeys).
     displaymenu: {
-        label: "Display",
+        // Hidden baseline is said on the button, so the missing panel is never silently gone.
+        label: (app) => (app.viewer.state.showBase || !app.viewer.twoImages() ? "Display" : "Display: baseline hidden"),
         title: "Show baseline, Image only, Layout, Outline changed areas, Start zoomed on the change",
         run: (app, ctx) => app.viewer.displayMenu(ctx.el),
     },

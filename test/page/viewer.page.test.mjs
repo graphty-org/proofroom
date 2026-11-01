@@ -89,6 +89,9 @@ const blob = (hash) => ({ b: CAPTURE, e: GRID_BASE, f: RESIZED, g: RESIZED_OUT }
 const SMALL = "9100";
 const LARGE = "9200";
 const RESIZE = "9300";
+// Twelve snapshots with long story names, each resized: the item line at laptop width.
+const LONG = "9400";
+const LONG_NAME = "a-story-whose-name-runs-on-well-past-the-room-it-has";
 // At 1280 the small change's Image only row keeps its own item line and Options: the viewer is
 // under 1300 px and over 1100.
 const NARROW = { width: 1280, height: 800 };
@@ -97,6 +100,7 @@ const targets = () => [
     target(Number(SMALL), { projects: [project("graphty-element", { reviewable: 6 })] }),
     target(Number(LARGE), { projects: [project("graphty-element", { reviewable: 40 })] }),
     target(Number(RESIZE), { projects: [project("graphty-element", { reviewable: 2 })] }),
+    target(Number(LONG), { projects: [project("graphty-element", { reviewable: 12 })] }),
 ];
 // The resized change's two rows: an 800 x 600 baseline and a 1000 x 760 new image each.
 const resizedRows = (name) => {
@@ -120,6 +124,14 @@ const resizedRows = (name) => {
 const rows = (id, name, query) => {
     if (id === RESIZE) {
         return resizedRows(name);
+    }
+    if (id === LONG) {
+        const a = rowsAnswer(name, 12, () => "changed");
+        a.items = a.items.map((x, i) => {
+            const story = `component-0--${LONG_NAME}-${i}`;
+            return { ...x, id: story, file: `${story}.${x.mode}.png`, size: [1000, 760] };
+        });
+        return a;
     }
     const a = id === SMALL ? rowsAnswer(name, 6, (i) => SMALL_STATUSES[i]) : rowsAnswer(name, 40, () => "changed");
     if (query?.get("rows") === "1") {
@@ -219,7 +231,7 @@ describe("the four views", () => {
         const page = await open(SMALL);
         // A new reader starts in Spotlight: the plain baseline and the spotlit new image.
         expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
-        expect(await labels(page)).toEqual(["Baseline", "Spotlit new"]);
+        expect(await labels(page)).toEqual(["Baseline", "New"]);
         expect(await page.locator("#stage figure:nth-child(2) canvas").count()).toBe(1);
         // V: Side by side, the two images.
         await page.keyboard.press("KeyV");
@@ -245,7 +257,7 @@ describe("the four views", () => {
         await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         // S, then S again.
         await page.keyboard.press("KeyS");
-        await expect.poll(() => labels(page)).toEqual(["Baseline", "Spotlit new"]);
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         await page.keyboard.press("KeyS");
         await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         // By click, the same.
@@ -254,7 +266,7 @@ describe("the four views", () => {
         await tool(page, "view-flash").click();
         await expect.poll(async () => (await labels(page)).length).toBe(1);
         await tool(page, "view-spotlight").click();
-        await expect.poll(() => labels(page)).toEqual(["Baseline", "Spotlit new"]);
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         // F from Spotlight is the Flash view, flashing the spotlit pair in one frame; F again is
         // Side by side.
         await page.keyboard.press("KeyF");
@@ -401,8 +413,27 @@ describe("Baseline [P] in every view", () => {
     const TABLE = [
         ["KeyV", "side", ["Baseline", "New"], ["New"]],
         ["KeyH", "highlight", ["Baseline", "New"], ["New"]],
-        ["KeyS", "spotlight", ["Baseline", "Spotlit new"], ["Spotlit new"]],
+        ["KeyS", "spotlight", ["Baseline", "New"], ["New"]],
     ];
+    it("says the baseline is hidden: Show baseline P in the remaining strip, and on the Display button", async () => {
+        const page = await open(SMALL);
+        const show = page.locator('#stage .label [data-act="baseline"]');
+        expect(await tool(page, "displaymenu").innerText()).toBe("Display");
+        expect(await show.count()).toBe(0);
+        await page.keyboard.press("KeyP");
+        await expect.poll(() => labels(page)).toEqual(["New"]);
+        await show.waitFor();
+        expect(await show.innerText()).toBe("Show baselineP");
+        expect(await show.locator("kbd.quiet").innerText()).toBe("P");
+        // At the left end of the strip, before the panel's name.
+        expect(await show.evaluate((n) => n === n.parentElement.firstElementChild)).toBe(true);
+        expect(await tool(page, "displaymenu").innerText()).toBe("Display: baseline hidden");
+        await show.click();
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
+        expect(await show.count()).toBe(0);
+        expect(await tool(page, "displaymenu").innerText()).toBe("Display");
+    });
+
     it("hides the baseline in Side by side, Highlight and Spotlight, and Flash keeps its one frame", async () => {
         const page = await open(SMALL);
         await page.keyboard.press("KeyV");
@@ -505,7 +536,7 @@ describe("one-sided snapshots and failures", () => {
         await page.keyboard.press("KeyJ");
         await page.keyboard.press("ArrowLeft");
         await drawn(page, 1);
-        expect(await labels(page)).toEqual(["Baseline", "Spotlit new"]);
+        expect(await labels(page)).toEqual(["Baseline", "New"]);
     });
 });
 
@@ -570,6 +601,47 @@ describe("the item line", () => {
         await expect.poll(() => page.locator("#area-at").textContent()).toBe("Area 1 of 3");
         await page.keyboard.press("Digit0");
         await expect.poll(() => page.locator("#area-at").count()).toBe(0);
+    });
+
+    it("at 1024 x 768 never cuts the story name below 24 characters: it wraps the line instead", async () => {
+        const page = await open(LONG, { width: 1024, height: 768 });
+        // Changes shown too: the narrowest viewer the page draws.
+        await page.keyboard.press("Shift+Digit1");
+        await expect.poll(() => page.locator("#changes").getAttribute("class")).not.toContain("rail");
+        const line = await page.evaluate(() => {
+            const l = globalThis.document.querySelector("#viewer .iline");
+            const name = l.querySelector(".name");
+            const box = l.getBoundingClientRect();
+            return {
+                name: name.textContent,
+                cutByBox: name.scrollWidth > name.clientWidth + 1,
+                tags: [...l.querySelectorAll(".badge")].map((b) => b.textContent),
+                outside: [...l.querySelectorAll("button, .badge, .name")]
+                    .filter((n) => {
+                        const r = n.getBoundingClientRect();
+                        return r.left < box.left - 0.5 || r.right > box.right + 0.5 || r.bottom > box.bottom + 0.5;
+                    })
+                    .map((n) => n.dataset.act ?? n.textContent),
+            };
+        });
+        expect(line.name.replace("...", "").length).toBeGreaterThanOrEqual(24);
+        expect(line.cutByBox).toBe(false);
+        expect(line.tags).toContain("resized");
+        expect(line.outside).toEqual([]);
+    });
+
+    it.each([
+        [1440, 900],
+        [1280, 800],
+        [1024, 768],
+    ])("at %i x %i a large change's item line shows Open Enter while the list is shown", async (width, height) => {
+        const page = await open(LARGE, { width, height });
+        const openBtn = page.locator('.iline [data-act="openrow"]');
+        await expect.poll(() => openBtn.innerText()).toBe("OpenEnter");
+        await openBtn.click();
+        // The list folds to its rail and Open goes with it.
+        await expect.poll(() => page.locator("#snaps").getAttribute("class")).toContain("rail");
+        expect(await openBtn.count()).toBe(0);
     });
 
     it("cuts the name first, never below 24 characters, and keeps Select and Details whole", async () => {
@@ -912,9 +984,8 @@ describe("the toolbar's one row", () => {
             const page = await open(LARGE, size);
             if ((await page.locator('.iline [data-act="openrow"]').count()) > 0) {
                 await page.locator('.iline [data-act="openrow"]').click();
-                await expect
-                    .poll(() => page.locator('.iline [data-act="back"]').getAttribute("title"))
-                    .toBe("Back to the list (Esc)");
+                // Open folds the list to its rail at every width (a viewing level under 1400 px).
+                await expect.poll(() => page.locator("#snaps").getAttribute("class")).toContain("rail");
             }
             return page;
         },
@@ -1016,6 +1087,30 @@ describe("pictures stay, one view, Image only and laptop width", () => {
         expect(t.errors).toEqual([]);
     });
 
+    it("4 on a resized snapshot draws 4x at once, and the locator sits in the New panel's label strip", async () => {
+        const page = await open(RESIZE);
+        await page.keyboard.press("KeyV");
+        await page.keyboard.press("Digit4");
+        // The toolbar and the drawn pixels agree from the key press on, not only once redrawn.
+        const drawnScales = () =>
+            page.evaluate(() =>
+                [...globalThis.document.querySelectorAll("#stage .sheet > img, #stage .sheet > canvas")].map(
+                    (p) => parseFloat(p.style.width) / (p.naturalWidth ?? p.width),
+                ),
+            );
+        expect(await zoomShown(page)).toBe("Zoom: 4x");
+        expect(await drawnScales()).toEqual(expect.arrayContaining([4]));
+        expect(new Set(await drawnScales())).toEqual(new Set([4]));
+        await drawn(page, 1);
+        expect(new Set(await drawnScales())).toEqual(new Set([4]));
+        await page.locator("#stage figure:last-child .label .locator").waitFor();
+        expect(await page.locator(".locator").count()).toBe(1);
+        const loc = await page.locator(".locator").boundingBox();
+        expect(loc.width).toBeLessThanOrEqual(60);
+        expect(loc.height).toBeLessThanOrEqual(16);
+        expect(t.errors).toEqual([]);
+    });
+
     it("Flash is one view: from Spotlight F flashes the spotlit pair, and S after H is plain Spotlight", async () => {
         const page = await open(SMALL);
         expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
@@ -1033,7 +1128,7 @@ describe("pictures stay, one view, Image only and laptop width", () => {
         await page.keyboard.press("KeyH");
         await expect.poll(() => page.locator("#stage canvas.diffmark").count()).toBe(2);
         await page.keyboard.press("KeyS");
-        await expect.poll(() => labels(page)).toEqual(["Baseline", "Spotlit new"]);
+        await expect.poll(() => labels(page)).toEqual(["Baseline", "New"]);
         expect(await seg.locator("button.on").count()).toBe(1);
         expect(await tool(page, "view-spotlight").getAttribute("aria-checked")).toBe("true");
         // F from Side by side is the plain Flash.
@@ -1212,7 +1307,7 @@ describe("the diff worker", () => {
         await failed.first().getByRole("button", { name: "Retry" }).click();
         await drawn(t.page, 1);
         expect(await failed.count()).toBe(0);
-        expect(await labels(t.page)).toEqual(["Baseline", "Spotlit new"]);
+        expect(await labels(t.page)).toEqual(["Baseline", "New"]);
     });
 });
 

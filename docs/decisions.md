@@ -152,16 +152,19 @@ never taken away while you might still want it. Nothing clears on a timer.
 The sheet is titled with the change's number, its title muted below, then three lines: what it
 saves ("Saves 12 you accepted and 1,208 accepted earlier to <branch>, as <name>."), what is still
 left ("34 left: they will block the merge", with Go to the first), and the check it sets ("GitHub
-check: Reviewed"). What it posts, the full commit status, how it signs and the shell command are
-under one closed **Details**; a signing problem, or no passkey registered yet, stays outside it.
-The steps Finish takes did not change.
+check: Reviewed"), then, right above the confirm button, who signs ("Signs with: Passkey '...'",
+or why nothing is signed): the reader confirms knowing which passkey will be asked for. What it
+posts, the full commit status, the signing progress and the shell command are under one closed
+**Details**. The steps Finish takes did not change.
 
 ## Settings: your choices first
 
 Settings lists what you choose, in the order you are likely to want it: Theme, Highlight color,
 Single-letter keys, Passkeys and Picture storage. The adapters table, which only says how the
-repository is set up, is under a closed **Repository setup**, whose summary says "Repository setup:
-1 problem" when CI takes no capture requests.
+repository is set up, is under **Repository setup**: closed while nothing there is wrong, and
+open with its summary naming the first problem in plain words ("Repository setup: CI takes no
+capture requests", "+1 more" when there are more) when something is, so the reason is read
+without hunting for it.
 
 ## Each count said once in the list
 
@@ -204,3 +207,30 @@ On a narrow window the decision bar used to drop the words of Previous, Next and
 at every width, a 1024 x 768 laptop included. If the bar is ever too narrow, the quiet Left and
 Right after J and K shorten to `<-` and `->`, and then the bar takes a compact size; no button
 loses its name.
+
+## The zoom named is the zoom drawn
+
+After V and a digit key the toolbar said "Zoom: 4x" for about a quarter second while the panes
+still showed the old pictures at Fit, until the new view's pictures were made. The pictures on
+screen now take the new zoom at once, centered on the current area, so the toolbar and the pixels
+always agree; the new view's pictures replace them when ready.
+
+## Hiding the baseline is said where it shows
+
+P used to take the Baseline panel away with nothing on screen saying so. With the baseline hidden,
+the remaining panel's label starts with a quiet **Show baseline P** and the Display button reads
+**Display: baseline hidden**; both go when P shows it again. Panels are always named "Baseline"
+and "New", in every view ("Spotlit new" is gone: the view switch already says Spotlight).
+
+## Open on the item line at every width
+
+**Open Enter** used to show on the item line only under 1400 px, where a large change has a
+separate viewing level, so the same snapshot had the button at 1280 and not at 1440. It now shows
+on a large change whenever its list is shown beside the viewer, at every width, and does the same
+thing everywhere: it folds the list to its rail (under 1400 px, that is the viewing level).
+
+## The story name is never cut short on the item line
+
+At 1024 px the item line cut a story name to "i...". Now the badges other than "unstable" and
+"resized" go first, then the name is cut in the middle, never below 24 characters, and if it still
+does not fit the item line wraps to a second line.

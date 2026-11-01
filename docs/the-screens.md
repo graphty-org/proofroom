@@ -181,14 +181,22 @@ of the New panel's label moves the view where you click it. At the right end, **
 what you set once a session, each printing its key, which works with the menu closed: **Show
 baseline P** (hide it to see the new image alone), **Image only Shift+3**, **Layout: Auto Y** (Y
 steps Auto, Side by side and Over and under; Auto picks whichever draws the images larger),
-**Outline changed areas B** and **Start zoomed on the change O**.
+**Outline changed areas B** and **Start zoomed on the change O**. With the baseline hidden, the
+button reads **Display: baseline hidden**, and the remaining panel's label starts with a quiet
+**Show baseline P**, so the missing panel is never silently gone; both go when P shows it again.
+The zoom the toolbar names is the zoom drawn: the pictures on screen take it at once, also right
+after V or a digit key, while the new view's pictures are made.
 
 Under the toolbar, the item line: **Back Esc**, the snapshot's number and status ("#1028 changed"),
 its story's name (with dark or light after it), its badges, **Next area N** when it has more than
-one changed area (with "Area 1 of 26" while zoomed above Fit), **Select X** and **Details**. The
-size of the change is on the snapshot's row and in Details, not here. When the line is tight, the
-name is cut first (in the middle, down to 24 characters, then at its end), then the other badges
-go; "unstable", "resized", Select and Details always stay whole. **Details** opens the snapshot's threshold, renderer, hashes, settings
+one changed area (with "Area 1 of 26" while zoomed above Fit), **Select X**, **Open Enter** and
+**Details**. **Open Enter** shows on a large change (more than 10 snapshots) while its list is
+shown beside the viewer, at every window width: it folds the list to its rail (under 1400 px that
+is the viewing level, which Back leaves). The size of the change is on the snapshot's row and in
+Details, not here. When the line is tight, the badges other than "unstable" and "resized" go
+first, then the name is cut in the middle, never below 24 characters; if it still does not fit,
+the line wraps to a second line. "unstable", "resized", Select, Open and Details always stay
+whole. **Details** opens the snapshot's threshold, renderer, hashes, settings
 file, component, attempts and console under the line, with **Copy link to this image**.
 
 Nothing is drawn over the images. The label above each panel says what it shows and what state it

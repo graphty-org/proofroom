@@ -1427,11 +1427,15 @@ body.nokeys kbd .lk {
     gap: 6px;
     flex: none;
 }
-/* The name is cut first: by the page in the middle (viewer.js fillLine), then by this box at its
-   end. Everything else on the line keeps its size: Details, Select and the resized and unstable
-   tags never shrink. */
+/* Nothing on the line shrinks: the page drops badges, then cuts the name in the middle down to 24
+   characters (viewer.js fillLine), then wraps the line to a second line. */
+.iline.wrap {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding-block: 4px;
+}
 .iline .who {
-    flex: 0 1 auto;
+    flex: none;
     min-width: 0;
     display: flex;
     overflow: hidden;
@@ -2235,4 +2239,12 @@ dialog.finish .warnbox {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+/* With the baseline hidden (P): "Show baseline  P" at the left end of the remaining label strip. */
+.stage .label .showbase {
+    flex: none;
+    height: 18px;
+    padding: 0 4px;
+    font-size: 12px;
+    font-weight: 400;
 }

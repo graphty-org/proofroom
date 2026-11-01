@@ -16,11 +16,12 @@
   passkey](../README.md#approving-with-a-passkey).
 - **Picture storage**: how much the server may keep on disk (the config's `diskBudget`, 10 GB by
   default) and how much it holds now. See [Troubleshooting](troubleshooting.md).
-- **Repository setup**, closed until you open it: the adapters, that is the code host, capture
-  store, story source and renderer the server uses, from `visual-review.config.json`, and for each
-  the functions it lacks with the buttons hidden because of them (for example, plain git has no CI,
-  so "CI" in New capture is unavailable). Read only. When CI takes no capture requests, the closed
-  line reads "Repository setup: 1 problem".
+- **Repository setup**: the adapters, that is the code host, capture store, story source and
+  renderer the server uses, from `visual-review.config.json`, and for each the functions it lacks
+  with the buttons hidden because of them (for example, plain git has no CI, so "CI" in New capture
+  is unavailable). Read only. Closed while nothing there is wrong. With a problem it starts open
+  and its line names the first one, for example "Repository setup: CI takes no capture requests"
+  ("+1 more" when there are more).
 
 The keys switch, the Highlight color and the theme are kept in this browser. The passkeys, the
 picture storage and the adapters are the server's.

@@ -749,9 +749,8 @@ describe.each(["chromium", "webkit"])("group headers and the list menu in %s", (
         );
         await page.keyboard.press("Escape");
         await expect.poll(() => dialog(page).count()).toBe(0);
-        // One level at 1440: no Open is printed, so Enter does nothing.
-        expect(await keyOwners(page, "Enter")).toEqual([]);
-        await page.keyboard.press("Enter");
+        // Open [Enter] is printed at every width; Enter is only Open's.
+        expect(await keyOwners(page, "Enter")).toEqual(["openrow"]);
         await page.keyboard.press("Shift+KeyA");
         await page.keyboard.press("Enter");
         await expect.poll(() => posts("/api/accept-all").length).toBe(1);
