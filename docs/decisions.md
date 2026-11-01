@@ -121,3 +121,43 @@ it is a common correction key, and on a Mac it is labelled delete.
 The selection bar says how many are selected and offers Clear and its menu; it no longer has its
 own Accept, Reject and Exclude. The decision bar decides the selection while the current row is in
 it, and says so ("Accept 3"), so there is one place to look for what a decision will do.
+
+## No empty viewer before a change is open
+
+The page used to open in three columns: the changes, a middle Change pane summarizing the current
+one, and an empty viewer saying "Choose a change on the left". The middle pane is gone. With no
+change open the page is the changes and, in the viewer's place, the summary of the current change
+with **Open [Enter]**, so the first screen says what Enter would open and nothing is empty.
+
+## A quieter top bar
+
+The top bar keeps what you need at any moment: the tabs, **Next change Shift+N** (its one home,
+left of Finish, instead of the Changes header and the Snapshots title line), Keys, Settings and
+Finish. **New capture...** moved to the Captures screen, where captures are. The data's age and
+**Refresh** show only when the data is more than 5 minutes old or the server is not answering:
+"Updated 40 s ago" said nothing worth reading. **Finish #4455...** names the change and no count;
+it is outlined in the primary color while snapshots are left and filled once none is, never the
+grey of an unavailable button, so it reads as the way out from the first minute.
+
+## Messages clear themselves on the next action
+
+A message used to stay until another replaced it, so an old "Sorted: Author." could sit under a
+new state. Now a plain message clears on your next action. A message with a button (Undo, Retry,
+Load it) stays until you use it, press Dismiss, or another message replaces it, so a button is
+never taken away while you might still want it. Nothing clears on a timer.
+
+## The Finish sheet in three lines
+
+The sheet is titled with the change's number, its title muted below, then three lines: what it
+saves ("Saves 12 you accepted and 1,208 accepted earlier to <branch>, as <name>."), what is still
+left ("34 left: they will block the merge", with Go to the first), and the check it sets ("GitHub
+check: Reviewed"). What it posts, the full commit status, how it signs and the shell command are
+under one closed **Details**; a signing problem, or no passkey registered yet, stays outside it.
+The steps Finish takes did not change.
+
+## Settings: your choices first
+
+Settings lists what you choose, in the order you are likely to want it: Theme, Highlight color,
+Single-letter keys, Passkeys and Picture storage. The adapters table, which only says how the
+repository is set up, is under a closed **Repository setup**, whose summary says "Repository setup:
+1 problem" when CI takes no capture requests.

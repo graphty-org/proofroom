@@ -66,7 +66,7 @@ import {
     visibleRows,
 } from "./list.js";
 import { ORDER, STATUS, mark } from "./marks.js";
-import { history as messageHistory, hostCan, hostWho, say, sayAgain, wordsOf } from "./messages.js";
+import { history as messageHistory, hostCan, hostWho, say, sayAgain, setDismiss, wordsOf } from "./messages.js";
 import { applyPanes, keepFloor, layoutFor, remember, remembered, shownNow, togglePane, twoLevels } from "./panes.js";
 import {
     applyTheme,
@@ -168,33 +168,56 @@ const app = {
 
 // ---------------------------------------------------------------- drawing
 
+// Data older than this shows its age and Refresh in the top bar; fresher data shows neither.
+const STALE_MS = 5 * 60000;
+
 function drawTop() {
     $("repo").textContent = app.list?.repository ?? "";
     const tab = (name) =>
         control(app, `screen-${name}`, { zone: "top", attrs: { "aria-current": app.screen === name ? "page" : null } });
     $("tabs").replaceChildren(tab("review"), tab("baselines"), tab("captures"));
-    $("newcap-slot").replaceChildren(control(app, "newcap", { zone: "top" }));
     const trouble = app.failed !== null || Boolean(app.list?.error) || app.offline();
+    // The data's age as muted text and a small Refresh, only once the data is 5 minutes old, or
+    // while something is wrong or refreshing. When the bar is tight the age text goes first
+    // (page.css); it stays in Refresh's tooltip and accessible name.
+    const status = app.statusText();
     $("status-slot").replaceChildren(
-        control(app, "refresh", {
-            zone: "top",
-            attrs: {
-                class: `status ${trouble ? "trouble" : ""}`,
-                id: "srvstatus",
-                ...(app.offline() && { title: `${offlineText(true)} Click to retry.` }),
-            },
-            children: [
-                app.refreshing ? ic("spin") : trouble ? ic("offline") : null,
-                el("span", { class: "ell" }, app.statusText()),
-            ],
-        }),
+        ...(app.statusShown()
+            ? [
+                  el(
+                      "span",
+                      { class: `age ${trouble ? "trouble" : ""}`, id: "srvage" },
+                      app.refreshing ? ic("spin") : trouble ? ic("offline") : null,
+                      el("span", { class: "ell" }, status),
+                  ),
+                  control(app, "refresh", {
+                      zone: "top",
+                      attrs: {
+                          class: "small",
+                          id: "srvstatus",
+                          "aria-label": `Refresh (${status})`,
+                          title: app.offline() ? `${offlineText(true)} Click to retry.` : `${status}. Refresh now.`,
+                      },
+                  }),
+              ]
+            : []),
     );
-    // Finish, with a change open: always in this place, so it is found without searching (design 2.2).
+    // Next change and Finish belong to the Review screen. Finish, with a change open, is always in
+    // this place, so it is found without searching (design 2.2): outlined while anything is left,
+    // filled once nothing is, never the grey of an unavailable button.
+    const review = app.screen === "review";
+    const left = app.snaps.filter((s) => !s.decision).length;
     $("frame-slot").replaceChildren(
-        control(app, "keys", { zone: "top" }),
+        ...(review ? [control(app, "nextchange", { zone: "top", quiet: true, attrs: { id: "top-next" } })] : []),
+        control(app, "keys", { zone: "top", quiet: true }),
         control(app, "settings", { zone: "top" }),
-        ...(app.openId !== null
-            ? [control(app, "finish", { zone: "top", attrs: { class: "primary", id: "finish" } })]
+        ...(review && app.openId !== null
+            ? [
+                  control(app, "finish", {
+                      zone: "top",
+                      attrs: { class: app.snaps.length > 0 && left === 0 ? "primary" : "outline", id: "finish" },
+                  }),
+              ]
             : []),
     );
 }
@@ -208,6 +231,21 @@ function offlineText(tooltip = false) {
     }
     return `${head} Showing what was loaded at ${clock(app.listAt)}${tooltip ? ". D" : "; d"}ecisions cannot be saved.`;
 }
+
+// How old the list is, in seconds, on the server's clock (as the rows' ages are): its time when the
+// list came, plus the time since.
+const ageSeconds = () => {
+    const now = (app.list.now ?? app.listAt) + (Date.now() - app.listAt);
+    return Math.max(0, Math.round((now - app.list.updatedAt) / 1000));
+};
+
+// Whether the top bar shows the data's age and Refresh.
+app.statusShown = () =>
+    app.refreshing ||
+    app.offline() ||
+    app.failed !== null ||
+    Boolean(app.list?.error) ||
+    (Boolean(app.list?.updatedAt) && ageSeconds() * 1000 >= STALE_MS);
 
 app.statusText = () => {
     if (app.refreshing) {
@@ -225,28 +263,40 @@ app.statusText = () => {
     if (!app.list?.updatedAt) {
         return "Loading...";
     }
-    // On the server's clock, as the rows' ages are: its time when the list came, plus the time since.
-    const now = (app.list.now ?? app.listAt) + (Date.now() - app.listAt);
-    const s = Math.max(0, Math.round((now - app.list.updatedAt) / 1000));
+    const s = ageSeconds();
     return s < 5 ? "Updated just now" : s < 60 ? `Updated ${s} s ago` : `Updated ${Math.floor(s / 60)} min ago`;
 };
 
+// A rail's badge: the number over a short word ("7" / "left"), never a bare number; none for 0.
+const railCount = (n, title) =>
+    n > 0 ? el("span", { class: "count", title }, el("b", {}, fmt(n)), el("span", {}, "left")) : null;
+
+// A rail's key, quiet and stacked ("Shift" over "1") to fit the 44 px rail. Its text stays the
+// printed key; the two lines are drawn from its attributes.
+const railKey = (k) =>
+    kb(k, true).map((box) => {
+        const [top, bottom] = k.split("+");
+        box.classList.add("stack");
+        box.dataset.top = top;
+        box.dataset.bottom = bottom;
+        return box;
+    });
+
 function drawChangesPane() {
-    const needs = app.changes.filter(needsYou).length;
+    const needs = app.changes.length === 1 ? 1 : app.changes.filter(needsYou).length;
     $("rail-c").replaceWith(
         control(app, "pane1", {
             zone: "changes-head",
             ctx: { rail: true },
             attrs: { id: "rail-c", class: "railbar", title: "Show Changes (Shift+1)" },
             children: [
-                el("span", { class: "count" }, String(app.changes.length === 1 ? 1 : needs || "")),
+                railCount(needs, `${plural(needs, "change")} need${needs === 1 ? "s" : ""} you`),
                 el("span", { class: "vt" }, "Changes"),
-                kb("Shift+1"),
+                railKey("Shift+1"),
             ],
         }),
     );
     $("hide-c").replaceChildren(control(app, "pane1", { zone: "changes-head" }));
-    $("chg-next").replaceChildren(control(app, "nextchange", { zone: "changes-head", attrs: { id: "chg-next-btn" } }));
     $("chg-rows").replaceChildren(...rowButtons(app, "changes", "changes-head"));
     $("chg-sort").replaceChildren(control(app, "chgsort", { zone: "changes-head", attrs: { class: "small" } }));
     drawChanges(app);
@@ -256,7 +306,7 @@ function drawChangesPane() {
 const noCapturesYet = (w) =>
     `${w.ciName ? `Captures made by ${w.ciName} appear here on their own once a ${w.changeNoun} runs its visual job. Or capture` : "Capture"} the working tree on this machine now.`;
 
-// The summary of a change, in the Snapshots pane while no change is open.
+// The summary of the current change, in the viewer's place while no change is open.
 function summaryOf(c) {
     // "720 snapshots: 653 changed, 65 new, 2 removed", one plain sentence.
     const statuses = REVIEWABLE.filter((s) => c.counts[s] > 0)
@@ -275,11 +325,22 @@ function summaryOf(c) {
         ),
         ready
             ? [
-                  el("div", { class: "small" }, `${plural(c.total, "snapshot")}: ${statuses}`),
-                  el("div", { class: "small" }, el("b", {}, `${fmt(c.undecided)} left`)),
+                  el("div", {}, `${plural(c.total, "snapshot")}: ${statuses}`),
+                  el("div", {}, el("b", {}, `${fmt(c.undecided)} left`)),
               ]
-            : el("div", { class: "small" }, c.count),
-        el("div", {}, control(app, "summaryopen", { zone: "snaps-head", ctx: { id: c.id } })),
+            : el("div", {}, c.count),
+        el(
+            "div",
+            {},
+            control(app, "summaryopen", {
+                zone: "iline",
+                ctx: { id: c.id },
+                // Enter on the current row opens it, unless that row's Enter is Finish...: then
+                // Open prints no key, so no key box says something Enter would not do.
+                keyed: !document.querySelector('.chg.cur [data-act="finishchg"][data-key]'),
+                attrs: { class: "primary" },
+            }),
+        ),
     );
 }
 
@@ -305,16 +366,16 @@ function titleLink(c, title, name) {
 
 function drawSnaps() {
     const c = app.open();
-    const [changesShown] = shownNow();
+    const left = app.snaps.filter((s) => !s.decision).length;
     $("rail-s").replaceWith(
         control(app, "pane2", {
             zone: "snaps-head",
             ctx: { rail: true },
             attrs: { id: "rail-s", class: "railbar", title: "Show Snapshots (Shift+2)" },
             children: [
-                el("span", { class: "count" }, c ? fmt(app.snaps.filter((s) => !s.decision).length) : ""),
+                c ? railCount(left, `${plural(left, "snapshot")} left to decide`) : null,
                 el("span", { class: "vt" }, "Snapshots"),
-                kb("Shift+2"),
+                railKey("Shift+2"),
             ],
         }),
     );
@@ -332,25 +393,9 @@ function drawSnaps() {
         app.lv.built = null;
     }
     if (!c) {
-        $("snaps-head").replaceChildren(el("div", { class: "h1" }, el("span", { class: "grow" }, "Change"), hide));
-        const cur = app.change(app.curId);
-        list.replaceChildren(
-            app.changes.length === 0
-                ? el(
-                      "div",
-                      { class: "summary nocap" },
-                      el("div", { class: "title" }, "No captures yet."),
-                      el("p", { class: "small" }, noCapturesYet(wordsOf(app.list))),
-                      el(
-                          "div",
-                          { id: "summary-newcap" },
-                          control(app, "newcap", { zone: "snaps-head", attrs: { class: "primary" } }),
-                      ),
-                  )
-                : cur
-                  ? summaryOf(cur)
-                  : el("p", { class: "muted empty" }, "Choose a change on the left."),
-        );
+        // No change open: the pane is not shown (page.css); the summary is in the viewer's place.
+        $("snaps-head").replaceChildren();
+        list.replaceChildren();
         return;
     }
     // Line 1: the number, never cut, then the title, cut first ("..."), its whole in the tooltip.
@@ -362,9 +407,6 @@ function drawSnaps() {
         c.url && hostCan(app.list, "openChange")
             ? titleLink(c, title, name)
             : el("span", { class: "grow ctl", title }, name),
-        changesShown
-            ? null
-            : control(app, "nextchange", { zone: "snaps-head", quiet: true, attrs: { id: "snap-next-btn" } }),
         hide,
     );
     if (app.snaps.length === 0) {
@@ -405,25 +447,29 @@ function drawViewer() {
         return;
     }
     app.viewer.stop();
-    if (app.changes.length === 0 && !c) {
-        v.replaceChildren();
-        return;
-    }
     if (!c) {
+        // No change open: the current change's summary (or, with none yet, where captures come
+        // from) in the viewer's place, so the page is the changes and what Enter would open.
+        const cur = app.change(app.curId);
         v.replaceChildren(
             el(
                 "div",
-                { class: "stage" },
-                el(
-                    "div",
-                    { class: "emptyv" },
-                    el("p", {}, el("b", {}, "Choose a change on the left")),
-                    el(
-                        "p",
-                        {},
-                        "Up and Down move through the changes; the current row's Open button and Next change print their keys.",
-                    ),
-                ),
+                { class: "stage summarystage" },
+                app.changes.length === 0
+                    ? el(
+                          "div",
+                          { class: "summary nocap" },
+                          el("div", { class: "title" }, "No captures yet."),
+                          el("p", {}, noCapturesYet(wordsOf(app.list))),
+                          el(
+                              "div",
+                              { id: "summary-newcap" },
+                              control(app, "newcap", { zone: "iline", attrs: { class: "primary" } }),
+                          ),
+                      )
+                    : cur
+                      ? summaryOf(cur)
+                      : null,
             ),
         );
         return;
@@ -445,6 +491,8 @@ function drawViewer() {
     );
 }
 
+setDismiss(() => control(app, "msgdismiss", { zone: "msgline", attrs: { class: "quiet" } }));
+
 function drawMsgButton() {
     $("msg-btn").replaceChildren(control(app, "messages", { zone: "msgline" }));
 }
@@ -452,6 +500,8 @@ function drawMsgButton() {
 /** Redraws everything that depends on the state, then the key hints. */
 function draw() {
     const focus = focusedControl();
+    // Before anything is drawn, so what measures the Snapshots pane sees it shown.
+    document.body.dataset.open = String(app.openId !== null);
     drawTop();
     const waiting = drawWaiting();
     $("scr-captures").hidden = waiting || app.screen !== "captures";
@@ -749,7 +799,7 @@ app.openChange = async (id, { snap = null, quiet = false, view = {} } = {}) => {
         const parts = snapParts(snap);
         say(`${parts?.file ?? snap} is not in this capture any more: showing the first undecided snapshot.`);
     } else if (!quiet) {
-        say(`Opened ${c.label} ${c.title}: ${fmt(snaps.filter((s) => !s.decision).length)} undecided.`);
+        say(`Opened ${c.label}: ${fmt(snaps.filter((s) => !s.decision).length)} left.`);
     }
 };
 

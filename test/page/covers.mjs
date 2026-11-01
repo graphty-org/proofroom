@@ -88,6 +88,7 @@ export const COVERS = {
         "rowundo",
         "messages",
         "closebox",
+        "msgdismiss",
     ],
     "layout.page.test.mjs": ["pane1", "pane2", "back", "openrow", "pickrow"],
     "finish.page.test.mjs": [

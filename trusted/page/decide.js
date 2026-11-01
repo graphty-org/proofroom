@@ -798,7 +798,7 @@ export function installDecide(app) {
 
     // ------------------------------------------------------------ the end card
 
-    app.endFinishLabel = () => app.finishLabel();
+    app.endFinishLabel = () => app.finishCountLabel();
     app.endBack = () => {
         app.endCard = false;
         app.back();

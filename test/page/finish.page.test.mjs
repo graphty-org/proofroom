@@ -1,7 +1,7 @@
 /*
  * Finish on the new page (design section 7), by real input: Finish in the top bar and its summary
  * sheet (what it commits, posts and sets, the commit status in the server's own words, what signs
- * it, the undecided left with Go to the first undecided, Esc keeping everything), Finish... on a
+ * it, the snapshots left with Go to the first, Esc keeping everything), Finish... on a
  * row of Decided, not finished without opening the change, Finish all with its cost and one
  * failure stopping only its change, Queued rows, Remove from the run and Stop, the step list on the
  * changes row, a reload during a Finish, the sheet refusing when decisions changed in another tab,
@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, v
 import { startApp } from "../faults.mjs";
 import { fakeGh, git, isolateGit, job, makeRepo, onePr } from "../helpers.mjs";
 import { COVERS } from "./covers.mjs";
+import { NOW } from "./fixtures.mjs";
 import {
     BROWSERS,
     TOKEN,
@@ -184,27 +185,36 @@ describe("the summary sheet", () => {
             const page = await open({}, name);
             // No change open: the top bar's Finish is absent, and nothing stands in its place.
             const slot = page.locator("#frame-slot");
-            expect(await slot.evaluate((n) => [...n.childNodes].map((c) => c.nodeName))).toEqual([
-                "BUTTON",
-                "BUTTON",
+            expect(await slot.evaluate((n) => [...n.childNodes].map((c) => c.dataset.act))).toEqual([
+                "nextchange",
+                "keys",
+                "settings",
             ]);
             expect(await slot.innerText()).not.toContain("null");
             await openChange(page, OPEN);
             const finish = page.locator('#top [data-act="finish"]');
-            expect(await shows(finish)).toBe(`Finish #${OPEN} (2)`);
+            // Named, no count; outlined in the primary color while snapshots are left.
+            expect(await shows(finish)).toBe(`Finish #${OPEN}...`);
+            expect(await finish.getAttribute("class")).toBe("outline");
             await finish.click();
             const s = sheet(page);
             await s.waitFor();
-            expect(await s.locator("h3").innerText()).toBe(`Finish #${OPEN} Four`);
-            expect(await s.locator(".warnbox").innerText()).toBe(
-                "2 snapshots are still undecided; they will block the merge. Go to the first undecided",
-            );
+            // The number as the title, the change's title muted below, then three lines.
+            expect(await s.locator("h3").innerText()).toBe(`Finish #${OPEN}`);
+            expect(await s.locator(".ptitle").innerText()).toBe("Four");
+            expect(await s.locator(".left").innerText()).toBe("2 left: they will block the merge Go to the first");
+            expect(await s.locator(".check").innerText()).toBe("GitHub check: Reviewed");
+            expect(await focusedAct(page)).toBe("finishgo");
+            const plumbing = s.locator("details.plumbing");
+            expect(await plumbing.evaluate((d) => d.open)).toBe(false);
+            expect(await s.innerText()).not.toContain("Will set:");
+            await plumbing.locator("summary").click();
             const text = await s.innerText();
             expect(text).toContain(
                 `Saves 2 you accepted to branch feat/${OPEN}-change, as Ada Owner.`,
             );
             // The commit status in the server's own words (commitStatus), never "approved" with
-            // snapshots undecided.
+            // snapshots undecided, under Details.
             expect(text).toContain(
                 'Will set: the commit status "Reviewed: 2 accepted, 0 rejected, 0 excluded, 2 left undecided" (pending).',
             );
@@ -212,7 +222,6 @@ describe("the summary sheet", () => {
             expect(text).toContain("Signs with: Not yet protected: no passkey registered. Register passkey...");
             expect(await shows(s.locator('[data-act="finishgo"]'))).toBe(`Finish #${OPEN} [Enter]`);
             expect(await shows(s.locator('[data-act="confirmcancel"]'))).toBe("Cancel [Esc]");
-            expect(await focusedAct(page)).toBe("finishgo");
 
             // Esc closes it, nothing sent.
             await page.keyboard.press("Escape");
@@ -293,14 +302,14 @@ describe("the summary sheet", () => {
         expect(await sheet(page).innerText()).toContain("Signs with: Not yet protected");
     });
 
-    it("Go to the first undecided closes the sheet on the first undecided snapshot", async () => {
+    it("Go to the first closes the sheet on the first undecided snapshot", async () => {
         const page = await open();
         await openChange(page, OPEN);
         // The current snapshot the last undecided one, then the sheet.
         await page.keyboard.press("ArrowDown");
         await expect.poll(() => page.locator(".iline b.num").innerText()).toBe("#4");
         await page.locator('#top [data-act="finish"]').click();
-        await sheet(page).getByRole("button", { name: "Go to the first undecided" }).click();
+        await sheet(page).getByRole("button", { name: "Go to the first" }).click();
         await sheet(page).waitFor({ state: "detached" });
         await expect.poll(() => page.locator(".iline b.num").innerText()).toBe("#3");
         expect(posts("/api/finish")).toEqual([]);
@@ -314,6 +323,7 @@ describe("the summary sheet", () => {
         await rowOf(page, A).getByRole("button", { name: "Finish..." }).click();
         const s = sheet(page);
         await s.waitFor();
+        await s.locator("summary", { hasText: "Details" }).click();
         const text = await s.innerText();
         expect(text).toContain(`Will post: 1 reject as one comment on #${A}.`);
         expect(text).toContain(
@@ -390,7 +400,7 @@ describe("the summary sheet", () => {
         expect(await settings.locator("h3").innerText()).toBe("Settings");
         await page.keyboard.press("Escape");
         await sheet(page).waitFor();
-        expect(await sheet(page).locator("h3").innerText()).toBe(`Finish #${A} Change ${A}`);
+        expect(await sheet(page).locator("h3").innerText()).toBe(`Finish #${A}`);
     });
 });
 
@@ -399,10 +409,11 @@ describe("a change whose last snapshot was just decided (issue #1)", () => {
         // The change being decided, and a smaller one that arrived meanwhile and would sort first.
         // The server counts each decision, as the real one does.
         const NEW = "9104";
-        const list = listAnswer([
-            TARGETS()[0],
-            target(Number(NEW), { projects: [project("graphty-element", { reviewable: 3 })] }),
-        ]);
+        // Data 6 minutes old, so the top bar offers Refresh.
+        const list = listAnswer(
+            [TARGETS()[0], target(Number(NEW), { projects: [project("graphty-element", { reviewable: 3 })] })],
+            { updatedAt: NOW - 6 * 60000 },
+        );
         const decide = () => {
             const [p] = list.targets[0].projects;
             Object.assign(p, { decided: p.decided + 1, undecided: p.undecided - 1 });
@@ -456,12 +467,12 @@ describe("a change whose last snapshot was just decided (issue #1)", () => {
 
         // Next change [Shift+N] from the other change reaches it.
         await rowOf(page, NEW).click();
-        await expect.poll(() => message(page)).toBe(`Opened #${NEW} Change ${NEW}: 3 undecided.`);
+        await expect.poll(() => message(page)).toBe(`Opened #${NEW}: 3 left.`);
         await page.keyboard.press("Escape");
         await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
         await page.keyboard.press("Shift+KeyN");
         // (The fake's rows keep only their first two decisions: the count after the colon is the fake's.)
-        await expect.poll(() => message(page)).toMatch(new RegExp(`^Opened #${OPEN} Four: `));
+        await expect.poll(() => message(page)).toMatch(new RegExp(`^Opened #${OPEN}: `));
         await page.keyboard.press("Escape");
         await expect.poll(() => message(page)).toMatch(/^Back to the changes\./);
 
@@ -469,7 +480,7 @@ describe("a change whose last snapshot was just decided (issue #1)", () => {
         await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe(OPEN);
         await page.keyboard.press("Enter");
         await sheet(page).waitFor();
-        expect(await sheet(page).locator("h3").innerText()).toBe(`Finish #${OPEN} Four`);
+        expect(await sheet(page).locator("h3").innerText()).toBe(`Finish #${OPEN}`);
     });
 });
 
@@ -480,7 +491,7 @@ describe("Finish... and Finish all", () => {
         expect(await btn.getAttribute("title")).toBe("Opens the summary sheet for this change without opening it");
         await btn.click();
         await sheet(page).waitFor();
-        expect(await sheet(page).locator(".warnbox").count()).toBe(0);
+        expect(await sheet(page).locator(".left").count()).toBe(0);
         await page.keyboard.press("Enter");
         await openNothing(page);
         await expect.poll(() => countOf(page, A)).toMatch(/^Finished \d\d:\d\d$/);
@@ -772,7 +783,7 @@ describe("on the review server", () => {
             await page.goto(`${s.origin}/#token=${TOKEN}&change=123`);
             await page.locator("#snap-list .srow.cur").waitFor({ state: "attached" });
             const finish = page.locator('#top [data-act="finish"]');
-            await expect.poll(() => shows(finish)).toBe("Finish #123 (2)");
+            await expect.poll(() => shows(finish)).toBe("Finish #123...");
             await finish.click();
             await sheet(page).getByRole("button", { name: "Register passkey..." }).click();
             const settings = page.locator("dialog.settings[open]");
@@ -786,7 +797,7 @@ describe("on the review server", () => {
             await sh.waitFor();
             // Its approval prepared on the review server, the passkey named.
             await expect
-                .poll(() => sh.innerText())
+                .poll(() => sh.textContent())
                 .toMatch(/Signs with: Passkey '(Linux|Mac|Windows) passkey, \d{4}-\d\d-\d\d'/);
             expect(await shows(sh.locator('[data-act="finishgo"]'))).toBe("Sign and finish #123 [Enter]");
             const before = git(r.remote, "rev-parse", "feature");
@@ -837,11 +848,11 @@ describe("on the review server", () => {
             await page.goto(`${s.origin}/#token=${TOKEN}&change=master`);
             await page.locator("#snap-list .srow.cur").waitFor({ state: "attached" });
             const finish = page.locator('#top [data-act="finish"]');
-            await expect.poll(() => shows(finish)).toBe("Finish seed (1)");
+            await expect.poll(() => shows(finish)).toBe("Finish seed...");
             await finish.click();
             const sh = sheet(page);
             await sh.waitFor();
-            expect(await sh.locator("h3").innerText()).toBe("Finish seed Seed from master");
+            expect(await sh.locator("h3").innerText()).toBe("Finish seed");
             expect(await sh.innerText()).toMatch(
                 /Saves 1 you accepted to branch visual\/seed-\d{4}-\d\d-\d\d, as .+, and opens its pull request\./,
             );

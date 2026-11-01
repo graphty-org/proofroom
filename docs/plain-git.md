@@ -67,12 +67,12 @@ tracks the remote one, so Finish pushes its commits back to it.
 
 ## What the page leaves out
 
-Settings > Adapters lists what plain git cannot do and which buttons it hides because of that:
+Settings > Repository setup lists what plain git cannot do and which buttons it hides because of that:
 
 | Missing         | What you see                                                                   |
 | --------------- | ------------------------------------------------------------------------------ |
 | Comments        | Rejects are written to `visual-review-rejects/<branch>.md` on the branch       |
-| Commit statuses | Finish sets none, and its summary has no "Will set" line                       |
+| Commit statuses | Finish sets none, and its summary has no check line                            |
 | Issues          | Rejects on the default branch would go to the same file                        |
 | Opening changes | No "Open on" button; a passkey registration pushes its branch for you to merge |
 | CI              | Every capture runs on this machine; "CI" in New capture is unavailable         |

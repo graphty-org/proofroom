@@ -62,7 +62,7 @@ describe("the page on a plain git repository", () => {
             },
         };
         await page.goto(`${s.origin}/#token=${TOKEN}`);
-        await page.locator("#snap-list").getByRole("button", { name: "New capture..." }).click();
+        await page.locator("#viewer").getByRole("button", { name: "New capture..." }).click();
         const option = page.locator("#nc-pr option");
         await option.waitFor({ state: "attached" });
         expect(await option.innerText()).toBe("feat/y feature (Owner)");
@@ -90,12 +90,12 @@ describe("the page on a plain git repository", () => {
         await page.goto(`${s.origin}/#token=${TOKEN}`);
 
         // No CI: the empty Review screen offers only a capture on this machine.
-        await expect.poll(() => page.locator("#snap-list").innerText()).toContain("No captures yet.");
-        expect(await page.locator("#snap-list").innerText()).toContain("Capture the working tree on this machine now.");
-        expect(await page.locator("#snap-list").innerText()).not.toContain("Captures made by");
+        await expect.poll(() => page.locator("#viewer").innerText()).toContain("No captures yet.");
+        expect(await page.locator("#viewer").innerText()).toContain("Capture the working tree on this machine now.");
+        expect(await page.locator("#viewer").innerText()).not.toContain("Captures made by");
 
         // New capture: a branch from the remote (none here), and CI unavailable.
-        await page.locator("#snap-list").getByRole("button", { name: "New capture..." }).click();
+        await page.locator("#viewer").getByRole("button", { name: "New capture..." }).click();
         const sheet = page.locator("#ncf");
         await sheet.waitFor();
         const remote = sheet.locator("label", { hasText: "A branch from the remote" });
@@ -129,10 +129,11 @@ describe("the page on a plain git repository", () => {
         await page.keyboard.press("Escape");
         await expect.poll(() => menu.count()).toBe(0);
         await row.click();
-        await expect.poll(() => message(page)).toBe("Opened feat/x feature: 3 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened feat/x: 3 left.");
 
-        // Settings, Adapters: what plain git lacks and what that hides.
+        // Settings, Repository setup: what plain git lacks and what that hides.
         await page.getByRole("button", { name: "Settings" }).click();
+        await page.locator("#set-setup summary").click();
         const adapters = page.locator("#set-adapters");
         await adapters.waitFor();
         const said = await adapters.innerText();
@@ -166,15 +167,19 @@ describe("the page on a plain git repository", () => {
 
         // Finish: the reject goes to a file on the branch, and no status is set.
         const finish = page.locator('#top [data-act="finish"]');
-        await expect.poll(() => finish.innerText()).toContain("Finish feat/x (1)");
+        await expect.poll(() => finish.innerText()).toBe("Finish feat/x...");
         await finish.click();
         const box = page.locator("dialog.finish[open]:not([aria-busy])");
         await box.waitFor();
+        // No commit status under plain git: no check line.
+        expect(await box.locator(".check").count()).toBe(0);
+        await box.locator("summary", { hasText: "Details" }).click();
         const summary = await box.innerText();
         expect(summary).toContain("Saves the rejects file to branch feat/x, as ");
         expect(summary).toContain("Will write 1 reject to visual-review-rejects/feat-x.md on the branch.");
         expect(summary).not.toContain("Will post");
         expect(summary).not.toContain("Will set");
+        await box.locator('[data-act="finishgo"]').focus();
         await page.keyboard.press("Enter");
         await expect
             .poll(() => message(page))

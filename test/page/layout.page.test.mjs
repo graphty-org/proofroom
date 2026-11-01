@@ -127,13 +127,29 @@ describe.each(SIZES)("at %i x %i", (width, height) => {
         const page = await open();
         expect((await box(page, "#top")).height).toBe(36);
         expect((await box(page, "#msgline")).height).toBe(24);
-        // No change open: Changes is 480 px wide, the Snapshots pane 420 px.
+        // No change open: Changes is 480 px wide, no Snapshots pane, and the viewer holds the
+        // current change's summary.
         expect((await box(page, "#changes")).width).toBe(480);
-        expect((await box(page, "#snaps")).width).toBe(420);
+        expect(await page.locator("#snaps").evaluate((n) => n.getClientRects().length)).toBe(0);
+        expect((await box(page, "#viewer")).width).toBe(width - 480);
         await page.locator('.chg[data-chg="3484"]').click();
         await page.locator(".iline").waitFor({ state: "attached" });
         expect((await box(page, "#changes")).width).toBe(44);
         expect((await box(page, "#snaps")).width).toBe(44);
+    });
+
+    it("draws a focused button's Enter hint outside it: the button and its neighbors keep their place", async () => {
+        const page = await open();
+        const keys = page.locator('#top [data-act="keys"]');
+        const before = await box(page, '#top [data-act="keys"]');
+        const settings = await box(page, '#top [data-act="settings"]');
+        // Focused from the keyboard, as the hint is drawn only for a focus the reader can see.
+        await page.locator('#top [data-act="nextchange"]').focus();
+        await page.keyboard.press("Tab");
+        await expect.poll(() => keys.evaluate((n) => n === globalThis.document.activeElement)).toBe(true);
+        expect(await keys.evaluate((n) => globalThis.getComputedStyle(n, "::after").content)).toBe('"Enter"');
+        expect(await box(page, '#top [data-act="keys"]')).toEqual(before);
+        expect(await box(page, '#top [data-act="settings"]')).toEqual(settings);
     });
 });
 

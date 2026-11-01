@@ -19,6 +19,10 @@ Where each key is printed:
   clicked; its items print **0, 1, 2, 4, 8**.
 - **P, Shift+3, Y, B, O**: the **Display** menu at the right end of the toolbar (Show baseline,
   Image only, Layout, Outline changed areas, Start zoomed on the change).
+- **Shift+N**: **Next change** in the top bar (and on the end card). **Shift+1**, **Shift+2**:
+  the Changes pane's **Hide** and the Snapshots pane's fold button, and each pane's rail, where the
+  key is stacked ("Shift" over "1"). **?**: **Keys** in the top bar. **/**: the Find box's
+  placeholder.
 - **N**: **Next area** on the item line, when the snapshot has more than one changed area. **X**:
   **Select X Shift+Up/Down** on the item line. **Esc**: **Back** on the item line, and Clear,
   Close and Cancel wherever something can be cleared or closed.
@@ -87,5 +91,7 @@ Rules:
   line says "Back to the changes. Enter opens #4455 again."
 - **Shift+Down starts a selection** from the current row (Shift+Up the other way); it is printed
   on **Select X Shift+Up/Down** on the item line and in the selection bar's `...` menu.
-- **Enter does what the visible [Enter] says**: open the current change or snapshot, the default
-  button of a box or the end card, or a button you focused with Tab.
+- **Enter does what the visible [Enter] says**: open the current change (its summary's **Open
+  [Enter]** while no change is open) or snapshot, the default button of a box or the end card, or
+  a button you focused with Tab. A focused button shows its Enter just under itself, so focusing it
+  never moves the controls beside it.

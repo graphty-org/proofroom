@@ -126,18 +126,29 @@ button[aria-disabled="true"] {
     opacity: 0.45;
     cursor: default;
 }
-/* A button the reviewer focused with Tab takes Enter: it shows [Enter], and every other [Enter] loses its box. */
+/* A button the reviewer focused with Tab takes Enter: it shows [Enter], and every other [Enter] loses its box.
+   The hint is drawn outside the button, centered under it, so focusing a button never widens it
+   or moves its neighbors. */
+button:focus-visible:not(.fa, .sec) {
+    position: relative;
+}
 button:focus-visible:not(:has(kbd.ek))::after {
     content: "Enter";
-    display: inline-block;
+    position: absolute;
+    left: 50%;
+    top: calc(100% + 3px);
+    transform: translateX(-50%);
+    z-index: 5;
     font:
         11px/1 system-ui,
         sans-serif;
+    font-weight: 400;
+    color: var(--ink);
+    background: var(--surface);
     border: 1px solid currentColor;
     border-radius: 3px;
     padding: 2px 3px;
-    margin-left: 5px;
-    opacity: 0.75;
+    pointer-events: none;
 }
 body:has(button:focus-visible) button:not(:focus-visible) kbd.ek {
     display: none;
@@ -148,6 +159,16 @@ button.primary {
     color: var(--on-ink);
     border-color: var(--focus);
     font-weight: 700;
+}
+/* The primary color as an outline: Finish while anything is left. Never the grey of an unavailable
+   button, even when pressing it would only say there is nothing new to finish. */
+button.outline {
+    border-color: var(--focus);
+    color: var(--focus);
+    font-weight: 700;
+}
+#finish[aria-disabled="true"] {
+    opacity: 1;
 }
 input[type="search"],
 input[type="text"],
@@ -342,30 +363,53 @@ body.held [data-zone="end"] kbd {
     border-bottom-color: var(--focus);
     font-weight: 700;
 }
-#top .status {
+/* The data's age, muted, and a small Refresh: only once the data is 5 minutes old, or while
+   something is wrong. */
+#status-slot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex: 0 1 auto;
+}
+#top .age {
     font-size: 12px;
     color: var(--ink-2);
-    border: 0;
-    background: transparent;
     max-width: 220px;
     overflow: hidden;
     text-overflow: ellipsis;
-    flex: 0 1 auto;
-    min-width: 60px;
     display: inline-flex;
     align-items: center;
     gap: 4px;
+}
+#top .age.trouble {
+    color: var(--ink);
+    font-weight: 600;
+}
+#top .age.trouble .ic {
+    color: var(--warn);
+}
+#top button.small {
+    min-height: 22px;
+    height: 22px;
+    padding: 0 7px;
+    font-size: 12px;
 }
 #frame-slot {
     display: flex;
     gap: 8px;
 }
-#top .status.trouble {
-    color: var(--ink);
-    font-weight: 600;
+/* When the top bar is tight, the repository's name goes first, then the age text (its words stay
+   in Refresh's tooltip and accessible name); Finish never leaves the screen. */
+@media (max-width: 1279px) {
+    #top .repo {
+        display: none;
+    }
 }
-#top .status.trouble .ic {
-    color: var(--warn);
+@media (max-width: 1100px) {
+    #top .age {
+        display: none;
+    }
 }
 #screens {
     flex: 1;
@@ -401,6 +445,11 @@ body.held [data-zone="end"] kbd {
     height: 20px;
     padding: 0 8px;
     font-size: 12px;
+}
+#msgline button.quiet {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ink-2);
 }
 
 /* panes */
@@ -478,19 +527,40 @@ body.held [data-zone="end"] kbd {
     font-weight: 700;
     color: var(--ink);
 }
+/* A rail's badge: the number over a short word, each line under 40 px. */
 .railbar .count {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    max-width: 40px;
     font-size: 11px;
+    line-height: 13px;
     background: var(--ink);
     color: var(--on-ink);
-    border-radius: 8px;
-    padding: 1px 6px;
+    border-radius: 6px;
+    padding: 2px 4px;
 }
-.railbar .count:empty {
-    display: none;
-}
-.railbar kbd {
-    margin: 0;
+.railbar .count span {
     font-size: 10px;
+}
+/* A rail's key, quiet, stacked: "Shift" over "1". The box's own text is the printed key, drawn
+   at no size; the two lines come from its attributes. */
+.railbar kbd.stack {
+    margin: 0;
+    font-size: 0;
+    line-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+.railbar kbd.stack::before,
+.railbar kbd.stack::after {
+    content: attr(data-top);
+    font-size: 10px;
+    line-height: 12px;
+}
+.railbar kbd.stack::after {
+    content: attr(data-bottom);
 }
 
 /* changes rows */
@@ -691,6 +761,23 @@ body.held [data-zone="end"] kbd {
 #snaps-head > .h1 button.chip .cl {
     overflow: hidden;
     text-overflow: ellipsis;
+}
+/* No change open: the current change's summary sits in the viewer's place, on a --surface card
+   (no text is drawn on --stage). */
+body[data-open="false"] #snaps {
+    display: none;
+}
+.summarystage {
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.summarystage .summary {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 16px 20px;
+    max-width: 520px;
+    width: 100%;
 }
 .summary {
     padding: 10px 12px;
@@ -1866,6 +1953,21 @@ dialog .adapters ul {
 dialog .q > b {
     display: block;
     margin-bottom: 4px;
+}
+dialog details.q > summary {
+    font-weight: 700;
+    cursor: pointer;
+}
+/* The Finish sheet: the change's title muted under its number, then three lines and Details. */
+dialog .ptitle {
+    margin: -6px 0 10px;
+    overflow-wrap: normal;
+}
+dialog.finish .left b {
+    color: color-mix(in srgb, var(--warn) 75%, var(--ink));
+}
+dialog .plumbing p {
+    font-size: 12px;
 }
 dialog label {
     display: flex;

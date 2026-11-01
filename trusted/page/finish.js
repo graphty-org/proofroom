@@ -12,7 +12,7 @@
 import { approve, passkeyWrongHost } from "./passkey.js";
 import { control } from "./actions.js";
 import { api } from "./api.js";
-import { hostCan } from "./messages.js";
+import { hostCan, wordsOf } from "./messages.js";
 import { el, fmt, ic, plural } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -173,7 +173,10 @@ export function installFinish(app) {
         app.snaps.length > 0
             ? app.snaps.filter((s) => s.decision && !s.finished && !s.rejectedBefore).length
             : (targetOf(app.openId)?.unpublished ?? 0);
-    app.finishLabel = () => `Finish ${app.open()?.label ?? ""} (${fmt(app.finishCount())})`;
+    // The top bar's Finish names the change and opens its sheet ("Finish #4455..."); the end card's
+    // says how many decisions it publishes.
+    app.finishLabel = () => `Finish ${app.open()?.label ?? ""}...`;
+    app.finishCountLabel = () => `Finish ${app.open()?.label ?? ""} (${fmt(app.finishCount())})`;
     app.finishOK = () => {
         if (app.finishing()) {
             return "A Finish is running: wait for it to end";
@@ -366,28 +369,18 @@ export function installFinish(app) {
         return progress.step.replace(/ done\)$/, ")").replaceAll(/\d+/g, (n) => fmt(Number(n)));
     }
 
+    // One change's sheet: its number as the title and its title muted below; then three lines (what
+    // it saves, what is still left, the check it sets) and the plumbing under one closed Details.
     function oneBody({ id, t, prepared }, notice) {
         const f = t.finish;
         const c = app.change(id);
         const seed = t.pr === null;
         const rejects = f.notes.filter((x) => x.decision === "reject");
         const undecided = f.undecided.reduce((k, p) => k + p.undecided, 0);
-        return [
-            el("h3", {}, `Finish ${c?.label ?? id} ${c?.title ?? ""}`),
-            notice ? el("p", { class: "c-failed" }, notice) : null,
-            undecided > 0
-                ? el(
-                      "div",
-                      { class: "warnbox" },
-                      el(
-                          "b",
-                          {},
-                          `${plural(undecided, "snapshot")} ${undecided === 1 ? "is" : "are"} still undecided; ${undecided === 1 ? "it" : "they"} will block the merge.`,
-                      ),
-                      id === app.openId ? [" ", control(app, "gofirst", { zone: "box" })] : null,
-                  )
-                : null,
-            el("p", { class: "saves" }, commitLine(t)),
+        const signs = signsLine(t, prepared);
+        // Signing that cannot happen, or needs a passkey registered, is said outside Details.
+        const signsShown = Boolean(prepared?.error) || (t.passkey?.keys ?? []).length === 0;
+        const posts =
             rejects.length > 0 || (!seed && f.acceptNotes > 0)
                 ? [
                       toFile(t)
@@ -406,9 +399,31 @@ export function installFinish(app) {
                             )
                           : null,
                   ]
+                : null;
+        return [
+            el("h3", {}, `Finish ${c?.label ?? id}`),
+            c?.title ? el("p", { class: "ptitle muted" }, c.title) : null,
+            notice ? el("p", { class: "c-failed" }, notice) : null,
+            el("p", { class: "saves" }, commitLine(t)),
+            undecided > 0
+                ? el(
+                      "p",
+                      { class: "left" },
+                      el("b", {}, `${fmt(undecided)} left: they will block the merge`),
+                      id === app.openId ? [" ", control(app, "gofirst", { zone: "box" })] : null,
+                  )
                 : null,
-            toFile(t) ? null : el("p", {}, el("b", {}, "Will set:"), ` ${statusText(f)}.`),
-            signsLine(t, prepared),
+            toFile(t) ? null : el("p", { class: "check" }, `${wordsOf(app.list).hostName} check: ${f.status.description.split(":")[0]}`),
+            signsShown ? signs : null,
+            el(
+                "details",
+                { class: "plumbing" },
+                el("summary", { class: "small" }, "Details"),
+                posts,
+                toFile(t) ? null : el("p", {}, el("b", {}, "Will set:"), ` ${statusText(f)}.`),
+                signsShown ? null : signs,
+                startCommandOf(t),
+            ),
         ];
     }
 
@@ -557,17 +572,21 @@ export function installFinish(app) {
         ];
     }
 
+    // The shell command that starts this server, for a Finish signed from the reader's own shell.
+    function startCommandOf(t) {
+        return t.startCommand
+            ? el(
+                  "div",
+                  { class: "startcmd" },
+                  el("p", { class: "small" }, el("b", {}, "Start this server from your own shell")),
+                  el("pre", { class: "small" }, t.startCommand),
+              )
+            : null;
+    }
+
     function sheetFoot(items) {
-        const t = items[0].t;
         return [
-            t.startCommand
-                ? el(
-                      "details",
-                      {},
-                      el("summary", { class: "small" }, "Start this server from your own shell"),
-                      el("pre", { class: "small" }, t.startCommand),
-                  )
-                : null,
+            items.length > 1 ? startCommandOf(items[0].t) : null,
             el(
                 "div",
                 { class: "foot" },

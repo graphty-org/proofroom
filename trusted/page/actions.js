@@ -11,7 +11,7 @@
  * queued for later (design 10).
  */
 
-import { wordsOf } from "./messages.js";
+import { beforeAction, wordsOf } from "./messages.js";
 import { el, fmt, kb } from "./ui.js";
 
 // Where a control sits, in the order that decides which of two controls showing the same key
@@ -65,7 +65,7 @@ export const ACTIONS = {
         },
         run: (app) => app.newCapture(),
     },
-    refresh: { label: (app) => app.statusText(), title: "Refresh now", run: (app) => app.refresh() },
+    refresh: { label: "Refresh", title: "Refresh now", run: (app) => app.refresh() },
     keys: { label: "Keys", key: "?", title: "Every key, grouped by task", run: (app) => app.keysSheet() },
     settings: { label: "Settings", run: (app) => app.settingsSheet() },
     finish: {
@@ -230,10 +230,11 @@ export const ACTIONS = {
         run: (app, ctx) => app.finishSheet([ctx.id]),
         available: (app) => (app.finishing() ? RUNNING : true),
     },
-    // The Snapshots pane's summary of the current change, while none is open.
+    // The summary of the current change in the viewer's place, while none is open.
     summaryopen: {
         label: "Open",
-        title: "Enter opens it (the key is printed on its row)",
+        key: "Enter",
+        title: "Opens this change",
         run: (app, ctx) => app.openChange(ctx.id),
     },
 
@@ -595,7 +596,7 @@ export const ACTIONS = {
         run: (app) => app.finishGo(),
         available: (app) => app.finishGoOK(),
     },
-    gofirst: { label: "Go to the first undecided", run: (app) => app.goFirstUndecided() },
+    gofirst: { label: "Go to the first", title: "Closes this sheet at the first undecided snapshot", run: (app) => app.goFirstUndecided() },
     finishregister: {
         label: "Register passkey...",
         title: "Opens Settings; closing it brings this sheet back",
@@ -604,6 +605,8 @@ export const ACTIONS = {
     // The message line's own button: Retry after a failed list or a failed open (ctx.run retries it).
     retry: { label: "Retry", run: (app, ctx) => ctx.run() },
     messages: { label: "Messages", title: "The last 20 messages", run: (app) => app.messagesBox() },
+    // A message with a button stays until the button is used or this clears it.
+    msgdismiss: { label: "Dismiss", title: "Clear the message line", run: () => {} },
     usetoken: { label: "Open", key: "Enter", run: (app) => app.submitToken() },
 };
 
@@ -644,6 +647,7 @@ export function labelOf(app, id, ctx = {}) {
  */
 export function runAction(app, id, ctx, via) {
     app.logUsage("action", { a: id, via });
+    beforeAction(ctx?.el?.dataset?.zone === "msgline");
     const ok = availability(app, id, ctx);
     if (ok === OFFLINE_WHY) {
         app.notSaved();

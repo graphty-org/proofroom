@@ -51,6 +51,40 @@ async function openLarge() {
 }
 const current = (page, sel, attr) => page.locator(`${sel}.cur`).first().getAttribute(attr);
 
+describe("the rails", () => {
+    it("print their key quiet and stacked, and a badge of the number over its word, each line under 40 px", async () => {
+        const page = await openLarge();
+        await page.keyboard.press("Shift+Digit2");
+        await expect.poll(() => shown(page)).toEqual([false, false]);
+        for (const [rail, key, title] of [
+            ["#rail-c", "Shift+1", /^\d+ changes? needs? you$/],
+            ["#rail-s", "Shift+2", /^\d+ snapshots? left to decide$/],
+        ]) {
+            const look = await page.locator(rail).evaluate((n) => {
+                const kbd = n.querySelector(":scope > kbd");
+                const count = n.querySelector(".count");
+                const css = (pseudo) => globalThis.getComputedStyle(kbd, pseudo).content;
+                return {
+                    key: kbd.textContent,
+                    quiet: kbd.classList.contains("quiet"),
+                    lines: [css("::before"), css("::after")],
+                    keyWidth: kbd.getBoundingClientRect().width,
+                    badge: count.innerText,
+                    badgeWidth: count.getBoundingClientRect().width,
+                    title: count.title,
+                };
+            });
+            expect(look.key).toBe(key);
+            expect(look.quiet).toBe(true);
+            expect(look.lines).toEqual(['"Shift"', `"${key.slice(-1)}"`]);
+            expect(look.keyWidth).toBeLessThan(40);
+            expect(look.badge).toMatch(/^[\d,]+\nleft$/);
+            expect(look.badgeWidth).toBeLessThan(40);
+            expect(look.title).toMatch(title);
+        }
+    });
+});
+
 describe("a pane key pressed again", () => {
     it("Shift+1 twice brings Snapshots back out of its rail", async () => {
         const page = await openLarge();

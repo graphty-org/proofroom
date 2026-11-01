@@ -863,6 +863,8 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         expect(await card.locator("h2").innerText()).toBe("All 3 decided.");
         expect(await activeId(page)).toBe("endfinish");
         expect(await shows(page.locator("#endfinish"))).toBe("Finish #8200 (3) [Enter]");
+        // Nothing left: the top bar's Finish is filled, no longer outlined.
+        expect(await page.locator("#finish").getAttribute("class")).toBe("primary");
         expect(await shows(card.locator('[data-act="endback"]'))).toBe("Back to changes [Esc]");
         expect(await shows(card.locator('[data-act="nextchange"]'))).toMatch(
             /^Next change: #\d+ \(\d+ undecided\) \[Shift\+N\]$/,
@@ -879,8 +881,8 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         const page = await toEndCard();
         const next = await page.locator('.endcard [data-act="nextchange"]').innerText();
         await page.keyboard.press("Shift+KeyN");
-        await expect.poll(() => message(page)).toMatch(/^Opened #\d+ /);
-        expect(next).toContain((await message(page)).match(/^Opened (#\d+) /)[1]);
+        await expect.poll(() => message(page)).toMatch(/^Opened #\d+: /);
+        expect(next).toContain((await message(page)).match(/^Opened (#\d+): /)[1]);
     });
 
     it("opens this change's Finish summary sheet from the end card by Enter", async () => {
@@ -889,7 +891,8 @@ describe.each(["chromium", "webkit"])("the decision bar and the end card in %s",
         await page.keyboard.press("Enter");
         const sheet = page.locator("dialog.finish[open]:not([aria-busy])");
         await sheet.waitFor();
-        expect(await sheet.locator("h3").innerText()).toBe(`Finish #${SMALL} Three`);
+        expect(await sheet.locator("h3").innerText()).toBe(`Finish #${SMALL}`);
+        expect(await sheet.locator(".ptitle").innerText()).toBe("Three");
         expect(await page.evaluate(() => globalThis.document.activeElement.dataset.act)).toBe("finishgo");
     });
 });

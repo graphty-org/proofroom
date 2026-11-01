@@ -609,7 +609,9 @@ await step(
 await step(
     "New capture dialog: open and cancel",
     async ({ check }) => {
-        await act("newcap", '[data-zone="top"]').click();
+        // New capture... is on the Captures screen.
+        await act("screen-captures").click();
+        await act("newcap").click();
         check(await waitDialog("Where"), "New capture... opened no dialog");
         const t = await page.locator("dialog#dlg").innerText();
         for (const w of ["What", "Against which baselines", "Which projects", "Where"]) {
@@ -625,10 +627,11 @@ await step(
         );
         await page.locator('dialog#dlg [data-act="confirmcancel"]').click();
         check(!(await dialogOpen()), "Cancel did not close New capture");
-        await act("newcap", '[data-zone="top"]').click();
+        await act("newcap").click();
         check(await waitDialog("Where"), "New capture... opened no dialog the second time");
         await page.keyboard.press("Escape");
         check(!(await dialogOpen()), "Esc did not close New capture");
+        await act("screen-review").click();
     },
     { allowText: /takes no capture requests|^Choose a change on the left/ },
 );

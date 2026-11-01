@@ -14,6 +14,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { ACTIONS, OFFLINE_WHY } from "../../trusted/page/actions.js";
 import { COVERS } from "./covers.mjs";
+import { NOW } from "./fixtures.mjs";
 import {
     BROWSERS,
     TOKEN,
@@ -138,21 +139,121 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await expect.poll(() => box(page).count()).toBe(0);
             });
 
-            it("keeps a message through unrelated key presses and polls, with no timer", async () => {
+            it("keeps a plain message through Tab and polls, with no timer, and clears it on the next action", async () => {
                 const page = await open({ clock: true });
                 await page.getByRole("button", { name: /^Sort:/ }).click();
                 await page.getByRole("menuitemradio", { name: "Author" }).click();
                 await expect.poll(() => message(page)).toBe("Sorted: Author.");
                 await page.locator("#chg-list").focus();
-                for (const k of ["ArrowDown", "ArrowDown", "ArrowUp", "Tab", "Shift+Tab"]) {
+                for (const k of ["Tab", "Shift+Tab"]) {
                     await page.keyboard.press(k);
                 }
                 await page.clock.runFor(60000);
                 await expect.poll(() => t.requests.filter((r) => r === "/api/prs?cached=1").length).toBeGreaterThan(2);
                 expect(await message(page)).toBe("Sorted: Author.");
+                // The next action (Down moves the current row) has read it: the line clears.
+                await page.locator("#chg-list").focus();
+                await page.keyboard.press("ArrowDown");
+                await expect.poll(() => message(page)).toBe("");
                 await page.getByRole("button", { name: "Messages" }).click();
-                expect(await box(page).locator("li").first().innerText()).toMatch(/^\d\d:\d\d Sorted: Author\.$/);
+                expect(await box(page).locator("li").allInnerTexts()).toContainEqual(
+                    expect.stringMatching(/^\d\d:\d\d Sorted: Author\.$/),
+                );
                 await closeBox(page);
+            });
+
+            it("keeps a message with a button through other actions until Dismiss", async () => {
+                const page = await open({});
+                await page.route("**/api/pr/**", (route) => route.fulfill({ status: 500, json: { error: "no rows" } }));
+                await page.locator("#chg-list").focus();
+                await page.keyboard.press("Shift+KeyN");
+                await expect.poll(() => message(page)).toMatch(/could not be opened: no rows$/);
+                const line = page.locator("#msgline");
+                expect(await line.getByRole("button", { name: "Retry" }).count()).toBe(1);
+                await page.locator("#chg-list").focus();
+                await page.keyboard.press("ArrowDown");
+                await page.keyboard.press("ArrowUp");
+                expect(await message(page)).toMatch(/could not be opened: no rows$/);
+                await line.getByRole("button", { name: "Dismiss" }).click();
+                await expect.poll(() => message(page)).toBe("");
+                expect(await line.getByRole("button", { name: "Retry" }).count()).toBe(0);
+            });
+        });
+
+        describe("the top bar", () => {
+            const STALE = { updatedAt: NOW - 12 * 60000 };
+            const shown = (page, sel) => page.locator(sel).evaluate((n) => n.getClientRects().length > 0);
+
+            it("shows the data's age and Refresh only once the data is 5 minutes old; no New capture", async () => {
+                const page = await open({ clock: true });
+                expect(await page.locator("#srvage").count()).toBe(0);
+                expect(await page.locator("#srvstatus").count()).toBe(0);
+                expect(await page.locator('#top [data-act="newcap"]').count()).toBe(0);
+                // The next poll brings data 12 minutes old.
+                t.setList(listAnswer(fiftyChanges(), STALE));
+                await page.clock.runFor(16000);
+                await expect.poll(() => page.locator("#srvage").count()).toBe(1);
+                // WebKit ends the text with a line break after its icon's place.
+                expect((await page.locator("#srvage").innerText()).trim()).toBe("Updated 12 min ago");
+                expect(await page.locator("#srvstatus").innerText()).toBe("Refresh");
+                expect(await page.locator("#srvstatus").getAttribute("aria-label")).toBe(
+                    "Refresh (Updated 12 min ago)",
+                );
+                // Next change is on the Review screen only, quiet, left of Finish.
+                expect(await visibleKeys(page)).toContainEqual({ act: "nextchange", key: "Shift+N" });
+                await page.getByRole("button", { name: "Captures" }).click();
+                expect(await page.locator('#top [data-act="nextchange"]').count()).toBe(0);
+                expect(await page.locator('#cap-list [data-act="newcap"]').count()).toBe(1);
+            });
+
+            it("at 1024x768 with stale data and a change open: the repository and age go, every keyed control and Finish stay in view", async () => {
+                const page = await open({
+                    viewport: { width: 1024, height: 768 },
+                    list: listAnswer(fiftyChanges(), STALE),
+                });
+                await page.locator("#chg-list").focus();
+                await page.keyboard.press("Shift+KeyN");
+                await expect.poll(() => message(page)).toMatch(/^Opened #\d+: \d+ left\.$/);
+                expect(await shown(page, "#repo")).toBe(false);
+                expect(await shown(page, "#srvage")).toBe(false);
+                expect(await page.locator("#srvstatus").getAttribute("aria-label")).toBe(
+                    "Refresh (Updated 12 min ago)",
+                );
+                const out = await page.evaluate(() =>
+                    [...globalThis.document.querySelectorAll("[data-key]")]
+                        .filter((n) => n.getClientRects().length > 0 && n.closest(".list") === null)
+                        .filter((n) => {
+                            const r = n.getBoundingClientRect();
+                            return r.left < 0 || r.top < 0 || r.right > 1024 || r.bottom > 768;
+                        })
+                        .map((n) => n.dataset.act),
+                );
+                expect(out).toEqual([]);
+                const fin = await page.locator("#finish").boundingBox();
+                expect(fin.x + fin.width).toBeLessThanOrEqual(1024);
+                expect(await page.locator("#finish").innerText()).toMatch(/^Finish #\d+\.\.\.$/);
+            });
+        });
+
+        describe("no change open", () => {
+            it("shows the changes and, in the viewer's place, the current change's summary with Open [Enter]", async () => {
+                const page = await open({});
+                expect(await page.locator("#snaps").evaluate((n) => n.getClientRects().length)).toBe(0);
+                const sum = page.locator("#viewer .summary");
+                await sum.waitFor();
+                // Past Decided, not finished (whose rows' Enter is Finish...) to Needs you.
+                await page.locator("#chg-list").focus();
+                await page.keyboard.press("ArrowDown");
+                await page.keyboard.press("ArrowDown");
+                expect(await sum.innerText()).toMatch(/\d+ snapshots?: /);
+                expect(await sum.innerText()).toMatch(/\d+ left/);
+                expect(await page.locator("#viewer").innerText()).not.toContain("Choose a change on the left");
+                const cur = await page.locator(".chg.cur").getAttribute("data-chg");
+                expect(await sum.locator(".title").innerText()).toContain(`#${cur}`);
+                expect(await visibleKeys(page)).toContainEqual({ act: "summaryopen", key: "Enter" });
+                await page.locator("#chg-list").focus();
+                await page.keyboard.press("Enter");
+                await expect.poll(() => message(page)).toMatch(new RegExp(`^Opened #${cur}: \\d+ left\\.$`));
             });
         });
 
@@ -201,7 +302,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await page.keyboard.press("ArrowDown");
                 await page.keyboard.press("ArrowDown");
                 await page.keyboard.press("Enter");
-                await expect.poll(() => message(page)).toMatch(/^Opened #\d+ /);
+                await expect.poll(() => message(page)).toMatch(/^Opened #\d+: /);
                 // In the viewer the zoom digits and view letters do nothing either.
                 const inViewer = t.actions.length;
                 for (const k of ["Digit2", "KeyH", "KeyZ"]) {
@@ -210,7 +311,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 expect(await settled(page, inViewer)).toEqual([]);
                 // On again, from Settings.
                 await page.getByRole("button", { name: "Settings" }).click();
-                const again = box(page).getByRole("checkbox", { name: "Letter, digit and symbol keys on" });
+                const again = box(page).getByRole("checkbox", { name: "Single-letter keys" });
                 expect(await again.isChecked()).toBe(false);
                 await again.click();
                 await expect.poll(() => message(page)).toBe("Letter, digit and symbol keys on.");
@@ -222,6 +323,26 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         });
 
         describe("Settings", () => {
+            it("lists the reader's choices first, and the adapters under a closed Repository setup", async () => {
+                const page = await open({});
+                await page.getByRole("button", { name: "Settings" }).click();
+                expect(await box(page).locator(":scope > .q > b, :scope > .q > summary").allInnerTexts()).toEqual([
+                    "Theme",
+                    "Highlight color",
+                    "Keys",
+                    "Passkeys",
+                    "Picture storage",
+                    "Repository setup",
+                ]);
+                expect(await box(page).getByRole("checkbox", { name: "Single-letter keys" }).isChecked()).toBe(true);
+                const setup = box(page).locator("#set-setup");
+                expect(await setup.evaluate((d) => d.open)).toBe(false);
+                expect(await box(page).locator("#set-adapters").isVisible()).toBe(false);
+                await setup.locator("summary").click();
+                expect(await box(page).locator("#set-adapters").isVisible()).toBe(true);
+                await closeBox(page);
+            });
+
             it("switches the Highlight color, and the drawn highlight follows", async () => {
                 const page = await open({
                     targets: [target(9100, { projects: [project("graphty-element", { reviewable: 1 })] })],
@@ -362,11 +483,12 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             });
 
             it("when the server stops: nothing that writes is enabled, a press sends nothing and says why; Retry after a restart enables them", async () => {
+                // Data 6 minutes old, so the top bar shows its age and Refresh.
                 const page = await open({
-                    targets: [
-                        target(9300, { projects: [project("graphty-element", { reviewable: 3 })] }),
-                        target(9301),
-                    ],
+                    list: listAnswer(
+                        [target(9300, { projects: [project("graphty-element", { reviewable: 3 })] }), target(9301)],
+                        { updatedAt: NOW - 6 * 60000 },
+                    ),
                     rows: decided,
                     hash: `token=${TOKEN}&change=9300&show=all`,
                 });
@@ -387,7 +509,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                         WRITES,
                     );
                 // WebKit ends the status's text with a line break after its icon.
-                const status = async () => (await page.locator("#srvstatus").innerText()).trim();
+                const status = async () => (await page.locator("#srvage").innerText()).trim();
                 await t.stopServer();
                 await page.locator("#srvstatus").click();
                 await expect.poll(status).toMatch(/^Offline since \d\d:\d\d$/);
@@ -432,7 +554,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                 await t.startServer();
                 await page.locator("#msg-x").getByRole("button", { name: "Retry" }).click();
                 await expect.poll(() => message(page)).toBe("Refreshed.");
-                expect(await status()).toMatch(/^Updated \d+ s ago$/);
+                // Online again, the data it holds still 6 minutes old.
+                expect(await status()).toBe("Updated 6 min ago");
                 expect(await writers()).toEqual([
                     ["finish", null, ""],
                     ["rowundo", null, "Undo this decision"],
@@ -478,7 +601,8 @@ for (const [name, type] of Object.entries(BROWSERS)) {
         describe("the tab title", () => {
             it("counts the changes that need you, and follows one being finished", async () => {
                 const needs = (over = {}) => [target(9401), target(9402, over)];
-                const page = await open({ targets: needs() });
+                const stale = { updatedAt: NOW - 6 * 60000 };
+                const page = await open({ list: listAnswer(needs(), stale) });
                 await expect.poll(() => page.title()).toBe("(2) Visual review");
                 t.setList(
                     listAnswer(
@@ -488,6 +612,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
                             ],
                             unpublished: 0,
                         }),
+                        stale,
                     ),
                 );
                 await page.locator("#srvstatus").click();

@@ -169,7 +169,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             }
             await expect.poll(() => page.locator(".chg.cur").getAttribute("data-chg")).toBe("3486");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toBe("Opened #3486 Storybook 9 upgrade: 300 undecided.");
+            await expect.poll(() => message(page)).toBe("Opened #3486: 300 left.");
             expect(await rails()).toEqual([true, false]);
             await page.keyboard.press("Enter");
             await expect.poll(rails).toEqual([true, true]);
@@ -242,7 +242,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Escape");
             await expect.poll(() => message(page)).toBe("Back to the changes. Enter opens #3486 again.");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toMatch(/^Opened #3486 /);
+            await expect.poll(() => message(page)).toMatch(/^Opened #3486: /);
             // Any other key in between ends the guard: a menu closed, then a letter, then Esc goes back.
             await page.getByRole("button", { name: "List", exact: true }).click();
             await page.getByRole("menu").waitFor();
@@ -294,7 +294,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("Enter");
             await expect
                 .poll(() => page.locator("dialog.finish[open] h3").innerText())
-                .toBe("Finish #3480 Change 3480");
+                .toBe("Finish #3480");
         });
 
         it("hides letter key hints and ignores those keys while letter keys are off", async () => {
@@ -322,7 +322,7 @@ for (const [name, type] of Object.entries(BROWSERS)) {
             await page.keyboard.press("ArrowDown");
             await page.keyboard.press("ArrowDown");
             await page.keyboard.press("Enter");
-            await expect.poll(() => message(page)).toBe("Opened #3484 Legend overlay: 3 undecided.");
+            await expect.poll(() => message(page)).toBe("Opened #3484: 3 left.");
             // The viewer's boxes keep only their arrow and Space halves.
             expect(await visibleKeys(page)).toEqual([
                 { act: "view-flash", key: "hold Space" },

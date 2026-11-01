@@ -10,23 +10,42 @@ See [Keys](keys.md).
 ## The top bar
 
 Left to right: the product name and your repository's name; the **Review**, **Baselines** and
-**Captures** tabs; **New capture...** (see [Starting a capture from the
-page](capturing-from-the-page.md)); the server's state ("Updated 40 s ago", or "Offline since
-14:02" when the server cannot be reached; click it to refresh now); **Keys [?]**; **Settings** (see
-[Settings](settings.md)); and, with a change open, **Finish #3486 (12)**, which counts the decisions
-it will publish (see [Finish](finish.md)). Finish is always in that place.
+**Captures** tabs; then, only when the data is more than 5 minutes old or something is wrong, its
+age in muted words ("Updated 12 min ago", "Offline since 14:02", "Server not answering") and a small
+**Refresh**; while the data is fresh neither shows. On the Review screen, **Next change Shift+N**
+(it opens the next change that needs you; this is its one home besides the end card); **Keys ?**;
+**Settings** (see [Settings](settings.md)); and, on the Review screen with a change open,
+**Finish #3486...**, which opens the Finish sheet (see [Finish](finish.md)). Finish is always in
+that place: outlined in the primary color while snapshots are left, filled once none is. On a
+narrow window (1024 px) the repository's name goes first, then the age words, which stay in
+Refresh's tooltip; Finish never leaves the screen. **New capture...** is on the Captures screen
+(see [Starting a capture from the page](capturing-from-the-page.md)).
 
 Under everything is the **message line**: the latest thing the page has to tell you (what a key
-did, why a key did nothing, a failure and its Retry). **Messages** opens the last 20.
+did, why a key did nothing, a failure and its Retry). A plain message clears on your next action. A
+message with a button (Undo, Retry, Load it) stays until you use the button, press **Dismiss**, or
+a newer message replaces it; so does the one a bulk decision leaves ("Accepted 34 snapshots.",
+with Undo), until your next decision. **Messages** opens the last 20. Opening a change says how
+many are left: "Opened #4455: 34 left."
 
 ## Review
 
-Three panes side by side: **Changes**, **Snapshots** and the **viewer**.
+With no change open the screen has two parts: **Changes** on the left and, in the viewer's place,
+the summary of the current change: its number and title, its branch, author, source and age,
+"720 snapshots: 653 changed, 65 new, 2 removed", "648 left", and **Open [Enter]**. Up and Down move
+through the changes and the summary follows; Enter opens the change (on a row that is decided and
+not finished, Enter is that row's **Finish...** instead, and Open prints no key). A link that names
+a change always opens it.
+
+With a change open, three panes side by side: **Changes**, **Snapshots** and the **viewer**.
 
 ### Panes and levels
 
-**Hide [Shift+1]** and **Hide [Shift+2]** fold the Changes and Snapshots panes into narrow rails;
-the rail, or the same key again, brings the pane back. Opening a change folds the panes the review
+**Hide Shift+1** and **< Shift+2** fold the Changes and Snapshots panes into narrow rails; the
+rail, or the same key again, brings the pane back. A rail prints its key stacked ("Shift" over
+"1") and a badge of what is left, the number over the word: "7 / left" on Changes (its tooltip "7
+changes need you"), "34 / left" on Snapshots ("34 snapshots left to decide"); with nothing left
+it has no badge. Opening a change folds the panes the review
 does not need: a small change (10 snapshots or fewer) opens with both side panes as rails, so the
 image gets the width at once. The viewer is never narrower than 800 px. **Image only [Shift+3]**
 folds both side panes. The page remembers your pane choices in this browser, separately for small
@@ -61,7 +80,7 @@ while a project is not. A **behind master** badge marks a change whose branch is
 branch, or whose capture is older than baselines the default branch accepted since (its tooltip says
 how many); "140 MB to download" one whose images opening it fetches again. **Find [/]** finds a change by
 number, title, branch or author; **Sort** orders them (Needs me first, Newest, Most undecided,
-Author); **Next change [Shift+N]** opens the next change that needs you. A row's **...** menu has
+Author); **Next change Shift+N** in the top bar opens the next change that needs you. A row's **...** menu has
 **About this change** (its title, description and comments, as plain text, each marked when not
 written by the repository's owner, and which other change shares baselines with it: "Shares 2,188
 baselines with #1677"), Open on the code host and **Copy link**.
@@ -186,7 +205,7 @@ the images being drawn is ignored and the message line says so, a held key decid
 decision is saved before the next one can be made.
 
 After the last undecided snapshot the stage shows the end card: **Finish #3486 (214) [Enter]**,
-Back, and **Next change [Shift+N]**.
+which counts the decisions it will publish, Back, and **Next change [Shift+N]**.
 
 ### A capture made with another browser
 

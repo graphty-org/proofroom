@@ -1,6 +1,6 @@
 /*
  * Captures on this machine from the new page (design 9.1, 9.2), in Chromium with real keys and
- * clicks: New capture... from the top bar, from the empty Review screen and from a row's Capture
+ * clicks: New capture... from the Captures screen, from the empty Review screen and from a row's Capture
  * again..., the sheet's defaults (Start is one Enter), what it says about a dirty working tree and a
  * story prefix, the second step for another person's pull request, the Capturing row in the
  * changes pane at once, the four sections of the Captures screen, Cancel, and Review results
@@ -142,6 +142,10 @@ async function openScripted({ captures = [], sources, post, ci = CI, ...options 
         const id = u.pathname.split("/")[3];
         if (id) {
             const c = list.find((x) => String(x.id) === id);
+            // A capture the test did not script (the one just started): not known yet.
+            if (!c) {
+                return route.fulfill({ status: 404, json: { error: "no such capture" } });
+            }
             return route.fulfill({
                 json: {
                     ...c,
@@ -185,11 +189,17 @@ async function openScripted({ captures = [], sources, post, ci = CI, ...options 
 const sheet = (page) => page.locator("dialog[open]");
 const checked = (page, name) => page.locator(`dialog[open] input[name=${name}]:checked`).getAttribute("value");
 
+// New capture... lives on the Captures screen.
+async function newCaptureSheet(page) {
+    await page.getByRole("button", { name: "Captures", exact: true }).click();
+    await page.locator('#cap-list [data-act="newcap"]').click();
+}
+
 describe("New capture...", () => {
-    it("opens from the top bar; a clean tree defaults to its branch, and Start is one Enter", async () => {
+    it("opens from the Captures screen; a clean tree defaults to its branch, and Start is one Enter", async () => {
         const s = await openScripted({ targets: [target(3486), target(3490)] });
         const { page } = s;
-        await page.getByRole("button", { name: "New capture..." }).first().click();
+        await newCaptureSheet(page);
         await expect.poll(() => sheet(page).locator("h3").innerText()).toBe("New capture");
         // The working tree has no change: its branch is what is captured, the current one first.
         expect(await checked(page, "what")).toBe("br");
@@ -231,7 +241,7 @@ describe("New capture...", () => {
             targets: [target(3486)],
             sources: { branch: "fix/legend-sizing", changed: 4, branches: ["fix/legend-sizing", "master"] },
         });
-        await page.getByRole("button", { name: "New capture..." }).first().click();
+        await newCaptureSheet(page);
         await expect.poll(() => checked(page, "what")).toBe("wt");
         const text = () => sheet(page).innerText();
         expect(await text()).toContain("The working tree on this machine (fix/legend-sizing, 4 files changed)");
@@ -259,7 +269,7 @@ describe("New capture...", () => {
             .getByRole("button", { name: /^Cancel/ })
             .click();
         await expect.poll(() => sheet(page).count()).toBe(0);
-        await page.getByRole("button", { name: "New capture..." }).first().click();
+        await newCaptureSheet(page);
         await expect.poll(() => sheet(page).count()).toBe(1);
         await page.keyboard.press("Escape");
         await expect.poll(() => sheet(page).count()).toBe(0);
@@ -324,7 +334,7 @@ describe("New capture...", () => {
                       ],
         });
         const { page } = s;
-        await page.getByRole("button", { name: "New capture..." }).first().click();
+        await newCaptureSheet(page);
         await expect.poll(() => sheet(page).locator("h3").innerText()).toBe("New capture");
         await page.keyboard.press("Enter");
         await expect.poll(() => sheet(page).locator("h3").innerText()).toBe("Capture on this computer?");
@@ -379,7 +389,7 @@ describe("New capture... on CI", () => {
             post: () => ({ id: 8, target: "3486" }),
         });
         const { page } = s;
-        await page.getByRole("button", { name: "New capture..." }).first().click();
+        await newCaptureSheet(page);
         await expect.poll(() => checked(page, "what")).toBe("br");
         // A local branch is captured here by default.
         expect(await checked(page, "where")).toBe("here");
@@ -401,7 +411,7 @@ describe("New capture... on CI", () => {
             targets: [target(3486, { head: "b".repeat(40) }), target(3490, { head: "c".repeat(40) })],
             ci: { available: false, label: "CI (GitHub Actions)", why, status: true, cancel: true },
         });
-        await page.getByRole("button", { name: "New capture..." }).first().click();
+        await newCaptureSheet(page);
         const ci = sheet(page).locator("label", { hasText: "CI (GitHub Actions)" });
         await expect.poll(() => ci.innerText()).toBe(`CI (GitHub Actions): unavailable, ${why}`);
         expect(await ci.locator("input").isDisabled()).toBe(true);
@@ -541,11 +551,11 @@ describe("the Captures screen", () => {
             },
         };
         await page.goto(`${s.origin}/#token=${TOKEN}`);
-        await expect.poll(() => page.locator("#snap-list").innerText()).toContain("No captures yet.");
-        expect(await page.locator("#snap-list").innerText()).toContain(
+        await expect.poll(() => page.locator("#viewer").innerText()).toContain("No captures yet.");
+        expect(await page.locator("#viewer").innerText()).toContain(
             "Captures made by CI appear here on their own once a pull request runs its visual job. Or capture the working tree on this machine now.",
         );
-        await page.locator("#snap-list").getByRole("button", { name: "New capture..." }).click();
+        await page.locator("#viewer").getByRole("button", { name: "New capture..." }).click();
         await expect.poll(() => checked(page, "what")).toBe("br");
         expect(await page.locator("#nc-br").inputValue()).toBe("feat/x");
         await page.keyboard.press("Enter");
@@ -565,7 +575,7 @@ describe("the Captures screen", () => {
         );
         await page.locator("#cap-rows").focus();
         await page.keyboard.press("Enter");
-        await expect.poll(() => message(page)).toBe("Opened branch Capture of branch feat/x: 3 undecided.");
+        await expect.poll(() => message(page)).toBe("Opened branch: 3 left.");
         expect(await page.locator("#scr-captures").isVisible()).toBe(false);
         expect(await page.locator(".chg.cur").getAttribute("data-chg")).toBe("branch-feat%2Fx");
         // Where it was captured is in the row's tooltip, with its other details.
@@ -713,7 +723,7 @@ describe("a capture on CI on the Captures screen", () => {
         await expect.poll(async () => (await row.innerText()).split("\n")).toContain("Capturing on CI");
     });
 
-    it("a workflow that takes no requests: Settings, Adapters gives the capture store's reason", async () => {
+    it("a workflow that takes no requests: Settings, Repository setup gives the capture store's reason", async () => {
         const why =
             ".github/workflows/visual-review.yml on master takes no capture requests: update it with proofroom init --force";
         const { page } = await openScripted({
@@ -721,6 +731,10 @@ describe("a capture on CI on the Captures screen", () => {
             ci: { ...CI_ON, available: false, why },
         });
         await page.getByRole("button", { name: "Settings" }).click();
+        // Closed, its summary says something there needs the reader.
+        const setup = page.locator("#set-setup summary");
+        expect(await setup.innerText()).toBe("Repository setup: 1 problem");
+        await setup.click();
         const adapters = page.locator("#set-adapters");
         await adapters.waitFor();
         expect(await adapters.innerText()).toContain(`Capture store\tGitHub Actions artifacts\t\nrequest: ${why}`);

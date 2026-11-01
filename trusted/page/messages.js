@@ -1,11 +1,25 @@
 /*
- * The message line: one fixed line at the bottom of the window where every message goes. A
- * message stays until the next one replaces it (never a timer); the last 20 are kept. Every word a
- * message says about changes comes from the code host's vocabulary (`wordsOf`).
+ * The message line: one fixed line at the bottom of the window where every message goes. Never a
+ * timer: a plain message clears on the reader's next action; a message with a button (Undo, Retry,
+ * Load it) stays until that button is used or the message is dismissed, or another replaces it.
+ * The last 20 are kept, behind Messages. Every word a message says about changes comes from the
+ * code host's vocabulary (`wordsOf`).
  */
 
 const kept = [];
 const KEEP = 20;
+// Whether the line shows a message that has a button: it outlives the reader's next action.
+let held = false;
+// Builds the line's Dismiss control (the page sets it: controls come from the action table).
+let dismissControl = () => null;
+
+/**
+ * Sets how the line's Dismiss control is built.
+ * @param {() => HTMLElement} make it
+ */
+export const setDismiss = (make) => {
+    dismissControl = make;
+};
 
 /**
  * Writes a message on the line, and keeps it in the history.
@@ -26,8 +40,39 @@ export function say(text, kind = "", actions = []) {
     t.textContent = text;
     t.className = `t ${kind}`;
     t.title = text;
-    document.getElementById("msg-x").replaceChildren(...actions);
+    held = actions.length > 0;
+    document.getElementById("msg-x").replaceChildren(...actions, ...(held ? [dismissControl()].filter(Boolean) : []));
 }
+
+/** Empties the message line (the history keeps what it said). */
+export function clearMessage() {
+    const t = document.getElementById("msg-t");
+    if (!t) {
+        return;
+    }
+    t.textContent = "";
+    t.className = "t";
+    t.title = "";
+    document.getElementById("msg-x").replaceChildren();
+    held = false;
+}
+
+/**
+ * Called as each action starts: a plain message has been read and goes; one with a button stays
+ * unless that button (or the line's Dismiss) is what was pressed.
+ * @param {boolean} fromLine the action is a control on the message line
+ */
+export function beforeAction(fromLine) {
+    if (!held || fromLine) {
+        clearMessage();
+    }
+}
+
+/**
+ * Whether the line shows a message with a button.
+ * @returns {boolean} it does
+ */
+export const messageHeld = () => held;
 
 /**
  * Replaces the newest message's text in place (a count that moves while the reader types), without
