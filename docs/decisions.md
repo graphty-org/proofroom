@@ -272,9 +272,7 @@ framed an unchanged-looking header while the change sat lower. When the only cha
 is centered and the row reads "Only the size changed: 2 px shorter". The List menu's Pictures are
 Crop to the change (the default), Whole image and Text only, plus Mark the change (named Spotlight
 small changes until the fifth pass: it now tints the changed pixels red where most of the picture
-changed, as Highlight does, instead of showing it plain; since the sixth pass it tints every
-changed row, because a spotlit small change read as a grey slab with one lit cell that showed where
-the change was but not what it was); a stored
+changed, as Highlight does, instead of showing it plain); a stored
 When small or Always reads as the crop, Never as Whole image. The gray crop bar is gone: every
 changed row is a crop, so it marked nothing.
 

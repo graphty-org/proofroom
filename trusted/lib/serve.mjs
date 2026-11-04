@@ -150,10 +150,9 @@ const PAGE_DIR = "../page";
 // image's crop at its own width, and knows how much of a picture the areas cover (shownKind); 4
 // crops every changed row onto its change, at most ROW_MAX CSS pixels of the page; 5 crops a large
 // change where the most pixels changed and tints a mostly-changed picture's changed pixels
-// (`row-tint`, `tint`); 6 tints every marked picture, whatever share of it changed, and slides a
-// crop that frames areas so it holds each one whole. The page asks for pictures with the same `v` (list.js), so a browser's kept
+// (`row-tint`, `tint`). The page asks for pictures with the same `v` (list.js), so a browser's kept
 // picture is not reused.
-const SPOTS_MADE_BY = "6";
+const SPOTS_MADE_BY = "5";
 const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
 const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
@@ -3962,7 +3961,9 @@ export function createApp({
 
     /**
      * A changed item's picture of one kind, its pair's every kind made at once, unless `run` made
-     * them. `auto` is the row's crop, tinted (shownKind).
+     * them. `auto` is the row's crop, spotlit, and a spotlit kind is shown plain when
+     * the areas cover a third or more of it, as shownKind decides from what the job found, or from
+     * the areas compare wrote into the item.
      * @param {{ path: string, hash: string, file: string, dir: string }} a where the baseline is
      * @param {{ path: string, hash: string, file: string, dir: string }} b where the capture is
      * @param {{ threshold: number, includeAA: boolean, areas?: number[][], size?: number[] | null,
@@ -3978,7 +3979,8 @@ export function createApp({
         const key = pairKey(a.hash, b.hash, { threshold, includeAA });
         // Only a capture `run` made is read first: another's job is queued at once, in list order.
         if (item.pictures) {
-            const made = await madeByRun(item, b.dir, shownKind(kind));
+            const known = areas.get(key) ?? factsOf(item, scale);
+            const made = await madeByRun(item, b.dir, known ? shownKind(kind, known) : kind);
             if (made) {
                 return made;
             }
@@ -3999,11 +4001,20 @@ export function createApp({
                 }),
                 { tag: b.dir, found: foundAreas(key), again },
             );
-        const want = shownKind(kind);
-        // Made again when its pictures are on disk without what the job found (a lost areas file),
-        // so the row learns its crop and areas.
-        const lost = !areas.get(key) && !factsOf(item, scale) && existsSync(files[want]);
-        return make(want, lost && want !== "plain" && want !== "row-plain");
+        const known = areas.get(key) ?? factsOf(item, scale);
+        if (known) {
+            return make(shownKind(kind, known));
+        }
+        if (kind === "plain" || kind === "row-plain") {
+            return make(kind);
+        }
+        // A spotlit kind is shown plain when its areas cover a third or more, which only the job
+        // finds: made first (again, when its pictures are on disk without what it found, a lost
+        // areas file), then the kind chosen.
+        const made = await make("row-spot", existsSync(files["row-spot"]));
+        const found = areas.get(key);
+        // Made in advance, the job made every kind: nothing to answer.
+        return made[0] === 200 && found && when === "now" ? make(shownKind(kind, found)) : made;
     };
 
     /**

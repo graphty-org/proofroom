@@ -273,7 +273,7 @@ export const ACTIONS = {
     group: { label: (app, ctx) => ctx.grouping, run: (app, ctx) => app.setGrouping(ctx.grouping) },
     picspot: {
         label: "Mark the change",
-        title: "Tints the changed pixels red",
+        title: "Spotlights a small change; tints the changed pixels red when most of the picture changed",
         run: (app) => app.setPictures({ spot: !(app.lv.pics.spot && !app.lv.pics.none), none: false }),
     },
     piczoom: { label: (app, ctx) => ctx.zoom, run: (app, ctx) => app.setPictures({ zoom: ctx.zoom, none: false }) },

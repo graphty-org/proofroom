@@ -884,17 +884,6 @@ where the change is, not what it is, and the list speaks two languages (red rows
    off; a small-change `row-tint` picture has red exactly at the dilated mask; the alt and tooltip
    read `..., changed pixels tinted` on every changed row.
 
-Built as: the page asks for `row-tint` (and `tint` under `Whole image`) whenever `Mark the change`
-is on, and `shownKind` answers `auto` with `row-tint`; every other kind is answered as asked, so an
-old address naming `row-spot` or `spot` still gets its spotlit picture, made by the same job.
-`SPOT_UNDER` no longer reaches the rows. The tooltip and alt carry `, changed pixels tinted` on
-every tinted row except a size-only crop, which is centered away from the strip that changed and
-has nothing in it to tint. Item 3 already held: a rule 1 or 2 crop is at least the framed box
-times `ROW_PAD` each way before it is clamped, and clamping only slides it inside the image, so
-every framed area stays whole (tested against all four edges, a fractional edge, and a cluster on
-the bottom edge). #548's picture was whole on the server (its lit cell at the crop's middle); the
-cut in the review shot was the list's edge over the row, not the crop.
-
 ### 11.2 The fourth-pass page work is finished and committed
 
 The staged edits on top of 55ee338 (header line 2 chip, `Wider`, Image only, Show headings,

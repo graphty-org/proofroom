@@ -220,7 +220,7 @@ describe("review page: pictures and images by their content", () => {
         await page.unroute("**/api/pic/**", failing);
         await retry.first().click();
         await expect.poll(() => page.locator("#snap-list .srow .pic.ready").count()).toBe(1);
-        expect(asked).toEqual(["?v=6&try=1"]);
+        expect(asked).toEqual(["?v=5&try=1"]);
         expect(posts).toEqual(["POST"]);
     });
 
