@@ -1023,7 +1023,7 @@ function pictureOf(app, s) {
         decoding: "async",
         // `v` names how the server makes pictures (serve.mjs SPOTS_MADE_BY): the browser keeps a
         // picture for good, so one made the older way is fetched again.
-        src: `/api/pic/${s.pic}-${pk.kind}?v=5${s.retried ? `&try=${s.retried}` : ""}`,
+        src: `/api/pic/${s.pic}-${pk.kind}?v=7${s.retried ? `&try=${s.retried}` : ""}`,
         "data-kind": pk.kind,
     });
     img.addEventListener("load", () => box.classList.add("ready"));

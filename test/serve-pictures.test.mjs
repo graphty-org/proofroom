@@ -728,7 +728,7 @@ describe("serve: the picture queue", () => {
         const s = await start({ fakes: onePrFakes(), pictures: first.pool });
         await s.api("GET", "/api/prs");
         await s.app.idle();
-        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("5");
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("7");
         // Made before the spotlight dimmed less and the row crop framed every area.
         writeFileSync(join(s.tmp, "spots", "made-by"), "1");
         const again = fakePool();
@@ -744,7 +744,7 @@ describe("serve: the picture queue", () => {
         await t.app.idle();
         // The three pairs again; the captures' own thumbnails are kept.
         expect(again.started).toHaveLength(3);
-        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("5");
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("7");
     });
 
     it("makes a pair's pictures again for a spotlit crop or Auto when the areas file was lost", async () => {

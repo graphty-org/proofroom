@@ -150,9 +150,9 @@ const PAGE_DIR = "../page";
 // image's crop at its own width, and knows how much of a picture the areas cover (shownKind); 4
 // crops every changed row onto its change, at most ROW_MAX CSS pixels of the page; 5 crops a large
 // change where the most pixels changed and tints a mostly-changed picture's changed pixels
-// (`row-tint`, `tint`). The page asks for pictures with the same `v` (list.js), so a browser's kept
+// (`row-tint`, `tint`); 7 spotlights a row again after 6 tinted every one. The page asks for pictures with the same `v` (list.js), so a browser's kept
 // picture is not reused.
-const SPOTS_MADE_BY = "5";
+const SPOTS_MADE_BY = "7";
 const PAGE_FILE = /^(?:viewer\/)?[a-z0-9][a-z0-9-]*\.(html|js|css|svg|png|webmanifest)$/;
 const PAGE_TYPES = {
     html: "text/html; charset=utf-8",
@@ -4237,7 +4237,12 @@ export function createApp({
             if (b) {
                 remember(blobs, item.capture, dir, b);
             }
-            remember(pictured, pairKey(item.baseline ?? "none", item.capture ?? "none", item), dir, { a, b, item, scale: r.scale ?? 1 });
+            remember(pictured, pairKey(item.baseline ?? "none", item.capture ?? "none", item), dir, {
+                a,
+                b,
+                item,
+                scale: r.scale ?? 1,
+            });
         }
     }
 

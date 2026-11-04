@@ -915,7 +915,7 @@ describe("rows", () => {
         await page.locator("#snap-find").click();
         await page.keyboard.type("115");
         await r.waitFor();
-        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-row-spot\?v=5$/);
+        await expect.poll(() => r.locator("img").getAttribute("src")).toMatch(/-row-spot\?v=7$/);
         expect((await listChecked(page)).checked).toEqual(["Component", "Crop to the change", "Mark the change"]);
         // The Pictures section: three choices, then the Mark the change toggle with its rule in its tooltip.
         await listMenu(page);
