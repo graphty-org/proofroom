@@ -276,11 +276,37 @@ const imageHash = (item) => item.capture ?? item.baseline ?? null;
  * @param {{ baselines: string, approvals: string }} config the settings
  * @returns {Promise<Map<string, string | null>>} `to` by baseline path
  */
-async function earlierAccepts(repo, head, pr, { baselines, approvals }) {
-    const out = new Map();
+function earlierAccepts(repo, head, pr, config) {
     if (pr === null || !head) {
-        return out;
+        return Promise.resolve(new Map());
     }
+    // A commit's files never change, so neither does this. Asked again on every refresh, it started
+    // one git process per record per pull request, and starting them starved the server.
+    const key = `${repo} ${head} ${pr} ${config.baselines} ${config.approvals}`;
+    if (!acceptsAt.has(key)) {
+        if (acceptsAt.size >= 1000) {
+            acceptsAt.clear();
+        }
+        const read = readEarlierAccepts(repo, head, pr, config);
+        acceptsAt.set(key, read);
+        read.catch(() => acceptsAt.delete(key));
+    }
+    return acceptsAt.get(key);
+}
+
+/** earlierAccepts' answers, by repository, commit, pull request and folders. */
+const acceptsAt = new Map();
+
+/**
+ * earlierAccepts, read from git.
+ * @param {string} repo the repository
+ * @param {string} head the captured head
+ * @param {number} pr the pull request
+ * @param {{ baselines: string, approvals: string }} config the settings
+ * @returns {Promise<Map<string, string | null>>} `to` by baseline path
+ */
+async function readEarlierAccepts(repo, head, pr, { baselines, approvals }) {
+    const out = new Map();
     const git = (args) => exec("git", args, { cwd: repo });
     const names = await git(["ls-tree", "--name-only", head, `${baselines}/reviews/`]).catch(() => "");
     // Record names start with their UTC time, so sorting by name applies the newest last.
