@@ -252,7 +252,7 @@ export function row(i, status, over = {}) {
                       // but every twelfth frames them all.
                       shown: i % 3 === 0 && i % 12 !== 0 ? 1 : 1 + (i % 7),
                       how: i % 3 === 0 && i % 12 !== 0 ? "cluster" : "all",
-                      // Every other ten rows' changes cover most of their crop: the server tints them.
+                      // Every other ten rows' changes cover most of their crop: still spotlit.
                       cover: Math.floor(i / 10) % 2 ? 0.5 : 0.1,
                   }
                 : null,

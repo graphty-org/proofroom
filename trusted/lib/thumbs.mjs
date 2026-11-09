@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { PNG } from "pngjs";
 
-import { dimmed, grow, regions, ROW, rowCrop, SPOT_UNDER } from "../page/spot.js";
+import { dimmed, grow, regions, ROW, rowCrop } from "../page/spot.js";
 import { paddedPair } from "./compare.mjs";
 import { MAX_AREAS } from "./results.mjs";
 
@@ -110,29 +110,25 @@ export const PAIR_KINDS = ["spot", "tint", "row-plain", "row-spot", "row-tint", 
 export const PICTURE_KINDS = [...PAIR_KINDS, "auto"];
 
 /**
- * The picture a row shows for a kind it asks for, from what the pair's job (or compare) found.
- * `auto` is the row's crop with its change marked (`row-spot`): every changed row is cropped to its
- * change. When the changed areas cover a third or more of what it shows, dimming the rest would
- * hide what changed, not point at it: the picture is tinted instead (`row-tint` for the row's crop,
- * `tint` for the whole image).
+ * The picture a row shows for a kind it asks for. `auto` is the row's crop, spotlit (`row-spot`).
+ *
+ * Row pictures are ALWAYS Spotlight, never tinted, at any coverage. Owner, 2026-11-09: "i never
+ * asked for tint. always spotlight". A design pass that tints mostly-changed (or all) rows has been
+ * built and reverted twice (4ec4c00, then the one-third rule 55ee338 kept by 74b0bb6); the test
+ * "row pictures are always Spotlight" in serve-pictures.test.mjs pins this. `tint` and `row-tint`
+ * are still made so an old URL answers, but nothing shows them.
  * @param {string} kind the kind asked for, one of PICTURE_KINDS
- * @param {{ zoom: number, areas: number, cover?: number, coverAll?: number }} facts what was found
  * @returns {string} the kind to show
  */
-export function shownKind(kind, facts) {
-    const want = kind === "auto" ? "row-spot" : kind;
-    if (want === "row-spot" && facts.cover >= SPOT_UNDER) {
-        return "row-tint";
-    }
-    return want === "spot" && facts.coverAll >= SPOT_UNDER ? "tint" : want;
+export function shownKind(kind) {
+    return kind === "auto" ? "row-spot" : kind;
 }
 
 /**
- * The kind `auto` shows (shownKind of `auto`).
- * @param {{ zoom: number, areas: number, cover?: number, coverAll?: number }} facts what was found
+ * The kind `auto` shows (shownKind of `auto`): always `row-spot`.
  * @returns {string} the kind the row shows
  */
-export const autoKind = (facts) => shownKind("auto", facts);
+export const autoKind = () => shownKind("auto");
 
 /**
  * One job's pictures, as RGBA pixels. For a pair: decoded once, both padded top-left to the

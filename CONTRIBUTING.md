@@ -17,6 +17,15 @@ read properties of null (reading 'edgesOut')"), though its `npm ci` installs the
 still holds the gate graphty-monorepo runs, which proofroom's output must keep passing until that
 repository moves to proofroom.
 
+## Owner rules a design pass must not undo
+
+- **Row pictures are always Spotlight, never tinted** (owner, 2026-11-09: "i never asked for tint.
+  always spotlight"). The small pictures in the Changes list dim what did not change, at every size
+  of change; they never show Highlight's red. Tinting rows was built twice from design passes and
+  reverted twice (4ec4c00, and the one-third rule of 55ee338 that 74b0bb6 kept). `shownKind` in
+  `trusted/lib/thumbs.mjs` holds it and the test "row pictures are always Spotlight" pins it. A
+  design document that says otherwise is wrong.
+
 ## Acceptance test
 
 `scripts/uat.mjs` walks a reviewer's journey through a running review page in Chromium, on that

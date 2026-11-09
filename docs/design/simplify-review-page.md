@@ -1,5 +1,10 @@
 # proofroom review page: simplification spec (2026-10-31, revised after red team)
 
+> **Superseded on row pictures (owner, 2026-11-09):** "i never asked for tint. always spotlight."
+> Row pictures are always Spotlight, never tinted, at any coverage. Every rule below that tints a
+> row (`row-tint`, `tint`, the `SPOT_UNDER` choice in 10.2 and 11.1, the 10.4 rejection of
+> always-Spotlight rows) is void. See CONTRIBUTING.md, "Owner rules a design pass must not undo".
+
 Worktree: `/home/apowers/Projects/proofroom/.worktrees/simplify-review-page`. Page code is
 `trusted/page/` (plain ES modules), styles in `trusted/page/page.css`. No new dependencies, no new
 files unless a test needs one. Prefer deleting and merging over adding.

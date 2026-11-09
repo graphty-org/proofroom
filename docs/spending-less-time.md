@@ -50,10 +50,8 @@ badge "+11 identical" when their change is identical to others'.
   changed: 2 px shorter". The row itself says how many areas changed, "3 changed areas".
 - **Whole image**: the whole new image, shrunk to the row.
 - **Text only, no pictures**: text rows, the densest list.
-- **Mark the change** (on by default): a small change is spotlit (what did not change is dimmed),
-  so it stands out. When the changed areas cover a third or more of a row's crop, dimming would
-  hide the change, so the changed pixels are tinted red instead, as Highlight shows them. The same
-  rule holds under Whole image.
+- **Mark the change** (on by default): the change is spotlit (what did not change is dimmed), so it
+  stands out, however much of the picture changed. The same holds under Whole image.
 
 ## Selecting
 

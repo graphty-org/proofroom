@@ -301,7 +301,15 @@ describe("rowCrop", () => {
             [100, 2000, 50, 50],
             [1000, 3000, 50, 50],
         ]);
-        const { crop } = rowCrop([[0, 0, 2400, 3804], [0, 0, 1, 1]], w, h, { scale: 2, mask });
+        const { crop } = rowCrop(
+            [
+                [0, 0, 2400, 3804],
+                [0, 0, 1, 1],
+            ],
+            w,
+            h,
+            { scale: 2, mask },
+        );
         expect(contains(crop, [100, 2000, 50, 50])).toBe(true);
     });
 
@@ -309,7 +317,15 @@ describe("rowCrop", () => {
         const { crop, how } = rowCrop(DDRAM, 2400, 3804, { scale: 2, base: [2400, 3770] });
         expect(how).toBe("center");
         expect(crop).toEqual([800, 1150 + 2654 / 2 - 156, 800, 312]);
-        const far = rowCrop([[2000, 3000, 400, 804], [0, 0, 10, 10]], 2400, 3804, { scale: 2 });
+        const far = rowCrop(
+            [
+                [2000, 3000, 400, 804],
+                [0, 0, 10, 10],
+            ],
+            2400,
+            3804,
+            { scale: 2 },
+        );
         expect(inside(far.crop, 2400, 3804)).toBe(true);
     });
 
@@ -338,10 +354,7 @@ describe("rowCrop", () => {
             [900, 4000],
             [2400, 400],
         ]) {
-            for (const r of [
-                rowCrop([[0, 10, w, h - 10]], w, h, { scale: 2 }),
-                rowCrop([], w, h, { scale: 2 }),
-            ]) {
+            for (const r of [rowCrop([[0, 10, w, h - 10]], w, h, { scale: 2 }), rowCrop([], w, h, { scale: 2 })]) {
                 expect(r.crop[2] / r.crop[3]).toBeCloseTo(SHAPE, 6);
                 expect(r.crop[2]).toBeLessThanOrEqual(800);
                 expect(inside(r.crop, w, h)).toBe(true);
@@ -425,10 +438,10 @@ describe("the picture job", () => {
         const capture = PNG.sync.read(png(800, 600, [0, 0, 800, 600]));
         capture.data.set([240, 240, 240, 255], 0);
         const wide = pictures({ baseline, capture: PNG.sync.write(capture), threshold: 0.1, includeAA: false });
-        // Tinted: the change covers the whole picture, so dimming would hide it.
-        expect(autoKind(wide.facts)).toBe("row-tint");
-        expect(shownKind("row-spot", wide.facts)).toBe("row-tint");
-        expect(shownKind("spot", wide.facts)).toBe("tint");
+        // Spotlit even though the change covers the whole picture: rows are never tinted.
+        expect(autoKind(wide.facts)).toBe("row-spot");
+        expect(shownKind("row-spot", wide.facts)).toBe("row-spot");
+        expect(shownKind("spot", wide.facts)).toBe("spot");
         // Mark the change off: the plain crop, whatever the cover.
         expect(shownKind("row-plain", wide.facts)).toBe("row-plain");
         const two = pictures({
@@ -485,13 +498,34 @@ describe("the picture job", () => {
         expect(factsOf({ ...item, baselineSize: [2400, 1800] }, 2).how).toBe("center");
     });
 
-    it("marks a row by Spotlight under a third of the crop changed, by Tint at a third or more", () => {
-        const facts = (cover) => ({ zoom: 2, areas: 1, cover, coverAll: cover / 4 });
-        expect(autoKind(facts(SPOT_UNDER - 0.01))).toBe("row-spot");
-        expect(autoKind(facts(SPOT_UNDER))).toBe("row-tint");
-        expect(autoKind(facts(0.9))).toBe("row-tint");
-        expect(shownKind("row-plain", facts(0.9))).toBe("row-plain");
-        expect(shownKind("row-plain", facts(0.01))).toBe("row-plain");
+    // Owner, 2026-11-09: "i never asked for tint. always spotlight". Row pictures went to the tint
+    // twice (4ec4c00 for every row, the one-third rule 55ee338 kept by 74b0bb6); this pins them.
+    it("row pictures are always Spotlight, never tinted, at any coverage", () => {
+        for (const cover of [0, 0.01, SPOT_UNDER - 0.01, SPOT_UNDER, 0.5, 0.9, 1]) {
+            const facts = { zoom: 2, areas: 1, cover, coverAll: cover };
+            expect(autoKind(facts)).toBe("row-spot");
+            expect(shownKind("auto", facts)).toBe("row-spot");
+            expect(shownKind("row-spot", facts)).toBe("row-spot");
+            expect(shownKind("spot", facts)).toBe("spot");
+            expect(shownKind("row-plain", facts)).toBe("row-plain");
+        }
+        // A pair that changed everywhere: the row it is shown is the spotlit crop, with no red tint.
+        const baseline = png(800, 600, null);
+        const capture = PNG.sync.read(png(800, 600, null));
+        for (let y = 100; y < 400; y++) {
+            for (let x = 100; x < 700; x++) {
+                capture.data.set([120, 120, 120, 255], (y * 800 + x) * 4);
+            }
+        }
+        const { images, facts } = pictureParts({
+            baseline,
+            capture: PNG.sync.write(capture),
+            threshold: 0.1,
+            includeAA: false,
+        });
+        expect(facts.cover).toBeGreaterThanOrEqual(SPOT_UNDER);
+        expect(images[autoKind(facts)]).toBe(images["row-spot"]);
+        expect(images[shownKind("spot", facts)]).toBe(images.spot);
     });
 
     it("tints exactly the changed pixels grown by TINT_GROW toward the Highlight red, the new image elsewhere", () => {
@@ -543,8 +577,8 @@ describe("the picture job", () => {
             threshold: 0.1,
             includeAA: false,
         });
-        expect(autoKind(facts)).toBe("row-tint");
-        expect(shownKind("spot", facts)).toBe("tint");
+        // Made so an old URL answers; no row shows them (always Spotlight).
+        expect(facts.cover).toBeGreaterThanOrEqual(SPOT_UNDER);
         for (const [tint, plain] of [
             [images["row-tint"], images["row-plain"]],
             [images.tint, images.plain],
@@ -728,7 +762,7 @@ describe("serve: the picture queue", () => {
         const s = await start({ fakes: onePrFakes(), pictures: first.pool });
         await s.api("GET", "/api/prs");
         await s.app.idle();
-        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("7");
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("8");
         // Made before the spotlight dimmed less and the row crop framed every area.
         writeFileSync(join(s.tmp, "spots", "made-by"), "1");
         const again = fakePool();
@@ -744,7 +778,7 @@ describe("serve: the picture queue", () => {
         await t.app.idle();
         // The three pairs again; the captures' own thumbnails are kept.
         expect(again.started).toHaveLength(3);
-        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("7");
+        expect(readFileSync(join(s.tmp, "spots", "made-by"), "utf8")).toBe("8");
     });
 
     it("makes a pair's pictures again for a spotlit crop or Auto when the areas file was lost", async () => {

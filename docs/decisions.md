@@ -291,7 +291,15 @@ dark, on a 2x screen, judged row by row:
   counts are the same in all four. No changed row has a band beside its picture wider than 3 CSS px
   (the slot is 2.61:1, the crop 2.56:1); only the two whole-image new and removed rows do.
 
-## Every changed row tinted: checked row by row
+## Row pictures are always Spotlight (owner, 2026-11-09)
+
+"i never asked for tint. always spotlight." Every row picture is spotlit, at every size of change;
+none is tinted red. This supersedes the two sections below and the tint rules of the design
+document's fifth and sixth passes (10.2, 11.1): tinting every row (4ec4c00) was reverted
+(4306921), and the one-third rule (55ee338, kept by 74b0bb6) still tinted mostly-changed rows, for
+example `selected-at-rest`, whose changed areas cover 36% of its crop. Picture version 8.
+
+## Every changed row tinted: checked row by row (superseded)
 
 Since the sixth pass a changed row's picture tints its changed pixels red at every size of change
 (Spotlight stays a viewer view). Checked on the studio server at commit 83a8b0b (picture version
