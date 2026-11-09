@@ -2802,16 +2802,19 @@ export function createApp({
         // A capture made from the page has no CI run, and keeps none of these folders.
         const all = [...targets.values(), ...held.values()].filter((t) => !t.capture);
         const runs = new Set(all.flatMap((t) => [t.runId, ...(t.sourceRuns ?? [])]));
-        if (results || finishing || runs.has(null) || !existsSync(tmp)) {
+        if (results || finishing || !existsSync(tmp)) {
             return;
         }
-        // the rolling target's own capture directories
+        // A target with no run (waiting for CI) may be any run's, so no run's download goes then.
+        const runsKnown = !runs.has(null);
+        // the rolling target's own capture directories; the others are copies of older renders,
+        // whatever the runs, and while they stayed the disk budget evicted the changes instead
         const rolled = new Set(
             all.flatMap((t) => (t.rolling ? t.projects.map((p) => p.dir && basename(dirname(p.dir))) : [])),
         );
         for (const d of readdirSync(tmp)) {
             const run = /^(\d+)-(?:final-)?\d+$/.exec(d)?.[1];
-            if ((run && !runs.has(Number(run))) || (d.startsWith("rolling-") && !rolled.has(d))) {
+            if ((runsKnown && run && !runs.has(Number(run))) || (d.startsWith("rolling-") && !rolled.has(d))) {
                 rmSync(join(tmp, d), { recursive: true, force: true });
                 forgetImages(join(tmp, d));
             }

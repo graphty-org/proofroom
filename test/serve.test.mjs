@@ -963,6 +963,23 @@ describe("serve: rolling renders", () => {
         expect((await capture(s)).decisions).toEqual({});
     });
 
+    it("deletes an older render's capture directory, even while a pull request waits for CI", async () => {
+        const s = await startWith(
+            (r) => [{ commit: r.master, at: 5000, items: [item("badge--default", "light", 3000)], pending: [] }],
+            { gh: (r) => slices(r, { prs: [{ number: 124, head: "4".repeat(40), branch: "no-run" }] }) },
+        );
+        const rolled = () => readdirSync(s.tmp).filter((d) => d.startsWith("rolling-"));
+        await capture(s);
+        const [older] = rolled();
+        expect(older).toBeDefined();
+        s.box.list = [{ commit: s.master, at: 6000, items: [item("badge--default", "light", 3001)], pending: [] }];
+        await s.api("GET", "/api/prs?refresh=1");
+        await until(async () => (await target(s))?.runId === 3001);
+        await capture(s);
+        expect(rolled()).not.toContain(older);
+        expect(rolled()).toHaveLength(1);
+    });
+
     it("refuses its Finish while a candidate is offered", async () => {
         const held = await startWith((r) => {
             return [{ commit: r.master, at: 5000, items: [item("badge--default", "light", 3000)], pending: [] }];
