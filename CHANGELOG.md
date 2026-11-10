@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.1.0
+
+Everything 1.0.0 publishes is kept. What changes:
+
+**A simpler review page.**
+
+- Each changed row's picture is cropped onto its change and shown in Spotlight, with nothing drawn
+  over it.
+- The list says each count once, groups have one-line headers, and the toolbar has seven controls.
+- Every keyboard shortcut has a visible button that shows its key. Previous [Up] and Next [Down]
+  buttons are on every list.
+- "Behind master" and "a newer capture" are small chips on the first line, not paragraphs.
+- The held candidate and the rolling renders are named by their commit, and the candidate is listed
+  first.
+
+**Finish.**
+
+- The approval is prepared as soon as the decisions are complete, and its progress is shown.
+- The Finish sheet no longer reports a false conflict.
+- A candidate's approval commit names the candidate.
+- Finish never signs a candidate's tree while one of its projects is not loaded.
+
+**The review server.**
+
+- Pages answer at once. Before, every refresh started one git process for each review record of
+  each open pull request, and with many pull requests a page took seconds to load or stayed blank.
+- Older rolling renders are deleted while a pull request waits for CI. Before, they filled the
+  disk budget, and a held candidate lost its images every hour it sat unopened.
+- A run with a gated `visual-final` capture is reviewed from that capture.
+- An unchanged item's baseline is read from git, never reported as a damaged image.
+- A damaged download replaces only its own capture.
+
+**Capture.**
+
+- The capture browser renders at 2x for the whole run, not only during each shot.
+- A story whose play function threw is recorded as failed.
+- A flaky story keeps its differing first shot, named.
+- A retried split capture keeps its shard.
+- A whole story id is captured alone, not every id it is a prefix of.
+- A changed story is shot once when it is master's capture.
+- Master's reference capture comes from master's first-parent line.
+
 ## 1.0.0
 
 The first version published as `proofroom`. It was `@graphty/visual-review` until 0.2.35; moving
